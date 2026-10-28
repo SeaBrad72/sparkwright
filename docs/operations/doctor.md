@@ -83,7 +83,12 @@ CI failures on untracked repos or fresh clones. The two concerns are deliberatel
 | `--require` | Strict: UNVERIFIED also exits 1. Auto-set inside CI (`$CI` env). |
 | `--full`    | Posture + metrics (informational). Exit code unchanged by metrics. |
 | `--quick`   | The advisory lines only: skips conformance and claims, which read `UNVERIFIED (skipped by --quick…)`. Never a pass; see below. Refused (exit 2) with `--full` and with `--as agent`. |
+| `--boundary`| The agent-boundary static leg (SWAS-355): runs `scripts/doctor-boundary.sh` instead of the posture sweep. One verdict from preflight's scope reader, guard-wired's grader and the opt-out declaration on origin's default branch; exit 0, 1 (an UNDECLARED opt-out, a malformed or UNTRUSTED declaration, an unreadable declaration while a part is OFF, or a grader FAIL) or 2 UNVERIFIED (1 under `--require`/CI). `--boundary-offline` (typed on the command line, never an environment variable; anyone can pass it) turns the unreadable-declaration FAIL into a loud WARN and the verdict into UNVERIFIED (exit 2, 1 under `--require`), never PASS; it never relaxes UNTRUSTED. CI counts only with no TTY attached (CI set in a terminal is judged as a human terminal, with a WARN). Reads settings, writes nothing; refused (exit 2) with `--full`, `--quick` and `--as`. See `runtime-guards.md`, "The agent boundary: on by default". |
 | `--selftest`| Built-in regression test: stubs the composed commands, verifies the render contract and exit-code logic. Wired to CI via `conformance/doctor-wired.sh`. |
+
+### The `secrets-in-tree` and `secrets-in-env` lines (SWAS-357)
+
+Two advisory lines, printed after the forge lines, **names only** (never a file's content or a variable's value). `secrets-in-tree` lists secret-named files in the working tree (the guard's name set, templates excluded, `.git` and `node_modules` skipped, at most 20 shown with a count); WARN, or FAIL under `--require`. `secrets-in-env` lists secret-looking variable names in the session's environment; WARN. A name check misses a secret under an innocent name, and listing removes nothing. Names alone may be sensitive (a customer name in a path, for example) and they appear in CI logs. A subtree the walk cannot read is named on the line, never read as OK. See [`secrets-for-ai.md`](secrets-for-ai.md).
 
 ## Progress, the estimate and `--quick` (SWAS-201)
 

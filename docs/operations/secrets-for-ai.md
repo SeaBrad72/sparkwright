@@ -86,6 +86,40 @@ secret-read speed-bump (above) complements this by keeping a live key *file* out
 of the agent's context in the first place — but the real control here is minting
 short-lived credentials so there is no long-lived key file to leak.
 
+## Keep secrets out of the working tree and the environment
+
+A secret sitting where the agent works can be read: a file (`.env`, `*.pem`,
+`id_rsa`, a `secrets/` directory) or an exported variable. Runtime secrets
+should come from a secret manager or be injected at run time, never left as
+files in the tree: `op run -- <cmd>`, `doppler run -- <cmd>`,
+`aws-vault exec <profile> -- <cmd>`, or the CI platform's secrets. The process
+that needs the secret gets it for its own lifetime; nothing is left behind for
+the agent to open.
+
+`sparkwright doctor` checks for what is left behind, by **name only**. It never
+reads a file's content or a variable's value:
+
+- **`secrets-in-tree`** lists secret-named files in the working tree (tracked,
+  untracked or ignored; `.git` and `node_modules` are skipped; templates such as
+  `.env.example` are not findings). The name set is the guard's own. WARN by
+  default; FAIL under `--require`. Move each file out and inject its contents at
+  run time instead.
+- **`secrets-in-env`** lists the session's variable names that look secret
+  (`*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, `*CREDENTIAL*`, `*_KEY`, and
+  the kit's own `KIT_TRACKER_*` and `KIT_FORGE_*` names). WARN by default.
+
+`secrets-in-env` matches those name patterns and the prefixes `KIT_TRACKER_` and
+`KIT_FORGE_`; it is not a verified list of the kit's own variable names. Symlinks
+are listed by their own name and never followed. Names alone may be sensitive
+(a customer name in a path, for example), and they appear in CI logs.
+
+**The ceiling, stated plainly.** A name check misses a secret under an innocent
+name (`notes.txt`, `config.local`, a variable called `FOO`). And
+`secrets-in-env` only lists: it removes nothing, so an agent that runs in a shell
+holding those variables can still read them. That read stays **open**; the
+sandbox's read-deny and your secret manager are the controls, and these two
+lines show you what to clean up.
+
 ## See also
 
 - [`secrets-at-scale.md`](../enterprise/secrets-at-scale.md) — managed stores, OIDC, rotation

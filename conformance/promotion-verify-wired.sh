@@ -214,32 +214,76 @@ selftest() {
   else
     echo "FAIL: branch scoping: record rc=$_brc, exact 'scope: branch/feat-b2-go' lines in note=$_bscope"; st=1
   fi
-  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+  # PV3 (SWAS-392, G1b): these two negatives pass --basis, so the design-GO-needs-a-basis refusal
+  # (below) cannot be the reason they are refused, and they assert the SCOPE-SPECIFIC message as well
+  # as rc 2. Without --basis, and asserting rc alone, they would stay green for the wrong refusal.
+  _b2out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class control-plane --scope "branch/" \
-        --token "GO" >/dev/null 2>&1 ); then _b2rc=0; else _b2rc=$?; fi
-  if [ "$_b2rc" = 2 ]; then
-    echo "PASS: branch scoping NEGATIVE: a bare 'branch/' names no branch -> rc 2"
+        --token "GO" --basis "docs/architecture/x-design.md" 2>&1 )" && _b2rc=0 || _b2rc=$?
+  if [ "$_b2rc" = 2 ] && printf '%s' "$_b2out" | grep -qF "names no branch"; then
+    echo "PASS: branch scoping NEGATIVE (PV3): a bare 'branch/' names no branch -> rc 2 with the scope message"
   else
-    echo "FAIL: branch scoping NEGATIVE: 'branch/' should be rc 2, got rc=$_b2rc"; st=1
+    echo "FAIL: branch scoping NEGATIVE (PV3): 'branch/' should be rc 2 'names no branch', got rc=$_b2rc: $_b2out"; st=1
   fi
-  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+  _b3out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class control-plane --scope "branch/feat+plus" \
-        --token "GO" >/dev/null 2>&1 ); then _b3rc=0; else _b3rc=$?; fi
-  if [ "$_b3rc" = 2 ]; then
-    echo "PASS: branch scoping NEGATIVE: a name outside the gate's scope charset -> rc 2 (not recorded dead)"
+        --token "GO" --basis "docs/architecture/x-design.md" 2>&1 )" && _b3rc=0 || _b3rc=$?
+  if [ "$_b3rc" = 2 ] && printf '%s' "$_b3out" | grep -qF "may contain only"; then
+    echo "PASS: branch scoping NEGATIVE (PV3): a name outside the gate's scope charset -> rc 2 with the scope message (not recorded dead)"
   else
-    echo "FAIL: branch scoping NEGATIVE: 'branch/feat+plus' should be rc 2, got rc=$_b3rc"; st=1
+    echo "FAIL: branch scoping NEGATIVE (PV3): 'branch/feat+plus' should be rc 2 'may contain only', got rc=$_b3rc: $_b3out"; st=1
   fi
   # REGRESSION: the NEW rule applies to the `branch/` shape ONLY. Existing scopes keep their existing
   # hygiene — this repo's own ledger holds scopes with a space ("PR #999"), and retrofitting the
   # charset onto every scope would refuse records the gates already accept.
   if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class Ordinary --scope "PR #1005" \
-        --token "GO" >/dev/null 2>&1 ); then _b4rc=0; else _b4rc=$?; fi
+        --token "GO" --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _b4rc=0; else _b4rc=$?; fi
   if [ "$_b4rc" = 0 ]; then
     echo "PASS: branch scoping: a non-branch scope with a space is still accepted (no retrofit)"
   else
     echo "FAIL: branch scoping: 'PR #1005' must still record, got rc=$_b4rc"; st=1
+  fi
+
+  # PV1 (SWAS-392, design 2.3a): `record --gate design` WITHOUT --basis is refused, rc 2, on every class,
+  # and writes NO note (the ledger ref is byte-identical afterwards). The gate that reads a design GO
+  # (ceremony-binding.sh) refuses a basis-less one as "names no artifact", so the front door refuses to
+  # mint a design GO that can never bind. ONLY the exact gate value `design` is affected (PV2).
+  for _pv1c in "Ordinary:PR #1013" "control-plane:branch/pv1-cp"; do
+    _pv1cls="${_pv1c%%:*}"; _pv1sc="${_pv1c#*:}"
+    _pv1pre="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
+    _pv1out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+          --gate design --rung "Design" --class "$_pv1cls" --scope "$_pv1sc" \
+          --token "GO" 2>&1 )" && _pv1rc=0 || _pv1rc=$?
+    _pv1post="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
+    if [ "$_pv1rc" = 2 ] && [ "$_pv1pre" = "$_pv1post" ] && printf '%s' "$_pv1out" | grep -qF -e "--basis"; then
+      echo "PASS: PV1 ($_pv1cls): record --gate design without --basis -> rc 2 naming --basis, ledger untouched"
+    else
+      echo "FAIL: PV1 ($_pv1cls): expected rc 2 naming --basis and an untouched ledger, got rc=$_pv1rc pre=$_pv1pre post=$_pv1post: $_pv1out"; st=1
+    fi
+  done
+  # PV4 (F-2/M3): the LITERAL `(none recorded)` is the omitted-basis default, so it is refused as a --basis
+  # for a design GO too (trimmed, case-insensitive) -- else the refusal above is bypassed by typing the default.
+  for _pv4b in "(none recorded)" "  (None Recorded) "; do
+    _pv4pre="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
+    _pv4out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+          --gate design --rung "Design" --class Ordinary --scope "PR #1015" \
+          --token "GO" --basis "$_pv4b" 2>&1 )" && _pv4rc=0 || _pv4rc=$?
+    _pv4post="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
+    if [ "$_pv4rc" = 2 ] && [ "$_pv4pre" = "$_pv4post" ] && printf '%s' "$_pv4out" | grep -qF -e "none recorded"; then
+      echo "PASS: PV4: record --gate design --basis '$_pv4b' -> rc 2, ledger untouched"
+    else
+      echo "FAIL: PV4: --basis '$_pv4b' on a design GO must be rc 2 with an untouched ledger, got rc=$_pv4rc: $_pv4out"; st=1
+    fi
+  done
+  # PV2: any OTHER gate keeps the optional basis -- rc 0 and the literal default, unchanged.
+  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+        --gate release-candidate --rung "Release candidate" --class Ordinary --scope "PR #1014" \
+        --token "GO" >/dev/null 2>&1 ) \
+     && ( cd "$R" && git notes --ref=promotions show "$APP" 2>/dev/null | grep -qx 'basis: (none recorded)' ); then
+    echo "PASS: PV2: record with another gate and no --basis -> rc 0, 'basis: (none recorded)' unchanged"
+  else
+    echo "FAIL: PV2: a non-design gate without --basis must still record with 'basis: (none recorded)'"; st=1
   fi
 
   # =====================================================================================
@@ -1782,7 +1826,8 @@ EOF
     _cd="$1"; _cs="$2"; _cp="$3"; shift 3
     if LOUT="$( cd "$_cd" && PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" record \
           --approved-sha "$_cs" --approved-by "solo maintainer" --gate design --rung Design \
-          --class control-plane --scope "$_cp" --token "GO: $_cp" "$@" 2>&1 )"; then
+          --class control-plane --scope "$_cp" --token "GO: $_cp" \
+          --basis docs/architecture/x-design.md "$@" 2>&1 )"; then
       LRC=0; else LRC=$?; fi
   }
   # llog <clone-dir> [args...] -> sets LRC and LOUT
@@ -1805,7 +1850,7 @@ EOF
       printf '( cd "%s/B" && PROMOTION_NOTES_REF=%s sh "%s" record --approved-sha %s \\\n' \
              "$LF" "$LR" "$VERIFY" "$BSHA"
       printf '  --approved-by racer --gate design --rung Design --class control-plane \\\n'
-      printf '  --scope branch/racer-$$ --token "GO: racer" ) >/dev/null 2>&1\nexit 0\n'
+      printf '  --scope branch/racer-$$ --token "GO: racer" --basis docs/architecture/x-design.md ) >/dev/null 2>&1\nexit 0\n'
     } > "$LF/hooks/reference-transaction"
     chmod +x "$LF/hooks/reference-transaction"
     git -C "$LF/A" config core.hooksPath "$LF/hooks"
@@ -2031,7 +2076,7 @@ EOF
   _rrefs="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
   if LOUT="$( cd "$LF/A" && PROMOTION_NOTES_REF='*' $VSH "$VERIFY" record --approved-sha "$ASHA" \
         --approved-by x --gate design --rung Design --class control-plane --scope branch/x \
-        --token GO 2>&1 )"; then LRC=0; else LRC=$?; fi
+        --token GO --basis docs/architecture/x-design.md 2>&1 )"; then LRC=0; else LRC=$?; fi
   _rrefs2="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'invalid PROMOTION_NOTES_REF' \
      && [ "$_rrefs" = "$_rrefs2" ]; then _lc=0; else _lc=1; fi
@@ -2697,7 +2742,7 @@ EOF
   lrec "$LF/A" "$ASHA" "branch/f1a0"
   lfetch "$LF/B"; _fpre="$(lrev "$LF/B")"
   lrejecthook
-  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1a --token "GO: f1a"
+  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1a --token "GO: f1a" --basis docs/architecture/x-design.md
   _frc="$LRC"; _fsout="$LOUT"
   llog "$LF/B" --unpushed
   if [ -e "$LF/sig.mark" ] && [ "$LRC" = 0 ] && [ "$(lrev "$LF/B")" = "$_fpre" ] && ! lnote "$LF/B" "$BSHA" \
@@ -2711,7 +2756,7 @@ EOF
   mkledger f1b
   lrec "$LF/A" "$ASHA" "branch/f1b0"
   lfetch "$LF/B"
-  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1b --token "GO: f1b"
+  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1b --token "GO: f1b" --basis docs/architecture/x-design.md
   if [ "$LRC" = 143 ] && rnote "$LF" "$BSHA" && lnote "$LF/B" "$BSHA" && [ "$(lrev "$LF/B")" = "$(rrev "$LF")" ]; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync F1(b) (+): record + TERM during a push that SUCCEEDS -> note on origin, local == origin, exit 143, not unwound" "rc=$LRC out=$LOUT"
 
@@ -2988,7 +3033,7 @@ EOF
   lfix b1c
   if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
   _lpre="$(lrev "$LF/B")"
-  lplant "$LF/B" "refs/kit/notes-remote-" record --approved-sha "$ASHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/b1c --token "GO: b1c"
+  lplant "$LF/B" "refs/kit/notes-remote-" record --approved-sha "$ASHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/b1c --token "GO: b1c" --basis docs/architecture/x-design.md
   if [ "$_anc" = 0 ] && [ "$LRC" = 2 ] && [ "$(lrev "$LF/B")" = "$_lpre" ] \
      && printf '%s' "$LOUT" | grep -qF "refs/kit/notes-remote-$_wpid"; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync B1(c) (−): the same symref at the scratch ref -> record's sync-in refuses naming it; the local ledger is intact" "anc=$_anc rc=$LRC lrev=$(lrev "$LF/B") want=$_lpre out=$LOUT"

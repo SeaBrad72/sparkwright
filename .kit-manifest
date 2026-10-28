@@ -80,6 +80,7 @@ conformance/backlog-presence.sh
 conformance/badge-version.sh
 conformance/board-drift.sh
 conformance/board-parser-drift.sh
+conformance/boundary-redteam.sh
 conformance/branch-protection.sh
 conformance/brownfield-walk.sh
 conformance/build-output-ignored.sh
@@ -175,6 +176,7 @@ conformance/fixtures/board-migrate/screen-plan-ok.tsv
 conformance/fixtures/board-migrate/screen-plan.tsv
 conformance/fixtures/board-migrate/screen.list
 conformance/fixtures/board-parser-corpus/rows.tsv
+conformance/fixtures/boundary-redteam/design-default.settings.json
 conformance/fixtures/deploy-decision-integrity/acknowledge-bias.md
 conformance/fixtures/deploy-decision-integrity/bracket-bias.md
 conformance/fixtures/deploy-decision-integrity/exercised-bias.md
@@ -694,6 +696,7 @@ docs/enterprise/secrets-at-scale.md
 docs/governance/promotion-contract.md
 docs/governance/promotion-log.md
 docs/onboarding/first-feature-tdd.md
+docs/operations/agent-boundary-contract.md
 docs/operations/agentic-ops.md
 docs/operations/break-glass.md
 docs/operations/ci-platforms.md
@@ -1047,12 +1050,15 @@ scripts/board-claim.sh
 scripts/board-migrate.sh
 scripts/board.sh
 scripts/branch-protection-apply.sh
+scripts/ci-time-report.sh
 scripts/containment-audit.sh
 scripts/coverage-ratchet.sh
+scripts/doctor-boundary.sh
 scripts/doctor.sh
 scripts/dora.sh
 scripts/escalate.sh
 scripts/explain.sh
+scripts/fetch-text.sh
 scripts/fixtures/agent-trace-sample.jsonl
 scripts/fixtures/engineer-fixture.sh
 scripts/fixtures/otel-trace-sample.ndjson

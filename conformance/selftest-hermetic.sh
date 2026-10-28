@@ -30,6 +30,10 @@
 # ROSTER semantics = conformance/ci-selftest-coverage.sh's exactly: scan conformance/*.sh
 # scripts/*.sh hooks/pre-push; capability = `--selftest` survives comment-strip.
 #
+# FACE LINES (SWAS-376): every PASS line, and the FAIL line of a face that ran, ends `(<n> s) battery: <state>` — the face's
+# whole seconds, and whether verify.sh's nested run deferred the guard battery (`deferred` / `NOT deferred` / `not run/unknown`,
+# read from the face's own `renderer probe: agent-autonomy <verdict>` line, only when exactly one is present; see battery_state).
+#
 # EXCLUSIONS: conformance/hermetic-exclusions.txt (the aggregate-exclusions.txt precedent) —
 # basename<TAB>reason; a reasonless entry FAILS the lane. That file is a BYPASS SURFACE and its
 # header says so. It ships EMPTY.
@@ -115,6 +119,22 @@ first_fails() {
 
 _repo_of() { git -C "$(dirname "$1")" rev-parse --show-toplevel 2>/dev/null; }
 
+# battery_state <face-output> — SWAS-376: did this face defer the guard battery? Read from the face's own
+# `renderer probe: agent-autonomy <verdict>` line (printed once by verify.sh --selftest, from the rendered row), and
+# ONLY when exactly one such line is present: N-A is `deferred`, PASS is `NOT deferred` (a fallback ran the battery),
+# anything else (FAIL, UNVERIFIED, absent, no line, two or more lines) is `not run/unknown`. The trailing space in the
+# pattern keeps a longer row name (`agent-autonomy-alias`) from counting. Deferred or not, never why.
+battery_state() {
+  _bn=$(LC_ALL=C grep -c -e '^renderer probe: agent-autonomy ' "$1" || :)
+  if [ "$_bn" != 1 ]; then echo "not run/unknown"; return 0; fi
+  _bl=$(LC_ALL=C grep -e '^renderer probe: agent-autonomy ' "$1" || :)
+  case "$_bl" in
+    'renderer probe: agent-autonomy N-A') echo "deferred" ;;
+    'renderer probe: agent-autonomy PASS') echo "NOT deferred" ;;
+    *) echo "not run/unknown" ;;
+  esac
+}
+
 # run_faces <path> — run <path> --selftest under both faces. 0 = both pass; 1 = a face failed,
 # with the FACE, TARGET and captured output named (the operator must not need a re-run to see why).
 run_faces() {
@@ -129,7 +149,7 @@ run_faces() {
   # face (a): stripped environment (B2 §10-A9's exact recipe)
   _hh="$WORK/home.$$"; mkdir -p "$_hh"
   _ta=$(mktemp -d "$WORK/tmp.a.XXXXXX") || { echo "FAIL: face (a) — cannot make its TMPDIR"; return 1; }
-  _fa=0
+  _fa=0; _t0=$(date +%s)
   (
     unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE || true
     HOME=$_hh; GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null
@@ -138,15 +158,16 @@ run_faces() {
     export HOME GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 TMPDIR
     cd "$_top" && sh "$_rel" --selftest
   ) >"$_o" 2>&1 || _fa=$?
+  _el=$(( $(date +%s) - _t0 )); _bs=$(battery_state "$_o")
   rm -rf "$_ta"
   if [ "$_fa" != 0 ]; then
-    echo "FAIL: face (a) stripped-env — $_rel reds with no ambient identity/config (rc $_fa)."
+    echo "FAIL: face (a) stripped-env — $_rel reds with no ambient identity/config (rc $_fa) ($_el s) battery: $_bs."
     echo "  The selftest reads git identity/config it did not set (green on a dev tree, dead on a runner)."
     first_fails "$_o"
     sed 's/^/    /' "$_o" | tail -30
     return 1
   fi
-  echo "  PASS: face (a) stripped-env — $_rel"
+  echo "  PASS: face (a) stripped-env — $_rel ($_el s) battery: $_bs"
 
   # face (b): a --no-local clone (no notes refs, no ambient object store; grades HEAD)
   _c="$WORK/clone.$$"; rm -rf "$_c"
@@ -156,17 +177,18 @@ run_faces() {
     rm -rf "$_c"; return 1
   fi
   _tb=$(mktemp -d "$WORK/tmp.b.XXXXXX") || { echo "FAIL: face (b) — cannot make its TMPDIR"; rm -rf "$_c"; return 1; }
-  _fb=0
+  _fb=0; _t0=$(date +%s)
   ( cd "$_c" && TMPDIR=$_tb && export TMPDIR && sh "$_rel" --selftest ) >"$_o" 2>&1 || _fb=$?
+  _el=$(( $(date +%s) - _t0 )); _bs=$(battery_state "$_o")
   rm -rf "$_c" "$_tb"
   if [ "$_fb" != 0 ]; then
-    echo "FAIL: face (b) clone — $_rel reds inside a fresh git clone --no-local (rc $_fb)."
+    echo "FAIL: face (b) clone — $_rel reds inside a fresh git clone --no-local (rc $_fb) ($_el s) battery: $_bs."
     echo "  The selftest reads ambient notes-refs/object-store/worktree state a clone does not carry."
     first_fails "$_o"
     sed 's/^/    /' "$_o" | tail -30
     return 1
   fi
-  echo "  PASS: face (b) clone — $_rel"
+  echo "  PASS: face (b) clone — $_rel ($_el s) battery: $_bs"
   return 0
 }
 
@@ -334,6 +356,47 @@ selftest() {
     st_has "N2 face ($_fc) names the TMPDIR failure" "$out" "FAIL: face ($_fc) — cannot make its TMPDIR"
   done
 
+  # HB (SWAS-376, C1(i) + C3) — every face's PASS/FAIL line states the guard battery's state and the face's seconds, on green as well as
+  #      red. The state comes from the face's own `renderer probe: agent-autonomy <verdict>` line and only when EXACTLY ONE such line is
+  #      present: N-A is `deferred`, PASS is `NOT deferred`, and everything else (FAIL, UNVERIFIED, no line, two lines, a longer row name)
+  #      is `not run/unknown`. The suffix is `(<n> s) battery: <state>`; a lane that always says `deferred`, takes the first of two
+  #      lines, or reports 0 s reds a cell below. Fixture faces print the probe shapes; the lane runs through its main path.
+  st_repo "$st/fp"
+  for _k in probena probepass probefail probeunv probenone probetwo probealias probealias2 probered sleep2; do st_fix "$st/fp/conformance/$_k-check.sh" "$_k"; done
+  st_commit "$st/fp"
+  # probealias2: the real row N-A beside a longer-named row's PASS line is still ONE probe line (the alias does not count, so it is `deferred`)
+  for _hb in "probena:deferred" "probepass:NOT deferred" "probefail:not run/unknown" "probeunv:not run/unknown" "probenone:not run/unknown" "probetwo:not run/unknown" "probealias:not run/unknown" "probealias2:deferred"; do
+    _hk=${_hb%%:*}; _hw=${_hb#*:}
+    rc=0; out=$( cd "$st/fp" && sh "$_self" "conformance/$_hk-check.sh" 2>&1 ) || rc=$?
+    st_expect "HB $_hk: both faces pass, lane rc 0" 0 "$rc"
+    for _hf in a b; do
+      _hl=$(printf '%s\n' "$out" | grep -F -e "PASS: face ($_hf)" || :)
+      case "$_hl" in
+        *") battery: $_hw") echo "PASS: selftest — HB $_hk face ($_hf) states 'battery: $_hw'" ;;
+        *) echo "FAIL: selftest — HB $_hk face ($_hf) line does not end '(<n> s) battery: $_hw': [$_hl]"; sfail=1 ;;
+      esac
+    done
+  done
+  # a RED face states it too (the FAIL line, not only the PASS line): face (a) reds, the probe line says N-A
+  rc=0; out=$( cd "$st/fp" && sh "$_self" conformance/probered-check.sh 2>&1 ) || rc=$?
+  st_expect "HB probered: a red face is lane rc 1" 1 "$rc"
+  _hl=$(printf '%s\n' "$out" | grep -F -e "FAIL: face (a)" || :)
+  case "$_hl" in
+    *") battery: deferred.") echo "PASS: selftest — HB probered the FAIL line states 'battery: deferred'" ;;
+    *) echo "FAIL: selftest — HB probered the FAIL line does not end '(<n> s) battery: deferred.': [$_hl]"; sfail=1 ;;
+  esac
+  # C3 non-vacuity: a face that sleeps 2 s reports at least 2 s on each face's line (a constant-0 timer reds)
+  rc=0; out=$( cd "$st/fp" && sh "$_self" conformance/sleep2-check.sh 2>&1 ) || rc=$?
+  st_expect "HB sleep2: both faces pass, lane rc 0" 0 "$rc"
+  for _hf in a b; do
+    _hs=$(printf '%s\n' "$out" | grep -F -e "PASS: face ($_hf)" | sed -n 's/.*(\([0-9][0-9]*\) s) battery.*/\1/p')
+    case "$_hs" in
+      ''|*[!0-9]*) echo "FAIL: selftest — HB sleep2 face ($_hf) carries no whole-seconds '(<n> s)' field: [$_hs]"; sfail=1 ;;
+      *) if [ "$_hs" -ge 2 ]; then echo "PASS: selftest — HB sleep2 face ($_hf) reports $_hs s (>= 2)"
+         else echo "FAIL: selftest — HB sleep2 face ($_hf) reports $_hs s for a 2 s sleep (a constant timer?)"; sfail=1; fi ;;
+    esac
+  done
+
   [ "$sfail" -eq 0 ] && { echo "selftest-hermetic --selftest: OK"; return 0; }
   echo "selftest-hermetic --selftest: FAIL"; return 1
 }
@@ -358,12 +421,22 @@ st_has() { # <label> <output> <fixed-string> — the output carries the string
   if printf '%s\n' "$2" | grep -qF -e "$3"; then echo "PASS: selftest — $1"
   else echo "FAIL: selftest — $1 (missing: $3)"; sfail=1; fi
 }
-st_fix() { # <path> <kind: fail1|nofail|passshape|fail15|sentinel> — a fixture whose --selftest prints a shaped output
+st_fix() { # <path> <kind: fail1|nofail|passshape|fail15|sentinel|probe*|sleep2> — a fixture whose --selftest prints a shaped output
   case $2 in
     fail1)     _b='echo "selftest FAIL: boom"; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
     nofail)    _b='i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
     passshape) _b='echo "PASS: selftest — a non-zero adapter rc yields the exact FAIL sentence (rc -> FAIL)"; echo "selftest FAIL: expected PASS"; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
     fail15)    _b='i=0; while [ $i -lt 15 ]; do echo "selftest FAIL: leg $i"; i=$((i+1)); done; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
+    probena)    _b='echo "renderer probe: agent-autonomy N-A"; echo OK' ;;
+    probepass)  _b='echo "renderer probe: agent-autonomy PASS"; echo OK' ;;
+    probefail)  _b='echo "renderer probe: agent-autonomy FAIL"; echo OK' ;;
+    probeunv)   _b='echo "renderer probe: agent-autonomy UNVERIFIED"; echo OK' ;;
+    probenone)  _b='echo OK' ;;
+    probetwo)   _b='echo "renderer probe: agent-autonomy N-A"; echo "renderer probe: agent-autonomy PASS"; echo OK' ;;
+    probealias) _b='echo "renderer probe: agent-autonomy-alias N-A"; echo OK' ;;
+    probealias2) _b='echo "renderer probe: agent-autonomy N-A"; echo "renderer probe: agent-autonomy-alias PASS"; echo OK' ;;
+    probered)   _b='echo "renderer probe: agent-autonomy N-A"; echo "selftest FAIL: boom"; exit 1' ;;
+    sleep2)     _b='sleep 2; echo OK' ;;
     sentinel)  _b='[ -n "${HERMETIC_ST_SENT:-}" ] || { echo "FAIL: no sentinel given"; exit 1; }
     [ "${TMPDIR:-}" != "$HERMETIC_ST_SENT" ] || { echo "FAIL: TMPDIR is still the outer sentinel"; exit 1; }
     d=$(mktemp -d "$TMPDIR/x.XXXXXX") || { echo "FAIL: no templated mktemp"; exit 1; }

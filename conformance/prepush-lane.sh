@@ -614,6 +614,13 @@ ARGVLOG=""; UNV=""; MB=""; FAILS=0; RAN=0; HCEIL=3600; SELFCEIL=3600
 # names PREPUSH_CEILING_S instead. It is the HEAVY default (3600 s) because its cost is not a constant:
 # selftest-hermetic derives its OWN target set from its roster, and on this branch that was 4 targets /
 # 2013 s measured unbounded — the 900 s and 1800 s constants before it were KILLS, censored measurements.
+
+# LOCAL_DEFER_SELFTESTS (SWAS-442, design 2026-10-26-verify-selftest-wall-design.md §3.7, owner Q1): the aggregate-sized hermetic targets
+# whose two faces the LOCAL pre-push does not run. ONE literal entry, matched whole against the listing (never a pattern): verify.sh's
+# --selftest nests a full aggregate run (about 87 min a face on a plain run, [E] from a measured 5216 s), far past SELFCEIL, so running it
+# here only turned PARITY-CORE into FAIL. CI's H2 step binds both faces; the verdict names it NOT ENFORCED locally and never claims it ran.
+LOCAL_DEFER_SELFTESTS='conformance/verify.sh'
+SELF_NE=0; SELF_NE_LIST=""
 note() { printf '# %s\n' "$1"; }
 unv()  { [ -n "$UNV" ] || UNV=$1; }      # the FIRST reason wins: it is the one that stopped the run
 
@@ -981,6 +988,50 @@ exec_check() {
   report_inv "$_bk" "$_b $_as" "$_x" "$_cl"
 }
 
+# local_defer_scan — sets SELF_NE/SELF_NE_LIST from the LISTING (exact whole-line match per listed entry), and writes the OTHER touched
+# hermetic-roster targets (selftest-hermetic's own roster rule: conformance/*.sh scripts/*.sh hooks/pre-push whose comment-stripped text
+# names --selftest; a closed path charset so they can become argv) to $WORK/herm.targets. Empty unless a listed target is touched.
+local_defer_scan() {
+  SELF_NE=0; SELF_NE_LIST=""; : > "$WORK/herm.targets"
+  for _e in $LOCAL_DEFER_SELFTESTS; do
+    grep -qxF -e "$_e" "$WORK/listing" 2>/dev/null || continue
+    SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="${SELF_NE_LIST:+$SELF_NE_LIST, }$_e"
+  done
+  [ "$SELF_NE" -gt 0 ] || return 0
+  while IFS= read -r _f; do
+    case $_f in
+      */*/*) continue ;;
+      */.*) continue ;;   # the roster's own glob never matches a dot-file
+      conformance/*.sh|scripts/*.sh|hooks/pre-push) ;;
+      *) continue ;;
+    esac
+    case " $LOCAL_DEFER_SELFTESTS " in *" $_f "*) continue ;; esac
+    [ -f "$_f" ] || continue
+    sed 's/#.*//' "$_f" | grep -q -e '--selftest' || continue
+    # a roster target whose name cannot become argv is NOT dropped silently: the clause names it as CI-bound (never claimed as run)
+    case $_f in *[!A-Za-z0-9._/-]*)
+      SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="$SELF_NE_LIST, $_f (name outside the argv charset; CI binds it)"; continue ;; esac
+    printf '%s\n' "$_f" >> "$WORK/herm.targets"
+  done < "$WORK/listing"
+}
+
+# excl_check — selftest-hermetic validates conformance/hermetic-exclusions.txt on every call (reviewer 3: an exclusions-only diff must not
+# widen the bypass unvalidated). When the listed target is the ONLY touched selftest no call is made, so a touched exclusions file is
+# validated here by the same rule (every non-comment line is <name><TAB><reason>). Prints a FAIL line and counts it; rc 0 always.
+excl_check() {
+  grep -qxF -e 'conformance/hermetic-exclusions.txt' "$WORK/listing" 2>/dev/null || return 0
+  [ -f conformance/hermetic-exclusions.txt ] || return 0
+  while IFS= read -r _xl; do
+    case $_xl in ''|\#*) continue ;; esac
+    _xr=${_xl#*"$TAB"}
+    if [ "$_xr" = "$_xl" ] || [ -z "$_xr" ]; then
+      RAN=$((RAN+1)); FAILS=$((FAILS+1))
+      printf '  FAIL  %-18s %s\n' core-selftest "conformance/hermetic-exclusions.txt entry '$_xl' carries no <TAB>reason — an unreasoned exclusion is a silent bypass"
+      return 0
+    fi
+  done < conformance/hermetic-exclusions.txt
+}
+
 # -------------------------------------------------------------------------------- the bucket split
 is_heavy_row() { grep -q "^$1$TAB""heavy$TAB" "$WORK/twins.ok" 2>/dev/null; }
 # ORDERING ONLY, never membership: the cheap doc/board/governance locks first, so a typo-class red
@@ -1236,7 +1287,21 @@ run_core() {
   fi
   run_parselint_scoped
   run_secretscan_scoped
-  if [ -s "$WORK/q.sel" ] && ! hl_need core-selftest; then
+  local_defer_scan
+  [ "$SELF_NE" -eq 0 ] || note "core-selftest: $SELF_NE touched selftest(s) NOT ENFORCED locally — CI binds them: $SELF_NE_LIST (CI's H2 lane grades the faces; this run never claims they ran; the other touched targets are graded explicitly, so an untracked touched selftest script fails face (b) here — commit before running the lane)"
+  if [ "$SELF_NE" -gt 0 ] && [ -s "$WORK/herm.targets" ] && ! hl_need core-selftest; then
+    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"
+  elif [ "$SELF_NE" -gt 0 ] && [ -s "$WORK/herm.targets" ]; then
+    # a listed target is touched: the hermetic lane gets the OTHER touched roster targets explicitly (--touched would re-derive the listed one)
+    # The file is ONE PATH PER LINE: argv is built by a read loop, one argument per line (a word-split of the file would join two paths).
+    set -f; set --
+    while IFS= read -r _ht; do set -- "$@" "$_ht"; done < "$WORK/herm.targets"
+    set +f
+    RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh "$@"; RUN_HB=""
+    report_inv core-selftest "selftest-hermetic $(LC_ALL=C grep -c '^TARGET: ' "$WORK/out" || :) explicit targets ($SELF_NE_LIST not run, CI binds it; both faces)" 0 "$SELFCEIL"
+  elif [ "$SELF_NE" -gt 0 ]; then
+    excl_check   # the listed target(s) were the only touched selftests: nothing to run locally (the note above says so), but a touched exclusions file is still validated
+  elif [ -s "$WORK/q.sel" ] && ! hl_need core-selftest; then
     RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"
   elif [ -s "$WORK/q.sel" ]; then
     RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh --touched; RUN_HB=""
@@ -1685,6 +1750,7 @@ reco() {
 # --warranted OK are unchanged. Never `RESULT:`; the caller prints it as the LAST line.
 ok_verdict() {
   _tnc=""; [ "$TN" -eq 0 ] || _tnc="$TN board-bound twin(s) NOT ENFORCED locally — CI binds them"   # SWAS-163
+  [ "$SELF_NE" -eq 0 ] || _tnc="${_tnc:+$_tnc; }$SELF_NE touched selftest(s) NOT ENFORCED locally — CI binds them: $SELF_NE_LIST"   # SWAS-442
   if [ "$WARRANTED" -eq 0 ] && [ "$CORE_N" -gt 0 ]; then
     printf 'PARITY-CORE: OK (own surface — %s CI-derived core-live check(s) not run; --warranted and CI run them%s)\n' "$CORE_N" "${_tnc:+; $_tnc}"
   elif [ "$WARRANTED" -eq 1 ] && [ "$CACHE_SKIPS" -gt 0 ]; then
@@ -1804,7 +1870,7 @@ selftest() {
               census_unbucketed census_denominator census_negative twin_stale twin_cishape \
               heavy_rows twin_grammar injection scrub docs_only rename newline newline_charset base \
               ceiling budget \
-              floor argv core_selftest heavy_needs_flag dash verdict shim no_fanout no_write \
+              floor argv core_selftest local_defer heavy_needs_flag dash verdict shim no_fanout no_write \
               no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced \
               cache_skip_same_tree cache_code_change cache_bookkeeping cache_heavy_bookkeeping \
               cache_dirty_bypass cache_skip_output_never \
@@ -2424,6 +2490,70 @@ selftest_core_selftest() {
   wantnot "core-selftest: and no untouched --selftest is executed" "^#   sh conformance/beta\.sh"
   sfx "core-selftest: the hermetic call got --touched under HERMETIC_BASE=the base" "base=[HEAD] argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
   want "core-selftest: its ceiling is the named SELFCEIL, not the 120s core ceiling" "^# ceiling: 120s/invocation (core-selftest 3600s · heavy arms 3600s"
+}
+
+# SWAS-442 (C6): verify.sh's hermetic faces are CI-bound locally, and the verdict never claims they ran. The hermetic script is again a
+# recording stub. The fixture commits verify.sh (and gamma) AFTER the base commit, so both are in the listing (`--base <the sha between the commits>`; a later --base wins; the base charset has no `~`).
+selftest_local_defer() {
+  _ldclause='1 touched selftest(s) NOT ENFORCED locally — CI binds them: conformance/verify.sh'
+  # LD1-LD3: verify.sh is the only touched selftest -> the stub is never called, the clause and the H2 note are printed
+  mkcin 'sh conformance/verify.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"; sfx "local-defer: a touched verify.sh alone is rc 0" 0 "$DVRC"
+  sfx "local-defer: and the hermetic lane is NOT called for it (no faces run)" "MISSING" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: the verdict is an OK that carries the NOT ENFORCED clause naming verify.sh" "yes" "$(lastline | grep -e '^PARITY-CORE: OK (' | grep -qF -e "${_ldclause})" && echo yes || echo no)"
+  want "local-defer: the run says CI's H2 lane grades it" "^# core-selftest: .*NOT ENFORCED locally.*conformance/verify\.sh.*H2 lane"
+  wantnot "local-defer: no core-selftest OK line claims a face ran" "^  OK    core-selftest "
+  # LD4-LD5 (the load-bearing negative): a non-listed target touched beside verify.sh still runs its faces, and verify.sh is not among them
+  mkcin 'sh conformance/verify.sh --selftest' 'sh conformance/gamma.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'; mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx
+  rn "$d" --base "$_ldb"; sfx "local-defer: verify.sh plus a non-listed target is rc 0" 0 "$DVRC"
+  sfx "local-defer: the non-listed target's faces RUN, as the only explicit target" "argv=[conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  want "local-defer: that run is labelled core-selftest" "^  OK    core-selftest "
+  sfx "local-defer: and the clause is still printed" "yes" "$(lastline | grep -qF -e "$_ldclause" && echo yes || echo no)"
+  # LD4b (fix round I-1): TWO other touched targets reach the hermetic lane as TWO arguments, one per path, sorted — never one joined string
+  mkcin 'sh conformance/verify.sh --selftest' 'sh conformance/gamma.sh --selftest' 'sh conformance/delta.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'
+  mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; mkchk delta 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: two other touched targets arrive as two arguments" "argv=[conformance/delta.sh conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  # LD4c: the argv is counted, not just printed (a joined string would be ONE argument)
+  mkchk selftest-hermetic 'printf "n=%s\n" "$#" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  rn "$d" --base "$_ldb"
+  sfx "local-defer: and the hermetic lane counts exactly 2 arguments" "n=2" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  # LD6: only a non-listed target touched -> the unchanged --touched call and no clause
+  mkcin 'sh conformance/gamma.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: a non-listed target alone keeps the unchanged --touched call" "argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: and prints no clause" "no" "$(lastline | grep -qF -e 'NOT ENFORCED locally' && echo yes || echo no)"
+  # LD8 (L2): a path that merely CONTAINS the listed name (a nested copy, a backup) is not the listed target: the --touched call stays, no clause
+  mkcin 'sh conformance/gamma.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkdir -p "$d/docs/conformance"; printf '#!/bin/sh\n' > "$d/docs/conformance/verify.sh"
+  printf '#!/bin/sh\n' > "$d/conformance/verify.sh.bak"; mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: a nested or suffixed verify.sh keeps the unchanged --touched call" "argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: and prints no clause (the match is the whole line)" "no" "$(lastline | grep -qF -e 'NOT ENFORCED locally' && echo yes || echo no)"
+  # LD9 (L1): an other touched target whose name cannot be argv is NAMED in the clause, never silently dropped
+  mkcin 'sh conformance/verify.sh --selftest'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'
+  printf '#!/bin/sh\ncase ${1-} in --selftest) exit 0 ;; esac\n' > "$d/conformance/odd name.sh"; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: with only an out-of-charset other target, no hermetic call is made" "MISSING" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: the clause names that path as CI-bound" "yes" "$(lastline | grep -qF -e 'conformance/odd name.sh (name outside the argv charset; CI binds it)' && echo yes || echo no)"
+  # LD10 (M-1): verify.sh alone must not let a reasonless hermetic-exclusions entry slip past (the lane's own validation is skipped with no call)
+  mkcin 'sh conformance/verify.sh --selftest'
+  mkchk selftest-hermetic 'echo "TARGET: conformance/gamma.sh (both faces)"'
+  commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'
+  printf 'anything.sh\n' > "$d/conformance/hermetic-exclusions.txt"; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: a reasonless exclusions entry beside a touched verify.sh is rc 1" 1 "$DVRC"
+  want "local-defer: and the FAIL names the entry" "^  FAIL  core-selftest .*hermetic-exclusions.txt entry 'anything.sh'"
+  printf 'anything.sh\tfixture: dispositioned\n' > "$d/conformance/hermetic-exclusions.txt"; commit_fx; rn "$d" --base "$_ldb"
+  sfx "local-defer: the same file with a reason is rc 0" 0 "$DVRC"
+  # LD7: the exemption is a literal one-entry list, never a pattern
+  _ldn=$(grep -c -e "^LOCAL_DEFER_SELFTESTS='conformance/verify\.sh'" "$LANE" || :)
+  sfx "local-defer: the exemption is the literal one-entry list" 1 "$_ldn"
 }
 
 # M-3, the NEGATIVE half of "heavy is never run without its flag": both routes into the bucket (cf-* job placement AND a twin-table `heavy` row) yield no OK line and no executed-argv entry.

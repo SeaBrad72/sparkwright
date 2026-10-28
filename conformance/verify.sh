@@ -26,7 +26,7 @@
 # the credential seam (B4): its OFFLINE declaration-integrity leg (--declared-only — no gh, no
 # network) IS registered below; its LIVE forge-comparison leg still needs repo-admin gh and runs
 # operator-side, not here. "aggregate" means representative.
-#   usage: sh conformance/verify.sh [--require] [--changed <listing-file>] [--summary-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
+#   usage: sh conformance/verify.sh [--require] [--changed <listing-file>] [--summary-file <path>] [--timing-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
 #
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE — `--changed <listing>` (a newline-delimited changed-paths file) lets an
 # ADOPTER's pull-request run skip the rows flagged `--kitselftest` (the kit's own selftests, whose subject
@@ -80,6 +80,24 @@ _vs_from_mode() {
   echo error   # a stray flag (no --selftest first), a doubled flag, or no value: never falls back to nested
 }
 
+# _vs_probe_line <rendered-output> -> the one line `renderer probe: agent-autonomy <PASS|N-A|FAIL|UNVERIFIED|MISCONFIGURED|absent>` (SWAS-376;
+# `absent` also for two or more anchored rows; the lane reads everything but N-A and PASS as not run/unknown).
+# The selftest's nested aggregate run (the renderer probe) grades RENDERING only, so its agent-autonomy row is paid for and never read; the
+# hermetic lane reads this line instead, to say on green as well as red whether a face deferred the battery to `guard-battery` (N-A) or ran
+# it (PASS). The match is the whole rendered row, anchored: a longer row name (`agent-autonomy-alias`) or a [doc] row never matches.
+# Deferred or not, never why: a fallback's NOTE is discarded inside check() and does not reach the rendered output.
+_vs_probe_line() {
+  _pl_v=absent
+  # exactly ONE anchored row, as the lane's one-line rule wants; two or more are not one battery, so `absent`
+  _pl_n=$(printf '%s\n' "$1" | grep -Ec '^  \[control\] agent-autonomy +(PASS|N-A|FAIL|UNVERIFIED|MISCONFIGURED)$') || _pl_n=0
+  if [ "$_pl_n" = 1 ]; then
+    for _pl_t in PASS N-A FAIL UNVERIFIED MISCONFIGURED; do
+      if printf '%s\n' "$1" | grep -Eq "^  \[control\] agent-autonomy +$_pl_t\$"; then _pl_v=$_pl_t; break; fi
+    done
+  fi
+  printf 'renderer probe: agent-autonomy %s\n' "$_pl_v"
+}
+
 # _vs_record_field <header-or-trailer-line> <key> -> the value of ` key=value`
 _vs_record_field() { printf '%s\n' "$1" | sed -n "s/.* $2=\\([^ ]*\\).*/\\1/p"; }
 
@@ -94,6 +112,11 @@ _vs_record_check() {
     "verify-output-file: v1 head="*" self="*" dirty="*" require="*" changed="*) ;;
     *) echo "foreign: not written by verify.sh --output-file"; return 1 ;;
   esac
+  # SWAS-393 (S3): a fifth argument `shard` asks for a ROW-SHARD record (its header carries ` shard=i/N`); the default asks for a full
+  # run, which a shard record is NOT (--selftest --from-output would otherwise grade a partial run as the whole aggregate).
+  _rc_sh=$(_vs_record_field "$_rc_h" shard)
+  if [ "${5:-full}" = shard ] && [ -z "$_rc_sh" ]; then echo "not a shard record (no shard= field)"; return 1; fi   # MG:shardmode
+  if [ "${5:-full}" != shard ] && [ -n "$_rc_sh" ]; then echo "a shard record, not a full enforced run (grade it with --merge)"; return 1; fi   # MG:fullmode
   _rc_hd=$(_vs_record_field "$_rc_h" head)
   if [ -z "$_rc_hd" ] || [ "$_rc_hd" = none ] || [ "$2" = none ] || [ "$_rc_hd" != "$2" ]; then
     echo "stale: written at another commit"; return 1
@@ -164,13 +187,18 @@ _vs_load_record() {
 # record in a --selftest --from-output P line, and no uncommented --selftest line lacks --from-output (a dropped flag
 # silently re-nests the aggregate). The grading step must also be able to FAIL the job (review M1): no continue-on-error
 # on it or its job, no step `if:` other than exactly the not-cancelled expression, and no shell tail (a pipe, a semicolon
-# or an ampersand) after its command. Else print why and return 1. Comment lines never count.
+# or an ampersand) after its command. SWAS-393: a job that runs `verify.sh --shard` writes a PARTIAL record, so it is not a recorder
+# and is not graded here — but it must feed a job that runs `--merge`, which lists it in `needs:` (block list or inline), so a
+# shard can never be the only verdict. Else print why and return 1. Comment lines never count.
 _vs_ci_shape() {
   if _sh_msg=$(LC_ALL=C awk '
     { l = $0; sub(/^[ \t]+/, "", l); ind = match($0, /[^ ]/) - 1 }
     $0 ~ /^  [A-Za-z0-9_-]+:/ { job = $1; sub(/:.*/, "", job); inst = 0; cur = 0 }
     substr(l, 1, 1) == "#" || l == "" { next }
-    { isnew = (substr(l, 1, 2) == "- " && (!inst || ind <= sind)) }
+    ind <= 4 && !(ind == 4 && l ~ /^needs:/) { innd = 0 }
+    ind == 4 && l ~ /^needs:/ { innd = 1; v = l; sub(/^needs:[ \t]*/, "", v); sub(/[ \t]+#.*/, "", v); gsub(/[][,]/, " ", v); needs[job] = needs[job] " " v " "; next }
+    innd && ind > 4 && l ~ /^- / { v = substr(l, 3); sub(/[ \t]+#.*/, "", v); needs[job] = needs[job] " " v " "; next }
+    { isnew =(substr(l, 1, 2) == "- " && (!inst || ind <= sind)) }
     isnew { nst++; cur = nst; inst = 1; sind = ind; att = 1; l = substr(l, 3); sub(/^[ \t]+/, "", l) }
     !isnew && inst && ind <= sind { inst = 0; cur = 0 }
     !isnew && inst { att = (ind == sind + 2) }
@@ -179,9 +207,11 @@ _vs_ci_shape() {
     inst && att && l ~ /^continue-on-error:/ { v = l; sub(/^continue-on-error:[ \t]*/, "", v); if (v != "false") scoe[cur] = 1 }
     index(l, "conformance/verify.sh") == 0 { next }
     {
-      n = split(l, w, " "); rec = 0; sel = 0; op = ""; fo = ""
+      n = split(l, w, " "); rec = 0; sel = 0; op = ""; fo = ""; shd = 0; mrg = 0
       for (i = 1; i <= n; i++) {
-        if (w[i] == "--require") rec = 1
+        if (w[i] == "--require" || w[i] == "--merge") rec = 1
+        if (w[i] == "--merge") mrg = 1
+        if (w[i] == "--shard") shd = 1   # SWAS-393: a row-shard leg writes a PARTIAL record that only --merge grades; it is not graded here
         if (w[i] == "--selftest") sel = 1
         if (w[i] == "--output-file") op = w[i + 1]
         if (w[i] == "--from-output") fo = w[i + 1]
@@ -192,9 +222,16 @@ _vs_ci_shape() {
         tail = substr(l, index(l, "--from-output") + 13); sub(/^[ \t]+[^ \t]+/, "", tail); sub(/[ \t]#.*/, "", tail)
         if (tail ~ /[|;&]/) badtail[k] = 1
       }
-      if (rec && op != "") recd[job SUBSEP op] = 1
+      if (rec && op != "" && !shd) recd[job SUBSEP op] = 1
+      if (shd) shardjob[job] = 1
+      if (mrg) mergejob[job] = 1
     }
     END {
+      for (sj in shardjob) {   # SWAS-393: a shard job is a partial run, so it must feed a --merge job (never be a verdict on its own)
+        ok = 0
+        for (mj in mergejob) if (index(needs[mj], " " sj " ") > 0) ok = 1
+        if (!ok) { print "job " sj " runs verify.sh --shard but no --merge job lists it in needs: (a shard is a partial run and may not be a verdict on its own)"; bad = 1 }
+      }
       if (bare != "") { print "an uncommented verify.sh --selftest line in job" bare " has no --from-output (it would re-run the aggregate nested)"; bad = 1 }
       for (k in recd) if (!(k in grade)) { split(k, p, SUBSEP); print "job " p[1] " records " p[2] " with --output-file but never grades that record with --selftest --from-output"; bad = 1 }
       for (k in recd) if (k in grade) {
@@ -210,6 +247,279 @@ _vs_ci_shape() {
       exit (bad ? 3 : 0)
     }' "$1"); then return 0; fi
   echo "$_sh_msg"; return 1
+}
+
+# ── ROW-SHARDS (SWAS-393, slice S3 of SWAS-314; design 2026-10-24-ci-shaping section 4.2; controls C6, C7, C8) ───────────────
+# `--require --shard <i>/<N> --output-file F` runs the registry rows whose ORDINAL (the 1-based position of the `check` call) mod N
+# is i-1, writes the rows' lines, then a `Shard-rows: i/N <ordinal>:<name>...` line and a `Shard-counts:` line, and records the run
+# in SWAS-282's record, whose header gains ` shard=i/N tree=<git write-tree>` (the tree and the working-tree checksum are taken
+# BEFORE the run: the join compares the tree a shard STARTED from). The agent-autonomy row is never run in a shard; it is written
+# JOIN. `--merge [--battery <dir>] <records...>` refuses unless every record is fresh (_vs_record_check, shard mode), graded in
+# this tree, and the coordinates, the rows and the union are exactly the registry's; it then grades the battery row through
+# `agent-autonomy.sh --join`, rebuilds the rows in registry order, sums the counters and falls through to the SAME footer a plain
+# run prints. The selection is an ARGUMENT, never the environment. Each refusal line below ends in a `# MG:<tag>` comment: the
+# --selftest strips the refusal from the shipped text and requires its leg to fail (the mutant), so a tag is load-bearing.
+
+# _rs_usage <args...> : the row-shard flags are valid only as `--shard <i>/<N>` (once, 1 <= i <= N, beside --require or CI, never with
+# --merge, --selftest or --changed) or as the FIRST word `--merge` (once; never with --shard or --changed), and `--battery <dir>` only
+# after --merge. Prints the refusal and returns 1 (the caller exits 2). Reads its arguments only.
+_rs_usage() {
+  _ru_first=${1:-}; _ru_prev=""; _ru_sh=0; _ru_shv=""; _ru_mg=0; _ru_bt=0; _ru_btv=""; _ru_req=0; _ru_chg=0; _ru_a=""
+  for _ru_a in "$@"; do
+    if [ "$_ru_prev" = "--shard" ]; then _ru_shv=$_ru_a; fi
+    if [ "$_ru_prev" = "--battery" ]; then _ru_btv=$_ru_a; fi
+    case "$_ru_a" in
+      --shard) _ru_sh=$((_ru_sh+1)) ;;
+      --merge) _ru_mg=$((_ru_mg+1)) ;;
+      --battery) _ru_bt=$((_ru_bt+1)) ;;
+      --require) _ru_req=1 ;;
+      --changed) _ru_chg=1 ;;
+    esac
+    _ru_prev=$_ru_a
+  done
+  if [ "$_ru_mg" -gt 0 ] && [ "$_ru_first" != "--merge" ]; then echo "--merge must be the FIRST word"; return 1; fi   # MG:u-merge-first
+  if [ "$_ru_mg" -gt 1 ]; then echo "--merge given twice"; return 1; fi   # MG:u-merge-twice
+  if [ "$_ru_bt" -gt 0 ] && [ "$_ru_mg" = 0 ]; then echo "--battery is valid only with --merge"; return 1; fi   # MG:u-battery-alone
+  if [ "$_ru_bt" -gt 1 ]; then echo "--battery given twice"; return 1; fi   # MG:u-battery-twice
+  if [ "$_ru_bt" = 1 ] && { [ -z "$_ru_btv" ] || [ "${_ru_btv#--}" != "$_ru_btv" ]; }; then echo "--battery needs a directory"; return 1; fi   # MG:u-battery-value
+  if [ "$_ru_sh" -gt 1 ]; then echo "--shard given twice"; return 1; fi   # MG:u-shard-twice
+  if [ "$_ru_sh" = 1 ]; then
+    _ru_ok=1
+    case "$_ru_shv" in
+      [1-9]*/[1-9]*) ;;
+      *) _ru_ok=0 ;;
+    esac
+    case "${_ru_shv%/*}${_ru_shv#*/}" in
+      *[!0-9]*) _ru_ok=0 ;;
+    esac
+    if [ "${#_ru_shv}" -gt 7 ]; then _ru_ok=0; fi
+    if [ "$_ru_ok" = 1 ] && [ "${_ru_shv%/*}" -gt "${_ru_shv#*/}" ]; then _ru_ok=0; fi
+    if [ "$_ru_ok" = 0 ]; then echo "--shard needs <i>/<N> with 1 <= i <= N (got '$_ru_shv')"; return 1; fi   # MG:u-shard-format
+  fi
+  if [ "$_ru_sh" = 1 ] && [ "$_ru_mg" -gt 0 ]; then echo "--shard and --merge are exclusive"; return 1; fi   # MG:u-shard-merge
+  if [ "$_ru_sh" = 1 ] && [ "$_ru_first" = "--selftest" ]; then echo "--shard cannot be combined with --selftest"; return 1; fi   # MG:u-shard-selftest
+  if [ "$_ru_sh" = 1 ] && [ "$_ru_chg" = 1 ]; then echo "--shard runs every row: it cannot be combined with --changed"; return 1; fi   # MG:u-shard-changed
+  if [ "$_ru_mg" -gt 0 ] && [ "$_ru_chg" = 1 ]; then echo "--merge grades full-run records: it cannot be combined with --changed"; return 1; fi   # MG:u-merge-changed
+  if [ "$_ru_sh" = 1 ] && [ "$_ru_req" = 0 ] && [ -z "${CI:-}" ]; then echo "--shard needs --require (a shard record is graded as an enforced run)"; return 1; fi   # MG:u-shard-require
+  return 0
+}
+
+# _mg_registry <out> : this file's `^check` rows as `<ordinal>:<name>`, in file order (the census reads the same lines).
+_mg_registry() {
+  awk '/^check [a-z]+ / { n = $3; gsub(/"/, "", n); print ++i ":" n }' "$_SELF" > "$1"
+}
+
+# _mg_parse <record> <k> <wd> <display> : read ONE record (already past _vs_record_check) into <wd>/meta.<k> (tab-separated: shard,
+# tree, counts, one `row ordinal listed-name rendered-name verdict` per listed row) and <wd>/rows.<k> (`ordinal<TAB>seq<TAB>line` for
+# every body line; the battery row's line is replaced by the marker @@JOIN@@). Prints the reason and returns 1 when it is malformed.
+_mg_parse() {
+  : > "$3/meta.$2"; : > "$3/rows.$2"
+  if ! _mp_why=$(awk -v meta="$3/meta.$2" -v rows="$3/rows.$2" '
+    function bad(m) { print "malformed record (" m ")"; err = 1; exit 1 }
+    NR == 1 {
+      if (match($0, / shard=[0-9]+\/[0-9]+( |$)/)) { sh = substr($0, RSTART + 7, RLENGTH - 7); sub(/ $/, "", sh) } else bad("no shard=<i>/<N> in the header")
+      if (match($0, / tree=[^ ]+/)) tr = substr($0, RSTART + 6, RLENGTH - 6); else bad("no tree= in the header")
+      if (length(sh) > 13) bad("the coordinate is too long")
+      next
+    }
+    NR == 2 { if ($0 != "Conformance verification (honest aggregate)") bad("line 2 is not the aggregate heading"); next }
+    NR == 3 { if ($0 != "-------------------------------------------") bad("line 3 is not the heading rule"); next }
+    tail {
+      if ($0 ~ /^Shard-rows: /) bad("two Shard-rows lines")
+      if ($0 ~ /^Shard-counts: /) { if (cnt != "") bad("two Shard-counts lines"); cnt = $0 }
+      if ($0 ~ /^verify-output-end: v1 rc=/) { trc = $0; sub(/^verify-output-end: v1 rc=/, "", trc); sub(/ .*/, "", trc) }
+      next
+    }
+    /^Shard-rows: / {
+      n = split($0, t, " ")
+      if (t[2] != sh) bad("Shard-rows names " t[2] " but the header " sh)
+      for (i = 3; i <= n; i++) {
+        if (t[i] !~ /^[0-9]+:[^ ]+$/) bad("a Shard-rows token is not ordinal:name")
+        p = index(t[i], ":"); idx[i - 2] = substr(t[i], 1, p - 1) + 0; nm[i - 2] = substr(t[i], p + 1)
+      }
+      nt = n - 2; tail = 1; next
+    }
+    /^  \[(control|doc)\] / { rown++; rname[rown] = $2; rver[rown] = $3; rkind[rown] = $1; L[++nl] = $0; R[nl] = rown; next }
+    { if (rown == 0) bad("a line before the first row"); L[++nl] = $0; R[nl] = rown }
+    END {
+      if (err) exit 1
+      if (!tail) { print "malformed record (no Shard-rows line)"; exit 1 }
+      if (cnt == "") { print "malformed record (no Shard-counts line)"; exit 1 }
+      print "shard\t" sh > meta; print "tree\t" tr > meta
+      m = split(cnt, c, " ")
+      for (i = 2; i <= m; i++) { split(c[i], kv, "="); v = kv[2] + 0; print "count\t" kv[1] "\t" v > meta }
+      nr = rown + 0; print "nrows\t" nr > meta; print "ntok\t" nt > meta
+      for (r = 1; r <= rown; r++) {
+        k = rkind[r]; v = rver[r]
+        if (v == "JOIN" || v == "N-A") { if (v == "N-A") dn++; continue }
+        if (k == "[control]") dc++; else dd++
+        if (v == "FAIL") { df++; if (k == "[control]") dcf = 1 }
+        if (v == "UNVERIFIED") { du++; df++ }
+        if (v == "MISCONFIGURED") dm++
+      }
+      print "derived\tcontrols\t" dc + 0 > meta; print "derived\tdocs\t" dd + 0 > meta; print "derived\tunverified\t" du + 0 > meta
+      print "derived\tnas\t" dn + 0 > meta; print "derived\tfailed\t" df + 0 > meta; print "derived\tmisconfigured\t" dm + 0 > meta
+      print "derived\tctrl_fail\t" dcf + 0 > meta
+      print "rc\t" ((dcf + 0 > 0 || du + 0 > 0 || dm + 0 > 0) ? 1 : 0) "\t" trc > meta
+      for (r = 1; r <= nt; r++) { rn = (r <= rown) ? rname[r] : ""; rv = (r <= rown) ? rver[r] : ""; print "row\t" idx[r] "\t" nm[r] "\t" rn "\t" rv > meta }
+      for (j = 1; j <= nl; j++) {
+        r = R[j]; tx = L[j]; ix = 0
+        if (r >= 1 && r <= nt) ix = idx[r]
+        if (r >= 1 && r <= nt && rver[r] == "JOIN" && L[j] ~ /^  \[/) tx = "@@JOIN@@"
+        print ix "\t" j "\t" tx > rows
+      }
+    }' "$1"); then echo "$_mp_why — $4"; return 1; fi   # MG:parse
+  _mp_nr=$(awk -F'\t' '$1 == "nrows" { print $2 }' "$3/meta.$2"); _mp_nt=$(awk -F'\t' '$1 == "ntok" { print $2 }' "$3/meta.$2")
+  if [ "$_mp_nr" != "$_mp_nt" ]; then echo "rendered rows disagree with the row list ($_mp_nr rendered, $_mp_nt listed) — $4"; return 1; fi   # MG:body
+  _mp_nm=$(awk -F'\t' '$1 == "row" && $3 != $4 { print $3 " listed, " $4 " rendered"; exit }' "$3/meta.$2")
+  if [ -n "$_mp_nm" ]; then echo "a rendered row name differs from its listed name ($_mp_nm) — $4"; return 1; fi   # MG:bodyname
+  _mp_j=$(awk -F'\t' '$1 == "row" && $5 == "JOIN" && $3 != "agent-autonomy" { print $3; exit }' "$3/meta.$2")
+  if [ -n "$_mp_j" ]; then echo "the row $_mp_j is written JOIN, and only the agent-autonomy row may be (a JOIN row is graded by the battery join, so any other would escape its grading) — $4"; return 1; fi   # MG:join
+  _mp_a=$(awk -F'\t' '$1 == "row" && $5 != "JOIN" && $3 == "agent-autonomy" { print $5; exit }' "$3/meta.$2")
+  if [ -n "$_mp_a" ]; then echo "the agent-autonomy row must be written JOIN, not $_mp_a (a shard may not run the battery) — $4"; return 1; fi   # MG:join2
+  # the record's own counters and trailer must agree with the rows it renders (a record that hides a FAIL row behind zero counters
+  # or an rc 0 would otherwise carry its lie into the merged Summary and exit)
+  _mp_cd=$(awk -F'\t' '$1 == "count" { c[$2] = $3 } $1 == "derived" { if (c[$2] + 0 != $3 + 0) { print $2 ": the record says " c[$2] + 0 ", its rows show " $3 + 0; exit } }' "$3/meta.$2")
+  if [ -n "$_mp_cd" ]; then echo "the record's Shard-counts disagree with its rows ($_mp_cd) — $4"; return 1; fi   # MG:counts
+  _mp_rc=$(awk -F'\t' '$1 == "rc" && $2 != $3 { print "the rows need rc " $2 ", the trailer says rc " $3; exit }' "$3/meta.$2")
+  if [ -n "$_mp_rc" ]; then echo "the record's trailer rc disagrees with its rows ($_mp_rc) — $4"; return 1; fi   # MG:trailerrc
+  return 0
+}
+
+# _mg_validate <wd> <head> <self> <dirty> <tree> <registry> <record>... : rc 0 with <wd>/rows (the rebuilt rows, registry order, the
+# battery row as @@JOIN@@) and <wd>/counts (`controls docs unverified nas failed misconfigured ctrl_fail`); else the reason and rc 1.
+_mg_validate() {
+  _mv_wd=$1; _mv_hd=$2; _mv_sf=$3; _mv_dt=$4; _mv_tr=$5; _mv_reg=$6; shift 6
+  if [ "$#" = 0 ]; then echo "no shard record given"; return 1; fi   # MG:none
+  _mv_k=0; _mv_m=""; _mv_js=" "
+  for _mv_f in "$@"; do
+    _mv_k=$((_mv_k+1)); _mv_u=$_mv_f
+    # a private copy, checked and read once (the file validated is the file graded); an unreadable path goes on as it is, and the check names why
+    if [ -f "$_mv_f" ] && [ -r "$_mv_f" ] && cp "$_mv_f" "$_mv_wd/r$_mv_k" 2>/dev/null; then _mv_u="$_mv_wd/r$_mv_k"; fi
+    if ! _mv_why=$(_vs_record_check "$_mv_u" "$_mv_hd" "$_mv_sf" "$_mv_dt" shard); then echo "$_mv_why — $_mv_f"; return 1; fi   # MG:rec
+    _mg_parse "$_mv_u" "$_mv_k" "$_mv_wd" "$_mv_f" || return 1
+    _mv_t=$(awk -F'\t' '$1 == "tree" { print $2 }' "$_mv_wd/meta.$_mv_k")
+    if [ "$_mv_t" != "$_mv_tr" ]; then echo "the record was graded in another tree ($_mv_t; this tree is $_mv_tr) — $_mv_f"; return 1; fi   # MG:tree
+    _mv_c=$(awk -F'\t' '$1 == "shard" { print $2 }' "$_mv_wd/meta.$_mv_k"); _mv_j=${_mv_c%/*}; _mv_n=${_mv_c#*/}
+    if [ "$_mv_j" -lt 1 ] || [ "$_mv_j" -gt "$_mv_n" ]; then echo "the coordinate $_mv_c is outside 1..N — $_mv_f"; return 1; fi   # MG:range
+    if [ -z "$_mv_m" ]; then _mv_m=$_mv_n; fi
+    if [ "$_mv_n" != "$_mv_m" ]; then echo "the records disagree on N ($_mv_m and $_mv_n) — $_mv_f"; return 1; fi   # MG:n
+    case "$_mv_js" in
+      *" $_mv_j "*) echo "the coordinate $_mv_j/$_mv_m appears twice — $_mv_f"; return 1 ;;   # MG:dup
+    esac
+    _mv_js="$_mv_js$_mv_j "
+  done
+  if [ "$_mv_k" != "$_mv_m" ]; then
+    _mv_miss=""; _mv_i=1
+    while [ "$_mv_i" -le "$_mv_m" ] && [ "$_mv_i" -le 64 ]; do
+      case "$_mv_js" in
+        *" $_mv_i "*) ;;
+        *) _mv_miss="$_mv_miss $_mv_i/$_mv_m" ;;
+      esac
+      _mv_i=$((_mv_i+1))
+    done
+    echo "missing coordinate(s):${_mv_miss:- none listed} ($_mv_k record(s) given, M is $_mv_m)"; return 1   # MG:missing
+  fi
+  if [ "$(grep -c ':agent-autonomy$' "$_mv_reg")" != 1 ]; then echo "the registry has no agent-autonomy row (or has several): there is nothing to join the battery with"; return 1; fi   # MG:noaa
+  : > "$_mv_wd/idxs"; : > "$_mv_wd/union"; : > "$_mv_wd/rows.all"; : > "$_mv_wd/cnt"
+  _mv_i=1
+  while [ "$_mv_i" -le "$_mv_k" ]; do
+    awk -F'\t' '$1 == "row" { print $2 }' "$_mv_wd/meta.$_mv_i" >> "$_mv_wd/idxs"
+    awk -F'\t' '$1 == "row" { print $2 ":" $3 }' "$_mv_wd/meta.$_mv_i" >> "$_mv_wd/union"
+    awk -F'\t' '$1 == "count" { print $2 "\t" $3 }' "$_mv_wd/meta.$_mv_i" >> "$_mv_wd/cnt"
+    cat "$_mv_wd/rows.$_mv_i" >> "$_mv_wd/rows.all"
+    _mv_i=$((_mv_i+1))
+  done
+  _mv_d=$(LC_ALL=C sort "$_mv_wd/idxs" | LC_ALL=C uniq -d | sed -n 1p)
+  if [ -n "$_mv_d" ]; then echo "the row $_mv_d ran in two shards (overlapping rows)"; return 1; fi   # MG:overlap
+  _mv_i=1
+  while [ "$_mv_i" -le "$_mv_k" ]; do
+    _mv_c=$(awk -F'\t' '$1 == "shard" { print $2 }' "$_mv_wd/meta.$_mv_i"); _mv_j=${_mv_c%/*}
+    _mv_fr=$(awk -F'\t' -v j="$_mv_j" -v n="$_mv_m" '$1 == "row" && ($2 - 1) % n != j - 1 { print $2 ":" $3; exit }' "$_mv_wd/meta.$_mv_i")
+    if [ -n "$_mv_fr" ]; then echo "the row $_mv_fr is owned by another shard than $_mv_c (its ordinal mod N is not $((_mv_j - 1)))"; return 1; fi   # MG:foreign
+    _mv_i=$((_mv_i+1))
+  done
+  LC_ALL=C sort "$_mv_wd/union" > "$_mv_wd/union.s"; LC_ALL=C sort "$_mv_reg" > "$_mv_wd/reg.s"
+  if ! cmp -s "$_mv_wd/union.s" "$_mv_wd/reg.s"; then echo "the union of the records' rows is not the registry's rows (first difference: $(LC_ALL=C comm -3 "$_mv_wd/union.s" "$_mv_wd/reg.s" | sed -n 1p | tr -d '\t'))"; return 1; fi   # MG:union
+  LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2n "$_mv_wd/rows.all" | cut -f3- > "$_mv_wd/rows"
+  awk -F'\t' '{ s[$1] += $2 } END { print s["controls"] + 0, s["docs"] + 0, s["unverified"] + 0, s["nas"] + 0, s["failed"] + 0, s["misconfigured"] + 0, (s["ctrl_fail"] > 0 ? 1 : 0) }' "$_mv_wd/cnt" > "$_mv_wd/counts"
+  return 0
+}
+
+# _mg_battery_recs <dir> : the *.rec files of the battery directory, one per line; rc 1 when there are none.
+_mg_battery_recs() {
+  _br_n=0
+  for _br_f in "$1"/*.rec; do
+    if [ -f "$_br_f" ]; then printf '%s\n' "$_br_f"; _br_n=$((_br_n+1)); fi
+  done
+  if [ "$_br_n" = 0 ]; then return 1; fi   # MG:battery
+  return 0
+}
+
+# _mg_aa_na <file> : 0 when the (captured) agent-autonomy row rendered N-A.
+_mg_aa_na() {
+  if grep -Eq '^  \[control\] +agent-autonomy +N-A$' "$1"; then return 0; fi   # MG:na
+  return 1
+}
+
+# _mg_aa_row <battery-records-file> : the battery row, graded by the JOIN of the battery shard records (C8). Runs the REAL check().
+_mg_aa_row() {
+  _ar_l=$1
+  set -- sh conformance/agent-autonomy.sh --join
+  while IFS= read -r _ar_f; do
+    set -- "$@" "$_ar_f"
+  done < "$_ar_l"
+  check control agent-autonomy --kitselftest "$@"   # mb:replay agent-autonomy
+}
+
+# _mg_timing <out> <record>... : append each record's `<record>.timing` sidecar (the shard's --timing-file) to <out>. Timing is
+# telemetry, never a gate: a missing sidecar is skipped.
+_mg_timing() {
+  _mt_o=$1; shift
+  for _mt_f in "$@"; do
+    if [ -f "$_mt_f.timing" ]; then cat "$_mt_f.timing" >> "$_mt_o" 2>/dev/null || true; fi   # MG:timing
+  done
+  return 0
+}
+
+# _mg_main : the --merge run (the record paths are in $MERGE_RECS, newline-separated). On success sets the counters from the records
+# and the battery row, and MERGE_FINAL to the file holding the rebuilt rows; the caller prints it where the registry's rows would be.
+_mg_main() {
+  if [ -n "$SEAM_ACTIVE" ]; then echo "verify --merge: REFUSED (a test seam is active: $SEAM_ACTIVE — a merge is a verdict, never a test)"; return 2; fi   # MG:seam
+  _mm_nl='
+'
+  _mm_oifs=$IFS; IFS=$_mm_nl; set -f
+  # shellcheck disable=SC2086  # the record list is newline-separated, and is split on purpose
+  set -- $MERGE_RECS
+  set +f; IFS=$_mm_oifs
+  _mm_wd=$(mktemp -d "${TMPDIR:-/tmp}/verify-merge.XXXXXX") || { echo "verify --merge: REFUSED (no scratch directory)"; return 1; }
+  _mm_hd=$(git rev-parse HEAD 2>/dev/null) || _mm_hd=none
+  if [ -z "$_mm_hd" ]; then _mm_hd=none; fi
+  _mm_sf=$(cksum < "$_SELF" | tr ' ' '-')
+  _mm_dt=$(git status --porcelain --untracked-files=all 2>/dev/null | cksum | tr ' ' '-')
+  _mm_tr=$(git write-tree 2>/dev/null) || _mm_tr=none
+  if [ -z "$_mm_tr" ]; then _mm_tr=none; fi
+  _mg_registry "$_mm_wd/registry"
+  if ! _mm_why=$(_mg_validate "$_mm_wd" "$_mm_hd" "$_mm_sf" "$_mm_dt" "$_mm_tr" "$_mm_wd/registry" "$@"); then
+    echo "verify --merge: REFUSED ($_mm_why)"; rm -rf "$_mm_wd"; return 1
+  fi
+  read -r controls docs unverified nas failed misconfigured ctrl_fail < "$_mm_wd/counts"
+  if [ -n "$BATTERY" ]; then
+    if ! _mg_battery_recs "$BATTERY" > "$_mm_wd/brecs"; then echo "verify --merge: REFUSED ($BATTERY holds no *.rec battery record to join)"; rm -rf "$_mm_wd"; return 1; fi
+    _mg_aa_row "$_mm_wd/brecs" > "$_mm_wd/aa"
+    # C8: a joined battery row is PASS or FAIL, never N-A (adopter-census forbids an unclassified N-A control row on the export, and a
+    # deferral is not a join). Without --battery the row runs as it always did, and a deferral stays the N-A it is today.
+    if _mg_aa_na "$_mm_wd/aa"; then
+      nas=$((nas-1)); controls=$((controls+1)); failed=$((failed+1)); ctrl_fail=1
+      { line "[control]" agent-autonomy FAIL; emit_diag agent-autonomy "the joined battery rendered N-A. In a merge the agent-autonomy row is PASS or FAIL, never N-A"; } > "$_mm_wd/aa"
+    fi
+  else
+    check control agent-autonomy --kitselftest sh conformance/agent-autonomy.sh > "$_mm_wd/aa"   # mb:replay agent-autonomy
+  fi
+  if [ -n "$KS_TIMING" ]; then _mg_timing "$KS_TIMING" "$@"; fi
+  awk 'FNR == NR { a[++n] = $0; next } $0 == "@@JOIN@@" { for (i = 1; i <= n; i++) print a[i]; next } { print }' "$_mm_wd/aa" "$_mm_wd/rows" > "$_mm_wd/final"
+  MERGE_FINAL=$_mm_wd/final
+  return 0
 }
 
 # The writer's signal path: on INT or TERM print what the child captured, write NO record (the reader then refuses
@@ -235,15 +545,27 @@ _vs_write_record() {
   # pre-existing path an attacker could point a symlink at), then moved into place; both are removed on every exit.
   _wr_dir=$(dirname "$_wr_path")
   _wr_cap=$(mktemp "$_wr_dir/.verify-rec.XXXXXX" 2>/dev/null) || _wr_cap=""
-  _wr_req=0; _wr_chg=0
+  _wr_req=0; _wr_chg=0; _wr_shard=""; _wr_prev=""
   if [ -n "${CI:-}" ]; then _wr_req=1; fi
   for _wr_a in "$@"; do
     if [ "$_wr_a" = "--require" ]; then _wr_req=1; fi
+    if [ "$_wr_a" = "--merge" ]; then _wr_req=1; fi   # a merge is an enforced run (SWAS-393)
     if [ "$_wr_a" = "--changed" ]; then _wr_chg=1; fi
+    if [ "$_wr_prev" = "--shard" ]; then _wr_shard=$_wr_a; fi
+    _wr_prev=$_wr_a
   done
   if [ -z "$_wr_cap" ]; then
     echo "verify: WARNING — cannot create a capture file next to $_wr_path; running WITHOUT recording" >&2
     exec sh "$_SELF" "$@"
+  fi
+  # SWAS-393 (S3): a ROW-SHARD record also carries the tree id and the working-tree checksum of the tree the shard STARTED from, taken
+  # BEFORE the run (a row may leave untracked residue, and the join runs in a pristine tree of the same content). A plain record is unchanged.
+  _wr_extra=""; _wr_dirty0=""
+  if [ -n "$_wr_shard" ]; then
+    _wr_tree=$(git -C "$_wr_root" write-tree 2>/dev/null) || _wr_tree=none
+    if [ -z "$_wr_tree" ]; then _wr_tree=none; fi
+    _wr_dirty0=$(git -C "$_wr_root" status --porcelain --untracked-files=all 2>/dev/null | cksum | tr ' ' '-')
+    _wr_extra=" shard=$_wr_shard tree=$_wr_tree"
   fi
   sh "$_SELF" "$@" > "$_wr_cap" 2>&1 &
   _wr_pid=$!
@@ -258,12 +580,13 @@ _vs_write_record() {
   if [ -z "$_wr_head" ]; then _wr_head=none; fi
   _wr_self=$(cksum < "$_SELF" | tr ' ' '-')
   _wr_dirty=$(git -C "$_wr_root" status --porcelain --untracked-files=all 2>/dev/null | cksum | tr ' ' '-')
+  if [ -n "$_wr_shard" ]; then _wr_dirty=$_wr_dirty0; fi
   _wr_lines=$(sed -n '$=' "$_wr_cap")
   _wr_nl=0
   if [ -s "$_wr_cap" ] && [ -n "$(tail -c 1 "$_wr_cap")" ]; then _wr_nl=1; fi
   _wr_tmp=$(mktemp "$_wr_dir/.verify-rec.XXXXXX" 2>/dev/null) || _wr_tmp=""
   if [ -n "$_wr_tmp" ] && {
-    printf 'verify-output-file: v1 head=%s self=%s dirty=%s require=%s changed=%s\n' "$_wr_head" "$_wr_self" "$_wr_dirty" "$_wr_req" "$_wr_chg"
+    printf 'verify-output-file: v1 head=%s self=%s dirty=%s require=%s changed=%s%s\n' "$_wr_head" "$_wr_self" "$_wr_dirty" "$_wr_req" "$_wr_chg" "$_wr_extra"
     cat "$_wr_cap"
     if [ "$_wr_nl" = 1 ]; then printf '\n'; fi
     printf 'verify-output-end: v1 rc=%s lines=%s\n' "$_wr_rc" "${_wr_lines:-0}"
@@ -293,6 +616,8 @@ while [ "$_of_n" -gt 0 ]; do
   set -- "$@" "$_of_a"
 done
 _of_first=${1:-}   # the first word LEFT after the pair is stripped: --output-file F --selftest is refused like --selftest --output-file F
+# SWAS-393: the row-shard flags are validated BEFORE anything runs (and again by the recorded child, with the same answer).
+if _rs_why=$(_rs_usage "$@"); then :; else echo "verify: usage error — $_rs_why" >&2; exit 2; fi
 if [ "$_of_cnt" -gt 0 ]; then
   if [ "$_of_cnt" -gt 1 ]; then echo "verify: usage error — --output-file given twice" >&2; exit 2; fi
   if [ "$_of_take" = 1 ] || [ -z "$_of_path" ]; then echo "verify: usage error — --output-file needs a path" >&2; exit 2; fi
@@ -309,24 +634,63 @@ fi
 
 cd "$(dirname "$0")/.."
 
+# SWAS-393 (S3): `--merge` is the FIRST word (validated by _rs_usage above). The flags it understands are taken out of "$@" here: the
+# record paths go to MERGE_RECS (newline-separated, absolute), --battery's directory to BATTERY, and --require / --timing-file /
+# --summary-file stay in "$@" for the option loop below. Any other flag is a usage error.
+MERGE=0; BATTERY=""; MERGE_RECS=""; MERGE_FINAL=""
+if [ "${1:-}" = "--merge" ]; then
+  MERGE=1; shift
+  _mg_n=$#; _mg_take=""
+  while [ "$_mg_n" -gt 0 ]; do
+    _mg_a=$1; shift; _mg_n=$((_mg_n-1))
+    if [ "$_mg_take" = battery ]; then
+      case "$_mg_a" in
+        /*) BATTERY=$_mg_a ;;
+        *) BATTERY="$_KS_ORIG_PWD/$_mg_a" ;;
+      esac
+      _mg_take=""; continue
+    fi
+    if [ "$_mg_take" = keep ]; then set -- "$@" "$_mg_a"; _mg_take=""; continue; fi
+    case "$_mg_a" in
+      --battery) _mg_take=battery ;;
+      --require) set -- "$@" "$_mg_a" ;;
+      --timing-file|--summary-file) set -- "$@" "$_mg_a"; _mg_take=keep ;;
+      --*) echo "verify: usage error — $_mg_a is not valid with --merge" >&2; exit 2 ;;
+      /*) MERGE_RECS="$MERGE_RECS$_mg_a
+" ;;
+      *) MERGE_RECS="$MERGE_RECS$_KS_ORIG_PWD/$_mg_a
+" ;;
+    esac
+  done
+fi
+
 REQUIRE=0
 [ -n "${CI:-}" ] && REQUIRE=1
 [ "${1:-}" = "--require" ] && REQUIRE=1
+if [ "$MERGE" = 1 ]; then REQUIRE=1; fi
 # --changed / --summary-file may sit anywhere after the first word; a missing value leaves them empty,
 # which means "no listing" = the full battery (the safe direction). Values are made absolute BEFORE use.
-KS_CHANGED=""; KS_SUMMARY=""; _ks_prev=""
+KS_CHANGED=""; KS_SUMMARY=""; KS_TIMING=""; _ks_prev=""; RS_SPEC=""
 for _ks_a in "$@"; do
   case "$_ks_prev" in
     --changed) KS_CHANGED=$_ks_a ;;
     --summary-file) KS_SUMMARY=$_ks_a ;;
+    --timing-file) KS_TIMING=$_ks_a ;;
+    --shard) RS_SPEC=$_ks_a ;;
   esac
   [ "$_ks_a" = "--require" ] && REQUIRE=1
   _ks_prev=$_ks_a
 done
+# SWAS-393: the row shard is an ARGUMENT only (validated by _rs_usage); SHARD_I/SHARD_N stay 0 for a run without --shard.
+SHARD_I=0; SHARD_N=0
+if [ -n "$RS_SPEC" ]; then SHARD_I=${RS_SPEC%/*}; SHARD_N=${RS_SPEC#*/}; fi
 case "$KS_CHANGED" in ''|/*) ;; *) KS_CHANGED="$_KS_ORIG_PWD/$KS_CHANGED" ;; esac
 case "$KS_SUMMARY" in ''|/*) ;; *) KS_SUMMARY="$_KS_ORIG_PWD/$KS_SUMMARY" ;; esac
+case "$KS_TIMING" in ''|/*) ;; *) KS_TIMING="$_KS_ORIG_PWD/$KS_TIMING" ;; esac
+[ -z "$KS_TIMING" ] || : > "$KS_TIMING" 2>/dev/null || true   # truncate ONCE per run: a reused path never mixes runs
 
 ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0; nas=0; misconfigured=0
+_rs_idx=0; _rs_rows=""   # SWAS-393: the ordinal of the current `check` call, and this shard's rows (` ordinal:name`)
 SKIP_KS=0; SKIPPED_KS=""   # --kitselftest skip mode (decided once, after the selftest block) and the rows it skipped
 line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
 
@@ -445,6 +809,14 @@ _incomplete() {
 trap '_incomplete 130' INT
 trap '_incomplete 143' TERM
 
+# SWAS-372 (SWAS-314 S0) — optional per-row timing, selected by ARGUMENT only: `--timing-file <path>` makes check()
+# append one line per row, `<name>\t<seconds>\t<verdict>` (whole seconds of the row's command; 0 for a row skipped
+# before it ran). Absent = no file, no extra work: the default output is byte-identical.
+_rt_log() {  # <name> <seconds> <verdict>
+  [ -n "$KS_TIMING" ] || return 0
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$KS_TIMING" 2>/dev/null || true
+}
+
 # check KIND NAME [--kitself | --adopter] COMMAND...
 check() {
   kind=$1; name=$2; shift 2
@@ -478,24 +850,35 @@ check() {
       echo "verify.sh: registry error — check '$name' declares --kitselftest together with --kitself/--adopter (mutually exclusive)" >&2
       exit 2 ;;
   esac
+  # SWAS-393 (S3) — ROW SHARDS. Every call counts, so the ordinal is the row's position in the registry. A shard runs only the rows whose
+  # ordinal mod N is i-1 and prints nothing for the others; the battery row (agent-autonomy) is never run here — it is written JOIN and
+  # graded by `--merge` through agent-autonomy.sh --join. With no --shard (SHARD_N 0) this block changes nothing.
+  _rs_idx=$((_rs_idx+1))
+  if [ "$SHARD_N" -gt 0 ]; then
+    if [ $(( (_rs_idx - 1) % SHARD_N )) -ne $((SHARD_I - 1)) ]; then return 0; fi   # MG:select
+    _rs_rows="$_rs_rows $_rs_idx:$name"
+    if [ "$name" = agent-autonomy ]; then line "[$kind]" "$name" "JOIN"; return 0; fi   # MG:joinrow
+  fi
   if [ "${1:-}" = "--kitselftest" ]; then
     shift
     # Skip mode is decided ONCE (below the selftest block) from a readable non-empty non-control-plane
     # listing; it renders through the SAME N-A path and counters as --kitself — no new verdict kind.
     if [ "$SKIP_KS" = "1" ]; then
-      line "[$kind]" "$name" "N-A"; nas=$((nas+1)); SKIPPED_KS="$SKIPPED_KS $name"; return 0
+      line "[$kind]" "$name" "N-A"; nas=$((nas+1)); SKIPPED_KS="$SKIPPED_KS $name"; _rt_log "$name" 0 "N-A"; return 0
     fi
   elif [ "${1:-}" = "--kitself" ]; then
     shift
     if [ ! -f docs/ROADMAP-KIT.md ] && [ ! -f .github/workflows/golden-path.yml ]; then
-      line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
+      line "[$kind]" "$name" "N-A"; nas=$((nas+1)); _rt_log "$name" 0 "N-A"; return 0
     fi
   elif [ "${1:-}" = "--adopter" ]; then
     shift   # metadata-only: fall through and run the command like any unflagged row
   fi
   # The child's own basename, for the MISCONFIGURED key below. Taken from the ROW, not from $out.
   _base=""; for _a in "$@"; do case "$_a" in conformance/*.sh) _base=${_a##*/}; break ;; esac; done
+  _rt0=""; [ -z "$KS_TIMING" ] || _rt0=$(date +%s)
   if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
+  _rt_secs=0; [ -z "$_rt0" ] || _rt_secs=$(( $(date +%s) - _rt0 ))
   # C6 — a child that self-declared it verified NOTHING here renders N-A, not PASS. Gated on rc = 0
   # EXACTLY, so this branch is structurally unreachable from the FAIL and rc-2/UNVERIFIED arms below:
   # no failing or unverified check can be reclassified by prose, and --require semantics are untouched.
@@ -504,12 +887,13 @@ check() {
   # here, and said so. Not blocking, not OK; the reason stays in $out and is deliberately not surfaced
   # (the token + the count IS the honesty claim; one line per check, per the selftest's own pin).
   if [ "$rc" = "0" ] && is_self_skip "$out"; then
-    line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
+    line "[$kind]" "$name" "N-A"; nas=$((nas+1)); _rt_log "$name" "$_rt_secs" "N-A"; return 0
   fi
   case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
   if [ "$rc" = "0" ]; then
-    line "[$kind]" "$name" "PASS"
+    line "[$kind]" "$name" "PASS"; _rt_log "$name" "$_rt_secs" "PASS"
   elif [ "$rc" = "2" ] && is_usage_marked "$out" "$_base"; then
+    _rt_log "$name" "$_rt_secs" "MISCONFIGURED"
     # The registry invoked this child WRONG. Blocking without --require, on purpose: a broken row is
     # invisible to a local run otherwise, and a row that never runs proves nothing while looking green.
     # Its OWN counter, and it does NOT touch $failed (the doc-check advisory tally): borrowing that
@@ -518,12 +902,12 @@ check() {
     line "[$kind]" "$name" "MISCONFIGURED"; misconfigured=$((misconfigured+1))
     emit_diag "$name" "$out"
   elif [ "$rc" = "2" ]; then
-    line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1))
+    line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1)); _rt_log "$name" "$_rt_secs" "UNVERIFIED"
     # Under --require/CI an UNVERIFIED IS a failure, so it earns its diagnostic too — otherwise the
     # one state most likely to be environmental ("no gh, no remote") is the hardest to act on.
     [ "$REQUIRE" = "1" ] && { failed=$((failed+1)); emit_diag "$name" "$out"; } || true
   else
-    line "[$kind]" "$name" "FAIL"; failed=$((failed+1))
+    line "[$kind]" "$name" "FAIL"; failed=$((failed+1)); _rt_log "$name" "$_rt_secs" "FAIL"
     [ "$kind" = "control" ] && ctrl_fail=1 || true
     emit_diag "$name" "$out"
   fi
@@ -713,6 +1097,345 @@ if [ "${1:-}" = "--selftest" ]; then
   _wp_why=$(_vs_record_check "$_vsd/rec-live" "$_wp_hd" "$_wp_sf" "$_wp_dt") || _vs_die "WRITER-RECORD: the writer's own record was REFUSED by the reader ($_wp_why)"
   grep -q "^verify-output-end: v1 rc=$_wp_rc " "$_vsd/rec-live" || _vs_die "WRITER-RECORD: the trailer does not carry the child's status ($_wp_rc)"
   [ -z "$(find "$_vsd" -name '.verify-rec.*')" ] || _vs_die "WRITER-RECORD: the writer left a .verify-rec.* capture or staging file behind"
+  if sed -n 1p "$_vsd/rec-live" | grep -q ' shard='; then _vs_die "WRITER-RECORD: a plain recorded run carries a shard= field — a full run would read as a shard record"; fi
+
+  # -- ROW-SHARDS (SWAS-393, slice S3 of SWAS-314; design 2026-10-24-ci-shaping section 4.2; controls C6, C7, C8) -----------
+  # `--require --shard i/N --output-file F` runs the rows whose ordinal mod N is i-1 and records them; `--merge --battery <dir>
+  # <records...>` refuses unless the records partition the registry exactly, and rebuilds ONE run. Every refusal below has a leg
+  # AND a mutant: _mg_mut neutralises the line the SHIPPED function tags `# MG:<tag>`, and the same leg must then fail to prove
+  # that line (the bad input is accepted, or refused for another reason). The functions are pure over files and arguments, so
+  # they are driven directly; the flags are driven end to end in the fixture repo of the legs above.
+  _mg_mut() {  # <function> <tag> [sed-expr] : the function's text with its tagged line neutralised; rc 1 when nothing changed
+    _mu_o=$(sed -n "/^$1() {\$/,/^}\$/p" "$_SELF")
+    if [ -z "$_mu_o" ]; then _mu_o=$(sed -n "/^  $1() {\$/,/^  }\$/p" "$_SELF"); fi   # a helper this selftest defines (two-space indent)
+    _mu_m=$(printf '%s\n' "$_mu_o" | sed "/# MG:$2\$/{${3:-s/echo /: /;s/return [0-9]/:/};}")
+    if [ -z "$_mu_o" ] || [ "$_mu_o" = "$_mu_m" ]; then return 1; fi
+    printf '%s\n' "$_mu_m"
+  }
+  _mg_neg() {  # <label> <function> <tag> <sed|-> <reason> <call...> : REAL refuses with <reason>; the MUTANT does not
+    _ng_l=$1; _ng_f=$2; _ng_t=$3; _ng_x=$4; _ng_r=$5; shift 5
+    if _ng_o=$("$@"); then _vs_die "ROW-SHARDS($_ng_l): the bad input was ACCEPTED"; fi
+    case "$_ng_o" in
+      *"$_ng_r"*) ;;
+      *) _vs_die "ROW-SHARDS($_ng_l): refused for the wrong reason" "want: $_ng_r" "got: $_ng_o" ;;
+    esac
+    if [ "$_ng_x" = - ]; then _ng_m=$(_mg_mut "$_ng_f" "$_ng_t") || _ng_m=""; else _ng_m=$(_mg_mut "$_ng_f" "$_ng_t" "$_ng_x") || _ng_m=""; fi
+    if [ -z "$_ng_m" ]; then _vs_die "ROW-SHARDS($_ng_l): no mutant — $_ng_f has no line tagged MG:$_ng_t that the edit changes, so the leg proves nothing"; fi
+    if _ng_mo=$( eval "$_ng_m"; "$@" 2>/dev/null ); then return 0; fi
+    case "$_ng_mo" in
+      *"$_ng_r"*) _vs_die "ROW-SHARDS($_ng_l): the MUTANT ($_ng_f without MG:$_ng_t) was still refused with the same reason — the leg does not prove that line" ;;
+    esac
+    return 0
+  }
+  # A hand-built shard record: header, the two heading lines, the rows, Shard-rows, Shard-counts, a footer, the trailer.
+  # Knobs (set in a subshell): _sr_drop=<idx> omits that row's rendered line; _sr_rename=<idx>:<name> renders another name;
+  # _sr_noshard=1 omits the Shard-rows line; _sr_counts=<text> replaces the Shard-counts values; _sr_result=OK|FAIL forces the
+  # RESULT line and the trailer rc (the default follows the rows, as the real footer does).
+  _sr_drop=""; _sr_rename=""; _sr_noshard=0; _sr_counts=""; _sr_result=""
+  _sr_rec() {  # <out> <j/N> <tree> <idx:name[=VERDICT]>...
+    _sr_o=$1; _sr_c=$2; _sr_t=$3; shift 3
+    _sr_cc=0; _sr_nn=0; _sr_ff=0; _sr_uu=0; _sr_mm=0; _sr_cf=0; _sr_tok=""
+    {
+      printf '%s\n' 'Conformance verification (honest aggregate)' '-------------------------------------------'
+      for _sr_x in "$@"; do
+        _sr_i=${_sr_x%%:*}; _sr_r=${_sr_x#*:}; _sr_v=PASS
+        if [ "${_sr_r%%=*}" = agent-autonomy ]; then _sr_v=JOIN; fi
+        if [ "${_sr_r#*=}" != "$_sr_r" ]; then _sr_v=${_sr_r#*=}; _sr_r=${_sr_r%%=*}; fi
+        _sr_tok="$_sr_tok $_sr_i:$_sr_r"
+        if [ "$_sr_drop" = "$_sr_i" ]; then continue; fi
+        _sr_shown=$_sr_r
+        if [ "${_sr_rename%%:*}" = "$_sr_i" ]; then _sr_shown=${_sr_rename#*:}; fi
+        printf '  %-9s %-18s %s\n' '[control]' "$_sr_shown" "$_sr_v"
+        case "$_sr_v" in
+          PASS) _sr_cc=$((_sr_cc+1)) ;;
+          N-A) _sr_nn=$((_sr_nn+1)) ;;
+          FAIL) _sr_cc=$((_sr_cc+1)); _sr_ff=$((_sr_ff+1)); _sr_cf=1 ;;
+          UNVERIFIED) _sr_cc=$((_sr_cc+1)); _sr_uu=$((_sr_uu+1)); _sr_ff=$((_sr_ff+1)) ;;
+          MISCONFIGURED) _sr_cc=$((_sr_cc+1)); _sr_mm=$((_sr_mm+1)) ;;
+        esac
+      done
+      _sr_res=OK
+      if [ "$_sr_cf" = 1 ] || [ "$_sr_uu" != 0 ] || [ "$_sr_mm" != 0 ]; then _sr_res=FAIL; fi
+      if [ -n "$_sr_result" ]; then _sr_res=$_sr_result; fi
+      if [ "$_sr_noshard" = 0 ]; then printf 'Shard-rows: %s%s\n' "$_sr_c" "$_sr_tok"; fi
+      if [ -n "$_sr_counts" ]; then printf 'Shard-counts: %s\n' "$_sr_counts"
+      else printf 'Shard-counts: controls=%s docs=0 unverified=%s nas=%s failed=%s misconfigured=%s ctrl_fail=%s\n' "$_sr_cc" "$_sr_uu" "$_sr_nn" "$_sr_ff" "$_sr_mm" "$_sr_cf"; fi
+      printf '\n%s\n' 'Summary: stub'
+      if [ "$_sr_res" = OK ]; then printf '%s\n' 'RESULT: OK (controls verified; docs present)'; else printf '%s\n' 'RESULT: FAIL (a control check failed)'; fi
+    } > "$_sr_o.body"
+    _sr_n=$(sed -n '$=' "$_sr_o.body")
+    _sr_trc=0; if [ "$_sr_res" != OK ]; then _sr_trc=1; fi
+    {
+      printf 'verify-output-file: v1 head=%s self=%s dirty=%s require=1 changed=0 shard=%s tree=%s\n' "$_fo_hd" "$_fo_sf" "$_fo_dt" "$_sr_c" "$_sr_t"
+      cat "$_sr_o.body"
+      printf 'verify-output-end: v1 rc=%s lines=%s\n' "$_sr_trc" "$_sr_n"
+    } > "$_sr_o"
+  }
+  _sr_t1=0123456789012345678901234567890123456789
+  _sr_t2=9876543210987654321098765432109876543210
+  _sr_reg="$_vsd/sr.reg"
+  printf '%s\n' 1:alpha 2:beta 3:gamma 4:agent-autonomy 5:delta 6:eps > "$_sr_reg"
+  _sr_wd="$_vsd/wd"
+  _sr_v() {  # <records...> : _mg_validate against the fixture's live values, in a fresh scratch directory
+    rm -rf "$_sr_wd"; mkdir "$_sr_wd"
+    _mg_validate "$_sr_wd" "$_fo_hd" "$_fo_sf" "$_fo_dt" "$_sr_t1" "$_sr_reg" "$@"
+  }
+  # -- the registry, and the anchor: a well-formed pair is accepted and rebuilt in registry order ------------------
+  _mg_registry "$_vsd/live.reg" || _vs_die "ROW-SHARDS(registry): _mg_registry failed"
+  [ "$(grep -c '' "$_vsd/live.reg")" = "$(grep -c '^check ' "$_SELF")" ] || _vs_die "ROW-SHARDS(registry): the registry listing does not hold one entry per ^check row"
+  [ "$(grep -c ':agent-autonomy$' "$_vsd/live.reg")" = 1 ] || _vs_die "ROW-SHARDS(registry): the agent-autonomy row is not listed exactly once"
+  [ "$(sed -n 1p "$_vsd/live.reg")" = "1:branch-protection-declared" ] || _vs_die "ROW-SHARDS(registry): the first row is not 1:branch-protection-declared"
+  _sr_rec "$_vsd/s1.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma 5:delta=N-A
+  _sr_rec "$_vsd/s2.rec" 2/2 "$_sr_t1" 2:beta 4:agent-autonomy 6:eps
+  _sr_why=$(_sr_v "$_vsd/s1.rec" "$_vsd/s2.rec") || _vs_die "ROW-SHARDS(anchor): the well-formed pair was REFUSED — every negative below would pass vacuously" "$_sr_why"
+  {
+    printf '  %-9s %-18s %s\n' '[control]' alpha PASS; printf '  %-9s %-18s %s\n' '[control]' beta PASS
+    printf '  %-9s %-18s %s\n' '[control]' gamma PASS; printf '%s\n' '@@JOIN@@'
+    printf '  %-9s %-18s %s\n' '[control]' delta N-A; printf '  %-9s %-18s %s\n' '[control]' eps PASS
+  } > "$_vsd/sr.expect"
+  cmp -s "$_vsd/sr.expect" "$_sr_wd/rows" || _vs_die "ROW-SHARDS(anchor): the rebuilt rows are not the registry order with the JOIN marker in place" "got:" "$(cat "$_sr_wd/rows")"
+  [ "$(cat "$_sr_wd/counts")" = "4 0 0 1 0 0 0" ] || _vs_die "ROW-SHARDS(anchor): the summed counters are wrong (want '4 0 0 1 0 0 0')" "got: $(cat "$_sr_wd/counts")"
+  # records may be given in any order
+  _sr_v "$_vsd/s2.rec" "$_vsd/s1.rec" >/dev/null || _vs_die "ROW-SHARDS(anchor): the pair in the other order was refused"
+  cmp -s "$_vsd/sr.expect" "$_sr_wd/rows" || _vs_die "ROW-SHARDS(anchor): the order of the records changed the rebuilt rows"
+
+  # -- C6: every --merge refusal, each with its mutant -------------------------------------------------------------
+  _mg_neg none _mg_validate none - 'no shard record given' _sr_v
+  ( _fo_hd=fedcba9876543210fedcba9876543210fedcba98; _sr_rec "$_vsd/x-head.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma 5:delta )
+  _mg_neg stale-record _mg_validate rec - 'stale: written at another commit' _sr_v "$_vsd/x-head.rec" "$_vsd/s2.rec"
+  _mg_neg not-a-shard-record _vs_record_check shardmode - 'not a shard record' _sr_v "$_vsd/good" "$_vsd/s2.rec"
+  _mg_neg full-mode-refuses-shard _vs_record_check fullmode - 'a shard record, not a full enforced run' _vs_record_check "$_vsd/s1.rec" "$_fo_hd" "$_fo_sf" "$_fo_dt"
+  _sr_rec "$_vsd/x-tree.rec" 1/2 "$_sr_t2" 1:alpha 3:gamma 5:delta
+  _mg_neg foreign-tree _mg_validate tree - 'graded in another tree' _sr_v "$_vsd/x-tree.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-range.rec" 3/2 "$_sr_t1" 3:gamma
+  _mg_neg coordinate-range _mg_validate range - 'outside 1..N' _sr_v "$_vsd/x-range.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-n3.rec" 2/3 "$_sr_t1" 2:beta
+  _mg_neg disagree-on-N _mg_validate n - 'disagree on N' _sr_v "$_vsd/s1.rec" "$_vsd/x-n3.rec"
+  _mg_neg duplicate-coordinate _mg_validate dup - 'appears twice' _sr_v "$_vsd/s1.rec" "$_vsd/s1.rec"
+  _mg_neg missing-coordinate _mg_validate missing - 'missing coordinate' _sr_v "$_vsd/s1.rec"
+  _sr_rec "$_vsd/x-foreign.rec" 1/2 "$_sr_t1" 1:alpha 2:beta 5:delta
+  _sr_rec "$_vsd/x-s2nob.rec" 2/2 "$_sr_t1" 4:agent-autonomy 6:eps
+  _mg_neg foreign-row _mg_validate foreign - 'owned by another shard' _sr_v "$_vsd/x-foreign.rec" "$_vsd/x-s2nob.rec"
+  _sr_rec "$_vsd/x-overlap.rec" 2/2 "$_sr_t1" 2:beta 3:gamma 4:agent-autonomy 6:eps
+  _mg_neg overlapping-rows _mg_validate overlap - 'ran in two shards' _sr_v "$_vsd/s1.rec" "$_vsd/x-overlap.rec"
+  _sr_rec "$_vsd/x-short.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma
+  _mg_neg union-row-missing _mg_validate union - 'not the registry' _sr_v "$_vsd/x-short.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-zeta.rec" 2/2 "$_sr_t1" 2:beta 4:agent-autonomy 6:zeta
+  _mg_neg union-unknown-row _mg_validate union - 'not the registry' _sr_v "$_vsd/s1.rec" "$_vsd/x-zeta.rec"
+  ( _sr_drop=3; _sr_rec "$_vsd/x-drop.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma 5:delta )
+  _mg_neg rendered-fewer-than-listed _mg_parse body - 'rendered rows disagree' _sr_v "$_vsd/x-drop.rec" "$_vsd/s2.rec"
+  ( _sr_rename=3:other; _sr_rec "$_vsd/x-rename.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma 5:delta )
+  _mg_neg rendered-name-differs _mg_parse bodyname - 'row name differs' _sr_v "$_vsd/x-rename.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-join.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma=JOIN 5:delta
+  _mg_neg join-on-another-row _mg_parse join - 'only the agent-autonomy row may be' _sr_v "$_vsd/x-join.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-aa.rec" 2/2 "$_sr_t1" 2:beta 4:agent-autonomy=PASS 6:eps
+  _mg_neg battery-row-not-join _mg_parse join2 - 'must be written JOIN' _sr_v "$_vsd/s1.rec" "$_vsd/x-aa.rec"
+  ( _sr_noshard=1; _sr_rec "$_vsd/x-nosr.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma 5:delta )
+  _mg_neg malformed-record _mg_parse parse - 'malformed record' _sr_v "$_vsd/x-nosr.rec" "$_vsd/s2.rec"
+  # a record that shows a FAIL row is accepted when its counters and trailer say so (the anchor), and refused when either lies
+  _sr_rec "$_vsd/x-fail.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma=FAIL 5:delta
+  _sr_why=$(_sr_v "$_vsd/x-fail.rec" "$_vsd/s2.rec") || _vs_die "ROW-SHARDS(counts anchor): an honest record with a FAIL row was REFUSED ($_sr_why)"
+  [ "$(cat "$_sr_wd/counts")" = "5 0 0 0 1 0 1" ] || _vs_die "ROW-SHARDS(counts anchor): the merged counters of an honest FAIL record are wrong" "got: $(cat "$_sr_wd/counts")"
+  ( _sr_counts='controls=5 docs=0 unverified=0 nas=0 failed=0 misconfigured=0 ctrl_fail=0'; _sr_rec "$_vsd/x-lie-counts.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma=FAIL 5:delta )
+  _mg_neg counts-hide-a-fail _mg_parse counts - 'Shard-counts disagree with its rows' _sr_v "$_vsd/x-lie-counts.rec" "$_vsd/s2.rec"
+  ( _sr_result=OK; _sr_rec "$_vsd/x-lie-rc.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma=FAIL 5:delta )
+  _mg_neg trailer-rc-hides-a-fail _mg_parse trailerrc - 'trailer rc disagrees with its rows' _sr_v "$_vsd/x-lie-rc.rec" "$_vsd/s2.rec"
+  _sr_rec "$_vsd/x-unv.rec" 1/2 "$_sr_t1" 1:alpha 3:gamma=UNVERIFIED 5:delta
+  _sr_why=$(_sr_v "$_vsd/x-unv.rec" "$_vsd/s2.rec") || _vs_die "ROW-SHARDS(counts anchor): an honest record with an UNVERIFIED row was REFUSED ($_sr_why)"
+  [ "$(cat "$_sr_wd/counts")" = "5 0 1 0 1 0 0" ] || _vs_die "ROW-SHARDS(counts anchor): the merged counters of an honest UNVERIFIED record are wrong" "got: $(cat "$_sr_wd/counts")"
+  printf '%s\n' 1:alpha 2:beta 3:gamma 5:delta 6:eps > "$_vsd/sr-noaa.reg"
+  _sr_v_noaa() { rm -rf "$_sr_wd"; mkdir "$_sr_wd"; _mg_validate "$_sr_wd" "$_fo_hd" "$_fo_sf" "$_fo_dt" "$_sr_t1" "$_vsd/sr-noaa.reg" "$@"; }
+  _mg_neg registry-without-battery-row _mg_validate noaa - 'no agent-autonomy row' _sr_v_noaa "$_vsd/s1.rec" "$_vsd/s2.rec"
+  mkdir "$_vsd/emptybat"
+  _mg_neg battery-dir-without-records _mg_battery_recs battery - '' _mg_battery_recs "$_vsd/emptybat"
+  mkdir "$_vsd/bat"; : > "$_vsd/bat/b2.rec"; : > "$_vsd/bat/b1.rec"; : > "$_vsd/bat/notes.txt"
+  [ "$(_mg_battery_recs "$_vsd/bat")" = "$(printf '%s\n%s' "$_vsd/bat/b1.rec" "$_vsd/bat/b2.rec")" ] || _vs_die "ROW-SHARDS(battery): the battery directory's *.rec files were not listed (sorted, records only)"
+
+  # -- C8: the joined battery row is PASS or FAIL, never N-A -------------------------------------------------------
+  printf '%s\n' '  [control] agent-autonomy      N-A' > "$_vsd/aa-na.txt"
+  printf '%s\n' '  [control] agent-autonomy      PASS' > "$_vsd/aa-pass.txt"
+  _mg_aa_na "$_vsd/aa-na.txt" || _vs_die "ROW-SHARDS(C8): an N-A battery row was not recognised"
+  if _mg_aa_na "$_vsd/aa-pass.txt"; then _vs_die "ROW-SHARDS(C8): a PASS battery row was read as N-A"; fi
+  _ng_m=$(_mg_mut _mg_aa_na na) || _vs_die "ROW-SHARDS(C8): no mutant — _mg_aa_na has no line tagged MG:na"
+  if ( eval "$_ng_m"; _mg_aa_na "$_vsd/aa-na.txt" ); then _vs_die "ROW-SHARDS(C8): the MUTANT (_mg_aa_na without MG:na) still recognised N-A — the leg does not prove that line"; fi
+
+  # -- section 7: --merge concatenates the shards' timing files ----------------------------------------------------
+  printf 'alpha\t3\tPASS\ngamma\t4\tPASS\n' > "$_vsd/s1.rec.timing"; printf 'beta\t5\tPASS\n' > "$_vsd/s2.rec.timing"
+  rm -f "$_vsd/t.tsv"; printf 'aa-join\t1\tPASS\n' > "$_vsd/t.tsv"
+  _mg_timing "$_vsd/t.tsv" "$_vsd/s1.rec" "$_vsd/s2.rec" "$_vsd/x-none.rec"
+  [ "$(grep -c '' "$_vsd/t.tsv")" = 4 ] || _vs_die "ROW-SHARDS(timing): the shards' timing files were not appended after the existing lines (want 4 lines)" "$(cat "$_vsd/t.tsv")"
+  grep -q "^gamma$(printf '\t')4$(printf '\t')PASS\$" "$_vsd/t.tsv" || _vs_die "ROW-SHARDS(timing): a shard's timing line is missing"
+  _ng_m=$(_mg_mut _mg_timing timing 's/cat /: /') || _vs_die "ROW-SHARDS(timing): no mutant — _mg_timing has no line tagged MG:timing"
+  printf 'aa-join\t1\tPASS\n' > "$_vsd/t2.tsv"; ( eval "$_ng_m"; _mg_timing "$_vsd/t2.tsv" "$_vsd/s1.rec" "$_vsd/s2.rec" )
+  [ "$(grep -c '' "$_vsd/t2.tsv")" = 1 ] || _vs_die "ROW-SHARDS(timing): the MUTANT (_mg_timing without its cat) still concatenated — the leg does not prove that line"
+
+  # -- the usage refusals (exit 2 before anything runs), each with its mutant ----------------------------------------
+  _ru_ci() { ( unset CI; _rs_usage "$@" ); }
+  _ru_ok() { _ru_ci "$@" >/dev/null || _vs_die "ROW-SHARDS(usage anchor): _rs_usage refused a valid line: $*"; }
+  _ru_ok --require
+  _ru_ok --require --shard 2/3
+  _ru_ok --require --shard 3/3 --timing-file t
+  _ru_ok --merge --battery d a b
+  _ru_ok --merge a
+  _ru_ok --selftest
+  _mg_neg usage-merge-first _rs_usage u-merge-first - 'FIRST word' _ru_ci --require --merge a
+  _mg_neg usage-merge-twice _rs_usage u-merge-twice - 'given twice' _ru_ci --merge --merge a
+  _mg_neg usage-battery-alone _rs_usage u-battery-alone - 'only with --merge' _ru_ci --require --battery d
+  _mg_neg usage-battery-twice _rs_usage u-battery-twice - 'given twice' _ru_ci --merge --battery d --battery e a
+  _mg_neg usage-battery-no-value _rs_usage u-battery-value - 'needs a directory' _ru_ci --merge --battery
+  _mg_neg usage-battery-flag-as-value _rs_usage u-battery-value - 'needs a directory' _ru_ci --merge --battery --require a
+  _mg_neg usage-shard-twice _rs_usage u-shard-twice - 'given twice' _ru_ci --require --shard 1/2 --shard 2/2
+  _mg_neg usage-shard-no-value _rs_usage u-shard-format - '<i>/<N>' _ru_ci --require --shard
+  _mg_neg usage-shard-out-of-range _rs_usage u-shard-format - '<i>/<N>' _ru_ci --require --shard 3/2
+  _mg_neg usage-shard-zero _rs_usage u-shard-format - '<i>/<N>' _ru_ci --require --shard 0/2
+  _mg_neg usage-shard-not-numeric _rs_usage u-shard-format - '<i>/<N>' _ru_ci --require --shard 1/x
+  _mg_neg usage-shard-two-slashes _rs_usage u-shard-format - '<i>/<N>' _ru_ci --require --shard 1/2/3
+  _mg_neg usage-shard-and-merge _rs_usage u-shard-merge - 'exclusive' _ru_ci --merge --shard 1/2 a
+  _mg_neg usage-shard-with-selftest _rs_usage u-shard-selftest - 'with --selftest' _ru_ci --selftest --shard 1/2
+  _mg_neg usage-shard-with-changed _rs_usage u-shard-changed - 'cannot be combined with --changed' _ru_ci --require --shard 1/2 --changed f
+  _mg_neg usage-merge-with-changed _rs_usage u-merge-changed - 'cannot be combined with --changed' _ru_ci --merge --changed f a
+  _mg_neg usage-shard-without-require _rs_usage u-shard-require - 'needs --require' _ru_ci --shard 1/2
+
+  # -- the selection: an argument, never the environment; the battery row is never run in a shard ----------------------
+  printf '#!/bin/sh\necho "OK: stub verified"\nexit 0\n' > "$_vsd/ok.sh"
+  printf '#!/bin/sh\ntouch "%s/aa-ran"\necho "OK: stub battery"\nexit 0\n' "$_vsd" > "$_vsd/aa-ran.sh"
+  printf '%s\n' "check control r1 sh $_vsd/ok.sh" "check control r2 sh $_vsd/ok.sh" "check doc r3 sh $_vsd/ok.sh" \
+    "check control agent-autonomy --kitselftest sh $_vsd/aa-ran.sh" "check control r5 sh $_vsd/ok.sh" "check control r6 sh $_vsd/ok.sh" \
+    "check control r7 sh $_vsd/ok.sh" > "$_vsd/sel-registry.sh"
+  # (the decoys are the option's would-be variable names and the internals: all must be overwritten or ignored)
+  _sr_run() {  # <script> <args...> : a stub-registry run (a test seam, so it ends UNVERIFIED), decoy environment
+    _sr_s=$1; shift
+    ( cd "$_vsd/repo" && env -u CI -u GITHUB_ACTIONS VERIFY_SELFTEST_REGISTRY="$_vsd/sel-registry.sh" VERIFY_SHARD=3/3 SHARD=1/1 SHARDS=3 \
+        SHARD_N=9 SHARD_I=9 _rs_idx=7 _rs_rows=" 9:decoy" sh "$_sr_s" "$@" 2>&1 ) || true
+  }
+  _sr_rows() { printf '%s\n' "$1" | grep -E '^  \[(control|doc)\] ' | sed 's/  */ /g'; }
+  _sr_sc=$_vsd/repo/conformance/verify.sh
+  rm -f "$_vsd/aa-ran"
+  _sr_all=$(_sr_run "$_sr_sc" --require)
+  [ -f "$_vsd/aa-ran" ] || _vs_die "ROW-SHARDS(selection): the plain stub run never ran the battery row (the marker leg is vacuous)"
+  [ "$(_sr_rows "$_sr_all" | grep -c '')" = 7 ] || _vs_die "ROW-SHARDS(selection): a plain run under decoy variables did not print all 7 rows" "$_sr_all"
+  if printf '%s\n' "$_sr_all" | grep -Eq 'JOIN|^Shard-'; then _vs_die "ROW-SHARDS(selection): a plain run printed a JOIN or Shard- line — it is no longer today's output"; fi
+  rm -f "$_vsd/aa-ran"
+  _sr_s1=$(_sr_run "$_sr_sc" --require --shard 1/3); _sr_s2=$(_sr_run "$_sr_sc" --require --shard 2/3); _sr_s3=$(_sr_run "$_sr_sc" --require --shard 3/3)
+  [ ! -f "$_vsd/aa-ran" ] || _vs_die "ROW-SHARDS(selection): a row shard RAN the battery row — it is graded by the join, never in a shard"
+  [ "$(_sr_rows "$_sr_s1")" = "$(printf '%s\n' ' [control] r1 PASS' ' [control] agent-autonomy JOIN' ' [control] r7 PASS')" ] || _vs_die "ROW-SHARDS(selection): shard 1/3 did not render rows 1, 4 (JOIN) and 7" "$(_sr_rows "$_sr_s1")"
+  [ "$(_sr_rows "$_sr_s2")" = "$(printf '%s\n' ' [control] r2 PASS' ' [control] r5 PASS')" ] || _vs_die "ROW-SHARDS(selection): shard 2/3 did not render rows 2 and 5" "$(_sr_rows "$_sr_s2")"
+  [ "$(_sr_rows "$_sr_s3")" = "$(printf '%s\n' ' [doc] r3 PASS' ' [control] r6 PASS')" ] || _vs_die "ROW-SHARDS(selection): shard 3/3 did not render rows 3 and 6" "$(_sr_rows "$_sr_s3")"
+  printf '%s\n' "$_sr_s1" | grep -qx 'Shard-rows: 1/3 1:r1 4:agent-autonomy 7:r7' || _vs_die "ROW-SHARDS(selection): shard 1/3's Shard-rows line is wrong" "$_sr_s1"
+  printf '%s\n' "$_sr_s2" | grep -qx 'Shard-rows: 2/3 2:r2 5:r5' || _vs_die "ROW-SHARDS(selection): shard 2/3's Shard-rows line is wrong" "$_sr_s2"
+  printf '%s\n' "$_sr_s1" | grep -qx 'Shard-counts: controls=2 docs=0 unverified=0 nas=0 failed=0 misconfigured=0 ctrl_fail=0' || _vs_die "ROW-SHARDS(selection): shard 1/3's counters are wrong (the battery row is counted by the join, not here)" "$_sr_s1"
+  # the mutants of the two selection lines are process-level: a mutated COPY of this script runs the same shards
+  _sr_mutmk() {  # <tag> <sed-expr> : write the copy of this script with MG:<tag> edited (it must differ)
+    sed "/# MG:$1\$/$2" "$_SELF" > "$_vsd/repo/conformance/verify-mut.sh"
+    if cmp -s "$_SELF" "$_vsd/repo/conformance/verify-mut.sh"; then _vs_die "ROW-SHARDS($1): no mutant — no line tagged MG:$1 is changed by the edit"; fi
+  }
+  rm -f "$_vsd/aa-ran"; _sr_mutmk joinrow 's/return 0/:/'
+  _sr_m=$(_sr_run "$_vsd/repo/conformance/verify-mut.sh" --require --shard 1/3)
+  [ -f "$_vsd/aa-ran" ] || _vs_die "ROW-SHARDS(joinrow): the MUTANT (a shard that runs the battery row) did not run it — the leg does not prove the JOIN line"
+  _sr_mutmk select 's/-ne/-eq/'
+  _sr_m=$(_sr_run "$_vsd/repo/conformance/verify-mut.sh" --require --shard 2/3)
+  [ "$(_sr_rows "$_sr_m")" != "$(_sr_rows "$_sr_s2")" ] || _vs_die "ROW-SHARDS(select): the MUTANT (the wrong rows) rendered shard 2/3's rows — the leg does not prove the selection line"
+  rm -f "$_vsd/repo/conformance/verify-mut.sh" "$_vsd/aa-ran"
+
+  # -- end to end in the fixture repo: the writer's shard header, the merge equals one run (C6), the join row (C8) -----
+  # The battery stub exists BEFORE the records are written (an untracked file is in the working-tree checksum).
+  # The battery stub is the DELIBERATELY FAILING row of the fixture: it exits 1, so a FAIL-class row (with its diagnostic block and a
+  # non-zero rc) is exercised end to end whichever shell runs the other rows (bash: a missing script is rc 127 = FAIL; dash: rc 2 =
+  # UNVERIFIED under --require). It is replaced by a passing stub before the legs that need a PASS.
+  printf '%s\n' '#!/bin/sh' "echo \"\$*\" > $_vsd/aa-args" 'echo "FAIL: planted battery row"' 'exit 1' > "$_vsd/repo/conformance/agent-autonomy.sh"
+  # What the parity leg compares must cover every rendering: the whole registry, an N-A row, a FAIL-class row, its diagnostic block, rc != 0.
+  # _sr_anchor <plain-output> <rc> <registry-rows>
+  _sr_anchor() {
+    [ "$(printf '%s\n' "$1" | grep -Ec '^  \[(control|doc)\] ')" = "$3" ] || { echo "the plain fixture run did not render one line per registry row"; return 1; }   # MG:anchor-rows
+    [ "$(printf '%s\n' "$1" | grep -Ec '^  \[(control|doc)\] .* N-A$')" -gt 0 ] || { echo "the plain fixture run has no N-A row"; return 1; }   # MG:anchor-na
+    [ "$(printf '%s\n' "$1" | grep -Ec '^  \[(control|doc)\] .* (FAIL|UNVERIFIED|MISCONFIGURED)$')" -gt 0 ] || { echo "the plain fixture run has no FAIL, UNVERIFIED or MISCONFIGURED row"; return 1; }   # MG:anchor-fail
+    printf '%s\n' "$1" | grep -q '^      ── ' || { echo "the plain fixture run printed no diagnostic block"; return 1; }   # MG:anchor-diag
+    [ "$2" != 0 ] || { echo "the plain fixture run exited 0"; return 1; }   # MG:anchor-rc
+    return 0
+  }
+  _sr_ao=$(printf '%s\n' '  [control] a    PASS' '  [control] b    N-A' '  [control] c    FAIL' '      ── c output ──────')
+  _sr_an=$(printf '%s\n' '  [control] a    PASS' '  [control] c    FAIL' '      ── c output ──────')
+  _sr_af=$(printf '%s\n' '  [control] a    PASS' '  [control] b    N-A' '      ── c output ──────')
+  _sr_ad=$(printf '%s\n' '  [control] a    PASS' '  [control] b    N-A' '  [control] c    FAIL')
+  _sr_why=$(_sr_anchor "$_sr_ao" 1 3) || _vs_die "ROW-SHARDS(parity anchor): a complete plain output was refused ($_sr_why)"
+  _mg_neg anchor-rows _sr_anchor anchor-rows - 'one line per registry row' _sr_anchor "$_sr_ao" 1 4
+  _mg_neg anchor-no-na _sr_anchor anchor-na - 'no N-A row' _sr_anchor "$_sr_an" 1 2
+  _mg_neg anchor-no-fail-class _sr_anchor anchor-fail - 'no FAIL, UNVERIFIED or MISCONFIGURED row' _sr_anchor "$_sr_af" 1 2
+  _mg_neg anchor-no-diagnostic _sr_anchor anchor-diag - 'no diagnostic block' _sr_anchor "$_sr_ad" 1 3
+  _mg_neg anchor-rc-zero _sr_anchor anchor-rc - 'exited 0' _sr_anchor "$_sr_ao" 0 3
+  mkdir "$_vsd/shards"
+  _vs_child '' --require
+  _sr_plain=$_vc_out; _sr_plain_rc=$_vc_rc
+  _sr_why=$(_sr_anchor "$_sr_plain" "$_sr_plain_rc" "$(grep -c '' "$_vsd/live.reg")") || _vs_die "ROW-SHARDS(parity): $_sr_why (the parity leg would not cover every rendering)" "rc $_sr_plain_rc" "$(printf '%s\n' "$_sr_plain" | sed -n '1,8p')"
+  printf '%s\n' "$_sr_plain" | grep -Eq '^  \[control\] +agent-autonomy +FAIL$' || _vs_die "ROW-SHARDS(parity): the planted battery row did not render FAIL in the plain run" "$(printf '%s\n' "$_sr_plain" | grep agent-autonomy)"
+  rm -f "$_vsd/aa-args"
+  _vs_child '' --require --shard 1/2 --output-file "$_vsd/shards/a.rec" --timing-file "$_vsd/shards/a.rec.timing"
+  _vs_child '' --require --shard 2/2 --output-file "$_vsd/shards/b.rec" --timing-file "$_vsd/shards/b.rec.timing"
+  [ -f "$_vsd/shards/a.rec" ] && [ -f "$_vsd/shards/b.rec" ] || _vs_die "ROW-SHARDS(writer): a shard run wrote no record"
+  _sr_hd=$(git -C "$_vsd/repo" rev-parse HEAD); _sr_tr=$(git -C "$_vsd/repo" write-tree)
+  _sr_sf=$(cksum < "$_vsd/repo/conformance/verify.sh" | tr ' ' '-')
+  _sr_dt=$(git -C "$_vsd/repo" status --porcelain --untracked-files=all | cksum | tr ' ' '-')
+  sed -n 1p "$_vsd/shards/a.rec" | grep -q " shard=1/2 tree=$_sr_tr\$" || _vs_die "ROW-SHARDS(writer): the shard record's header does not end in ' shard=1/2 tree=<this tree>'" "$(sed -n 1p "$_vsd/shards/a.rec")"
+  _sr_why=$(_vs_record_check "$_vsd/shards/a.rec" "$_sr_hd" "$_sr_sf" "$_sr_dt" shard) || _vs_die "ROW-SHARDS(writer): the writer's own shard record was REFUSED by the reader ($_sr_why)"
+  _sr_why=$(_vs_record_check "$_vsd/shards/a.rec" "$_sr_hd" "$_sr_sf" "$_sr_dt") && _vs_die "ROW-SHARDS(writer): --selftest --from-output would grade a SHARD record as a full run"
+  [ "$(cat "$_vsd/shards/a.rec" "$_vsd/shards/b.rec" | grep -Ec '^  \[control\] +agent-autonomy +JOIN$')" = 1 ] || _vs_die "ROW-SHARDS(writer): the battery row is not written JOIN in exactly one record"
+  [ ! -f "$_vsd/aa-args" ] || _vs_die "ROW-SHARDS(writer): a shard run executed the battery row (the stub recorded its arguments)"
+  _vs_child '' --merge "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  [ "$_vc_rc" = "$_sr_plain_rc" ] || _vs_die "ROW-SHARDS(parity): the merge exited $_vc_rc, the plain run $_sr_plain_rc"
+  if [ "$_vc_out" != "$_sr_plain" ]; then
+    printf '%s\n' "$_sr_plain" > "$_vsd/parity.plain"; printf '%s\n' "$_vc_out" > "$_vsd/parity.merge"
+    _vs_die "ROW-SHARDS(parity): the merged output is not the plain run's output, byte for byte" "$(diff "$_vsd/parity.plain" "$_vsd/parity.merge" | head -n 12)"
+  fi
+  [ "$(cat "$_vsd/aa-args")" = "" ] || _vs_die "ROW-SHARDS(parity): without --battery the battery row did not run as today's bare row (arguments: $(cat "$_vsd/aa-args"))"
+  # the flags are refused with exit 2 before anything runs, by the real argument path
+  _vs_child '' --require --shard 3/2
+  [ "$_vc_rc" = 2 ] || _vs_die "ROW-SHARDS(usage): --shard 3/2 exited $_vc_rc, not 2"
+  printf '%s\n' "$_vc_out" | grep -q '^verify: usage error' || _vs_die "ROW-SHARDS(usage): the refusal is not a 'verify: usage error' line" "$_vc_out"
+  if printf '%s\n' "$_vc_out" | grep -q 'Conformance verification'; then _vs_die "ROW-SHARDS(usage): a refused --shard started the aggregate"; fi
+  _vs_child '' --merge --bogus "$_vsd/shards/a.rec"
+  [ "$_vc_rc" = 2 ] || _vs_die "ROW-SHARDS(usage): --merge with an unknown flag exited $_vc_rc, not 2"
+  _vs_child '' --require --output-file "$_vsd/never.rec" --merge "$_vsd/shards/a.rec"
+  [ "$_vc_rc" = 2 ] || _vs_die "ROW-SHARDS(usage): --merge after another word exited $_vc_rc, not 2"
+  # nothing is printed by a refused merge (not even the heading), and the refusals are exit 1 (a seam: 2)
+  _vs_child '' --merge "$_vsd/shards/a.rec"
+  [ "$_vc_rc" = 1 ] || _vs_die "ROW-SHARDS(refusal): a merge of one of two records exited $_vc_rc, not 1"
+  printf '%s\n' "$_vc_out" | grep -q 'missing coordinate' || _vs_die "ROW-SHARDS(refusal): the refusal does not name the missing coordinate" "$_vc_out"
+  if printf '%s\n' "$_vc_out" | grep -q 'Conformance verification'; then _vs_die "ROW-SHARDS(refusal): a refused merge printed rows"; fi
+  _vs_child "VERIFY_SELFTEST_REGISTRY=$_vsd/sel-registry.sh" --merge "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  [ "$_vc_rc" = 2 ] || _vs_die "ROW-SHARDS(refusal): a merge under a test seam exited $_vc_rc, not 2"
+  printf '%s\n' "$_vc_out" | grep -q 'REFUSED (a test seam is active' || _vs_die "ROW-SHARDS(refusal): a merge under a test seam was not refused by name" "$_vc_out"
+  _ng_m=$(_mg_mut _mg_main seam) || _vs_die "ROW-SHARDS(seam): no mutant — _mg_main has no line tagged MG:seam"
+  SEAM_ACTIVE=x; _sr_sm=$( eval "$_ng_m"; MERGE_RECS=""; _mg_main 2>&1 ) || true; SEAM_ACTIVE=
+  case "$_sr_sm" in
+    *'REFUSED (a test seam is active'*) _vs_die "ROW-SHARDS(seam): the MUTANT (_mg_main without MG:seam) still refused the seam — the leg does not prove that line" ;;
+  esac
+  # C8 end to end: the battery directory's records go to `agent-autonomy.sh --join`, and N-A can never stand
+  mkdir -p "$_vsd/bat2"; : > "$_vsd/bat2/x.rec"
+  printf '%s\n' '#!/bin/sh' "echo \"\$*\" > $_vsd/aa-args" 'echo "OK: stub joined"' 'exit 0' > "$_vsd/repo/conformance/agent-autonomy.sh"
+  _vs_child '' --merge --battery "$_vsd/bat2" "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  printf '%s\n' "$_vc_out" | grep -Eq '^  \[control\] +agent-autonomy +PASS$' || _vs_die "ROW-SHARDS(C8): a passing joined battery did not render PASS" "$(printf '%s\n' "$_vc_out" | grep agent-autonomy)"
+  [ "$(cat "$_vsd/aa-args")" = "--join $_vsd/bat2/x.rec" ] || _vs_die "ROW-SHARDS(C8): the battery row was not run as 'agent-autonomy.sh --join <the *.rec files>'" "got: $(cat "$_vsd/aa-args")"
+  printf '%s\n' '#!/bin/sh' 'echo "N/A: deferred to a CI job"' 'exit 0' > "$_vsd/repo/conformance/agent-autonomy.sh"
+  _vs_child '' --merge --battery "$_vsd/bat2" "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  printf '%s\n' "$_vc_out" | grep -Eq '^  \[control\] +agent-autonomy +FAIL$' || _vs_die "ROW-SHARDS(C8): a joined battery that answered N/A did not render FAIL" "$(printf '%s\n' "$_vc_out" | grep agent-autonomy)"
+  if printf '%s\n' "$_vc_out" | grep -Eq '^  \[control\] +agent-autonomy +N-A$'; then _vs_die "ROW-SHARDS(C8): the joined battery row rendered N-A — adopter-census would need an exemption"; fi
+  _c8na=$(printf '%s\n' "$_vc_out" | grep -Ec '^  \[(control|doc)\] .* N-A$') || true
+  printf '%s\n' "$_vc_out" | grep '^Summary:' | grep -q "· $_c8na n/a ·" || _vs_die "ROW-SHARDS(C8): the Summary's n/a count and the N-A rows differ after the rewrite"
+  # ...but WITHOUT --battery (the kit tree's merge, whose battery defers to guard-battery) a deferral stays the N-A it is today
+  _vs_child '' --merge "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  printf '%s\n' "$_vc_out" | grep -Eq '^  \[control\] +agent-autonomy +N-A$' || _vs_die "ROW-SHARDS(C8): without --battery a deferred battery row no longer renders N-A (the kit tree's merge would turn red)"
+  printf '%s\n' '#!/bin/sh' 'echo "FAIL: stub"' 'exit 1' > "$_vsd/repo/conformance/agent-autonomy.sh"
+  _vs_child '' --merge --battery "$_vsd/bat2" "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  printf '%s\n' "$_vc_out" | grep -Eq '^  \[control\] +agent-autonomy +FAIL$' || _vs_die "ROW-SHARDS(C8): a failing joined battery did not render FAIL" "$(printf '%s\n' "$_vc_out" | grep agent-autonomy)"
+  _vs_child '' --merge --battery "$_vsd/emptybat" "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  [ "$_vc_rc" = 1 ] || _vs_die "ROW-SHARDS(refusal): a --battery directory with no record exited $_vc_rc, not 1"
+  printf '%s\n' "$_vc_out" | grep -q 'holds no \*.rec' || _vs_die "ROW-SHARDS(refusal): the empty battery directory was not named" "$_vc_out"
+  printf '%s\n' '#!/bin/sh' 'echo "OK: stub joined"' 'exit 0' > "$_vsd/repo/conformance/agent-autonomy.sh"
+  # section 7 end to end: every registry row is timed exactly once across the shards' files and the merge's own join row
+  rm -f "$_vsd/t-all.tsv"
+  _vs_child '' --merge --timing-file "$_vsd/t-all.tsv" "$_vsd/shards/a.rec" "$_vsd/shards/b.rec"
+  [ "$(cut -f1 "$_vsd/t-all.tsv" | LC_ALL=C sort)" = "$(sed 's/^[0-9]*://' "$_vsd/live.reg" | LC_ALL=C sort)" ] || _vs_die "ROW-SHARDS(timing): the merged timing file does not hold each registry row exactly once"
+  rm -rf "$_vsd/shards" "$_vsd/bat" "$_vsd/bat2" "$_vsd/emptybat" "$_sr_wd"
 
   # -- CI-SHAPE: the merged job keeps BOTH steps and they name the SAME record --------------------------------------
   # Kit tree only (disclosed N/A elsewhere, as the --kitself rows). Three fixtures, then the live ci.yml.
@@ -775,6 +1498,41 @@ $_cs_req
         if: \${{ !cancelled() }}
         continue-on-error: false
 $_cs_gr" ok
+  # SWAS-393: a row-shard leg writes a PARTIAL record that only --merge grades, so it owes no grading step; the merge job is the
+  # recorder (it writes the full record), so it owes exactly the one --selftest --from-output of the SAME path.
+  _cs_mj='  cf-m:
+    needs:
+      - changes
+      - cf-x
+    steps:
+      - run: sh conformance/verify.sh --merge --output-file "$RUNNER_TEMP/v.out" "$RUNNER_TEMP"/r/*.rec
+      - name: grade
+        if: ${{ !cancelled() }}
+        run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/v.out"'
+  _cs_expect 'a row-shard leg is not a recorder when a merge job lists it' "    steps:
+      - run: sh conformance/verify.sh --require --shard \"\$S/2\" --output-file \"\$RUNNER_TEMP/s.rec\"
+$_cs_mj" ok
+  _cs_expect 'a row-shard job no merge job lists is a sole verdict' '    steps:
+      - run: sh conformance/verify.sh --require --shard "$S/2" --output-file "$RUNNER_TEMP/s.rec"' bad 'no --merge job lists it'
+  _cs_expect 'a row-shard job a merge job does not list' "    steps:
+      - run: sh conformance/verify.sh --require --shard \"\$S/2\" --output-file \"\$RUNNER_TEMP/s.rec\"
+$(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge job lists it'
+  _cs_expect 'a merge job listing the shard job inline' '    steps:
+      - run: sh conformance/verify.sh --require --shard "$S/2" --output-file "$RUNNER_TEMP/s.rec"
+  cf-m:
+    needs: [changes, cf-x]
+    steps:
+      - run: sh conformance/verify.sh --merge --output-file "$RUNNER_TEMP/v.out" "$RUNNER_TEMP"/r/*.rec
+      - name: grade
+        if: ${{ !cancelled() }}
+        run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/v.out"' ok
+  _cs_expect 'a merge that is never graded' '    steps:
+      - run: sh conformance/verify.sh --merge --output-file "$RUNNER_TEMP/v.out" "$RUNNER_TEMP"/r/*.rec' bad 'records'
+  _cs_expect 'a merge graded by the same record' '    steps:
+      - run: sh conformance/verify.sh --merge --output-file "$RUNNER_TEMP/v.out" "$RUNNER_TEMP"/r/*.rec
+      - name: grade
+        if: ${{ !cancelled() }}
+        run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/v.out"' ok
   if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then
     [ -f .github/workflows/ci.yml ] || _vs_die "CI-SHAPE: the kit tree has no .github/workflows/ci.yml to grade"
     _cs_live=$(_vs_ci_shape .github/workflows/ci.yml) || _vs_die "CI-SHAPE: the live ci.yml is mis-shaped" "$_cs_live"
@@ -790,6 +1548,8 @@ $_cs_gr" ok
     # refuse it in a second and every leg below would grade an empty string (review R2). The pre-flight
     # LANE stays proven: its dedicated leg further down runs a real --require WITHOUT this variable.
     out=$(VERIFY_SKIP_PREFLIGHT=1 sh "$_SELF" 2>&1) || true
+    # SWAS-376: the ONE place the agent-autonomy row's rendered verdict is printed (the hermetic lane classifies it as deferred or not).
+    _vs_probe_line "$out"
   fi
   printf '%s\n' "$out" | grep -q "control-checks" || { echo "verify --selftest: FAIL (no summary)"; exit 1; }
   printf '%s\n' "$out" | grep -q "UNVERIFIED is NOT a pass" || { echo "verify --selftest: FAIL (no honesty footer)"; exit 1; }
@@ -1258,6 +2018,75 @@ $_cs_gr" ok
   grep -q 'kit v' "$_ksd/k2.summary" || _ks_die "K7: the --summary-file notice lacks the kit version"
   [ ! -s "$_ksd/k1.summary" ] || _ks_die "K7: --summary-file was written although NO row was skipped (guard-only listing)"
 
+  # ROWTIMES (SWAS-372) — `--timing-file <file>` appends one `<name>\t<seconds>\t<verdict>` line per row; absent = no file,
+  # and the printed rows are byte-identical either way. Stub registry (the two rows plus one that sleeps 2 s), so it costs
+  # ~2 s. The sleeper is the non-vacuity row (design 2026-10-24-ci-shaping §7): it must record >= 2, so a constant-0
+  # timer reds here; the line count must equal the rendered rows. Nothing after this leg reads registry.sh but K6 (a grep).
+  printf '#!/bin/sh\nsleep 2\necho "OK: slept"\nexit 0\n' > "$_ksd/sleep.sh"
+  printf '%s\n' "check control kst-marked --kitselftest sh $_ksd/pass.sh" "check control kst-plain sh $_ksd/pass.sh" "check control kst-sleep sh $_ksd/sleep.sh" > "$_ksd/registry.sh"
+  _ks_rt="$_ksd/rowtimes.tsv"
+  printf 'stale-row\t99\tPASS\n' > "$_ks_rt"   # a pre-existing file is REPLACED, never appended to
+  _ks_rt_on=$(_ks_run "" --timing-file "$_ks_rt")
+  if grep -q '^stale-row' "$_ks_rt"; then _ks_die "ROWTIMES: a pre-existing --timing-file was appended to, not replaced" "file was:" "$(cat "$_ks_rt")"; fi
+  _ks_rt_rows=$(printf '%s\n' "$_ks_rt_on" | grep -Ec '^  \[control\] ')
+  [ "$_ks_rt_rows" = 3 ] || _ks_die "ROWTIMES: the stub run rendered $_ks_rt_rows rows, not 3 (leg vacuous)" "output was:" "$_ks_rt_on"
+  [ "$(grep -c '' "$_ks_rt" 2>/dev/null)" = "$_ks_rt_rows" ] || _ks_die "ROWTIMES: --timing-file did not get exactly one line per rendered row (want $_ks_rt_rows)" "file was:" "$(cat "$_ks_rt" 2>/dev/null)"
+  _ks_rt_sl=$(awk -F '\t' '$1 == "kst-sleep" { print $2 }' "$_ks_rt")
+  case "$_ks_rt_sl" in ''|*[!0-9]*) _ks_die "ROWTIMES: the kst-sleep line has no whole-seconds field" "file was:" "$(cat "$_ks_rt")" ;; esac
+  [ "$_ks_rt_sl" -ge 2 ] || _ks_die "ROWTIMES: a row that sleeps 2 s recorded $_ks_rt_sl s (a constant-0 timer?)" "file was:" "$(cat "$_ks_rt")"
+  grep -Eq "^kst-marked$(printf '\t')[0-9]+$(printf '\t')PASS\$" "$_ks_rt" || _ks_die "ROWTIMES: no 'kst-marked<TAB>secs<TAB>PASS' line" "file was:" "$(cat "$_ks_rt")"
+  grep -Eq "^kst-plain$(printf '\t')[0-9]+$(printf '\t')PASS\$" "$_ks_rt" || _ks_die "ROWTIMES: no 'kst-plain<TAB>secs<TAB>PASS' line" "file was:" "$(cat "$_ks_rt")"
+  rm -f "$_ks_rt"
+  _ks_rt_off=$(_ks_run "")
+  [ ! -e "$_ks_rt" ] || _ks_die "ROWTIMES: a file appeared although --timing-file was absent"
+  [ "$_ks_rt_on" = "$_ks_rt_off" ] || _ks_die "ROWTIMES: the printed output differs with --timing-file present vs absent (must be byte-identical)"
+
+  # VP (SWAS-376, C1(ii)) — the renderer-probe line the hermetic lane classifies. The shipped probe path is `out=$(... sh "$_SELF" ...) || true`
+  # followed by ONE print of the agent-autonomy row's rendered verdict; here the SAME capture shape (the seam run, `_ks_run`) feeds the
+  # SHIPPED function over stub registries, and the computed line is held in a variable, never printed (a printed stub line would make the
+  # lane see two probe lines and read `not run/unknown`). The match is anchored and whole-name: a longer `agent-autonomy-alias` row, or a
+  # [doc] row of the same name, must never be read as the battery.
+  printf '#!/bin/sh\necho "N/A: agent-autonomy deferred to CI job guard-battery (stub)"\nexit 0\n' > "$_ksd/vp-na.sh"
+  printf '#!/bin/sh\necho "FAIL: stub"\nexit 1\n' > "$_ksd/vp-fail.sh"
+  printf '#!/bin/sh\necho "cannot verify: stub has no credentials"\nexit 2\n' > "$_ksd/vp-unv.sh"
+  _vp_fn=_vs_probe_; _vp_fn="${_vp_fn}line"   # the name is assembled from parts so the VP-site scan below does not count its own text
+  command -v "$_vp_fn" >/dev/null 2>&1 || _ks_die "VP: the probe-line function ($_vp_fn) is not defined — the renderer probe prints no agent-autonomy line, so the hermetic lane cannot tell a deferred battery from a full run"
+  _vp_is() {  # <label> <want-verdict> <registry-row>... : the probe line over a stub registry run
+    _vpl=$1; _vpw=$2; shift 2
+    printf '%s\n' "$@" > "$_ksd/registry.sh"
+    _vpo=$(_ks_run "")
+    _vpg=$(_vs_probe_line "$_vpo")
+    [ "$_vpg" = "renderer probe: agent-autonomy $_vpw" ] || _ks_die "VP($_vpl): the probe line read '$_vpg', want 'renderer probe: agent-autonomy $_vpw'" "output was:" "$_vpo"
+  }
+  _vp_is N-A N-A "check control agent-autonomy sh $_ksd/vp-na.sh"
+  _vp_is PASS PASS "check control agent-autonomy sh $_ksd/pass.sh"
+  _vp_is FAIL FAIL "check control agent-autonomy sh $_ksd/vp-fail.sh"
+  _vp_is UNVERIFIED UNVERIFIED "check control agent-autonomy sh $_ksd/vp-unv.sh"
+  _vp_is absent absent "check control kst-plain sh $_ksd/pass.sh"
+  _vp_is doc-row absent "check doc agent-autonomy sh $_ksd/pass.sh"
+  _vp_is alias-first PASS "check control agent-autonomy-alias sh $_ksd/vp-na.sh" "check control agent-autonomy sh $_ksd/pass.sh"
+  _vp_is alias-only absent "check control agent-autonomy-alias sh $_ksd/vp-na.sh"
+  # fix round: two anchored rows are not one battery (the lane's one-line rule), and a MISCONFIGURED row is a recognised verdict, not `absent`
+  _vp_is two-rows absent "check control agent-autonomy sh $_ksd/vp-na.sh" "check control agent-autonomy sh $_ksd/pass.sh"
+  _vp_is MISCONFIGURED MISCONFIGURED "check control agent-autonomy sh -c 'echo \"usage: vpmc.sh [x]\" >&2; exit 2' conformance/vpmc.sh"
+  # VP-site: the shipped file prints the line ONCE — one bare call, directly after the probe's `out=$(... "$_SELF" ...) || true` line, on `$out`.
+  # Every other use (these legs) is inside a command substitution.
+  _vp_want="$_vp_fn \"\$out\""
+  _vp_sites=$(awk -v fn="$_vp_fn" '
+    /^[ \t]*#/ || /^[ \t]*$/ { next }
+    index($0, fn "()") { prev = $0; next }
+    index($0, "$(" fn) { prev = $0; next }
+    index($0, fn) { n++; s = $0; p = prev }
+    { prev = $0 }
+    END { print n + 0; sub(/^ +/, "", s); print s; sub(/^ +/, "", p); print p }' "$_SELF")
+  _vp_n=$(printf '%s\n' "$_vp_sites" | sed -n 1p); _vp_s=$(printf '%s\n' "$_vp_sites" | sed -n 2p); _vp_p=$(printf '%s\n' "$_vp_sites" | sed -n 3p)
+  [ "$_vp_n" = 1 ] || _ks_die "VP-site: the file prints the renderer probe line $_vp_n time(s), want exactly 1 (a stub leg that prints its line, or a dropped print, breaks the lane's one-line rule)"
+  [ "$_vp_s" = "$_vp_want" ] || _ks_die "VP-site: the one print is '$_vp_s', want '$_vp_want' (the probe's own output)"
+  case "$_vp_p" in
+    'out=$(VERIFY_SKIP_PREFLIGHT=1 '*'sh "$_SELF" 2>&1) || true') ;;
+    *) _ks_die "VP-site: the print does not directly follow the renderer probe command (previous line: '$_vp_p')" ;;
+  esac
+
   # K6 — LAST (it reds until the marker rows are applied, plan task 3): the REAL registry carries at least one
   # --kitselftest row, and agent-autonomy's is one of them. Read off this file's own `^check` rows, the same
   # single source the census reads; the fixtures above are printf strings, so they cannot satisfy these greps.
@@ -1323,6 +2152,8 @@ $_cs_gr" ok
   echo "                       + KSOC K1-K4/K6/K7: --kitselftest rows skip (N-A + notice + --summary-file) only on a"
   echo "                         readable non-empty non-control-plane --changed listing; the guard, a renamed-away"
   echo "                         control-plane path, no/empty/unreadable listing and a failing classifier all run full"
+  echo "                       + VP: the renderer probe prints ONE 'renderer probe: agent-autonomy <verdict>' line, read from the"
+  echo "                         whole-name rendered row (a longer or [doc] row never counts), kept in variables everywhere else"
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
   echo "                         commit, and stays silent on a tree that has history — both probes"
   echo "                         ANCHORED to the pre-flight's OWN sentence, so a failing child's prose"
@@ -1399,6 +2230,12 @@ if [ -n "$KS_CHANGED" ] && [ -f "$KS_CHANGED" ] && [ -r "$KS_CHANGED" ] && [ -s 
   fi
 fi
 
+# SWAS-393: a --merge validates its records and grades the battery row BEFORE it prints anything (a refused merge prints no rows).
+if [ "$MERGE" = 1 ]; then
+  _mg_rc=0; _mg_main || _mg_rc=$?
+  if [ "$_mg_rc" != 0 ]; then exit "$_mg_rc"; fi
+fi
+
 echo "Conformance verification (honest aggregate)"
 echo "-------------------------------------------"
 # branch-protection's OFFLINE leg only (B4) — declaration-integrity, no gh, no network; see the
@@ -1412,6 +2249,9 @@ echo "-------------------------------------------"
 if [ -n "${VERIFY_SELFTEST_REGISTRY:-}" ]; then
   # shellcheck source=/dev/null  # a test-only seam resolved at runtime
   . "$VERIFY_SELFTEST_REGISTRY"
+elif [ "$MERGE" = 1 ]; then
+  # SWAS-393: the rows of the shard records, rebuilt in registry order (the battery row graded by the join), in place of the registry.
+  cat "$MERGE_FINAL"; rm -rf "$(dirname "$MERGE_FINAL")"
 else
 check control branch-protection-declared    --adopter sh conformance/branch-protection.sh --declared-only
 check control branch-protection-selftest    sh conformance/branch-protection.sh --selftest
@@ -2027,6 +2867,11 @@ check doc     collected-not-gated sh conformance/doc-markers.sh collected-not-ga
 check doc     roster-authority sh conformance/roster-authority-ready.sh
 fi
 
+# SWAS-393: a row shard names the rows it owns and its counters, for --merge (a plain run prints neither line).
+if [ "$SHARD_N" -gt 0 ]; then
+  printf 'Shard-rows: %s/%s%s\n' "$SHARD_I" "$SHARD_N" "$_rs_rows"
+  printf 'Shard-counts: controls=%d docs=%d unverified=%d nas=%d failed=%d misconfigured=%d ctrl_fail=%d\n' "$controls" "$docs" "$unverified" "$nas" "$failed" "$misconfigured" "$ctrl_fail"
+fi
 echo ""
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE — ONE notice line when any --kitselftest row was skipped. Never says the
 # skipped checks "passed" (design F1: the skip INHERITS the base's verdict, it does not check it). Nothing

@@ -102,7 +102,8 @@ if [ -f "$pv" ]; then
   set +e
   out=$( cd "$repo" && PATH="$shim_dir:$PATH" sh "$pv" record --no-push --approved-sha "$sha" \
            --approved-by Fixture --gate design --rung Design --class control-plane \
-           --scope branch/b2fix-shim-probe --token "GO" 2>&1 ); pvrc=$?
+           --scope branch/b2fix-shim-probe --token "GO" \
+           --basis docs/architecture/x-design.md 2>&1 ); pvrc=$?
   set -e
   if [ "$pvrc" = 0 ] && ( cd "$repo" && git notes --ref=promotions show "$sha" >/dev/null 2>&1 ); then
     echo "PASS: the ceremonial front door still records under install-shims (no guard deadlock)"

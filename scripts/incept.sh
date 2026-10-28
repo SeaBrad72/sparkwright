@@ -412,8 +412,9 @@ install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform
 # guard and conformance, so proceeding would only defer a cryptic failure.
 _pf_nested=""
 [ "${ALLOW_NESTED:-0}" -eq 1 ] && _pf_nested="--allow-nested"
+# SWAS-355: --boundary-advisory, so a boundary FAIL (an UNDECLARED opt-out) never aborts incept as "missing prerequisites": only the rc of the tools check is read here.
 # shellcheck disable=SC2086  # $_pf_nested is a deliberate single optional flag, not a word list
-if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh $_pf_nested >/dev/null 2>&1; then
+if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh --boundary-advisory $_pf_nested >/dev/null 2>&1; then
   echo "incept: missing prerequisites. Run 'sh scripts/preflight.sh' for the list + install hints. Aborting." >&2
   exit 1
 fi
@@ -594,7 +595,7 @@ if [ -f scripts/preflight.sh ]; then
   _pf_waiver=""
   [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ] && _pf_waiver="--allow-runtime-mismatch"
   # shellcheck disable=SC2086  # both are deliberate single optional flags, not word lists
-  if ! _pf_out=$(sh scripts/preflight.sh --stack "$STACK" $_pf_nested $_pf_waiver 2>&1); then
+  if ! _pf_out=$(sh scripts/preflight.sh --boundary-advisory --stack "$STACK" $_pf_nested $_pf_waiver 2>&1); then   # advisory: the floor message is never caused by the boundary
     echo "incept: the '$STACK' toolchain does not meet its declared floor." >&2
     echo "" >&2
     printf '%s\n' "$_pf_out" | sed 's/^/  /' >&2
@@ -1850,6 +1851,12 @@ fi
 if [ -n "$RKO_NOTEMPLATE" ]; then
   echo "warning: LEFT ALONE for a different reason —${RKO_NOTEMPLATE}: this export is MISSING the template incept" >&2
   echo "         stamps them from. That is a gap in the export, not a judgement about your files. Re-export." >&2
+fi
+
+# SWAS-355: the agent-boundary lines, once, as advice (the person sees them before the first plain preflight). Advisory: a boundary FAIL never aborts incept.
+if [ -f scripts/preflight.sh ]; then
+  echo "agent boundary (advice; run 'sh scripts/preflight.sh' any time — an undeclared opt-out fails it):"
+  sh scripts/preflight.sh --boundary-only --boundary-advisory 2>&1 || true
 fi
 
 case "$CI" in

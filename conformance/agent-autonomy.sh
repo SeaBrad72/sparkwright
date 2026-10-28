@@ -4,6 +4,7 @@
 # false-positive regressions (a commit message or doc that merely mentions a dangerous
 # command must NOT be denied). Requires jq (so the guard's normal path is exercised).
 set -eu
+AA_T0=$(date +%s)   # SWAS-372 (design 2026-10-24-ci-shaping §7): the OK line reports cells=<n> wall=<s>
 
 GUARD=".claude/hooks/guard.sh"
 command -v jq >/dev/null 2>&1 || { echo "agent-autonomy: jq required to run this check; install jq" >&2; exit 1; }
@@ -86,6 +87,8 @@ aa_usage() {
   echo "       --delta, --cells and --dims must be the FIRST argument; --cells is a LOCAL fix-round filter (never graded, refused in CI)" >&2
   echo "       under LC_ALL=C a --cells glob containing a non-ASCII byte is refused" >&2
   echo "       the I4 and Arm A blocks are selected by the bare label glob: --cells 'I4*', --cells 'Arm A*'" >&2
+  echo "       --list-cells prints the cell labels and runs none; --shard <j>/<M> --output-file <path> runs the cells with index mod M = j-1 (a GRADED mode);" >&2
+  echo "       --join <record>... grades the M shard records against this tree (all four are first-argument only)" >&2
 }
 # GUARD-CORPUS-RUNTIME — the MODE GATE. `run` (the default, every graded pass) executes every cell.
 # `oracle` (--selftest only) skips the ~2.6k guard spawns whose verdicts --selftest DISCARDS; the
@@ -101,6 +104,11 @@ AA_CELLS_RUN=0
 # AA_SCOPED_EXTRA counts UNCOUNTED legs (the I4 block, the fpra_lock call) that ran in a SCOPED run. It is
 # bumped only by aa_extra_ran, never by aa_cell_skip, and it never feeds the floor, AA_CELLS_RUN or C3.
 AA_SCOPED_EXTRA=0
+# SWAS-374 (S2, BATTERY-SHARDS): the shard state, set UNCONDITIONALLY here so an environment value is ignored (as AA_MODE is).
+# list and shard modes are reached by argv only, below. A cell is "<index><TAB><label>": the index counts distinct consecutive
+# labels passed to aa_cell_skip in this file's own order, so --list-cells and --shard agree on it (the join checks that they do).
+AA_SHARD_J=0; AA_SHARD_M=0; AA_SHARD_OUT=''
+AA_SH_N=0; AA_SH_LAST=''; AA_SH_RC=0; AA_SH_OPEN=''; AA_SH_OPENLBL=''; AA_SH_SEL=0; AA_SH_ANYFAIL=0; AA_SH_NEST=0; AA_SH_FOLLOW=''
 case "${1:-}" in
   --delta)
     AA_PRISTINE=${2:-}
@@ -121,6 +129,19 @@ case "${1:-}" in
     # F3: no control byte (a newline could forge an OK line in the report banner)
     case "$AA_CELLS_GLOB" in *[![:print:]]*) echo "agent-autonomy: --cells glob contains a non-printable byte" >&2; aa_usage; exit 2 ;; esac ;;
   --dims) AA_MODE=dims ;;                  # dispatched right after aa_dims is defined; prints one token, runs no cells, never defers
+  --list-cells)                            # SWAS-374: prints "<index><TAB><label>" per cell on stdout, runs no cell
+    AA_MODE=list
+    [ "$#" = 1 ] || { aa_usage; exit 2; } ;;
+  --shard)                                 # SWAS-374: a GRADED mode (allowed in CI, unlike --cells): the cells with index mod M = j-1
+    AA_MODE=shard; AA_SHARD_OUT=${4:-}
+    [ "$#" = 4 ] && [ "${3:-}" = --output-file ] && [ -n "$AA_SHARD_OUT" ] || { aa_usage; exit 2; }
+    case "${2:-}" in [1-9]*/[1-9]*) : ;; *) aa_usage; exit 2 ;; esac
+    case "${2%/*}${2#*/}" in *[!0-9]*) aa_usage; exit 2 ;; esac
+    AA_SHARD_J=${2%/*}; AA_SHARD_M=${2#*/}
+    [ "$AA_SHARD_J" -le "$AA_SHARD_M" ] || { aa_usage; exit 2; } ;;
+  --join)                                  # SWAS-374: dispatched after aa_join_main is defined; runs no cell
+    AA_MODE="join"
+    [ "$#" -ge 2 ] || { aa_usage; exit 2; } ;;
   '') : ;;
   --*) aa_usage; exit 2 ;;                 # an unknown option must not run a silently different check
 esac
@@ -148,6 +169,13 @@ if [ "$AA_MODE" != dims ]; then
     echo "agent-autonomy: --dims must be the FIRST argument (it was not)" >&2; aa_usage; exit 2
   done
 fi
+# SWAS-374: --list-cells, --shard and --join are FIRST-ONLY too (a later one would run the whole battery as the bare pass).
+case "$AA_MODE" in
+  list|shard|join) : ;;
+  *) for _aa_arg in "$@"; do
+       case "$_aa_arg" in --list-cells|--shard|--join) echo "agent-autonomy: $_aa_arg must be the FIRST argument (it was not)" >&2; aa_usage; exit 2 ;; esac
+     done ;;
+esac
 # aa-argv-end
 
 # === CI-BARE-BATTERY-ONCE — the DEFER mode of the BARE path (design 2026-09-30-ci-bare-battery-once §3a) =========
@@ -195,7 +223,7 @@ if [ "$AA_MODE" = dims ]; then
   exit 0
 fi
 # aa_input_list <tree> — the battery's input files, relative, one per line, LC_ALL=C sorted: every non-directory
-# under .claude/, every .kit/*.conf but the four named exclusions, every adapters/*/adapter.json, and the scripts
+# under .claude/, every .kit/*.conf but the five named exclusions, every adapters/*/adapter.json, and the scripts
 # Arm A executes. Broad on purpose: a file the battery starts reading later is already covered.
 # profiles/python/BRANCH-PROTECTION.md is read by Arm A but deliberately NOT listed (pruned in ts exports, so it
 # could mismatch across trees); its output is discarded and the lock only checks the worktree is unchanged, so
@@ -216,6 +244,7 @@ aa_input_list() {
         .kit/ratification-seats.conf) continue ;;  # export-ignored (not in the exported or rendered tree) and not read on the battery path
         .kit/tracker.conf) continue ;;             # export-ignored (not in the exported or rendered tree) and not read on the battery path
         .kit/model-map.conf) continue ;;           # export-ignored (SWAS-303a) (not in the exported or rendered tree) and not read on the battery path: the kit's own mapping
+        .kit/boundary-optout.conf) continue ;;     # export-ignored (SWAS-352: the kit's own declaration never ships) and not read on the battery path
       esac
       if [ -e "$_il_f" ] || [ -L "$_il_f" ]; then printf '%s\n' "$_il_f"; fi
     done
@@ -283,6 +312,7 @@ aa_cell_skip() {
   case "$AA_MODE" in
     oracle) return 0 ;;
     scoped) case "$1" in $AA_CELLS_GLOB) return 1 ;; *) return 0 ;; esac ;;
+    list|shard) aa_shard_cell "$1" && return 0; return 1 ;;   # SWAS-374: --list-cells / --shard (graded); the bare path's default arm below is unchanged
     *) return 1 ;;
   esac
 }
@@ -315,6 +345,235 @@ aa_completeness() {
   [ "$AA_MODE" = oracle ] && echo "  cause: AA_MODE=oracle reached the graded path — argv was clobbered before the bottom dispatch (see the NOT-set-dash-dash comment at the GPAB_OUT fixture); a top-level positional-parameter reset does this"
   return 1
 }
+
+# === SWAS-374 (S2, BATTERY-SHARDS) — --list-cells, --shard and --join (design 2026-10-24-ci-shaping §4.1, control C5) ==========
+# The guard battery runs as M shards in parallel and a join. A CELL is "<index><TAB><label>": the index counts the DISTINCT
+# CONSECUTIVE labels passed to aa_cell_skip in this file's own order (a helper that gates twice on one label, and the three inline
+# C2 gates, are one cell), so --list-cells and every --shard agree on it. --shard j/M runs the cells whose index mod M = j-1 and
+# writes a RECORD; --join grades M records against the tree it runs in. Unlike the local --cells filter, --shard is GRADED: it is
+# allowed in CI, its record binds the tree id, the script's cksum and the dims, and the join refuses unless the records partition
+# --list-cells exactly (disjoint, union equal, M coordinates 1..M once each) and the cells they ran reach AA_CELL_FLOOR.
+# Record (TAB-separated; a label never holds a tab or a control byte, aa_shard_cell turns each into "?"):
+#   aa-shard 1 / tree <id> / cksum <crc size> / dims <token> / shard j/M / cell <index> <label> <PASS|FAIL> ... / noh <n> <need> <seen> / end rc=<rc> cells=<n>
+# A cell's verdict is attributed by the failures between its gate and the next one (a limit stated here, not hidden: a failure in
+# an ungated leg lands on the cell before it). The bare, --selftest, --cells, --delta and --dims paths do not read any of this.
+aa_shard_close() {  # close the open cell: its verdict is whether `fail` moved since it opened
+  [ -n "$AA_SH_OPEN" ] || return 0
+  _sc_v=PASS
+  if [ "$fail" -ne 0 ]; then _sc_v=FAIL; AA_SH_ANYFAIL=1; fail=0; fi
+  printf 'cell\t%s\t%s\t%s\n' "$AA_SH_OPEN" "$AA_SH_OPENLBL" "$_sc_v" >> "$AA_SHARD_OUT"
+  AA_SH_OPEN=''
+}
+aa_shard_nest() { AA_SH_NEST=1; }    # the first line INSIDE an outer gate's block that holds inner gates (six sites; see the nested-gate note)
+aa_shard_unnest() { AA_SH_NEST=0; }  # the last line of that block
+aa_shard_cell() {  # <label> -> rc 0 = SKIP the cell, rc 1 = RUN it (list mode skips every cell and prints it on fd 3)
+  # NESTED gates: an inner gate inside an open outer block is neither indexed nor listed; it inherits the outer cell's selection (the
+  # block is entered only when the outer cell was selected, so that is RUN). Counting it would shift every later index in a shard
+  # that runs the block and not in --list-cells, and the join's union check would (rightly) refuse the whole battery.
+  if [ "$AA_SH_NEST" = 1 ]; then return "$AA_SH_RC"; fi
+  if [ "$AA_SH_N" -gt 0 ] && [ "$1" = "$AA_SH_LAST" ]; then return "$AA_SH_RC"; fi
+  aa_shard_close
+  # FOLLOWER: a cell that reads state its producer (the cell right before it) left behind is selected BY ITS PRODUCER'S INDEX, so the
+  # two always run in one shard. It is still its own cell (its own index and label in --list-cells); --list-cells names the producer on its line and the shard record repeats it, and --join refuses a follower in a shard without its producer or its marker.
+  # The marker must sit IMMEDIATELY before the follower's OWN gate, never before a nested or repeated gate; the join's i-1 check (the producer must be the cell right before the follower in --list-cells) refuses a misplaced marker.
+  _sh_f=$AA_SH_FOLLOW; AA_SH_FOLLOW=''
+  _sh_i=$AA_SH_N; AA_SH_N=$((AA_SH_N + 1)); AA_SH_LAST=$1
+  _sh_k=$_sh_i; [ -z "$_sh_f" ] || _sh_k=$((_sh_i - 1))
+  case "$1" in *[![:print:]]*) _sh_l=$(printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?') ;; *) _sh_l=$1 ;; esac
+  case "$_sh_f" in *[![:print:]]*) _sh_f=$(printf '%s' "$_sh_f" | LC_ALL=C tr -c '[:print:]' '?') ;; esac
+  AA_SH_RC=0
+  if [ "$AA_MODE" = list ]; then
+    if [ -n "$_sh_f" ]; then printf '%s\t%s\tfollows\t%s\n' "$_sh_i" "$_sh_l" "$_sh_f" >&3; else printf '%s\t%s\n' "$_sh_i" "$_sh_l" >&3; fi
+    return 0
+  fi
+  [ $((_sh_k % AA_SHARD_M)) -eq $((AA_SHARD_J - 1)) ] || return 0
+  # a failure before this cell was not this cell's: carry it to the shard's rc, then judge this cell alone
+  if [ "$fail" -ne 0 ]; then AA_SH_ANYFAIL=1; fail=0; fi
+  AA_SH_RC=1; AA_SH_OPEN=$_sh_i; AA_SH_OPENLBL=$_sh_l; AA_SH_SEL=$((AA_SH_SEL + 1))
+  if [ -n "$_sh_f" ]; then printf 'follow\t%s\t%s\t%s\n' "$_sh_i" "$_sh_l" "$_sh_f" >> "$AA_SHARD_OUT"; fi
+  return 1
+}
+# <producer label>: the line BEFORE a follower's gate; the producer is the gate just before it. A no-op outside list and shard mode, so
+# a bare, oracle or scoped pass never leaves a stale marker behind.
+aa_shard_follow() { case "$AA_MODE" in list|shard) AA_SH_FOLLOW=$1 ;; esac; }
+aa_shard_header() {  # <out> <tree> <cksum> <dims> <j/M> — truncates <out> and writes the header
+  { printf 'aa-shard\t1\n'; printf 'tree\t%s\n' "$2"; printf 'cksum\t%s\n' "$3"; printf 'dims\t%s\n' "$4"; printf 'shard\t%s\n' "$5"; } > "$1"
+}
+aa_shard_begin() {  # the real header: this tree's id (git write-tree), this script's cksum, this tree's dims
+  _sb_tree=$(git write-tree 2>/dev/null) || _sb_tree=''
+  [ -n "$_sb_tree" ] || { echo "agent-autonomy --shard: cannot take this tree's id (git write-tree failed); a record with no tree id could be joined to any tree" >&2; return 1; }
+  _sb_ck=$(cksum < "$0") || _sb_ck=''
+  [ -n "$_sb_ck" ] || { echo "agent-autonomy --shard: cannot take this script's cksum" >&2; return 1; }
+  aa_shard_header "$AA_SHARD_OUT" "$_sb_tree" "$_sb_ck" "$(aa_dims "$PWD")" "$AA_SHARD_J/$AA_SHARD_M" \
+    || { echo "agent-autonomy --shard: cannot write $AA_SHARD_OUT" >&2; return 1; }
+}
+aa_shard_finish() {  # the bottom of a shard: the noh and end lines; an empty shard fails
+  aa_shard_close
+  _sf_rc=0
+  if [ "$AA_SH_SEL" -eq 0 ]; then echo "FAIL: agent-autonomy shard $AA_SHARD_J/$AA_SHARD_M selected no cell (an empty shard fails)"; _sf_rc=1; fi
+  if [ "$fail" -ne 0 ] || [ "$AA_SH_ANYFAIL" -ne 0 ]; then echo "FAIL: agent-autonomy shard $AA_SHARD_J/$AA_SHARD_M failed"; _sf_rc=1; fi
+  { printf 'noh\t%s\t%s\t%s\n' "${AA_NOH_N:-0}" "${AA_NOH_NEED:-}" "${AA_NOH_SEEN:-|}"; printf 'end\trc=%s\tcells=%s\tgates=%s\twall=%s\n' "$_sf_rc" "$AA_CELLS_RUN" "$AA_SH_N" "$(( $(date +%s) - AA_T0 ))"; } >> "$AA_SHARD_OUT"
+  [ "$_sf_rc" -ne 0 ] || echo "OK: agent-autonomy shard $AA_SHARD_J/$AA_SHARD_M ran $AA_CELLS_RUN cells ($AA_SH_SEL gates); record $AA_SHARD_OUT"
+  return "$_sf_rc"
+}
+# aa_join_rec <record> <meta-out> <cells-out> <fails-out> — validate ONE record's structure; rc 0 writes the meta (k<TAB>v), the
+# cell keys (index<TAB>label) and the keys of the cells recorded FAIL; rc 1 prints why. Nothing after the end line, one noh line.
+aa_join_rec() {
+  awk -F'\t' -v meta="$2" -v cells="$3" -v fails="$4" -v follows="$5" '
+    function bad(m) { print "malformed record (" m ")"; err = 1; exit 1 }
+    st == 0 { if ($0 != "aa-shard\t1") bad("line 1 is not the aa-shard header"); st = 1; next }
+    st == 1 { if ($1 != "tree" || NF != 2 || $2 == "") bad("no tree line"); tree = $2; st = 2; next }
+    st == 2 { if ($1 != "cksum" || NF != 2 || $2 == "") bad("no cksum line"); ck = $2; st = 3; next }
+    st == 3 { if ($1 != "dims" || NF != 2 || $2 == "") bad("no dims line"); dims = $2; st = 4; next }
+    st == 4 { if ($1 != "shard" || NF != 2 || $2 !~ /^[0-9]+\/[0-9]+$/) bad("no shard j/M line"); shard = $2; st = 5; next }
+    st == 5 {
+      if ($1 == "cell") {
+        if (NF != 4 || $2 !~ /^[0-9]+$/ || ($4 != "PASS" && $4 != "FAIL")) bad("a cell line is not: cell, index, label, PASS or FAIL")
+        print $2 "\t" $3 > cells; n++
+        if ($4 == "FAIL") print $2 "\t" $3 > fails
+        next
+      }
+      if ($1 == "follow" && NF == 4 && $2 ~ /^[0-9]+$/) { print $2 "\t" $3 "\t" $4 > follows; next }
+      if ($1 == "noh" && NF == 4 && $2 ~ /^[0-9]+$/) { nohn = $2; need = $3; seen = $4; st = 6; next }
+      bad("expected a cell or the noh line")
+    }
+    st == 6 { if ($1 == "end" && NF == 5 && $2 ~ /^rc=[0-9]+$/ && $3 ~ /^cells=[0-9]+$/ && $4 ~ /^gates=[0-9]+$/ && $5 ~ /^wall=[0-9]+$/) { rc = substr($2, 4); cl = substr($3, 7); gt = substr($4, 7); wl = substr($5, 6); st = 7; next } bad("expected the end line") }
+    st == 7 { bad("a line after the end line") }
+    END {
+      if (err) exit 1
+      if (st != 7) { print "malformed record (truncated: no end line)"; exit 1 }
+      print "tree\t" tree > meta; print "cksum\t" ck > meta; print "dims\t" dims > meta; print "shard\t" shard > meta
+      print "ncell\t" n + 0 > meta; print "rc\t" rc > meta; print "cells\t" cl > meta; print "gates\t" gt > meta; print "wall\t" wl > meta
+      print "nohn\t" nohn > meta; print "need\t" need > meta; print "seen\t" seen > meta
+    }' "$1"
+}
+aa_join_get() { awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1"; }  # <meta-file> <key>
+# aa_join_follow <dir> <records> — the FOLLOWER check. --list-cells names each follower's producer (the cell right before it); a follower
+# that ran in a shard must have its producer's cell in that SAME record and its own follow line (the marker was seen). Verified here,
+# never trusted: a follower split from its producer reads state that was never set, and its verdict means nothing.
+aa_join_follow() {
+  _jf_d=$1; _jf_n=$2
+  [ -s "$_jf_d/lf" ] || return 0
+  _jf_t=$(printf '\t')
+  while IFS="$_jf_t" read -r _jf_i _jf_l _jf_p; do
+    _jf_pk="$((_jf_i - 1))$_jf_t$_jf_p"; _jf_k="$_jf_i$_jf_t$_jf_l"
+    grep -qxF "$_jf_pk" "$_jf_d/listed" || { echo "agent-autonomy --join: refused: the follower [$_jf_l] names a producer [$_jf_p] that is not the cell right before it (follow)"; return 1; }
+    _jf_r=1
+    while [ "$_jf_r" -le "$_jf_n" ]; do
+      if grep -qxF "$_jf_k" "$_jf_d/c$_jf_r"; then
+        grep -qxF "$_jf_pk" "$_jf_d/c$_jf_r" || { echo "agent-autonomy --join: refused: follower split from its producer: [$_jf_l] ran in a shard without [$_jf_p] (follow)"; return 1; }
+        grep -qxF "$_jf_k$_jf_t$_jf_p" "$_jf_d/o$_jf_r" || { echo "agent-autonomy --join: refused: the follower [$_jf_l] ran without its follow marker in its record (follow)"; return 1; }
+      fi
+      _jf_r=$((_jf_r + 1))
+    done
+  done < "$_jf_d/lf"
+  return 0
+}
+# aa_join_run <dir> <tree> <cksum> <dims> <floor> <list-file> <record>... — the join proper. rc 0 = the bare run's OK; rc 1 = refused or red.
+aa_join_run() {
+  _jr_d=$1; _jr_tree=$2; _jr_ck=$3; _jr_dims=$4; _jr_floor=$5; _jr_list=$6; shift 6
+  _jr_n=0; _jr_m=''; _jr_js=' '; _jr_sum=0; _jr_wsum=0; _jr_nohn=0; _jr_need=''; _jr_seen='|'; _jr_red=0
+  : > "$_jr_d/keys"; : > "$_jr_d/gates"
+  for _jr_f in "$@"; do
+    _jr_n=$((_jr_n + 1)); _jr_p="$_jr_d/m$_jr_n"
+    [ -f "$_jr_f" ] && [ -r "$_jr_f" ] || { echo "agent-autonomy --join: refused: $_jr_f is not a readable file"; return 1; }
+    : > "$_jr_d/c$_jr_n"; : > "$_jr_d/f$_jr_n"; : > "$_jr_d/o$_jr_n"
+    _jr_why=$(aa_join_rec "$_jr_f" "$_jr_p" "$_jr_d/c$_jr_n" "$_jr_d/f$_jr_n" "$_jr_d/o$_jr_n") || { echo "agent-autonomy --join: refused: $_jr_f: $_jr_why"; return 1; }
+    _jr_v=$(aa_join_get "$_jr_p" tree)
+    [ "$_jr_v" = "$_jr_tree" ] || { echo "agent-autonomy --join: refused: $_jr_f was graded in tree $_jr_v, not this tree $_jr_tree (tree id mismatch)"; return 1; }
+    _jr_v=$(aa_join_get "$_jr_p" cksum)
+    [ "$_jr_v" = "$_jr_ck" ] || { echo "agent-autonomy --join: refused: $_jr_f was graded by a different script (cksum [$_jr_v], this one [$_jr_ck])"; return 1; }
+    _jr_v=$(aa_join_get "$_jr_p" dims)
+    [ "$_jr_v" = "$_jr_dims" ] || { echo "agent-autonomy --join: refused: $_jr_f was graded with dims $_jr_v, this tree has $_jr_dims (dims mismatch)"; return 1; }
+    _jr_v=$(aa_join_get "$_jr_p" shard); _jr_sj=${_jr_v%/*}; _jr_sm=${_jr_v#*/}
+    { [ "$_jr_sj" -ge 1 ] && [ "$_jr_sj" -le "$_jr_sm" ]; } || { echo "agent-autonomy --join: refused: $_jr_f carries the coordinate $_jr_v, outside 1/M..M/M (coordinates)"; return 1; }
+    if [ -z "$_jr_m" ]; then _jr_m=$_jr_sm
+    elif [ "$_jr_m" != "$_jr_sm" ]; then echo "agent-autonomy --join: refused: the records disagree on M ($_jr_m and $_jr_sm; coordinates)"; return 1; fi
+    case "$_jr_js" in *" $_jr_sj "*) echo "agent-autonomy --join: refused: the coordinate $_jr_sj/$_jr_m appears twice (coordinates)"; return 1 ;; esac
+    _jr_js="$_jr_js$_jr_sj "
+    [ "$(aa_join_get "$_jr_p" ncell)" -ge 1 ] || { echo "agent-autonomy --join: refused: the shard $_jr_sj/$_jr_m in $_jr_f ran no cell (an empty shard fails)"; return 1; }
+    _jr_v=$(aa_join_get "$_jr_p" rc)
+    [ "$_jr_v" = 0 ] || { echo "FAIL: shard $_jr_sj/$_jr_m ended rc=$_jr_v"; _jr_red=1; }
+    if [ -s "$_jr_d/f$_jr_n" ]; then
+      tr '\t' ' ' < "$_jr_d/f$_jr_n" > "$_jr_d/fp$_jr_n"
+      while IFS= read -r _jr_l; do echo "FAIL: shard $_jr_sj/$_jr_m cell failed: $_jr_l"; done < "$_jr_d/fp$_jr_n"
+      _jr_red=1
+    fi
+    printf '%s %s\n' "$_jr_sj/$_jr_m" "$(aa_join_get "$_jr_p" gates)" >> "$_jr_d/gates"
+    _jr_sum=$((_jr_sum + $(aa_join_get "$_jr_p" cells))); _jr_wsum=$((_jr_wsum + $(aa_join_get "$_jr_p" wall)))
+    _jr_nohn=$((_jr_nohn + $(aa_join_get "$_jr_p" nohn)))
+    _jr_v=$(aa_join_get "$_jr_p" need)
+    if [ "$_jr_n" -eq 1 ]; then _jr_need=$_jr_v
+    elif [ "$_jr_v" != "$_jr_need" ]; then echo "agent-autonomy --join: refused: $_jr_f names a different NOH need list than the first record (noh)"; return 1; fi
+    _jr_seen="$_jr_seen$(aa_join_get "$_jr_p" seen)"
+    cat "$_jr_d/c$_jr_n" >> "$_jr_d/keys"
+  done
+  # the coordinates are exactly 1/M .. M/M, each once: a record count short of M names what is missing
+  if [ "$_jr_n" -ne "$_jr_m" ]; then
+    _jr_miss=''; _jr_k=1
+    while [ "$_jr_k" -le "$_jr_m" ]; do case "$_jr_js" in *" $_jr_k "*) : ;; *) _jr_miss="$_jr_miss $_jr_k/$_jr_m" ;; esac; _jr_k=$((_jr_k + 1)); done
+    echo "agent-autonomy --join: refused: M is $_jr_m but $_jr_n record(s) were given (missing:${_jr_miss:- none}; coordinates)"; return 1
+  fi
+  # disjoint, and the union is --list-cells
+  LC_ALL=C sort "$_jr_d/keys" | LC_ALL=C uniq -d > "$_jr_d/dup"
+  if [ -s "$_jr_d/dup" ]; then echo "agent-autonomy --join: refused: the shards overlap (a cell ran in two shards: $(head -n 1 "$_jr_d/dup" | tr '\t' ' '))"; return 1; fi
+  LC_ALL=C sort -u "$_jr_d/keys" > "$_jr_d/union"; awk -F'\t' '{ print $1 "\t" $2 }' "$_jr_list" | LC_ALL=C sort -u > "$_jr_d/listed"
+  awk -F'\t' 'NF == 4 && $3 == "follows" { print $1 "\t" $2 "\t" $4 }' "$_jr_list" > "$_jr_d/lf"
+  [ -s "$_jr_d/listed" ] || { echo "agent-autonomy --join: refused: --list-cells printed no cell"; return 1; }
+  if ! cmp -s "$_jr_d/union" "$_jr_d/listed"; then
+    echo "agent-autonomy --join: refused: the union of the shards' cells is not --list-cells (first difference: $(LC_ALL=C comm -3 "$_jr_d/union" "$_jr_d/listed" | head -n 1 | tr '\t' ' '))"; return 1
+  fi
+  # every shard walked the SAME gate sequence as --list-cells: a shard that counted a nested gate (or skipped one) ran a different
+  # sequence, and its inner cells were lost or run twice while the cell keys above still partitioned. Never relaxed.
+  _jr_ng=$(awk 'END { print NR }' "$_jr_d/listed")
+  _jr_bad=$(awk -v n="$_jr_ng" '$2 != n { printf "%s(%s) ", $1, $2 }' "$_jr_d/gates")
+  [ -z "$_jr_bad" ] || { echo "agent-autonomy --join: refused: a shard walked a different gate sequence than --list-cells ($_jr_ng gates; got ${_jr_bad}; a nested gate was counted or lost - gates)"; return 1; }
+  aa_join_follow "$_jr_d" "$_jr_n" || return 1
+  [ "$_jr_sum" -ge "$_jr_floor" ] || { echo "agent-autonomy --join: refused: the shards ran $_jr_sum cells in total, below the floor $_jr_floor (a graded pass must execute every cell)"; return 1; }
+  # NOH-L2/P1/P3 non-vacuity, on the SUMS (the bare path tests it on one run; no single shard can)
+  if [ "$_jr_nohn" -le 1000 ]; then echo "FAIL: NOH-L2/P1/P3 examined only $_jr_nohn denies across the shards; the locks are not running over the corpus"; _jr_red=1; fi
+  _jr_rest=${_jr_need#|}
+  while [ -n "$_jr_rest" ]; do
+    _jr_lab=${_jr_rest%%|*}; _jr_rest=${_jr_rest#*|}
+    [ -n "$_jr_lab" ] || continue
+    case "$_jr_seen" in *"|$_jr_lab|"*) : ;; *) echo "FAIL: NOH non-vacuity: the named cell [$_jr_lab] was not examined by the locks in any shard"; _jr_red=1 ;; esac
+  done
+  if [ "$_jr_red" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed (joined $_jr_n shards)"; return 1; fi
+  echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones ($_jr_sum cells)"
+  return 0
+}
+aa_join_check() {  # <tree> <cksum> <dims> <floor> <list-file> <record>... — run aa_join_run in a scratch dir, always removed
+  if [ "$#" -lt 6 ]; then echo "agent-autonomy --join: refused: no shard record given"; return 1; fi
+  _jc_d=$(mktemp -d "${TMPDIR:-/tmp}/aa-join.XXXXXX") || { echo "agent-autonomy --join: refused: mktemp failed"; return 1; }
+  _jc_rc=0; aa_join_run "$_jc_d" "$@" || _jc_rc=$?
+  rm -rf "$_jc_d"
+  return "$_jc_rc"
+}
+aa_join_main() {  # --join <record>... : this tree's id, cksum and dims, the floor from this script's own text, --list-cells from a child run
+  shift
+  _jm_tree=$(git write-tree 2>/dev/null) || _jm_tree=''
+  [ -n "$_jm_tree" ] || { echo "agent-autonomy --join: refused: git write-tree failed, so this tree has no id to compare the records with"; return 1; }
+  _jm_ck=$(cksum < "$0") || _jm_ck=''
+  _jm_floor=$(sed -n 's/^AA_CELL_FLOOR=\([0-9][0-9]*\)$/\1/p' "$0")
+  [ -n "$_jm_ck" ] && [ -n "$_jm_floor" ] || { echo "agent-autonomy --join: refused: cannot read this script's cksum or floor"; return 1; }
+  _jm_d=$(mktemp -d "${TMPDIR:-/tmp}/aa-list.XXXXXX") || { echo "agent-autonomy --join: refused: mktemp failed"; return 1; }
+  _jm_rc=0
+  if sh "$0" --list-cells > "$_jm_d/list"; then
+    aa_join_check "$_jm_tree" "$_jm_ck" "$(aa_dims "$PWD")" "$_jm_floor" "$_jm_d/list" "$@" || _jm_rc=$?
+    # SWAS-372 (design §7): the summed cells and wall, on a SEPARATE line after the OK line (S2's legs pin the OK text)
+    [ "$_jm_rc" -ne 0 ] || echo "battery: cells=$_jr_sum wall=$_jr_wsum shards=$_jr_n"
+    # SWAS-281 (CI-TIME-BUDGET): the join's own listed-set size (the set the union check just proved equal to the shards' cells), printed AFTER a green
+    # join so the CI step that follows can grade the `cells` count (conformance-mass-budget.sh --grade-cells <n> <variant>) without a second ~2-minute --list-cells run.
+    # It is printed here, not in aa_join_run, so the join's exact OK line (pinned by the shard legs) is unchanged.
+    [ "$_jm_rc" -ne 0 ] || echo "agent-autonomy --join: listed cells: $_jr_ng"
+  else echo "agent-autonomy --join: refused: --list-cells failed"; _jm_rc=1; fi
+  rm -rf "$_jm_d"
+  return "$_jm_rc"
+}
+if [ "$AA_MODE" = join ]; then _aa_jrc=0; aa_join_main "$@" || _aa_jrc=$?; exit "$_aa_jrc"; fi
+if [ "$AA_MODE" = shard ]; then aa_shard_begin || exit 2; fi
+if [ "$AA_MODE" = list ]; then exec 3>&1 1>/dev/null; fi
+# === end SWAS-374 BATTERY-SHARDS (the bottom dispatch is beside the scoped bottom) ===========================================
 
 # aa_cell_record <label> <cell-json> <kind> — collect one replayable cell. BASH CELLS ONLY: the command is
 # extracted with jq from the cell JSON, exactly as guard.sh does, so a Write/Edit/Read cell (whose
@@ -729,6 +988,7 @@ AA_KS_EXPECTED_IN
 # an ALLOW into a DENY for a copy, move, link, archive or dd whose source is a secret (SC-D: the denied shapes; SC-P: the priced
 # over-denies the design pins). They are `deny` cells, so only ALLOW->DENY is permitted for them. The allow cells (SC-A) and the
 # fall-through pair (SC-F1) are deliberately NOT listed: any movement of those is UNEXPECTED.
+# SWAS-355a (2ac73d58, cherry-picked to #912 as bdd15318): the two Bash cells on .kit/boundary-optout.conf are deny cells that move ALLOW->DENY; each entry equals a whole label but still matches as a prefix, so a new label extending either must be checked against it.
 AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [T2R3 API READ refunded]
 [T2R4 read-only flag takes the expansion as its VALUE]
@@ -775,6 +1035,8 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [SSR ]
 [SC-D]
 [SC-P]
+[redirect boundary-optout.conf]
+[interpreter boundary-optout.conf]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -1724,7 +1986,7 @@ assert_deny "K-3b C27 httpie's POSITIONAL method"                      '{"tool_n
 assert_deny "K-3b C27b xh's positional method"                         '{"tool_name":"Bash","tool_input":{"command":"xh PUT api.github.com/repos/o/r/pulls/5/merge"}}'
 assert_deny "K-3b C27c http DELETE the repo root"                      '{"tool_name":"Bash","tool_input":{"command":"http DELETE api.github.com/repos/o/r"}}'
 assert_deny "K-3b C28 an ABSOLUTE path to the client"                  '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
-assert_deny "K-3b C29 `command curl`"                                  '{"tool_name":"Bash","tool_input":{"command":"command curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C29 \`command curl\`"                                '{"tool_name":"Bash","tool_input":{"command":"command curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
 assert_deny "K-3b C31 a second statement after the request"            '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; echo done"}}'
 assert_deny "K-3b C33 a query string on the route"                     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge?x=1"}}'
 # ⚠️ PRICED M4 AND CELLED AS SUCH. The judge is HOST-AGNOSTIC on purpose (a GHES install is a different
@@ -2127,6 +2389,19 @@ assert_deny  "redirect seats.conf" '{"tool_name":"Bash","tool_input":{"command":
 assert_deny  "sed -i seats.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/octocat// .kit/ratification-seats.conf"}}'
 assert_deny  "rm seats.conf"       '{"tool_name":"Bash","tool_input":{"command":"rm .kit/ratification-seats.conf"}}'
 assert_allow "read seats.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/ratification-seats.conf"}}'
+# --- SWAS-355 (355a, D-241023-2 item 4 (a)): .kit/boundary-optout.conf and scripts/doctor-boundary.sh are control-plane. -----
+# The declaration decides whether an undeclared opt-out fails preflight, so an agent that can write it can declare its own opt-out.
+assert_deny  "Write boundary-optout.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/boundary-optout.conf","content":"x"}}'
+assert_deny  "Edit boundary-optout.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/boundary-optout.conf","old_string":"part=all","new_string":"part=egress"}}'
+assert_deny  "redirect boundary-optout.conf" '{"tool_name":"Bash","tool_input":{"command":"printf x > .kit/boundary-optout.conf"}}'
+assert_deny  "interpreter boundary-optout.conf" '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(.kit/boundary-optout.conf,w)"}}'
+assert_allow "read boundary-optout.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/boundary-optout.conf"}}'
+assert_deny  "Write doctor-boundary.sh"      '{"tool_name":"Write","tool_input":{"file_path":"scripts/doctor-boundary.sh","content":"x"}}'
+assert_deny  "redirect doctor-boundary.sh"   '{"tool_name":"Bash","tool_input":{"command":"printf x > scripts/doctor-boundary.sh"}}'
+# The six C5 sites (cell 29): the declaration path is named at exactly six lines of the core (a case arm in each of _cpp_kitowned and
+# _cpp_match, and the four variable sites). A count other than six is a FAIL, never a pass: fewer is a dark site, more is an unreviewed site.
+_bo_sites=$(grep -cE '\.kit/boundary-optout\\?\.conf' .claude/hooks/guard-core.sh || true)
+if [ "$_bo_sites" = 6 ]; then echo "PASS boundary-optout : the declaration path is named at exactly six C5 sites"; else echo "FAIL boundary-optout : the declaration path is named at $_bo_sites lines of guard-core.sh, not six C5 sites"; fail=1; fi
 # --- CP-MATCHER-CORPUS-DERIVED: the INTERPRETER route, the form the "all three matchers" count missed
 # ⚠️ THE HEADER ABOVE WAS TRUE AND STILL WRONG, and that is the defect this row closes. "All three
 # matcher sites carry it" counts `_cpp_kitowned` + `_cpp_match` + the glob leaves — the three it IS in.
@@ -8606,7 +8881,7 @@ assert_reason_has   "F-h Face4 KEEP: 2><guard-core> keeps it — a > byte is a w
 # addr2 + `p`. The regex refuses `/` and `\` inside the delimiters for exactly that reason.
 assert_reason_has   "F-h Face4 KEEP: W04 /a/,/b/w <guard-core>/p keeps it (the / refusal is why)" \
   '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/a/,/b/w .claude/hooks/guard-core.sh/p'\'' y"}}' "escape card R30 cp-write"
-assert_reason_has   "F-h sed script with a `w` command KEEPS it (sed writes)" \
+assert_reason_has   "F-h sed script with a \`w\` command KEEPS it (sed writes)" \
   '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''s/x/y/w .claude/hooks/guard-core.sh'\'' /tmp/a"}}' "escape card R30 cp-write"
 assert_deny         "F-h awk range read (deny anchor)" \
   '{"tool_name":"Bash","tool_input":{"command":"awk '\''END{print NR}'\'' conformance/verify.sh"}}'
@@ -8949,6 +9224,7 @@ assert_deny "NOH-E15 git rm with a glob pathspec" \
 # lock reads the segment-free view. A check that read the FULL reason would see a row AND a stop pointer and go red.
 assert_deny "NOH-P4 a command that quotes the stop wording keeps its true row pointer (deny anchor)" \
   '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"print('\''escape card §Stop and escalate'\'', open('\''conformance/verify.sh'\'').read())\""}}'
+aa_shard_follow "NOH-P4 a command that quotes the stop wording keeps its true row pointer (deny anchor)"   # SWAS-374: NOH-P4m reads $AA_OUT, which only the NOH-P4 deny above sets
 if aa_cell_skip "NOH-P4m"; then :; else
   _p4r=$(noh_reason_of "$AA_OUT")
   case "$_p4r" in
@@ -10398,6 +10674,7 @@ gsr_fx() {
 case "$GUARD" in /*) _gg=$GUARD ;; *) _gg=$PWD/$GUARD ;; esac
 # C1: a failed or missing `find` is a FAULT, never an empty directory (the stub exits 1; the real find is the pin)
 if ! aa_cell_skip "GSR-C1*"; then
+  aa_shard_nest   # SWAS-374: the gsr_fx cells below are gates inside this one
   _gsi=$(mktemp -d /tmp/gsrc1.XXXXXX) || _gsi=''
   if [ -n "$_gsi" ]; then
     GPAB_TRASH="$GPAB_TRASH $_gsi"; mkdir "$_gsi/bin" "$_gsi/skills"
@@ -10407,6 +10684,7 @@ if ! aa_cell_skip "GSR-C1*"; then
     gsr_fx "GSR-C1-reason the find-fault deny names its escape" deny "$_gsi" 'cp /tmp/e sk*' "$_gsi/bin:$PATH" 'make find available'
     gsr_fx "GSR-C1-pin pin: a glob that matches nothing, with a healthy find, stays allowed" allow "$_gsi" 'cp /tmp/e zz*'
   fi
+  aa_shard_unnest
 fi
 # C2: a `#` (or an odd quote) beside a cp/install glob means the last token is not trusted: every operand is walked
 gsr_deny "GSR-C2 cp a glob skill file with a trailing # comment" 'cp /tmp/e sk*/build/SKILL.md # /tmp/y'
@@ -10679,6 +10957,7 @@ assert_reason_has "SWAS227-N1c unknown-restore-option reason text" '{"tool_name"
 assert_reason_has "SWAS227-N1d tilde reason text" '{"tool_name":"Bash","tool_input":{"command":"git restore -s HEAD~5 ~"}}' 'shell expansion the guard cannot resolve'
 # C9: a write target reached through an existing symlink is judged at its PHYSICAL path (fixture made by the check itself)
 if ! aa_cell_skip "GSR-C9*"; then
+  aa_shard_nest   # SWAS-374: the gsr_fx cells below are gates inside this one
   _gsl=$(mktemp -d /tmp/gsrc9.XXXXXX) || _gsl=''
   if [ -n "$_gsl" ]; then
     GPAB_TRASH="$GPAB_TRASH $_gsl"; mkdir -p "$_gsl/skills/x"; : > "$_gsl/skills/x/SKILL.md"; : > "$_gsl/notes.txt"
@@ -10707,6 +10986,7 @@ if ! aa_cell_skip "GSR-C9*"; then
     gsr_fx "GSR-C9-tilde-cp cp through a ~ link" deny "$_gsl" 'cp /tmp/e ~/hl'
     gsr_fx "GSR-C9-reason the symlink deny names its escape" deny "$_gsl" 'echo x > lnk' '' 'behind a symlink'
   fi
+  aa_shard_unnest
 fi
 # fix round: C7 on a normalised view (wrappers, assignments, quoting, quoted global values), --pathspec-from-file, C6 globs
 gsr_deny "GSR-C7v-env GIT_GLOB_PATHSPECS=1 git checkout a plain glob" "GIT_GLOB_PATHSPECS=1 git checkout HEAD -- 'sk*'"
@@ -11276,6 +11556,100 @@ fi'
   fi
   # === end CI-BARE-BATTERY-ONCE legs ==============================================================
 
+  # === SWAS-449 L-EXCL — every export-ignored .kit conf has an exclusion arm in aa_input_list, and every arm names one ===========
+  # (design 2026-10-27-ci-adopter-row-times-449 section 3, Part B; oracle mode, no guard spawns.) A .kit/*.conf the kit tree carries and the
+  # export drops makes every exported tree's input list differ from the kit's, so the defer refuses and each consumer runs the whole battery
+  # (SWAS-449: +80 min of PR wall). Export-ignore is decided by `git check-attr export-ignore` (leading /, globs, directory rules, macros and
+  # last-match-wins all included), never by parsing .gitattributes text; a failing git reds, it never passes. Forward: each .kit/*.conf PRESENT
+  # in the tree that is export-ignored owes an arm (.kit/control-plane.conf is export-ignored but the kit holds none, so it owes none). Shape:
+  # every line of aa_input_list's case is one literal arm `.kit/<name>.conf) continue ;;` (+ optional comment); a glob, an alternation or
+  # `continue;;` reds, naming the line. Reverse: each arm names an export-ignored conf. Refuse list: roster, budget and control-plane ARE read
+  # on the battery path, so an arm for them reds. A new arm needs a C3 not-read proof in the review record. n = 0 is vacuous and reds.
+  _lx_ei() {  # <tree> <path> — rc 0 iff git says export-ignore is set for <path>; rc 1 not set; rc 2 git failed
+    _lx_o=$(git -C "$1" check-attr export-ignore -- "$2" 2>/dev/null) || return 2
+    case "$_lx_o" in *": export-ignore: set") return 0 ;; *": export-ignore: "*) return 1 ;; esac
+    return 2
+  }
+  _lx_run() {  # <script> <tree: a git tree holding .gitattributes and .kit/*.conf> — prints the verdict line; rc 0 green, rc 1 red
+    _lx_hint="a new exclusion arm needs a C3 not-read proof in the review record"
+    _lx_blk=$(awk '/^aa_input_list[(][)] [{]/ { f = 1 } f && /^[[:space:]]*case "[$]_il_f" in/ { c = 1; next } c && /^[[:space:]]*esac/ { exit } c { print }' "$1")
+    _lx_n=0; _lx_a=0; _lx_bad=''; _lx_arms=''
+    while IFS= read -r _lx_l; do
+      _lx_t=${_lx_l#"${_lx_l%%[![:space:]]*}"}
+      case "$_lx_t" in ''|'#'*) continue ;; esac
+      _lx_c=$(printf '%s\n' "$_lx_t" | sed -n 's/^\(\.kit\/[A-Za-z0-9._-][A-Za-z0-9._-]*\.conf\)) continue ;;\([[:space:]][[:space:]]*#.*\)\{0,1\}$/\1/p')
+      if [ -z "$_lx_c" ]; then _lx_bad="$_lx_bad arm shape [$_lx_t] is not one literal '.kit/<name>.conf) continue ;;';"; continue; fi
+      _lx_a=$((_lx_a + 1)); _lx_arms="$_lx_arms $_lx_c "
+      case "$_lx_c" in
+        .kit/control-plane.conf|.kit/roster.conf|.kit/budget.conf) _lx_bad="$_lx_bad $_lx_c is read on the battery path; it must not be excluded;"; continue ;;
+      esac
+      _lx_rc=0; _lx_ei "$2" "$_lx_c" || _lx_rc=$?
+      case "$_lx_rc" in
+        0) : ;;
+        1) _lx_bad="$_lx_bad arm $_lx_c names a conf that is not export-ignored;" ;;
+        *) _lx_bad="$_lx_bad git check-attr failed for arm $_lx_c;" ;;
+      esac
+    done <<LXBLK
+$_lx_blk
+LXBLK
+    for _lx_f in "$2"/.kit/*.conf; do
+      [ -e "$_lx_f" ] || continue
+      _lx_c=.kit/${_lx_f##*/}
+      _lx_rc=0; _lx_ei "$2" "$_lx_c" || _lx_rc=$?
+      case "$_lx_rc" in
+        0) _lx_n=$((_lx_n + 1))
+           case "$_lx_arms" in *" $_lx_c "*) : ;; *) _lx_bad="$_lx_bad $_lx_c is export-ignored but has no exclusion arm in aa_input_list ($_lx_hint);" ;; esac ;;
+        1) : ;;
+        *) _lx_bad="$_lx_bad git check-attr failed for $_lx_c;" ;;
+      esac
+    done
+    if [ "$_lx_n" -eq 0 ]; then echo "L-EXCL: 0 export-ignored confs present: vacuous$_lx_bad"; return 1; fi
+    if [ -n "$_lx_bad" ]; then echo "L-EXCL:$_lx_bad"; return 1; fi
+    echo "L-EXCL: $_lx_n export-ignored confs, $_lx_a arms"
+  }
+  _lxm() {  # <label> <script> <tree> <wanted substring> — a mutated input must RED (rc 1) and name its cause
+    _lxmo=$(_lx_run "$2" "$3") && _lxmrc=0 || _lxmrc=$?
+    case "$_lxmo" in
+      *"$4"*) if [ "$_lxmrc" = 1 ]; then echo "OK: L-EXCL mutant $1 — reds: $_lxmo"; else echo "nv: L-EXCL mutant $1 returned rc $_lxmrc, not 1 [$_lxmo]"; _st=1; fi ;;
+      *) echo "nv: L-EXCL mutant $1 did not name [$4]: [$_lxmo] (rc $_lxmrc)"; _st=1 ;;
+    esac
+  }
+  _lxf() {  # <dir> <gitattributes file> [<extra conf name>] — a fixture git tree: that .gitattributes and an empty copy of every .kit/*.conf
+    mkdir -p "$1/.kit" && git init -q "$1" >/dev/null 2>&1 && cp "$2" "$1/.gitattributes" || return 1
+    for _lxf_f in .kit/*.conf; do : > "$1/$_lxf_f"; done
+    [ -z "${3:-}" ] || : > "$1/.kit/$3"
+  }
+  if [ ! -e docs/ROADMAP-KIT.md ]; then
+    echo "N/A: L-EXCL — docs/ROADMAP-KIT.md (the kit's own export-ignored roadmap) is absent: not the kit's own tree, and an export's .gitattributes is the adopter's"
+  elif ! _lxd=$(mktemp -d /tmp/aa-lx.XXXXXX); then
+    echo "nv: L-EXCL NOT EXERCISED — mktemp failed; this is infrastructure, not a verdict on the leg"; _st=1
+  else
+    GPAB_TRASH="$GPAB_TRASH $_lxd"
+    _lxo=$(_lx_run "$0" .) && _lxrc=0 || _lxrc=$?
+    if [ "$_lxrc" = 0 ]; then echo "OK: $_lxo"; else echo "nv: $_lxo"; _st=1; fi
+    sed '/^[[:space:]]*\.kit\/boundary-optout\.conf) continue ;;/d' "$0" > "$_lxd/a.sh"
+    if cmp -s "$0" "$_lxd/a.sh"; then echo "nv: L-EXCL M-449a is unbound (the boundary-optout arm was not found to remove)"; _st=1
+    else _lxm M-449a "$_lxd/a.sh" . ".kit/boundary-optout.conf is export-ignored but has no exclusion arm"; fi
+    awk '{ print } /^[[:space:]]*\.kit\/boundary-optout\.conf\) continue ;;/ { print "        .kit/ghost.conf) continue ;;" }' "$0" > "$_lxd/b.sh"
+    if cmp -s "$0" "$_lxd/b.sh"; then echo "nv: L-EXCL M-449b is unbound (the boundary-optout arm was not found to follow)"; _st=1
+    else _lxm M-449b "$_lxd/b.sh" . "arm .kit/ghost.conf names a conf that is not export-ignored"; fi
+    grep -v '^\.kit/[A-Za-z0-9._-]*\.conf[[:space:]]' .gitattributes > "$_lxd/c.attr" || :
+    if cmp -s .gitattributes "$_lxd/c.attr"; then echo "nv: L-EXCL M-449c is unbound (no .kit conf export-ignore line was found to remove)"; _st=1
+    elif ! _lxf "$_lxd/c" "$_lxd/c.attr"; then echo "nv: L-EXCL M-449c NOT EXERCISED — the fixture tree could not be made"; _st=1
+    else _lxm M-449c "$0" "$_lxd/c" "0 export-ignored confs present: vacuous"; fi
+    awk '{ print } /^[[:space:]]*\.kit\/boundary-optout\.conf\) continue ;;/ { print "        .kit/r*.conf) continue ;;" }' "$0" > "$_lxd/d.sh"
+    if cmp -s "$0" "$_lxd/d.sh"; then echo "nv: L-EXCL M-449d is unbound (the boundary-optout arm was not found to follow)"; _st=1
+    else _lxm M-449d "$_lxd/d.sh" . "arm shape [.kit/r*.conf) continue ;;] is not one literal"; fi
+    awk '{ print } /^[[:space:]]*\.kit\/boundary-optout\.conf\) continue ;;/ { print "        .kit/control-plane.conf) continue ;;" }' "$0" > "$_lxd/e.sh"
+    if cmp -s "$0" "$_lxd/e.sh"; then echo "nv: L-EXCL M-449e is unbound (the boundary-optout arm was not found to follow)"; _st=1
+    else _lxm M-449e "$_lxd/e.sh" . ".kit/control-plane.conf is read on the battery path; it must not be excluded"; fi
+    { cat .gitattributes; printf '%s\n' '/.kit/sixth.conf export-ignore'; } > "$_lxd/f.attr"
+    if cmp -s .gitattributes "$_lxd/f.attr" || ! _lxf "$_lxd/f" "$_lxd/f.attr" sixth.conf; then echo "nv: L-EXCL M-449f NOT EXERCISED — the fixture tree could not be made"; _st=1
+    else _lxm M-449f "$0" "$_lxd/f" ".kit/sixth.conf is export-ignored but has no exclusion arm"; fi
+    rm -rf "$_lxd"
+  fi
+  # === end SWAS-449 L-EXCL ========================================================================
+
   assert_deny        "nv" "$_allowing"                 >/dev/null
   [ "$fail" = 1 ] || { echo "nv: assert_deny accumulator is neutered"; _st=1; }; fail=0
   assert_allow       "nv" "$_denying"                  >/dev/null
@@ -11682,6 +12056,194 @@ fi'
   else
     echo "nv: fail-closed/FC-H1 NOT EXERCISED — mktemp failed; this is infrastructure, not a verdict on the hook command"; _st=1
   fi
+  # === SWAS-374 BATTERY-SHARDS (control C5): --list-cells, --shard and --join =====================================================
+  # The shard machinery is driven IN-PROCESS over a 10-cell fixture (a doubled label is ONE cell) with the real aa_cell_skip, so the
+  # real selector, the real record writer and the real join are under test, with no second pass over the battery. Every refusal has a
+  # MUTATED INPUT that must red AND name the right reason, beside a positive control that proves the unmutated input passes.
+  _bsd=$(mktemp -d "${TMPDIR:-/tmp}/aa-bs.XXXXXX") || _bsd=''
+  if [ -z "$_bsd" ]; then echo "nv: BS NOT EXERCISED - mktemp failed; this is infrastructure, not a verdict on the shard legs"; _st=1
+  else
+    _bs_labels='c0 c1 c2 c2 c3 c4 c5 c6 c7 c8 c9'; _bs_tab=$(printf '\t')   # BSD sed has no \t in a replacement
+    # <mode> <j> <M> <out> [<failing label>] [<noh step>]: the real aa_cell_skip over the fixture, in a subshell (state stays out of selftest)
+    _bs_sim() (
+      AA_MODE=$1; AA_SHARD_J=$2; AA_SHARD_M=$3; AA_SHARD_OUT=$4; _bs_bad=${5:-}; _bs_step=${6:-300}
+      AA_SH_N=0; AA_SH_LAST=''; AA_SH_RC=0; AA_SH_OPEN=''; AA_SH_OPENLBL=''; AA_SH_SEL=0; AA_SH_ANYFAIL=0; AA_SH_NEST=0
+      AA_CELLS_RUN=0; fail=0; AA_NOH_N=0; AA_NOH_SEEN='|'; AA_NOH_NEED='|c3|'
+      if [ "$1" = list ]; then exec 3> "$4"; else aa_shard_header "$4" T1 '11 22' dimsX "$2/$3"; fi
+      # _bs_ungated=pre: an UNGATED failure before the first gate, in shard 2 only (ungated code runs in every shard of the real file)
+      [ "${_bs_ungated:-}" != pre ] || [ "$2" != 2 ] || fail=1
+      for _bs_l in $_bs_labels; do
+        if aa_cell_skip "$_bs_l"; then :; else
+          AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step))
+          [ "$_bs_l" != c3 ] || AA_NOH_SEEN="${AA_NOH_SEEN}c3|"
+          [ "$_bs_l" != "$_bs_bad" ] || fail=1
+        fi
+      done
+      # _bs_ungated=mid: an UNGATED failure between two gates (after c9, in shard 2): it lands on the open cell c9 and the shard's rc
+      [ "${_bs_ungated:-}" != mid ] || [ "$2" != 2 ] || fail=1
+      # a NESTED cell: the outer gate n0 holds two inner gates. A shard that runs n0 runs both, and they are neither indexed nor listed.
+      # _bs_nonest=1 is the MUTANT: the nest marker is dropped, so the inner gates are counted (in shard mode only)
+      if aa_cell_skip "n0"; then :; else
+        [ "${_bs_nonest:-}" = 1 ] || aa_shard_nest
+        AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step))
+        for _bs_in in "n0 a" "n0 b"; do
+          if aa_cell_skip "$_bs_in"; then :; else AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step)); fi
+        done
+        aa_shard_unnest
+      fi
+      # the last cell holds a TAB in its label: it must be listed and recorded as "x?y". It FOLLOWS n0 (reads state n0 left behind), so
+      # it is selected by n0's index. _bs_nofollow=1 is the MUTANT: the shard runs drop the marker while --list-cells keeps it.
+      [ "${_bs_nofollow:-}" = 1 ] && [ "$1" = shard ] || aa_shard_follow n0
+      if aa_cell_skip "$(printf 'x\ty')"; then :; else AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step)); fi
+      if [ "$1" = list ]; then :; else aa_shard_finish; fi
+    )
+    _bs_gen() {  # <M> <dir> [<failing label>] [<noh step>]: record <dir>/r<j> for j = 1..M, and the list file <dir>/list
+      mkdir -p "$2"; _bs_j=1
+      while [ "$_bs_j" -le "$1" ]; do _bs_sim shard "$_bs_j" "$1" "$2/r$_bs_j" "${3:-}" "${4:-300}" >/dev/null || :; _bs_j=$((_bs_j + 1)); done
+      _bs_sim list 1 1 "$2/list" >/dev/null
+    }
+    _bs_join() {  # <expect tree> <expect cksum> <expect dims> <floor> <list> <record>... -> sets _bs_o and _bs_rc
+      _bs_rc=0; _bs_o=$(aa_join_check "$@" 2>&1) || _bs_rc=$?
+    }
+    _bs_refuse() {  # <leg> <want substring>: the last join must be a red and name <want>
+      if [ "$_bs_rc" = 0 ]; then echo "nv: BS $1 was NOT refused (the join returned 0): $_bs_o"; _st=1
+      else case "$_bs_o" in *"$2"*) : ;; *) echo "nv: BS $1 was refused for the wrong reason (wanted [$2]): $_bs_o"; _st=1 ;; esac; fi
+    }
+    _bs_endl() { tail -n 1 "$1" | sed 's/[[:space:]]wall=[0-9]*$//'; }  # a record's end line minus its wall field (the other fields stay exact)
+    _bs_g=$_bsd/g4; _bs_gen 4 "$_bs_g"
+    # the list: 10 cells (the doubled label is one), the tab inside a label is a "?", the order is the file's own
+    [ "$(sed -n '1p' "$_bs_g/list")" = "$(printf '0\tc0')" ] && [ "$(grep -c . "$_bs_g/list")" = 12 ] && [ "$(sed -n '3p' "$_bs_g/list")" = "$(printf '2\tc2')" ] \
+      && [ "$(sed -n '11p' "$_bs_g/list")" = "$(printf '10\tn0')" ] && [ "$(sed -n '12p' "$_bs_g/list" | cut -f1,2)" = "$(printf '11\tx?y')" ] \
+      || { echo "nv: BS --list-cells did not enumerate the fixture as 0:c0, 1:c1, 2:c2 (once), ... 9:c9, 10:n0 (its inner gates unlisted) and 11:x?y"; _st=1; }
+    # each shard ran exactly the cells whose index mod 4 = j-1, in order; the nested cell's inner gates ran in its shard, unindexed
+    [ "$(grep -c '^cell' "$_bs_g/r1")" = 3 ] && [ "$(grep '^cell' "$_bs_g/r1" | cut -f2 | tr '\n' ' ')" = '0 4 8 ' ] \
+      && [ "$(grep '^cell' "$_bs_g/r4" | cut -f2 | tr '\n' ' ')" = '3 7 ' ] \
+      && [ "$(grep '^cell' "$_bs_g/r3" | cut -f2 | tr '\n' ' ')" = '2 6 10 11 ' ] \
+      && [ "$(_bs_endl "$_bs_g/r3")" = "$(printf 'end\trc=0\tcells=7\tgates=12')" ] \
+      || { echo "nv: BS --shard did not run indices 0 4 8 / 2 6 10 11 / 3 7, or shard 3 did not run n0 AND its two inner gates AND its follower x (7 cells): $(tail -n 1 "$_bs_g/r3")"; _st=1; }
+    # FOLLOWER: x (index 11) reads state n0 (index 10) leaves, so it is selected by n0's index and lands in n0's shard (3), not its own (4).
+    # --list-cells names the producer on its line, and the record carries a follow line.
+    [ "$(sed -n '12p' "$_bs_g/list")" = "$(printf '11\tx?y\tfollows\tn0')" ] && grep -q "^follow${_bs_tab}11${_bs_tab}x?y${_bs_tab}n0\$" "$_bs_g/r3" \
+      || { echo "nv: BS the follower x is not listed as following n0, or shard 3 has no follow line for it"; _st=1; }
+    case "$(sed -n '1,5p' "$_bs_g/r2" | tr '\t\n' ' ')" in 'aa-shard 1 tree T1 cksum 11 22 dims dimsX shard 2/4 ') : ;; *) echo "nv: BS the record header is not aa-shard/tree/cksum/dims/shard"; _st=1 ;; esac
+    [ "$(_bs_endl "$_bs_g/r2")" = "$(printf 'end\trc=0\tcells=3\tgates=12')" ] || { echo "nv: BS the end line of 2/4 is not rc=0 cells=3 gates=12: $(tail -n 1 "$_bs_g/r2")"; _st=1; }
+    # POSITIVE: M shards joined = the bare run (one shard 1/1) in verdict and cell count
+    _bs_gen 1 "$_bsd/g1"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_m=$_bs_o; _bs_mrc=$_bs_rc
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/g1/list" "$_bsd/g1/r1"; _bs_b=$_bs_o; _bs_brc=$_bs_rc
+    [ "$_bs_mrc" = 0 ] && [ "$_bs_brc" = 0 ] && [ "$_bs_m" = "$_bs_b" ] && case "$_bs_m" in 'OK: agent-autonomy guard denies irreversible actions and allows safe ones (15 cells)') true ;; *) false ;; esac \
+      || { echo "nv: BS 4 shards joined are not the bare run's verdict and count [$_bs_mrc: $_bs_m] vs [$_bs_brc: $_bs_b]"; _st=1; }
+    # an unordered argument list joins the same
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r3" "$_bs_g/r1" "$_bs_g/r4" "$_bs_g/r2"; [ "$_bs_rc" = 0 ] || { echo "nv: BS the join depends on the argument order: $_bs_o"; _st=1; }
+    # a red CELL in one shard is the bare run's red
+    _bs_gen 4 "$_bsd/gf" c5
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gf/list" "$_bsd/gf/r1" "$_bsd/gf/r2" "$_bsd/gf/r3" "$_bsd/gf/r4"; _bs_refuse "a failing cell" "FAIL: shard 2/4 cell failed: 5 c5"
+    # MUTANTS (each refused, for its own reason)
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3"; _bs_refuse "a missing shard" "missing: 4/4"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r2" "$_bs_g/r4"; _bs_refuse "a duplicated coordinate" "appears twice"
+    sed "s#^shard.*#shard${_bs_tab}9/4#" "$_bs_g/r2" > "$_bsd/r-out"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bsd/r-out" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a coordinate outside 1..M" "outside 1/M..M/M"
+    sed "s#^shard.*#shard${_bs_tab}4/5#" "$_bs_g/r4" > "$_bsd/r-m5"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bsd/r-m5"; _bs_refuse "records that disagree on M" "disagree on M"
+    { sed '$d' "$_bs_g/r2" | sed '$d'; printf 'cell\t0\tc0\tPASS\n'; tail -n 2 "$_bs_g/r2"; } > "$_bsd/r-ovl"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bsd/r-ovl" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "overlapping cells" "the shards overlap"
+    sed '/^cell.1.c1/d' "$_bs_g/r2" > "$_bsd/r-drop"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bsd/r-drop" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a cell dropped from a shard (union short of the list)" "is not --list-cells"
+    { cat "$_bs_g/list"; printf '99\tcX\n'; } > "$_bsd/list-extra"
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/list-extra" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a union that is not --list-cells (a cell no shard ran)" "is not --list-cells"
+    _bs_join T1 '11 22' dimsX 99999 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a total under the floor" "below the floor 99999"
+    _bs_join T2 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a tree-id mismatch" "tree id mismatch"
+    _bs_join T1 '33 44' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a cksum mismatch" "different script"
+    _bs_join T1 '11 22' dimsY 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a dims mismatch" "dims mismatch"
+    sed '$d' "$_bs_g/r3" > "$_bsd/r-trunc"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bsd/r-trunc" "$_bs_g/r4"; _bs_refuse "a truncated record (no end line)" "malformed record"
+    { cat "$_bs_g/r3"; printf 'cell\t7\tc7\tPASS\n'; } > "$_bsd/r-late"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bsd/r-late" "$_bs_g/r4"; _bs_refuse "a line after the end line" "malformed record"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bsd/does-not-exist" "$_bs_g/r4"; _bs_refuse "a missing record file" "not a readable file"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list"; _bs_refuse "no record at all" "no shard record given"
+    sed "s#^end.*#end${_bs_tab}rc=1${_bs_tab}cells=4${_bs_tab}gates=12${_bs_tab}wall=0#" "$_bs_g/r3" > "$_bsd/r-rc"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bsd/r-rc" "$_bs_g/r4"; _bs_refuse "a shard that ended rc=1" "ended rc=1"
+    # WALL (SWAS-372, design §7): every end line carries wall=<s>; the join sums it (15 cells, 3+6+9+12 = 30 s); a record without it is refused
+    _bs_k=1; while [ "$_bs_k" -le 4 ]; do sed "s#wall=[0-9]*\$#wall=$((_bs_k * 3))#" "$_bs_g/r$_bs_k" > "$_bsd/w$_bs_k"; _bs_k=$((_bs_k + 1)); done
+    aa_join_check T1 '11 22' dimsX 5 "$_bs_g/list" "$_bsd/w1" "$_bsd/w2" "$_bsd/w3" "$_bsd/w4" >/dev/null 2>&1 || true
+    { [ "${_jr_wsum:-x}" = 30 ] && [ "${_jr_sum:-x}" = 15 ]; } || { echo "nv: BS the join did not sum the shards' wall (want 30 over 15 cells; got wall=${_jr_wsum:-unset} cells=${_jr_sum:-unset})"; _st=1; }
+    sed 's/[[:space:]]wall=[0-9]*$//' "$_bs_g/r2" > "$_bsd/r-nowall"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bsd/r-nowall" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a record whose end line has no wall=" "malformed record"
+    # an EMPTY shard: 14 shards over 12 cells leave 13/14 and 14/14 with nothing. The shard run fails, and so does the join.
+    _bs_gen 14 "$_bsd/g14"
+    _bs_sim shard 13 14 "$_bsd/e12" >"$_bsd/e12.out" 2>&1 && _bs_erc=0 || _bs_erc=$?
+    { [ "$_bs_erc" = 1 ] && grep -q 'selected no cell' "$_bsd/e12.out" && [ "$(_bs_endl "$_bsd/e12")" = "$(printf 'end\trc=1\tcells=0\tgates=12')" ]; } \
+      || { echo "nv: BS an empty shard (13/14 over 12 cells) did not fail with rc 1 and an end line rc=1 cells=0 [rc $_bs_erc]"; _st=1; }
+    set --; _bs_k=1; while [ "$_bs_k" -le 14 ]; do set -- "$@" "$_bsd/g14/r$_bs_k"; _bs_k=$((_bs_k + 1)); done
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/g14/list" "$@"; _bs_refuse "an empty shard in a join" "ran no cell"
+    # NOH non-vacuity on the sums: a step of 1 examines 11 denies in all (not more than 1000); an unseen named cell is a red too
+    _bs_gen 4 "$_bsd/gn" "" 1
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gn/list" "$_bsd/gn/r1" "$_bsd/gn/r2" "$_bsd/gn/r3" "$_bsd/gn/r4"; _bs_refuse "NOH sums under 1000" "examined only 15 denies"
+    sed "s#^noh.*#noh${_bs_tab}1200${_bs_tab}|c3|zz|${_bs_tab}|c3|#" "$_bs_g/r1" > "$_bsd/r-need"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bsd/r-need" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a record naming a different NOH need list" "different NOH need list"
+    for _bs_f in "$_bs_g/r1" "$_bs_g/r2" "$_bs_g/r3" "$_bs_g/r4"; do sed "s#^noh.*#noh${_bs_tab}3300${_bs_tab}|c3|zz|${_bs_tab}|c3|#" "$_bs_f" > "$_bsd/n-$(basename "$_bs_f")"; done
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bsd/n-r1" "$_bsd/n-r2" "$_bsd/n-r3" "$_bsd/n-r4"; _bs_refuse "a named NOH cell no shard examined" "[zz] was not examined"
+    # NESTED gates: the MUTANT drops the nest marker, so a shard that runs n0 counts its inner gates and every later index shifts in
+    # shard mode only. The union is no longer --list-cells and the join refuses (the union check is never relaxed to hide this).
+    _bs_nonest=1; _bs_gen 4 "$_bsd/gnn"; unset _bs_nonest
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gnn/list" "$_bsd/gnn/r1" "$_bsd/gnn/r2" "$_bsd/gnn/r3" "$_bsd/gnn/r4"; _bs_refuse "a nested gate that is counted (no nest marker)" "is not --list-cells"
+    # the gate-sequence check on its own: a record whose gate count is not --list-cells's (cell keys and union untouched)
+    sed "s#gates=12#gates=14#" "$_bs_g/r2" > "$_bsd/r-gates"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bsd/r-gates" "$_bs_g/r3" "$_bs_g/r4"; _bs_refuse "a record with a different gate count" "different gate sequence"
+    # FOLLOWER mutants. (1) the shard runs drop the marker (the list keeps it): x lands in its OWN shard (4), split from n0 (3). The cell
+    # keys and the gate sequence are untouched, so only the follower check can see it. (2) shard 3 keeps x but loses its follow line.
+    _bs_nofollow=1; _bs_gen 4 "$_bsd/gnf"; unset _bs_nofollow
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gnf/list" "$_bsd/gnf/r1" "$_bsd/gnf/r2" "$_bsd/gnf/r3" "$_bsd/gnf/r4"; _bs_refuse "a follower split from its producer (marker dropped in the shard run)" "follower split from its producer"
+    sed '/^follow/d' "$_bs_g/r3" > "$_bsd/r-nofol"
+    _bs_join T1 '11 22' dimsX 5 "$_bs_g/list" "$_bs_g/r1" "$_bs_g/r2" "$_bsd/r-nofol" "$_bs_g/r4"; _bs_refuse "a follower whose record has no follow line" "without its follow marker"
+    # UNGATED failures: one between two gates lands on the open cell and the shard's rc; one before the first gate lands on the rc alone
+    _bs_ungated=mid; _bs_gen 4 "$_bsd/gum"; unset _bs_ungated
+    [ "$(_bs_endl "$_bsd/gum/r2")" = "$(printf 'end\trc=1\tcells=3\tgates=12')" ] && grep -q "^cell${_bs_tab}9${_bs_tab}c9${_bs_tab}FAIL" "$_bsd/gum/r2" \
+      || { echo "nv: BS an ungated failure between gates did not give end rc=1 and a FAIL on the open cell c9: $(tail -n 1 "$_bsd/gum/r2")"; _st=1; }
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gum/list" "$_bsd/gum/r1" "$_bsd/gum/r2" "$_bsd/gum/r3" "$_bsd/gum/r4"; _bs_refuse "an ungated failure between gates" "ended rc=1"
+    _bs_ungated=pre; _bs_gen 4 "$_bsd/gup"; unset _bs_ungated
+    [ "$(_bs_endl "$_bsd/gup/r2")" = "$(printf 'end\trc=1\tcells=3\tgates=12')" ] \
+      || { echo "nv: BS an ungated failure before the first gate did not give end rc=1: $(tail -n 1 "$_bsd/gup/r2")"; _st=1; }
+    _bs_join T1 '11 22' dimsX 5 "$_bsd/gup/list" "$_bsd/gup/r1" "$_bsd/gup/r2" "$_bsd/gup/r3" "$_bsd/gup/r4"; _bs_refuse "an ungated failure before the first gate" "ended rc=1"
+    # the selector itself: the default arm still RUNS a cell in an unknown mode, and run mode never reaches the shard state
+    AA_MODE=run; AA_SH_N=0; aa_cell_skip "c0" && { echo "nv: BS run mode skipped a cell"; _st=1; }
+    [ "$AA_SH_N" = 0 ] || { echo "nv: BS run mode touched the shard counter"; _st=1; }
+    rm -rf "$_bsd"
+  fi
+  # BS labels: a cell label (the first double-quoted argument of a cell helper) with an unescaped backtick or $( is RUN by the shell to build
+  # the label, so it changes between runs and --list-cells disagrees with itself (the join refused PR #896 on two such labels). Static scan of
+  # this file's own text; the mutant plants one and must red.
+  _bs_lab() { awk '/^[ \t]*(assert_[a-z_]+|gsr_[a-z_]+|gpab_[a-z_]+|aa_cell_skip)[ \t]+"/ { s = $0; sub(/^[^"]*"/, "", s); n = length(s)
+    for (i = 1; i <= n; i++) { c = substr(s, i, 1); if (c == "\\") { i++; continue } if (c == "\"") break
+      if (c == "`" || (c == "$" && substr(s, i + 1, 1) == "(")) { print NR ": " $0; break } } }'; }
+  [ -z "$(_bs_lab < "$0")" ] || { echo "nv: BS a cell label holds an unescaped backtick or dollar-paren: $(_bs_lab < "$0" | head -n 2)"; _st=1; }
+  [ -n "$(printf '%s\n' 'assert_deny "x `date` y" z' | _bs_lab)" ] && [ -n "$(printf '%s\n' 'gsr_fx "x $(date) y" z' | _bs_lab)" ] \
+    && [ -z "$(printf '%s\n' 'assert_deny "x \`date\` \$(y)" z' | _bs_lab)" ] || { echo "nv: BS the label scan misses a planted backtick or dollar-paren, or flags an escaped one"; _st=1; }
+  # BS stability: the REAL --list-cells twice must be byte-identical, non-empty, consecutively indexed 0..N-1 and well over a stub's size.
+  _bs_l1=$(sh "$0" --list-cells 2>/dev/null) || _bs_l1=''; _bs_l2=$(sh "$0" --list-cells 2>/dev/null) || _bs_l2=''
+  { [ -n "$_bs_l1" ] && [ "$_bs_l1" = "$_bs_l2" ] && [ "$(printf '%s\n' "$_bs_l1" | awk -F'\t' '$1 != NR - 1 { bad++ } END { print bad + 0 NR }')" = "0$(printf '%s\n' "$_bs_l1" | awk 'END { print NR }')" ] \
+    && [ "$(printf '%s\n' "$_bs_l1" | awk 'END { print (NR >= 2000) }')" = 1 ]; } \
+    || { echo "nv: BS two real --list-cells runs are not byte-identical, non-empty, indexed 0..N-1 and over 2000 cells (lines: $(printf '%s\n' "$_bs_l1" | awk 'END { print NR }') / $(printf '%s\n' "$_bs_l2" | awk 'END { print NR }'))"; _st=1; }
+  # BS argv (each exits before a cell runs): first-argument only, and the shard grammar is closed
+  _bs_x() { env -u CI -u GITHUB_ACTIONS sh "$0" "$@" >/dev/null 2>&1 && _bs_xrc=0 || _bs_xrc=$?; }
+  _bs_x --shard;                                  [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard with no coordinate returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 1/4;                              [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard without --output-file returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 1/4 --output-file;                [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard with an empty --output-file returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 5/4 --output-file /dev/null;      [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard 5/4 returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 0/4 --output-file /dev/null;     [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard 0/4 returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 1/4/2 --output-file /dev/null;    [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard 1/4/2 returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --shard 1x/4 --output-file /dev/null;     [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard 1x/4 returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --list-cells extra;                       [ "$_bs_xrc" = 2 ] || { echo "nv: BS --list-cells with an argument returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --join;                                   [ "$_bs_xrc" = 2 ] || { echo "nv: BS --join with no record returned $_bs_xrc, not 2"; _st=1; }
+  _bs_x --selftest --shard 1/4 --output-file /dev/null; [ "$_bs_xrc" = 2 ] || { echo "nv: BS --shard after --selftest returned $_bs_xrc, not 2 (first-only)"; _st=1; }
+  _bs_x --dims --list-cells;                      [ "$_bs_xrc" = 2 ] || { echo "nv: BS --list-cells after --dims returned $_bs_xrc, not 2 (first-only)"; _st=1; }
+  # the mode comes from argv only, through the real derivation block (leg 6's extraction), and --shard is allowed under CI (graded)
+  [ "$(AA_MODE=shard AA_SHARD_M=4 sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5${_nl5}printf %s \"\$AA_MODE:\$AA_SHARD_J:\$AA_SHARD_M\"" aa '' 2>/dev/null)" = 'run:0:0' ] \
+    || { echo "nv: BS an environment AA_MODE/AA_SHARD_M leaked into a bare run"; _st=1; }
+  [ "$(sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5${_nl5}printf %s \"\$AA_MODE:\$AA_SHARD_J:\$AA_SHARD_M\"" aa --list-cells 2>/dev/null)" = 'list:0:0' ] \
+    || { echo "nv: BS --list-cells does not derive AA_MODE=list"; _st=1; }
+  [ "$(CI=true GITHUB_ACTIONS=true sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5${_nl5}printf %s \"\$AA_MODE:\$AA_SHARD_J:\$AA_SHARD_M\"" aa --shard 2/4 --output-file /dev/null 2>/dev/null)" = 'shard:2:4' ] \
+    || { echo "nv: BS --shard 2/4 under CI and GITHUB_ACTIONS does not derive AA_MODE=shard (it is a graded mode)"; _st=1; }
   AA_MODE=$_st_mode; fail=$_save
   [ "$_st" = 0 ] && echo "OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: $_fla"
   return $_st
@@ -12393,11 +12955,13 @@ assert_deny "GTM-Q16 sed -i on a glob skill file" '{"tool_name":"Bash","tool_inp
 assert_allow "GTM-Q17 pin: sed without -i on a glob (a read)" '{"tool_name":"Bash","tool_input":{"command":"sed -n 1p sk*/build/SKILL.md"}}'
 # R3: a huge SOURCE glob must neither time out nor deny: only the destination of cp/install/mv is walked
 if ! aa_cell_skip "GTM-G21"; then
+  aa_shard_nest   # SWAS-374: the assert_allow below is a gate inside this one
   _g21=$(mktemp -d /tmp/gtmg21.XXXXXX) && { GPAB_TRASH="$GPAB_TRASH $_g21"; awk 'BEGIN { for (i = 1; i <= 20000; i++) print "f" i }' | (cd "$_g21" && xargs touch); }
   _g21t0=$(date +%s)
   assert_allow "GTM-G21 a 20000-file SOURCE glob is not walked (cp <dir>/* /tmp/out/)" '{"tool_name":"Bash","tool_input":{"command":"cp '"$_g21"'/* /tmp/out/"}}'
   _g21t1=$(date +%s)
   if [ $((_g21t1 - _g21t0)) -lt 5 ]; then echo "PASS time : GTM-G21 decided in $((_g21t1 - _g21t0))s"; else echo "FAIL (GTM-G21 took $((_g21t1 - _g21t0))s, wanted < 5)"; fail=1; fi
+  aa_shard_unnest
 fi
 # GTM-I1 (option injection): the glob walk hands `find` a directory name the agent chose. A name such as `-delete` must be a
 # PATH to find, never an expression (GNU find would delete the hook's cwd). SAFE BY CONSTRUCTION: it runs in a mktemp scratch dir,
@@ -13302,10 +13866,12 @@ if [ "${GPAB_G:-}" != "" ]; then
   gx_ct="$GPAB_TMP/gxcl12t"; gx_mkclone "$gx_ct"
   awk 'BEGIN { for (i = 1; i <= 20000; i++) printf "[branch \"b%d\"]\n\tremote = origin\n", i; printf "[alias]\n\tx = status\n" }' >> "$gx_ct/.git/config"
   if ! aa_cell_skip "SWAS278A-X12t"; then
+    aa_shard_nest   # SWAS-374: the hla_deny_has below is a gate inside this one
     gx_t0=$(date +%s)
     hla_deny_has "$GX_G" "SWAS278A-X12t [root] G4 with 20,000 allowlisted config keys and one unlisted key last names alias.x" "$(gx_in "$gx_R" "cd $gx_ct && sh $gx_R/scripts/board.sh show SWAS-1")" "declined this shape: config-key alias.x"
     gx_t1=$(date +%s)
     if [ $((gx_t1 - gx_t0)) -lt 10 ]; then echo "PASS time : SWAS278A-X12t decided in $((gx_t1 - gx_t0))s"; else echo "FAIL (SWAS278A-X12t took $((gx_t1 - gx_t0))s, wanted < 10)"; fail=1; fi
+    aa_shard_unnest
   fi
   # SWAS278A-X12i (security M1): _cp8b_g_cfg_allow runs its walk under a newline IFS with -f; it must hand BOTH back as it found them, on a deny, on an
   # allow, and with -f already on, and it must name the offender. gx_ifs sources a copy of the core in a subshell, marks IFS, runs the function, reports.
@@ -13371,6 +13937,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   gx_idx_mt() { stat -c %Y "$gx_rt/.git/index" 2>/dev/null || stat -f %m "$gx_rt/.git/index" 2>/dev/null; }
   gx_idx_stale() { sleep 1; touch "$gx_rt/scripts/board.sh"; touch -t 202001010000 "$gx_rt/.git/index"; }   # a stat-dirty entry, and an index old enough that any rewrite shows
   aa_cell_skip "SWAS278A-X12j" || {
+    aa_shard_nest   # SWAS-374: the gx_a below is a gate inside this one
     gx_idx_stale; gx_j0=$(gx_idx_mt)
     gx_a "SWAS278A-X12j-pre [root] G4 allowed (the cell whose side effect X12j reads)" "$gx_R" "cd $gx_C && sh $gx_R/scripts/board.sh show SWAS-1"
     if [ "$(gx_idx_mt)" = "$gx_j0" ] && [ ! -e "$gx_rt/.git/index.lock" ]; then echo "PASS deny : SWAS278A-X12j an allowed G4 leaves the root's .git/index untouched and takes no index.lock"
@@ -13385,6 +13952,7 @@ if [ "${GPAB_G:-}" != "" ]; then
       else echo "FAIL mutant : SWAS278A-MX12j — a git diff did not rewrite the index; X12j proves nothing"; fail=1; fi
     fi
     cp "$GPAB_TMP/gc.pristine" "$GX_GC"; AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    aa_shard_unnest
   }
   # X12k: git environment names in the HOOK's environment do not change a verdict (the hook's git runs under env -i)
   gx_envset GIT_DIR /nonexistent/gitdir; gx_envset GIT_CONFIG_GLOBAL /nonexistent/gc; gx_envset GIT_CONFIG_SYSTEM /nonexistent/gs
@@ -14264,7 +14832,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . --no-pager diff --stat)"}}' deny
 fi
 
-if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_fc_main; fi
+if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_shard_nest; aa_fc_main; aa_shard_unnest; fi   # SWAS-374: the per-trial gates in aa_fc_one nest inside this one
 
 # --- GUARD-READ-LANE-2 T3: the delta adjudication (only in --delta mode) --------------------------
 # Runs LAST, after EVERY cell in this file has been collected (SWAS-301a: it used to run before the last ~600 cells, which were never
@@ -14366,6 +14934,9 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 #     SC-M45) and 1 scp_mut_lacks cell (SC-M22), and the SC-T1 timing leg (it spawns the guard) -> 3373 + 148 = 3521. The static SC-C1
 #     coupling and its two mutants spawn no guard and are not counted.
 AA_CELL_FLOOR=3521
+# SWAS-374: the bottoms of --list-cells and --shard (the bare path and every other mode never reach these two lines).
+if [ "$AA_MODE" = list ]; then exit 0; fi
+if [ "$AA_MODE" = shard ]; then aa_shard_finish && exit 0; exit 1; fi
 if [ "$AA_MODE" = scoped ]; then
   # SCOPED: never the floor, never the graded OK line (C-B, F8). Non-zero if a matched cell failed or the report refused.
   aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?
@@ -14389,5 +14960,5 @@ if [ "$AA_MODE" = run ]; then
 fi
 if aa_completeness "$AA_CELLS_RUN" "$AA_CELL_FLOOR"; then :; else fail=1; fi
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
-echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones ($AA_CELLS_RUN cells)"
+echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones ($AA_CELLS_RUN cells) cells=$AA_CELLS_RUN wall=$(( $(date +%s) - AA_T0 ))"
 exit 0

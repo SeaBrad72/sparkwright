@@ -45,6 +45,23 @@ PUBLIC_REMOTE_DEFAULT="https://github.com/SeaBrad72/sparkwright.git"
 # their own. One identifier per line, `#` comments allowed; the file is `.gitattributes export-ignore`d
 # so it never reaches an export. Overridable for the selftest.
 PUBLISH_ID_FILE="${PUBLISH_ID_FILE:-$ROOT/.publish-identifiers}"
+# Release-note reference floor (SWAS-366): the newest CHANGELOG heading EXEMPT from public_note_refs and from
+# the malformed-marker finding. That heading and every OLDER one (the file is newest-first) are not graded,
+# because their published blocks predate the rule and cite things (an export-ignored path such as the tracker
+# conf, say) that the rule refuses. Task 0 of the build measured it. A plain assignment, no env seam: a standing
+# exemption moves only by a reviewed edit here. Empty means grade every block.
+# The floor is a VERSION compare, never a position: a heading is exempt only if it is a plain semver N.N.N that
+# is numerically <= the floor, field by field. Anything else (`Unreleased` too) is graded, and a stray or
+# misordered floor heading cannot exempt a newer block below it (SWAS-366 security S1). `_PNR_VLE` is the one
+# awk compare function; public_note_refs prepends it to its program and `_pnr_exempt` runs it for the gate.
+PUBNOTE_REF_FLOOR=3.240.0
+_PNR_VLE='function vle(v, f,   a, b, i, x, y) {
+  if (f == "" || v !~ /^[0-9]+[.][0-9]+[.][0-9]+$/) return 0
+  split(v, a, "."); split(f, b, ".")
+  for (i = 1; i <= 3; i++) { x = a[i] + 0; y = b[i] + 0; if (x < y) return 1; if (x > y) return 0 }
+  return 1
+}'
+_pnr_exempt() { PNR_HEADING=$1 LC_ALL=C awk -v f="$PUBNOTE_REF_FLOOR" "$_PNR_VLE"' BEGIN { exit (vle(ENVIRON["PNR_HEADING"], f) ? 0 : 1) }'; }   # ENVIRON, not -v: -v unescapes backslashes
 
 usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] | --gate [--require-ids] [--ids-base <rev>] | --selftest" >&2; exit 2; }
 
@@ -89,14 +106,145 @@ extract_public_notes() {
   # dangling start (missing `<!-- public:end -->`) or an absent block emits NOTHING and returns non-zero,
   # so the caller fails closed. Without this, a forgotten end marker would spill the internal bullets
   # (everything to the next `## [` heading or EOF) straight into the public Release note (security HIGH).
+  # ONE marker grammar (SWAS-366). rc 0 = a block (printed), rc 1 = no block, rc 3 = a MALFORMED block, with
+  # nothing printed: two markers on one line, or a second start before the end. The gate reads rc 3 as the
+  # `[malformed-block]` finding and the publish path refuses it, so a one-line block can no longer open a block
+  # that spills the internal bullets after it. The lines ending `# PNR-RC3` or `# PNR-BOTH` are the rc-3 clause
+  # (the selftest mutant PNM2 deletes both; PNM4 deletes only the both-markers line, `# PNR-BOTH`). The text before the first `## [` heading (the header prose) is not an entry.
   awk -v ver="$_epn_ver" '
     index($0, "## [" ver "]") == 1 { insec=1; next }                 # closing "]" stops 9.9.9==9.9.99
     insec && index($0, "## [") == 1 { exit }                         # left the entry (emit iff done)
-    insec && index($0, "<!-- public:start -->") { started=1; next }
-    insec && started && index($0, "<!-- public:end -->") { done=1; exit }
-    insec && started { buf = buf $0 ORS }
-    END { if (done) printf "%s", buf; else exit 1 }
+    insec {
+      s = index($0, "<!-- public:start -->"); e = index($0, "<!-- public:end -->")
+      if (s && e) { bad = 1; exit }                                  # PNR-BOTH
+      if (s && started) { bad = 1; exit }                            # PNR-RC3
+      if (s) { started = 1; next }
+      if (e && started) { done = 1; exit }
+      if (started) buf = buf $0 ORS
+    }
+    END { if (bad) exit 3; if (done) printf "%s", buf; else exit 1 }
   ' "$_epn_file"
+}
+
+# --- SWAS-366 — a public block may not point at anything a public reader cannot open --------------------
+# The public repo is a generated mirror with no PR history, so a PR number there links to nothing or to the
+# wrong item (the v3.241.0 note cited #891 and #880-#889), and its change log and export-ignored files do not
+# exist. public_note_refs <changelog> <scope> [<tracker-conf>] reads the public blocks of <changelog> (<scope>
+# is a version, or `all`; PUBNOTE_REF_FLOOR and older are not graded; the header prose before the first
+# `## [` heading is not an entry) and prints one DEDUPLICATED line per finding, `[<kind>] CHANGELOG.md:<line>
+# [<version>]`, never the matched text. Kinds:
+#   [pr-ref]           #<digits> (not after a letter, digit, _, & or /), PR #N / PR#N, owner/repo#N, GH-N,
+#                      an encoded &#35; / &#x23; / &num; before a digit (any case), and a forge URL whose path
+#                      holds /pull(s)/, /issues/ or /commit(s)/ plus a hex run, or a scheme-less (or schemed)
+#                      github/gitlab/bitbucket .com/.org /<o>/<r>/ path under pull(s), issues, commit(s), compare,
+#                      tree or blob (an optional www. too). Over-denied on purpose: links into the public repo's own
+#                      tree/blob are refused. file.md#anchor is not a finding. A forge host written some other way, or a
+#                      self-hosted forge, passes (stated ceiling).
+#   [tracker-key]      <KEY><sep><digits>, sep one of space, _ or -, KEY = the project= value of <tracker-conf>
+#                      (default .kit/tracker.conf), case-INsensitive, word-bounded (a short or common-word key such
+#                      as IT can match prose like "it 3": it fails loudly and is cured by rewording). It must match ^[A-Z][A-Z0-9]+$, else rc 2 (it enters a
+#                      regex). No conf: one N/A note on stderr, unless CLAUDE.md declares the Jira backend
+#                      (the kit's own repo), where a missing conf is rc 2 (fail closed).
+#   [internal-pointer] the text [Unreleased], or the word changelog (any case).
+#   [export-ignored]   a path-like token (holds / or ends .md .sh .conf .yml .yaml .txt .json), minus trailing
+#                      punctuation and a leading ./ or /, that the root .gitattributes marks export-ignore
+#                      (git check-attr --stdin -z). A token that starts with .., holds a .. component or holds
+#                      :// is skipped. Only paths the file matches AS WRITTEN are seen: a directory pattern
+#                      or a path written without its last part passes (stated ceiling).
+# rc 0 clean · 1 findings · 2 could not read (fail closed). Tokens are cut in awk and travel through files, so no
+# token ever meets a shell glob or word split. The awk keeps every regex on one line ending `# PNK-<kind>`
+# where the selftest's per-kind mutants delete it. No awk builtin is used as a variable name (the F1 trap).
+public_note_refs() {
+  _pr_cl=$1; _pr_scope=$2; _pr_conf=${3:-$ROOT/.kit/tracker.conf}
+  [ -f "$_pr_cl" ] || { echo "SCAN-ERROR: no changelog to read" >&2; return 2; }
+  _pr_d=$(mktemp -d "${TMPDIR:-/tmp}/sw-pnr.XXXXXX") || return 2
+  _pr_rc=0
+  _pnr_run "$_pr_cl" "$_pr_scope" "$_pr_conf" "$_pr_d" || _pr_rc=$?
+  rm -rf "$_pr_d"
+  return "$_pr_rc"
+}
+
+# _pnr_key <conf> — prints the tracker project key ('' = none to check); rc 2 = fail closed.
+_pnr_key() {
+  if [ ! -f "$1" ]; then
+    if [ -f "$ROOT/CLAUDE.md" ] && grep -Eq 'Backlog backend[^:]*: *Jira' "$ROOT/CLAUDE.md"; then
+      echo "SCAN-ERROR: CLAUDE.md declares the Jira backend but the tracker conf is missing, so the tracker key cannot be read" >&2
+      return 2
+    fi
+    echo "publish-public: note: no tracker conf - the [tracker-key] kind is N/A" >&2
+    return 0
+  fi
+  _pk=$(sed -n 's/^project=//p' "$1" | head -1 | tr -d '\r') || return 2
+  if ! printf '%s\n' "$_pk" | LC_ALL=C grep -Eq '^[A-Z][A-Z0-9]+$'; then
+    echo "SCAN-ERROR: the tracker conf project key is missing or is not an upper-case key" >&2
+    return 2
+  fi
+  printf '%s\n' "$_pk"
+}
+
+# _pnr_run <changelog> <scope> <conf> <workdir> — the body of public_note_refs (see above).
+_pnr_run() {
+  _pr_key=$(_pnr_key "$3") || return 2
+  # characters that wrap a token; the colon stays (a URL is skipped by its ://) and the brackets go below
+  _pr_wrap="[(){}<>,;=\"'\`!?|]"
+  LC_ALL=C awk -v scope="$2" -v floor="$PUBNOTE_REF_FLOOR" -v key="$_pr_key" -v wrap="$_pr_wrap" "$_PNR_VLE"'
+    function hit(kind) { printf "F\t%s\t%d\t%s\n", kind, NR, ver }
+    function tok(x) {
+      sub("[.:]+$", "", x); sub("^[.]/", "", x); sub("^/+", "", x)
+      if (x == "" || index(x, "://") || x ~ "^[.][.]" || x ~ "(^|/)[.][.](/|$)") return
+      if (index(x, "/") || x ~ "[.](md|sh|conf|yml|yaml|txt|json)$") printf "T\t%s\t%d\t%s\n", x, NR, ver
+    }
+    function scan(t,   lo, u, y, n, w, i) {
+      lo = tolower(t); u = t
+      gsub("([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+[.](md|sh|yml|yaml|txt|json|conf)#", "X", u)
+      if (u ~ "(^|[^A-Za-z0-9_&/])#[0-9]+" || lo ~ "(^|[^a-z0-9_])pr ?#[0-9]+" || u ~ "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+" || lo ~ "(^|[^a-z0-9_])gh-[0-9]+" || lo ~ "&(#35|#x23|num);[0-9]") hit("pr-ref")   # PNK-pr
+      n = split(lo, w, "[ \t]+")
+      for (i = 1; i <= n; i++) if ((index(w[i], "://") && w[i] ~ "/(pulls?|issues|commits?)/[0-9a-f]+") || w[i] ~ "(^|[^a-z0-9._-])(www[.])?(github|gitlab|bitbucket)[.](com|org)/[^/]+/[^/]+/(pulls?|issues|commits?|compare|tree|blob)/") hit("pr-ref")   # PNK-url
+      if (key != "" && lo ~ ("(^|[^a-z0-9_])" tolower(key) "[ _-][0-9]+([^a-z0-9_]|$)")) hit("tracker-key")   # PNK-key
+      if (index(lo, "[unreleased]") || index(lo, "changelog")) hit("internal-pointer")   # PNK-ptr
+      y = t; gsub("\\[", " ", y); gsub("\\]", " ", y); gsub(wrap, " ", y)
+      n = split(y, w, "[ \t]+")
+      for (i = 1; i <= n; i++) tok(w[i])
+    }
+    BEGIN { ver = ""; exempt = 0; on = 0 }
+    index($0, "## [") == 1 {
+      v = substr($0, 5); i = index(v, "]"); ver = (i > 0) ? substr(v, 1, i - 1) : v
+      on = 0
+      exempt = 0   # PNM5
+      if (vle(ver, floor)) exempt = 1
+      next
+    }
+    ver == "" || exempt || (scope != "all" && ver != scope) { next }
+    { s = index($0, "<!-- public:start -->"); e = index($0, "<!-- public:end -->") }
+    s && e { next }
+    s { on = 1; next }
+    e { on = 0; next }
+    on { scan($0) }
+  ' "$1" > "$4/raw" || { echo "SCAN-ERROR: the release-note reference read failed" >&2; return 2; }
+  awk -F '\t' '$1 == "F" { printf "[%s] CHANGELOG.md:%s [%s]\n", $2, $3, $4 }' "$4/raw" > "$4/found" || return 2
+  awk -F '\t' '$1 == "T" { print $2 }' "$4/raw" > "$4/toks.raw" || return 2
+  LC_ALL=C sort -u "$4/toks.raw" > "$4/toks" || return 2
+  : > "$4/exfound"
+  if [ -s "$4/toks" ]; then
+    _pnr_export_ignored "$4" || return 2
+  fi
+  LC_ALL=C sort -u "$4/found" "$4/exfound" > "$4/all" || return 2
+  if [ -s "$4/all" ]; then cat "$4/all"; return 1; fi
+  return 0
+}
+
+# _pnr_export_ignored <workdir> — asks git which of <workdir>/toks the root .gitattributes marks export-ignore,
+# and writes `[export-ignored]` findings for them to <workdir>/exfound. The answer is read by position, three
+# NUL-separated fields per path (path, attribute, value); a count that is not three per token fails closed.
+_pnr_export_ignored() {
+  tr '\n' '\000' < "$1/toks" > "$1/toks0" || return 2
+  git -C "$ROOT" check-attr --stdin -z export-ignore < "$1/toks0" > "$1/ca0" 2> "$1/ca.err" || return 2
+  [ ! -s "$1/ca.err" ] || return 2
+  tr '\000' '\n' < "$1/ca0" > "$1/ca" || return 2
+  _pe_n=$(wc -l < "$1/toks" | tr -d ' '); _pe_c=$(wc -l < "$1/ca" | tr -d ' ')
+  [ "$_pe_c" -eq $((_pe_n * 3)) ] || { echo "SCAN-ERROR: the attribute read did not answer every token" >&2; return 2; }
+  awk 'NR == FNR { tk[FNR] = $0; next } FNR % 3 == 0 && $0 == "set" { print tk[FNR / 3] }' "$1/toks" "$1/ca" > "$1/setfile" || return 2
+  awk -F '\t' 'NR == FNR { st[$0] = 1; next } $1 == "T" && ($2 in st) { printf "[export-ignored] CHANGELOG.md:%s [%s]\n", $3, $4 }' "$1/setfile" "$1/raw" > "$1/exfound"   # PNK-ex
 }
 
 # --- PUB-CHANGELOG — create the GitHub Release from the (already-scanned) curated note ---------------
@@ -396,6 +544,8 @@ _scan_tree() {
 # CHANGELOG.md is export-ignored, so the tree scan cannot see them). Read-only: no tag check, no dirty
 # check (it archives HEAD, so uncommitted edits are not scanned), no mirror, no network, no gitleaks
 # (the CI job it runs in already runs gitleaks over full history).
+# It also runs public_note_refs over every public block (SWAS-366: no PR number, tracker key, change-log pointer or
+# export-ignored path in a note) and reads the marker grammar (a malformed block is a finding).
 #   rc 0 clean · rc 1 a hit (each offending PATH printed, never an identifier value, plus one cure line)
 #   rc 2 a scan could not complete (fail-closed, same as the publish path)
 gate() {
@@ -440,10 +590,18 @@ gate() {
        on { print }' "$_gw/CHANGELOG.md" > "$_gw/note/release-notes.md" \
     || { echo "publish-public: gate: could not extract the public release-note blocks" >&2; exit 2; }
   _gvers=$(sed -n 's/^## \[\([^]]*\)\].*/\1/p' "$_gw/CHANGELOG.md") || { echo "publish-public: gate: could not list CHANGELOG versions" >&2; exit 2; }
-  _gi=0
+  _gi=0; _gexempt=0; : > "$_gw/findings"
+  # This loop runs in a SUBSHELL (it is the right side of a pipe), so a variable set in it is lost: each
+  # per-version finding is appended to $_gw/findings and read after the loop (SWAS-366, N6). A heading at or
+  # below the floor VERSION is not graded for a malformed block, the same compare as public_note_refs (S1).
   printf '%s\n' "$_gvers" | while IFS= read -r _gv; do
     [ -n "$_gv" ] || continue
-    extract_public_notes "$_gv" "$_gw/CHANGELOG.md" > "$_gw/note/v-$_gi.md" 2>/dev/null || : > "$_gw/note/v-$_gi.md"
+    _gexempt=0   # PNM5
+    if _pnr_exempt "$_gv"; then _gexempt=1; fi
+    _er=0
+    extract_public_notes "$_gv" "$_gw/CHANGELOG.md" > "$_gw/note/v-$_gi.md" 2>/dev/null || _er=$?
+    if [ "$_er" -ne 0 ]; then : > "$_gw/note/v-$_gi.md"; fi
+    if [ "$_er" -eq 3 ] && [ "$_gexempt" -eq 0 ]; then printf '[malformed-block] [%s]\n' "$_gv" >> "$_gw/findings"; fi   # PNM3
     _gi=$((_gi+1))
   done
   _gbad=0
@@ -459,6 +617,23 @@ gate() {
     echo "publish-public: gate: a CHANGELOG.md public block (release note) carries owner content, in:" >&2
     echo "  CHANGELOG.md (between <!-- public:start --> and <!-- public:end -->)" >&2
   fi
+  # SWAS-366: a public block must name nothing a public reader cannot open (references, change-log pointers,
+  # export-ignored paths, malformed markers). rc 2 is a read that could not complete: fail closed, never clean.
+  _gref=0; _gcure=0
+  public_note_refs "$_gw/CHANGELOG.md" all > "$_gw/refs.out" 2> "$_gw/refs.err" || _gref=$?   # PNM1
+  if [ "$_gref" -eq 2 ]; then
+    echo "publish-public: gate: the release-note reference check could not complete: $(_err_text "$_gw/refs.err")" >&2
+    exit 2
+  fi
+  if [ -s "$_gw/refs.err" ]; then sed 's/^/publish-public: gate: /' "$_gw/refs.err" >&2; fi
+  if [ "$_gref" -eq 1 ] || [ -s "$_gw/findings" ]; then
+    _gbad=1; _gcure=1
+    echo "publish-public: gate: a CHANGELOG.md public block (release note) holds something a public reader cannot open or is malformed, at:" >&2
+    cat "$_gw/refs.out" "$_gw/findings" 2>/dev/null | LC_ALL=C sort -u | sed 's/^/  /' >&2
+  fi
+  if [ "$_gcure" -ne 0 ]; then
+    echo "publish-public: gate: cure for those lines — a public block may not contain a # followed by digits (also PR#, owner/repo# or &#35;), a GH- number, a forge /pull(s)/, /issues/ or /commit(s)/ URL, or a github/gitlab/bitbucket URL (with or without a scheme or www.) under pull(s), issues, commit(s), compare, tree or blob, this project's tracker key with a number (any case, a space, _ or - between), the word changelog, [Unreleased], a path the export drops, or, in the block that ships, a marker that shares its line or opens twice. Reword it to name nothing a public reader cannot open (the public repo is a mirror with no PR history); see MAINTAINING.md section 3." >&2
+  fi
   if [ "$_gbad" -ne 0 ]; then
     echo "publish-public: gate: cure — replace the owner identifier with a neutral placeholder (reviewer-login / author-login); the identifier list is .publish-identifiers (export-ignored); a withheld-document path is cured by export-ignoring it in .gitattributes; a [name] hit is cured by renaming (the withheld component sits under the printed prefix: git ls-files '<prefix>/'); a [symlink] hit is cured by replacing the link with the file." >&2
     exit 1
@@ -473,11 +648,27 @@ gate() {
 # RED — the C2 vacuity this closes), plus the known FALSE-POSITIVE traps as GREEN fixtures, plus the
 # fail-closed rc contract.
 selftest() {
+  # FAIL CLOSED (SWAS-366, following SWAS-363's sentinel exit trap): an abort anywhere in this function (a set -u
+  # unbound variable, say) must never end the run green. bash 3.2 / sh take the EXIT trap's LAST status as the exit
+  # status, and the old cleanup trap ended in `rm -f`, so an abort exited 0. `_st_end` exits 0 only after the
+  # sentinel `_st_done=1` set immediately before the final `exit 0`; any other end exits 1. The one EXIT trap.
+  _st_done=0
+  _st_clean() { rm -rf "${_t:-}" "${_t_main:-}" "${_h:-}" "${_gb:-}"; rm -f "${_ids_main:-}" "${_hids:-}" "${_sef:-}" "${_st_ids0:-}"; }
+  _st_end() {
+    _st_code=0
+    [ "${_st_done:-0}" = 1 ] || _st_code=1   # PNM6
+    exit "$_st_code"
+  }
+  _t='' _t_main='' _h='' _gb='' _ids_main='' _hids='' _sef='' _st_ids0=''   # an inherited value must never reach the cleanup's rm
+  trap '_st_clean; _st_end' EXIT
+  _pnst_v=ok   # PNST-DIE
+  : "$_pnst_v"
   _t=$(mktemp -d "${TMPDIR:-/tmp}/sw-pub-st.XXXXXX") || die "mktemp failed"
   _fail=0
   # isolate the identifier config: a controlled token no source file contains, so the scan is exercised
   # without depending on (or embedding) the real owner identifiers.
   PUBLISH_ID_FILE=$(mktemp "${TMPDIR:-/tmp}/sw-pub-ids.XXXXXX") || die "mktemp failed"
+  _st_ids0=$PUBLISH_ID_FILE
   printf '# test identifiers\nACME-OWNER-TOKEN-42\nowner@example.test\nprivate-fork-dev\nOwner Human\nownerlogin\n' > "$PUBLISH_ID_FILE"
   # anchored: the offending path must appear as a WHOLE line, so no fixture can satisfy another's assertion.
   _hit()  { if sensitive_hits "$_t" | grep -qxF "$1"; then echo "  ok   RED   $2"; else echo "  FAIL missed   $2  ($1)"; _fail=$((_fail+1)); fi; }
@@ -565,7 +756,6 @@ selftest() {
   _sef=$(mktemp "${TMPDIR:-/tmp}/sw-pub-err-h.XXXXXX") || die "mktemp failed"
   _t=$_h; PUBLISH_ID_FILE=$_hids
   # trap-clean: every temp path above is reaped on ANY exit (a die or a signal included).
-  trap 'rm -rf "${_t_main:-}" "${_h:-}" "${_gb:-}"; rm -f "${_ids_main:-}" "${_hids:-}" "${_sef:-}"' EXIT
   trap 'exit 2' HUP INT TERM
   _fresh() { rm -rf "$_h"; mkdir -p "$_h/docs"; }
   _src()   { _srcr=0; _so=$(sensitive_hits "$_t" 2>"$_sef") || _srcr=$?; }
@@ -836,7 +1026,7 @@ EOF
     # (it is the machinery under test, not a shipped fixture), so it must not be exported into the scan.
     printf 'CHANGELOG.md export-ignore\nscripts/publish-public.sh export-ignore\n' > "$1/.gitattributes"
     printf '%s\n' "$2" > "$1/docs/fixture.md"
-    printf '# Changelog\n\n## [1.0.0]\n<!-- public:start -->\n%s\n<!-- public:end -->\n- internal bullet\n' "$3" > "$1/CHANGELOG.md"
+    printf '# Changelog\n\n## [9.0.0]\n<!-- public:start -->\n%s\n<!-- public:end -->\n- internal bullet\n' "$3" > "$1/CHANGELOG.md"
     ( cd "$1" && git init -q && git config user.email t@t && git config user.name t \
         && git add -A && git commit -q -m fixture ) >/dev/null 2>&1
   }
@@ -879,15 +1069,18 @@ EOF
   if [ "$_grc" -eq 0 ]; then echo "  ok   GATE  identifier only in the internal (non-public) changelog, even after an inline marker mention -> rc 0 (not shipped)"
   else echo "  FAIL GATE  internal-only plant should not red, got rc $_grc"; _fail=$((_fail+1)); fi
 
-  # S-1: the gate must scan AT LEAST what the publish ships. A line naming BOTH markers inside a `## [v]`
-  # section opens a block for extract_public_notes (the publish's extractor) — the gate scans its output too.
+  # S-1: the gate must scan AT LEAST what the publish ships, and the gate and the publish share ONE marker
+  # grammar. A line naming BOTH markers inside a `## [v]` section used to open a block for extract_public_notes;
+  # since SWAS-366 it is a MALFORMED block (rc 3), nothing is shipped from it, and the gate reds it as a
+  # `[malformed-block]` finding. (This cell's old needle, "CHANGELOG.md (between", needed the old opening
+  # behaviour; the design, section 3.1 step 2, replaces it. PN7 and PN13 hold the new contract.)
   _gate_repo "$_t/gate-both" "a clean fixture" "A clean user-facing summary."
-  printf '## [2.0.0]\n> prose <!-- public:start -->x<!-- public:end --> inline\nthanks to ownerlogin\n<!-- public:end -->\n' >> "$_t/gate-both/CHANGELOG.md"
+  printf '## [9.1.0]\n> prose <!-- public:start -->x<!-- public:end --> inline\nthanks to ownerlogin\n<!-- public:end -->\n' >> "$_t/gate-both/CHANGELOG.md"
   _gate_commit "$_t/gate-both"
   _gate_run "$_t/gate-both"
-  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qF "CHANGELOG.md (between"; then
-    echo "  ok   GATE  both-markers line inside a version section: what the publish extractor ships is scanned -> rc 1"
-  else echo "  FAIL GATE  both-markers divergence: want rc 1 naming the release note, got rc $_grc"; _fail=$((_fail+1)); fi
+  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qF "[malformed-block] [9.1.0]"; then
+    echo "  ok   GATE  both-markers line inside a version section: a malformed block, refused by the one grammar -> rc 1"
+  else echo "  FAIL GATE  both-markers line: want rc 1 naming [malformed-block] [9.1.0], got rc $_grc"; _fail=$((_fail+1)); fi
   _no_value "both-markers plant" "ownerlogin"
 
   # S-2: fail-closed WIRING — an exporter that fails, or a missing CHANGELOG, is rc 2 (never clean, never rc 1/0).
@@ -968,9 +1161,264 @@ EOF
     else echo "  ok   GATE  an unchanged list prints no weaker-than-base line (the line above is load-bearing)"; fi
   else echo "  FAIL GATE  setup: the base commit carries no list"; _fail=$((_fail+1)); fi
 
+  # --- SWAS-366: a public block may not point at anything a public reader cannot open --------------------
+  # public_note_refs and the one marker grammar, end to end through `--gate` on throwaway repos that carry COPIES
+  # of the real scripts. In a fixture the heading is line 3, the start marker line 4, so body line k is
+  # CHANGELOG.md line k+4. Mutants are scratch copies of the real script with the lines ending `# <token>`
+  # deleted (a `cmp -s` guard proves each differs); the cell then shows the check was load-bearing.
+  echo "publish-public --selftest: release-note references and the marker grammar (SWAS-366)"
+  _pn_mk() {  # <dir> <heading> <body> [tracker-conf-text] [attributes-line] [claude-md-text]
+    [ "$#" -ge 3 ] || { echo "  FAIL _pn_mk: arity (want at least 3 arguments, got $#)"; _fail=$((_fail+1)); return 0; }
+    _gate_repo "$1" "a clean fixture" "x"
+    printf '# Changelog\n\n## [%s]\n<!-- public:start -->\n%s\n<!-- public:end -->\n- internal bullet\n' "$2" "$3" > "$1/CHANGELOG.md"
+    if [ -n "${4:-}" ]; then mkdir -p "$1/.kit"; printf '%s\n' "$4" > "$1/.kit/tracker.conf"; fi
+    if [ -n "${5:-}" ]; then printf '%s\n' "$5" >> "$1/.gitattributes"; fi
+    if [ -n "${6:-}" ]; then printf '%s\n' "$6" > "$1/CLAUDE.md"; fi
+    _gate_commit "$1"
+  }
+  _pn_raw() {  # <dir> <changelog-file> — a gate fixture whose CHANGELOG.md is exactly <changelog-file>
+    [ "$#" -ge 2 ] || { echo "  FAIL _pn_raw: arity (want 2 arguments, got $#)"; _fail=$((_fail+1)); return 0; }
+    _gate_repo "$1" "a clean fixture" "x"
+    cp "$2" "$1/CHANGELOG.md"
+    _gate_commit "$1"
+  }
+  _pn_has() {  # <label> <needle> — the last gate output holds the needle
+    if printf '%s\n' "$_gout" | grep -qF -e "$2"; then echo "  ok   PN    $1"
+    else echo "  FAIL PN    $1: the gate output lacks '$2'"; _fail=$((_fail+1)); fi
+  }
+  _pn_not() {  # <label> <needle> — the last gate output does not hold the needle
+    if printf '%s\n' "$_gout" | grep -qF -e "$2"; then echo "  FAIL PN    $1: the gate output holds '$2'"; _fail=$((_fail+1))
+    else echo "  ok   PN    $1"; fi
+  }
+  _pn_miss() {  # <label> <needle> — a mutant run: the gate still ran and reds (rc 1), and the needle is gone
+    case "$_grc:$_gout" in
+      1:*"$2"*) echo "  FAIL PN    $1: the mutant still reports '$2'"; _fail=$((_fail+1)) ;;
+      1:*) echo "  ok   PN    $1" ;;
+      *) echo "  FAIL PN    $1: the mutant run did not red cleanly (rc $_grc), so a missing needle proves nothing"; _fail=$((_fail+1)) ;;
+    esac
+  }
+  _pn_ex() {  # <label> <want-rc> <version> <file> — extract_public_notes' rc and output (sets _pn_out)
+    _pn_rc=0; _pn_out=$(extract_public_notes "$3" "$4") || _pn_rc=$?
+    if [ "$_pn_rc" -eq "$2" ]; then echo "  ok   PN    $1 -> rc $_pn_rc"
+    else echo "  FAIL PN    $1: want rc $2, got rc $_pn_rc"; _fail=$((_fail+1)); fi
+  }
+  _pn_mutant() {  # <dir> <token> <label> — a copy of the red fixture whose script lacks the lines ending "# <token>"
+    rm -rf "$1"; cp -R "$_t/pn-red" "$1"
+    grep -v "# $2\$" "$ROOT/scripts/publish-public.sh" > "$1/scripts/publish-public.sh"
+    if cmp -s "$ROOT/scripts/publish-public.sh" "$1/scripts/publish-public.sh"; then
+      echo "  FAIL PNM   $3: the mutant is identical to the original, so it proves nothing"; _fail=$((_fail+1))
+    fi
+    _gate_run "$1"
+  }
+
+  # (a) every refused shape, one per line, in one block of a fixture that declares the key SWAS and an export-ignored path.
+  _pn_body=$(printf '%s\n' 'fixed in #880' 'see owner/repo#12' 'see gh-12' 'see PR#880' 'see &#35;880' 'see &#x23;880' \
+    'see https://github.com/o/r/pull/12' 'see https://github.com/o/r/commit/abc123' 'see SWAS-363' 'see &NUM;880' 'see &#X23;880' \
+    'the [Unreleased] line' 'read the Changelog' 'see docs/private.md' 'see ./docs/private.md' 'see /docs/private.md')
+  _pn_mk "$_t/pn-red" Unreleased "$_pn_body" 'project=SWAS' 'docs/private.md export-ignore'
+  _gate_run "$_t/pn-red"
+  _want_rc 1 "PN    a block holding every refused shape -> rc 1" "PN  refused shapes"
+  _pn_has "PN1   #880 -> [pr-ref] with line and version"        "[pr-ref] CHANGELOG.md:5 [Unreleased]"
+  _pn_has "PN2   owner/repo#12"                                   "[pr-ref] CHANGELOG.md:6 [Unreleased]"
+  _pn_has "PN3   gh-12 (lower case)"                              "[pr-ref] CHANGELOG.md:7 [Unreleased]"
+  _pn_has "PN3b  PR#880"                                          "[pr-ref] CHANGELOG.md:8 [Unreleased]"
+  _pn_has "PN3c  &#35;880"                                        "[pr-ref] CHANGELOG.md:9 [Unreleased]"
+  _pn_has "PN3c  &#x23;880"                                       "[pr-ref] CHANGELOG.md:10 [Unreleased]"
+  _pn_has "PN3d  a forge /pull/ URL"                              "[pr-ref] CHANGELOG.md:11 [Unreleased]"
+  _pn_has "PN3d  a forge /commit/ URL"                            "[pr-ref] CHANGELOG.md:12 [Unreleased]"
+  _pn_has "PN3e  the fixture conf's key with a number"            "[tracker-key] CHANGELOG.md:13 [Unreleased]"
+  _pn_has "PN3f  &NUM;880 (any case)"                             "[pr-ref] CHANGELOG.md:14 [Unreleased]"
+  _pn_has "PN3f  &#X23;880 (any case)"                            "[pr-ref] CHANGELOG.md:15 [Unreleased]"
+  _pn_has "PN4   the [Unreleased] pointer"                        "[internal-pointer] CHANGELOG.md:16 [Unreleased]"
+  _pn_has "PN4   the word changelog, any case"                    "[internal-pointer] CHANGELOG.md:17 [Unreleased]"
+  _pn_has "PN5   an export-ignored path"                          "[export-ignored] CHANGELOG.md:18 [Unreleased]"
+  _pn_has "PN5s  ./docs/private.md (leading ./ stripped)"         "[export-ignored] CHANGELOG.md:19 [Unreleased]"
+  _pn_has "PN5s  /docs/private.md (leading / stripped)"           "[export-ignored] CHANGELOG.md:20 [Unreleased]"
+  _no_value "finding lines" "docs/private.md"
+
+  # (b) the negatives: none of these is a finding, and none of them errors (the same fixture's key and attributes).
+  _pn_neg=$(printf '%s\n' 'see MAINTAINING.md#3-releasing' 'shipped as v3.241.0 after issue five' \
+    'CVE-2024-1, SHA-256 and UTF-8 are not keys' 'see ../x.md, https://e.org/a.md, /etc/x.md and docs/*.md' 'see docs/public.md')
+  _pn_mk "$_t/pn-neg" 9.0.0 "$_pn_neg" 'project=SWAS' 'docs/private.md export-ignore'
+  _gate_run "$_t/pn-neg"
+  _want_rc 0 "PN6   anchors, versions, CVE/SHA/UTF ids, odd and exported paths are clean -> rc 0" "PN6  negatives"
+
+  # (c) the tracker key comes ONLY from the conf: no conf is N/A, a bad key is rc 2, and in a Jira-declared tree a missing conf is rc 2.
+  _pn_mk "$_t/pn-nokey" 9.0.0 'see SWAS-363'
+  _gate_run "$_t/pn-nokey"
+  _want_rc 0 "PN3z  no conf and no Jira declaration: the key kind is N/A -> rc 0" "PN3z  no conf"
+  _pn_mk "$_t/pn-badkey" 9.0.0 'a clean line' 'project=sw.s'
+  _gate_run "$_t/pn-badkey"
+  _want_rc 2 "PN3k  a project key that is not ^[A-Z][A-Z0-9]+\$ -> rc 2 (fail closed)" "PN3k  bad key"
+  _pn_mk "$_t/pn-kitnoconf" 9.0.0 'a clean line' '' '' '- **Backlog backend**: Jira (project X)'
+  _gate_run "$_t/pn-kitnoconf"
+  _want_rc 2 "PN3k  a Jira-declared tree with no conf -> rc 2 (fail closed, not N/A)" "PN3k  kit tree without conf"
+
+  # (d) one marker grammar: extract_public_notes' rc 3 for a malformed block, the gate's [malformed-block] finding.
+  printf '# Changelog\n\n## [9.9.9]\n<!-- public:start -->one line<!-- public:end -->\n- INTERNAL-ONE\n<!-- public:start -->\nreal block\n<!-- public:end -->\n' > "$_t/pn7.md"
+  _pn_ex "PN7   a one-line block in an entry: malformed" 3 9.9.9 "$_t/pn7.md"
+  if [ -z "$_pn_out" ]; then echo "  ok   PN    PN7b  nothing is emitted from a malformed block"
+  else echo "  FAIL PN    PN7b: a malformed block emitted text"; _fail=$((_fail+1)); fi
+  _pn_ex "PN7c  no block in the entry: rc 1, not 3" 1 9.9.7 "$_t/pn7.md"
+  printf '# Changelog\n\n## [9.9.9]\n<!-- public:start -->\na\n<!-- public:start -->\nb\n<!-- public:end -->\n' > "$_t/pn8.md"
+  _pn_ex "PN8   a second start before the end: malformed" 3 9.9.9 "$_t/pn8.md"
+  _pn_raw "$_t/pn-g7" "$_t/pn7.md"
+  _gate_run "$_t/pn-g7"
+  _want_rc 1 "PN7   the gate reds a one-line block in an entry -> rc 1" "PN7  gate"
+  _pn_has "PN7   the finding names the version" "[malformed-block] [9.9.9]"
+  printf '# Changelog\n\n## [9.1.0]\n<!-- public:start -->\nfine\n<!-- public:end -->\n\n## [9.0.0]\n<!-- public:start -->x<!-- public:end -->\n- i\n' > "$_t/pn13.md"
+  _pn_raw "$_t/pn-g13" "$_t/pn13.md"
+  _gate_run "$_t/pn-g13"
+  _want_rc 1 "PN13  a malformed block in the SECOND heading still reds the gate (the loop is a subshell)" "PN13  second heading"
+  _pn_has "PN13  the finding names the second heading" "[malformed-block] [9.0.0]"
+  _pn_not "PN13  and not the clean first heading"      "[malformed-block] [9.1.0]"
+  printf '# Changelog\n\n> each entry carries a <!-- public:start -->...<!-- public:end --> block\n\n## [9.0.0]\n<!-- public:start -->\nclean\n<!-- public:end -->\n' > "$_t/pn9.md"
+  _pn_raw "$_t/pn-g9" "$_t/pn9.md"
+  _gate_run "$_t/pn-g9"
+  _want_rc 0 "PN9   the header prose naming both markers on a line is not an entry -> rc 0" "PN9  preamble"
+
+  # (e) the floor: the heading PUBNOTE_REF_FLOOR names and every older one are not graded; newer ones are.
+  printf '# Changelog\n\n## [3.241.0]\n<!-- public:start -->\nclean\n<!-- public:end -->\n\n## [3.240.0]\n<!-- public:start -->\nfixed in #880\n<!-- public:end -->\n\n## [3.239.0]\n<!-- public:start -->\nPR #12\n<!-- public:end -->\n\n## [3.238.0]\n<!-- public:start -->PR #12<!-- public:end -->\n' > "$_t/pn11a.md"
+  _pn_raw "$_t/pn-g11a" "$_t/pn11a.md"
+  _gate_run "$_t/pn-g11a"
+  _want_rc 0 "PN11  a reference at the floor and strictly older, and a malformed block older still, are not graded -> rc 0" "PN11  below the floor"
+  _pn_not "PN11  the heading strictly older than the floor is not flagged" "[3.239.0]"
+  _pn_not "PN11  nor the older malformed block"                           "[3.238.0]"
+  printf '# Changelog\n\n## [3.241.0]\n<!-- public:start -->\nfixed in #880\n<!-- public:end -->\n\n## [3.240.0]\n<!-- public:start -->\nfixed in #881\n<!-- public:end -->\n' > "$_t/pn11b.md"
+  _pn_raw "$_t/pn-g11b" "$_t/pn11b.md"
+  _gate_run "$_t/pn-g11b"
+  _want_rc 1 "PN11  the same reference above the floor reds -> rc 1" "PN11  above the floor"
+  _pn_has "PN11  the finding names the graded version" "[pr-ref] CHANGELOG.md:5 [3.241.0]"
+  _pn_not "PN11  and not the exempt one"               "[3.240.0]"
+
+  # (e2) the floor is a VERSION compare, not a position (security S1): a stray floor heading above a newer
+  # section (a fenced example, a misordered merge) must not exempt the newer block; `Unreleased` is never exempt.
+  printf '# Changelog\n\n## [3.240.0]\nstray example heading\n\n## [3.242.0]\n<!-- public:start -->\nfixed in #880\n<!-- public:end -->\n' > "$_t/pn14.md"
+  _pn_raw "$_t/pn-g14" "$_t/pn14.md"
+  _gate_run "$_t/pn-g14"
+  _want_rc 1 "PN14  a stray floor heading above a newer section does not exempt it -> rc 1" "PN14  stray floor heading"
+  _pn_has "PN14  the finding names the newer version" "[pr-ref] CHANGELOG.md:8 [3.242.0]"
+  printf '# Changelog\n\n## [3.240.0]\nstray example heading\n\n## [Unreleased]\n<!-- public:start -->\nfixed in #880\n<!-- public:end -->\n' > "$_t/pn14b.md"
+  _pn_raw "$_t/pn-g14b" "$_t/pn14b.md"
+  _gate_run "$_t/pn-g14b"
+  _want_rc 1 "PN14b [Unreleased] below a stray floor heading is still graded -> rc 1" "PN14b  Unreleased"
+  _pn_has "PN14b the finding names [Unreleased]" "[pr-ref] CHANGELOG.md:8 [Unreleased]"
+
+  # (e3) forge URLs without a scheme and other forge paths (S3); the tracker key in any case, with a space or _ (S4).
+  _pn_mk "$_t/pn-g3s" 9.0.0 "$(printf '%s\n' 'see github.com/o/r/pull/12' 'see github.com/o/r/commit/abc' 'see (github.com/o/r/blob/main/x)' 'see https://gitlab.com/o/r/tree/main' 'see www.github.com/o/r/pull/12')" 'project=SWAS'
+  _gate_run "$_t/pn-g3s"
+  _pn_has "PN3s  a scheme-less /pull/ URL"        "[pr-ref] CHANGELOG.md:5 [9.0.0]"
+  _pn_has "PN3s  a scheme-less /commit/ URL"      "[pr-ref] CHANGELOG.md:6 [9.0.0]"
+  _pn_has "PN3s  a wrapped scheme-less /blob/ URL" "[pr-ref] CHANGELOG.md:7 [9.0.0]"
+  _pn_has "PN3s  a /tree/ URL on another forge"   "[pr-ref] CHANGELOG.md:8 [9.0.0]"
+  _pn_has "PN3s  a www.-prefixed scheme-less URL"  "[pr-ref] CHANGELOG.md:9 [9.0.0]"
+  _pn_mk "$_t/pn-g3u" 9.0.0 "$(printf '%s\n' 'see swas-363' 'and SWAS 363' 'and Swas_363')" 'project=SWAS'
+  _gate_run "$_t/pn-g3u"
+  _pn_has "PN3u  the key in lower case"      "[tracker-key] CHANGELOG.md:5 [9.0.0]"
+  _pn_has "PN3u  the key with a space"       "[tracker-key] CHANGELOG.md:6 [9.0.0]"
+  _pn_has "PN3u  the key in mixed case with _" "[tracker-key] CHANGELOG.md:7 [9.0.0]"
+
+  # (f) one finding per line and kind, and the publish path runs the check before gitleaks.
+  _pn_mk "$_t/pn-g12" 9.0.0 'fixed in #880 and again #880'
+  _gate_run "$_t/pn-g12"
+  _pn_n=$(printf '%s\n' "$_gout" | grep -cF '[pr-ref] CHANGELOG.md:5 [9.0.0]' || true)
+  if [ "$_pn_n" -eq 1 ]; then echo "  ok   PN    PN12  the same reference twice on a line is one finding line"
+  else echo "  FAIL PN    PN12: want 1 finding line, got $_pn_n"; _fail=$((_fail+1)); fi
+  _pn_l1=$(grep -n '^NOTE_REFS=\$(public_note_refs ' "$ROOT/scripts/publish-public.sh" | head -1 | cut -d: -f1)
+  _pn_l2=$(grep -n '^gitleaks detect --source "\$NOTE_DIR"' "$ROOT/scripts/publish-public.sh" | head -1 | cut -d: -f1)
+  if [ -n "$_pn_l1" ] && [ -n "$_pn_l2" ] && [ "$_pn_l1" -lt "$_pn_l2" ]; then
+    echo "  ok   PN    PN10  publish step 2b checks the note's references before gitleaks (lines $_pn_l1 < $_pn_l2)"
+  else echo "  FAIL PN    PN10: step 2b does not call public_note_refs before gitleaks (lines '${_pn_l1}' / '${_pn_l2}')"; _fail=$((_fail+1)); fi
+
+  # (g) mutants: each deletes one check from a copy of the script and the cell above must then miss its finding.
+  _pn_mutant "$_t/pn-m1" PNM1 "PNM1"
+  _want_rc 0 "PNM1  without the public_note_refs call the red fixture is CLEAN (the call is load-bearing) -> rc 0" "PNM1  call deleted"
+  _pn_mutant "$_t/pn-mpr" PNK-pr "PNK-pr"
+  _pn_miss "PNK-pr  without the main reference rule line 5 is missed (the rule is load-bearing)"     "[pr-ref] CHANGELOG.md:5 "
+  _pn_mutant "$_t/pn-murl" PNK-url "PNK-url"
+  _pn_miss "PNK-url without the URL rule line 11 is missed (the rule is load-bearing)"             "[pr-ref] CHANGELOG.md:11 "
+  _pn_mutant "$_t/pn-mkey" PNK-key "PNK-key"
+  _pn_miss "PNK-key without the key rule line 13 is missed (the rule is load-bearing)"             "[tracker-key] CHANGELOG.md:13 "
+  _pn_mutant "$_t/pn-mptr" PNK-ptr "PNK-ptr"
+  _pn_miss "PNK-ptr without the pointer rule line 16 is missed (the rule is load-bearing)"         "[internal-pointer] CHANGELOG.md:16 "
+  _pn_mutant "$_t/pn-mex" PNK-ex "PNK-ex"
+  _pn_miss "PNK-ex  without the attribute join line 18 is missed (the join is load-bearing)"       "[export-ignored] CHANGELOG.md:18 "
+  # PNM5: with the per-heading reset deleted the exemption is a sticky latch again; PN14's fixture must then come
+  # out CLEAN (rc 0, no [pr-ref]). Strict: any other outcome is a FAIL.
+  rm -rf "$_t/pn-m5"; cp -R "$_t/pn-g14" "$_t/pn-m5"
+  grep -v "# PNM5\$" "$ROOT/scripts/publish-public.sh" > "$_t/pn-m5/scripts/publish-public.sh"
+  if cmp -s "$ROOT/scripts/publish-public.sh" "$_t/pn-m5/scripts/publish-public.sh"; then echo "  FAIL PNM   PNM5: the mutant is identical to the original"; _fail=$((_fail+1)); fi
+  _gate_run "$_t/pn-m5"
+  case "$_grc:$_gout" in
+    0:*"[pr-ref]"*) echo "  FAIL PNM   PNM5: rc 0 yet a [pr-ref] is printed, which is inconsistent"; _fail=$((_fail+1)) ;;
+    0:*) echo "  ok   PNM   PNM5  with the reset deleted (a positional latch) PN14's fixture is CLEAN (the version compare is load-bearing)" ;;
+    *) echo "  FAIL PNM   PNM5: the mutant run gave rc $_grc, not a clean rc 0, so it proves nothing"; _fail=$((_fail+1)) ;;
+  esac
+  rm -rf "$_t/pn-m3"; cp -R "$_t/pn-g7" "$_t/pn-m3"
+  grep -v "# PNM3\$" "$ROOT/scripts/publish-public.sh" > "$_t/pn-m3/scripts/publish-public.sh"
+  if cmp -s "$ROOT/scripts/publish-public.sh" "$_t/pn-m3/scripts/publish-public.sh"; then echo "  FAIL PNM   PNM3: the mutant is identical to the original"; _fail=$((_fail+1)); fi
+  _gate_run "$_t/pn-m3"
+  _want_rc 0 "PNM3  without the gate's rc-3 finding the one-line block fixture is CLEAN (the finding is load-bearing) -> rc 0" "PNM3  finding deleted"
+  # PNM2 runs the extractor itself: the function text of a copy without its rc-3 clause leaks the internal bullet.
+  sed -n '/^extract_public_notes() {/,/^}/p' "$ROOT/scripts/publish-public.sh" > "$_t/pn-fn.orig"
+  grep -v -e '# PNR-RC3$' -e '# PNR-BOTH$' "$_t/pn-fn.orig" > "$_t/pn-fn.mut"
+  if cmp -s "$_t/pn-fn.orig" "$_t/pn-fn.mut"; then echo "  FAIL PNM   PNM2: the mutant is identical to the original"; _fail=$((_fail+1)); fi
+  _pn_m2=$( . "$_t/pn-fn.mut"; extract_public_notes 9.9.9 "$_t/pn7.md" ) || true
+  case $_pn_m2 in
+    *INTERNAL-ONE*) echo "  ok   PNM   PNM2  without the rc-3 clause PN7b leaks the internal bullet (the clause is load-bearing)" ;;
+    *) echo "  FAIL PNM   PNM2: the mutant did not leak, so PN7b proves nothing"; _fail=$((_fail+1)) ;;
+  esac
+  # PNM4: a grammar that wrongly ACCEPTS a line holding both markers (the `# PNR-BOTH` line deleted) must turn
+  # S-1 red: the both-markers fixture then yields no `[malformed-block]`. The mutant must still RUN and red on
+  # the planted identifier (rc 1 with the "CHANGELOG.md (between" finding), so a crash cannot pass for red.
+  rm -rf "$_t/pn-m4"; cp -R "$_t/gate-both" "$_t/pn-m4"
+  grep -v "# PNR-BOTH\$" "$ROOT/scripts/publish-public.sh" > "$_t/pn-m4/scripts/publish-public.sh"
+  if cmp -s "$ROOT/scripts/publish-public.sh" "$_t/pn-m4/scripts/publish-public.sh"; then echo "  FAIL PNM   PNM4: the mutant is identical to the original"; _fail=$((_fail+1)); fi
+  _gate_run "$_t/pn-m4"
+  case "$_grc:$_gout" in
+    1:*"[malformed-block]"*) echo "  FAIL PNM   PNM4: the mutant still reports [malformed-block], so S-1 proves nothing"; _fail=$((_fail+1)) ;;
+    1:*"CHANGELOG.md (between"*) echo "  ok   PNM   PNM4  without the both-markers clause S-1 goes red (the clause is load-bearing)" ;;
+    *) echo "  FAIL PNM   PNM4: the mutant run did not red on the planted identifier (rc $_grc), so it proves nothing"; _fail=$((_fail+1)) ;;
+  esac
+
+  # PNST: the selftest fails CLOSED. A scratch copy whose selftest aborts before its first section (the line
+  # ending `# PNST-DIE` deleted, so the next line reads an unbound variable under set -u) must exit NON-zero and
+  # never print "all passed"; this is the old fail-open (an abort exited 0). PNM6 deletes the sentinel clause
+  # (`# PNM6`) from the same dying copy and the abort must then exit 0, which shows PNST is load-bearing.
+  # The copy dies on its first lines, so it never runs a nested selftest.
+  # Depth guard: each copy runs under PNST_NESTED=1 with _pnst_v unset, and runs ONLY if its `cmp -s` guard shows it
+  # differs (an identical copy would be a full nested selftest, which would recurse without bound). A nested
+  # selftest that ever reaches this point exits 1 here.
+  [ "${PNST_NESTED:-0}" != 1 ] || { echo "publish-public --selftest: nested PNST refused" >&2; exit 1; }
+  mkdir -p "$_t/pnst/scripts" "$_t/pnm6/scripts"
+  grep -v "# PNST-DIE\$" "$ROOT/scripts/publish-public.sh" > "$_t/pnst/scripts/publish-public.sh"
+  if cmp -s "$ROOT/scripts/publish-public.sh" "$_t/pnst/scripts/publish-public.sh"; then
+    echo "  FAIL PNST  the dying copy is identical to the original (not run)"; _fail=$((_fail+1))
+  else
+    _pnst_rc=0; env -u _pnst_v PNST_NESTED=1 sh "$_t/pnst/scripts/publish-public.sh" --selftest > "$_t/pnst/out" 2>&1 || _pnst_rc=$?
+    _pnst_out=$(cat "$_t/pnst/out")
+    case "$_pnst_rc:$_pnst_out" in
+      0:*|*"all passed"*) echo "  FAIL PNST  an aborted selftest exited $_pnst_rc or printed 'all passed' (fail-open)"; _fail=$((_fail+1)) ;;
+      *_pnst_v*) echo "  ok   PNST  a selftest that aborts before its first section exits non-zero (rc $_pnst_rc) and prints no 'all passed'" ;;
+      *) echo "  FAIL PNST  the dying copy exited $_pnst_rc but not through the planted unbound variable, so it proves nothing"; _fail=$((_fail+1)) ;;
+    esac
+  fi
+  grep -v -e "# PNST-DIE\$" -e "# PNM6\$" "$ROOT/scripts/publish-public.sh" > "$_t/pnm6/scripts/publish-public.sh"
+  if cmp -s "$_t/pnst/scripts/publish-public.sh" "$_t/pnm6/scripts/publish-public.sh"; then
+    echo "  FAIL PNM   PNM6: the mutant is identical to the dying copy (not run)"; _fail=$((_fail+1))
+  else
+    _pnm6_rc=0; env -u _pnst_v PNST_NESTED=1 sh "$_t/pnm6/scripts/publish-public.sh" --selftest > "$_t/pnm6/out" 2>&1 || _pnm6_rc=$?
+    _pnm6_out=$(cat "$_t/pnm6/out")
+    case "$_pnm6_rc:$_pnm6_out" in
+      0:*_pnst_v*) echo "  ok   PNM   PNM6  without the sentinel clause the aborted selftest exits 0 through the same abort (the clause, and so PNST, is load-bearing)" ;;
+      *) echo "  FAIL PNM   PNM6: without the sentinel clause the aborted selftest exited $_pnm6_rc (want 0 with the _pnst_v abort in its output), so PNST proves nothing"; _fail=$((_fail+1)) ;;
+    esac
+  fi
+
   rm -rf "$_t" "$_h"; rm -f "$PUBLISH_ID_FILE" "$_hids" "$_sef"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }
   echo "publish-public --selftest: all passed"
+  _st_done=1
   exit 0
 }
 [ "$SELFTEST" -eq 1 ] && selftest
@@ -996,7 +1444,9 @@ fi
 # PUB-CHANGELOG — a release must carry a curated public note (fail-closed: never publish a release with
 # empty notes, and never fall back to the internal bullets). Checked on --dry-run too, so a missing block
 # is caught before the real publish, not after the tag is already pushed.
-PUBLIC_NOTES=$(extract_public_notes "$VERSION") || PUBLIC_NOTES=""
+PUBLIC_NOTES_RC=0
+PUBLIC_NOTES=$(extract_public_notes "$VERSION") || PUBLIC_NOTES_RC=$?
+[ "$PUBLIC_NOTES_RC" -ne 3 ] || die "the public block of $VERSION in CHANGELOG.md is malformed: two markers share a line, or a second start marker opens before the end (SWAS-366). Nothing published."
 [ -n "$PUBLIC_NOTES" ] || die "no public release note for $VERSION — add a complete '<!-- public:start -->…<!-- public:end -->' block to its CHANGELOG.md entry (a dangling start also fails here). It becomes the GitHub Release note; the internal bullets never ship."
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sw-publish.XXXXXX") || die "mktemp failed"
@@ -1044,6 +1494,14 @@ if ! NOTE_HITS=$(sensitive_hits "$NOTE_DIR"); then
   die "ABORT — the release note could not be scanned. Nothing published."
 fi
 [ -z "$NOTE_HITS" ] || die "ABORT — the release note for $VERSION carries withheld/owner content ($NOTE_HITS). Fix its CHANGELOG public block. Nothing published."
+# SWAS-366: the note may not point at anything a public reader cannot open (PR numbers, tracker keys, the change
+# log, export-ignored paths). rc 1 = findings, rc 2 = the check could not complete; both stop the publish here,
+# before gitleaks and before any push. The finding lines name a line and a version, never the matched text.
+NOTE_REFS_RC=0
+NOTE_REFS=$(public_note_refs "$ROOT/CHANGELOG.md" "$VERSION" 2>"$NOTE_DIR/refs.err") || NOTE_REFS_RC=$?
+[ "$NOTE_REFS_RC" -ne 2 ] || die "ABORT — the release note for $VERSION could not be checked for private references: $(_err_text "$NOTE_DIR/refs.err"). Nothing published."
+[ ! -s "$NOTE_DIR/refs.err" ] || say "      note: $(_err_text "$NOTE_DIR/refs.err")"
+[ "$NOTE_REFS_RC" -eq 0 ] || die "ABORT — the release note for $VERSION refers to something a public reader cannot open ($(printf '%s' "$NOTE_REFS" | tr '\n' ';')). Reword its CHANGELOG public block (MAINTAINING.md section 3). Nothing published."
 gitleaks detect --source "$NOTE_DIR" --no-git --redact --exit-code 1 >/dev/null 2>&1 \
   || die "ABORT — gitleaks found a secret in the release note for $VERSION. Nothing published."
 say "      release note: scanned clean"

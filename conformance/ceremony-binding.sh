@@ -4,7 +4,8 @@
 #
 # A Sensitive/Control-plane change-set MUST carry a design artifact that (a) is named by a recorded
 # `--gate design` GO SCOPED TO THIS CHANGE, (b) is tracked, not a symlink, and real rather than a stub,
-# and (c) is touched by the commit that GO approves. Ordinary change-sets are N-A: nothing is required.
+# and (c) is touched by the commit that GO approves (or, in the inherited form, a design-only GO at P whose
+# blob is identical). Ordinary change-sets are N-A: nothing is required.
 #
 # ⚠️ TWO ARMS SINCE 2026-08-15 (C8, GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS). A PURE
 # GOVERNANCE-RECORD change — a meta-control panel sitting plus its bookkeeping — has NO design of its
@@ -16,11 +17,12 @@
 # SAME CHAIN with exactly TWO deltas: the basis GLOB, and a GOVERNANCE DIFF-SHAPE GUARD requiring the
 # change's cumulative file list to be a SUBSET of the enumerated governance set (_gov_path_in_set).
 # The pass is therefore earned by a DERIVED property of the diff, never by an author's declaration.
-#   * `scripts/promotion-verify.sh` is UNCHANGED — `--gate` is free text there (prior art: the inert
+#   * `scripts/promotion-verify.sh` is UNCHANGED BY C8 (SWAS-392 later made `record` require `--basis` for
+#     `--gate design`) — `--gate` is free text there (prior art: the inert
 #     `gate: design-void`), so the new value costs the record tool nothing.
 #   * A record carrying BOTH accepted values is DEFECTIVE by DISQUALIFICATION, never dispatched to
 #     one arm by matcher order.
-#   * The DESIGN arm is byte-unchanged. The live defective record `1d9f0afa` (gate: design + a
+#   * The DESIGN arm is byte-unchanged BY C8. The live defective record `1d9f0afa` (gate: design + a
 #     meta-control basis) therefore STAYS defective — closing the gap does not retro-cure the
 #     ledger's evidence of it.
 #   * A MIXED PR (a governance record plus routed control-plane cures) still needs a design basis for
@@ -152,6 +154,29 @@
 #           dependency is real and is stated here rather than discovered later.
 #     Cure boarded as GOVERNANCE-GUARD-BASE-REF-PLUMB (LOW/XS: plumb `--base-ref` through
 #     `--changed-files` so both legs measure against the same named base).
+#   * THE INHERITED FORM (SWAS-392; owner ruling Q1, D-241025-2) — what its green does and does NOT prove.
+#     A design record whose `basis:` is `<P>:<path>` (anchored 7-40 hex, git's own notation) is judged
+#     by check_inherited_parent INSTEAD of the touch-the-basis check. GREEN proves: at P there is a
+#     design-only GO whose approver label is [committer] or stronger on every class; whose P was not
+#     COMMITTED by a forge identity (name or email, whatever the approver) and whose approver is not a
+#     forge identity (whatever the committer) — two unconditional refusals, STRICTER than design 2.3,
+#     a disclosed fail-closed deviation; that names a human GO-giver in `go-by`; whose approved-sha is
+#     P; which touches the path (a literal pathspec); that the graded head carries the SAME blob and the SAME regular-file mode; and that the
+#     child quotes the parent's go-by byte for byte and its token as exactly `inherits <P>: <token>`.
+#     It does NOT prove: that the BUILD matches the design (only the design FILE is identical; deltas
+#     in the build still owe an amendment GO — conduct, not enforced); that the design covers THIS
+#     scope (T5: the render, which prints the parent summary ahead of the fence, is the control); that
+#     the parent note is authentic (a note binds, it does not authenticate, T6/T8: an agent can mint a
+#     parent naming the owner in a `[self-asserted]` go-by); or that two records on one commit do not
+#     overwrite each other (SWAS-323: the child is keyed on a NON-HEAD branch commit, such as the plan
+#     commit, which makes an overwrite unlikely, not impossible).
+#   * BRANCH-RETENTION DEPENDENCY (design 2.4 (b)): P must resolve in the clone that runs this gate. CI
+#     fetches branches and notes, not `refs/pull/*/head`, so the branch that carries P must stay on
+#     origin (D-240819-4); if it is deleted every inherited record refuses (fail closed) and the
+#     refusal names the cause.
+#   * LEGACY PARENTS (design 2.3a): a parent recorded with NO basis binds only when its full sha is on
+#     the committed CB_LEGACY_PARENTS list; the list ships with this kit's ledger shas, so an adopter's
+#     own basis-less parents are refused (their remedy is a confirming design).
 #   * IT PROVES NOTHING ABOUT ORDER. The design may have been written after the work.
 #   * `approved-sha` TOUCHES the artifact; it did not necessarily AUTHOR it — a zero-byte create or a
 #     whitespace edit satisfies a touch. It binds the record to the artifact, nothing more.
@@ -254,6 +279,90 @@ case "$CB_GOV_GLOB" in
     echo "  constraint entirely. Narrow it to your meta-control-artifact convention." >&2
     exit 2 ;;
 esac
+
+# ---- SWAS-392 — THE INHERITED DESIGN (design docs/architecture/2026-10-25-ceremony-binding-inherited-
+# design-design.md). Three file-scope pieces, all deliberately NOT overridable from the environment.
+#
+# (1) THE LEGACY-PARENT LIST (design 2.3a, G2/G4). The full 40-hex `approved-sha` of every design note
+# in this kit's ledger that was recorded with NO basis (`basis: (none recorded)`), taken from the note
+# itself so a reviewer sees what each entry vouches for. A basis-less parent binds ONLY when its commit
+# is on this list; the gate reads the FIRST field and compares it to the parent's full sha by exact
+# string equality, never by prefix. UNCONDITIONAL assignment, never `${CB_LEGACY_PARENTS:-…}`: an
+# environment variable of the same name is overwritten at load and can neither add nor remove an entry.
+# Only selftest() reassigns it, inside the function, to its fixture shas. Adding an entry is a
+# control-plane edit to this gate: visible in the diff and ratified like any change to the gate. After
+# `promotion-verify.sh record` refuses a design GO with no --basis or the literal `(none recorded)`, the
+# tool mints no new basis-less design note, and THIS LIST names the only ones the gate accepts (a note
+# hand-written with `git notes add` is not on it either). The ledger is re-read at land (conduct, not
+# enforced).
+# CEILING (G3): this list ships to adopters holding THIS kit's ledger shas; an adopter's own basis-less
+# parents are not on it and are refused ("not a legacy record"). The adopter's remedy is a confirming
+# design (skills/design). A repo file was rejected: a new control-plane path costs three guard matchers.
+CB_LEGACY_PARENTS='77c374a33cbf0377517091b28e91acc7f99b4797  kit-row SWAS-314  scope branch/docs/ci-shaping-314
+68b5980606d90ac48026e666ad60a30373e22aa3  kit-row SWAS-290  scope branch/docs/milestone-c-design'
+
+# (2) THE FORGE-IDENTITY LIST (design 2.3, N1). A squash-merge makes the forge the committer of a design
+# on main, and `--approved-by <forge>` DERIVES `[committer]` (the open hole at the label check below),
+# so an inherited PARENT may not be approved by, or name as its GO-giver, a forge identity. The
+# environment can only EXTEND the built-in defaults, never replace them: an empty value, an empty entry
+# or a character outside [A-Za-z0-9 ._@+-] (comma separates entries) is REFUSED, and no value removes a
+# default. (Compare CB_DESIGN_GLOB above and the file's own "arguments, not env" rule.)
+_forge_list() {   # prints the effective list, one identity per line; rc 2 when the setting is unusable
+  printf '%s\n' 'GitHub' 'noreply@github.com'
+  if [ "${CB_FORGE_COMMITTERS+set}" != set ]; then return 0; fi
+  case "$CB_FORGE_COMMITTERS" in
+    '') return 2 ;;
+    *[!A-Za-z0-9' '._@+,-]*) return 2 ;;
+  esac
+  _fl_rest="$CB_FORGE_COMMITTERS,"
+  while [ -n "$_fl_rest" ]; do
+    _fl_e="${_fl_rest%%,*}"; _fl_rest="${_fl_rest#*,}"
+    _fl_t="$(printf '%s' "$_fl_e" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [ -z "$_fl_t" ]; then return 2; fi
+    printf '%s\n' "$_fl_t"
+  done
+  return 0
+}
+if ! _forge_list >/dev/null; then
+  echo "ceremony-binding: CB_FORGE_COMMITTERS must be a non-empty comma-separated list of names or emails" >&2
+  echo "  drawn from [A-Za-z0-9 ._@+-] with no empty entry. It can only EXTEND the built-in forge" >&2
+  echo "  identities (GitHub, noreply@github.com), never replace them." >&2
+  exit 2
+fi
+_forge_norm() {   # trimmed, lower-cased (M3)
+  printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+}
+_forge_has() {   # <identity> -> 0 when it is a forge identity (trimmed, case-insensitive); 2 on a bad setting
+  _fh_v="$(_forge_norm "$1")"
+  if [ -z "$_fh_v" ]; then return 1; fi
+  _fh_list="$(_forge_list)" || return 2
+  while IFS= read -r _fh_e; do
+    if [ "$(_forge_norm "$_fh_e")" = "$_fh_v" ]; then return 0; fi
+  done <<FORGE_LIST_EOF
+$_fh_list
+FORGE_LIST_EOF
+  return 1
+}
+
+# (3) The quote helpers (design 2.2 step 5, M2). ONE matched pair of outer double quotes is removed,
+# and only when the value both starts and ends with `"` (length >= 2); nothing else is trimmed or
+# unescaped. `record` always stores the pair, so in practice both sides lose exactly one.
+_cb_unquote() {
+  _uq="$1"
+  case "$_uq" in
+    \"*\") if [ "${#_uq}" -ge 2 ]; then _uq="${_uq#\"}"; _uq="${_uq%\"}"; fi ;;
+  esac
+  printf '%s' "$_uq"
+}
+_legacy_parent() {   # <full 40-hex> -> 0 when it is the FIRST field of an entry (exact equality)
+  while IFS= read -r _lp_line; do
+    _lp_f="${_lp_line%%[[:space:]]*}"
+    if [ -n "$_lp_f" ] && [ "$_lp_f" = "$1" ]; then return 0; fi
+  done <<LEGACY_PARENTS_EOF
+$CB_LEGACY_PARENTS
+LEGACY_PARENTS_EOF
+  return 1
+}
 
 # THE GOVERNANCE SET — the ENUMERATED file set a `gate: governance` change may touch, and the arm's
 # ONLY anti-laundering predicate. Membership is checked against the set that
@@ -626,9 +735,34 @@ _record_gate_type() {
 #   * An 8 KB bound that is TOTAL ACROSS RECORDS, with the cut ANNOUNCED — GitHub drops a whole
 #     step summary past 1 MiB, and one forged field measured 1,601,670 bytes, so an unbounded render
 #     hides the record by VOLUME; a silent truncation hides it just as well (self-review finding 4).
+#
+# SWAS-392 (design section 4, F5/N5): an INHERITED-form record (basis `<P>:<path>`) quotes a GO that was
+# given elsewhere, and with only the 8 KB ledger-order fence a parent could be cut off by volume. So:
+#   * an "inherited parents" block is printed AHEAD of the fence, one line per inherited child — the
+#     child sha, P, and the parent's scope, kit-row, approved-by and go-by (each field cut at 120 bytes).
+#     Lines whose parent resolves come first, then `NO PARENT RECORD AT <P>` lines (unresolved commit |
+#     no note), each group in ledger order; the block has its own 2 KB bound with an ANNOUNCED cut that
+#     takes the unresolved tail first, and its own grown fence;
+#   * each resolved parent's full record follows its child INSIDE the main fence, labelled
+#     `--- inherited parent <P40> of record <child> ---` (the 8 KB total bound is unchanged).
+_rr_fence_for() {   # <text> -> a backtick fence longer than the longest backtick run in the text
+  _rf_run=$(printf '%s\n' "$1" | LC_ALL=C awk '
+    { n = 0
+      for (i = 1; i <= length($0); i++) {
+        if (substr($0, i, 1) == "`") { n++; if (n > m) m = n } else { n = 0 }
+      } }
+    END { print m + 0 }')
+  case "$_rf_run" in ''|*[!0-9]*) _rf_run=8192 ;; esac
+  _rf_fence='```'
+  while [ "${#_rf_fence}" -le "$_rf_run" ]; do _rf_fence="$_rf_fence"'`'; done
+  printf '%s' "$_rf_fence"
+}
+_rr_cut120() {   # control characters stripped FIRST (F-6), then cut at 120 bytes
+  printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | LC_ALL=C cut -c1-120
+}
 render_records() {
   _rr_nl=$(printf '\nX'); _rr_nl=${_rr_nl%X}   # a literal newline
-  _rr_body=''; _rr_matched=0
+  _rr_body=''; _rr_matched=0; _rr_ok=''; _rr_bad=''
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _rr_obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
       _rr_b="$(git notes --ref="$NOTES_REF" show "$_rr_obj" 2>/dev/null || true)"
@@ -642,11 +776,31 @@ render_records() {
       [ -n "$_rr_type" ] || continue
       _matches_scope "$_rr_b" || continue
       _rr_matched=$((_rr_matched + 1))
+      _rr_inh_rec=''
+      _rr_bs="$(printf '%s\n' "$_rr_b" | sed -n 's/^basis: //p' | head -1)"
+      if [ "$_rr_type" = design ] && printf '%s\n' "$_rr_bs" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then
+        _rr_pw="${_rr_bs%%:*}"
+        _rr_p40="$(git rev-parse -q --verify "${_rr_pw}^{commit}" 2>/dev/null)" || _rr_p40=''
+        _rr_pn=''
+        if [ -n "$_rr_p40" ]; then _rr_pn="$(git notes --ref="$NOTES_REF" show "$_rr_p40" 2>/dev/null)" || _rr_pn=''; fi
+        if [ -n "$_rr_pn" ]; then
+          _rr_f1="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^scope: //p' | head -1)")"
+          _rr_f2="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^kit-row: //p' | head -1)")"
+          _rr_f3="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^approved-by: //p' | head -1)")"
+          _rr_f4="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^go-by: //p' | head -1)")"
+          _rr_ok="${_rr_ok:+$_rr_ok$_rr_nl}record $_rr_obj inherits $_rr_pw: scope $_rr_f1 kit-row $_rr_f2 approved-by $_rr_f3 go-by $_rr_f4"
+          _rr_inh_rec="--- inherited parent $_rr_p40 of record $_rr_obj ---${_rr_nl}${_rr_pn}"
+        else
+          _rr_why='unresolved commit'; if [ -n "$_rr_p40" ]; then _rr_why='no note'; fi
+          _rr_bad="${_rr_bad:+$_rr_bad$_rr_nl}record $_rr_obj: NO PARENT RECORD AT $(_rr_cut120 "$_rr_pw") ($_rr_why)"
+        fi
+      fi
       if [ -z "$_rr_body" ]; then
         _rr_body="--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
       else
         _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
       fi
+      if [ -n "$_rr_inh_rec" ]; then _rr_body="${_rr_body}${_rr_nl}${_rr_inh_rec}"; fi
     done
   fi
   if [ -z "$_rr_body" ]; then
@@ -668,16 +822,30 @@ render_records() {
   # body, so no ledger content can close it. The grow-and-rescan loop this replaced forked `grep`
   # once per backtick over author-controlled input (measured 9s on a 2,000-backtick body); a render
   # nobody waits for is not visibility. Fail-safe: an unusable run length yields the LONGEST fence.
-  _rr_run=$(printf '%s\n' "$_rr_body" | LC_ALL=C awk '
-    { n = 0
-      for (i = 1; i <= length($0); i++) {
-        if (substr($0, i, 1) == "`") { n++; if (n > m) m = n } else { n = 0 }
-      } }
-    END { print m + 0 }')
-  case "$_rr_run" in ''|*[!0-9]*) _rr_run=8192 ;; esac
-  _rr_fence='```'
-  while [ "${#_rr_fence}" -le "$_rr_run" ]; do _rr_fence="$_rr_fence"'`'; done
+  _rr_fence="$(_rr_fence_for "$_rr_body")"
   printf '%s\n' "## ceremony-binding — the design/governance-gate GO record(s) this merge rides on ($_rr_matched matched, rendered up to the 8 KB total bound)" ''
+  if [ -n "$_rr_ok$_rr_bad" ]; then
+    # THE INHERITED-PARENTS BLOCK: ahead of the fence, resolved first, its own 2 KB bound (announced cut,
+    # unresolved tail first) and its own fence grown over its own content.
+    _rr_blk="$_rr_ok"
+    if [ -n "$_rr_bad" ]; then _rr_blk="${_rr_blk:+$_rr_blk$_rr_nl}$_rr_bad"; fi
+    _rr_btrunc=0
+    if [ "$(printf '%s' "$_rr_blk" | LC_ALL=C wc -c | tr -d ' ')" -gt 2048 ]; then
+      _rr_blk=$(printf '%s\n' "$_rr_blk" | LC_ALL=C awk -v max=2048 '
+        used < max {
+          if (used + length($0) + 1 > max) { printf "%s", substr($0, 1, max - used); exit }
+          print $0; used += length($0) + 1
+        }')
+      _rr_btrunc=1
+    fi
+    _rr_bfence="$(_rr_fence_for "$_rr_blk")"
+    printf '%s\n' '### inherited parents (a record in the `<P>:<path>` form quotes a GO given elsewhere; resolved parents first)' ''
+    printf '%s\n' "$_rr_bfence" "$_rr_blk" "$_rr_bfence"
+    if [ "$_rr_btrunc" = 1 ]; then
+      printf '%s\n' '' '**(inherited-parents block truncated at 2 KB — unresolved parents are cut first; read the ledger: `git notes --ref='"$NOTES_REF"' show <sha>`)**'
+    fi
+    printf '%s\n' ''
+  fi
   printf '%s\n' "$_rr_fence" "$_rr_body" "$_rr_fence"
   if [ "$_rr_trunc" = 1 ]; then
     printf '%s\n' '' "**(truncated at 8 KB TOTAL across all $_rr_matched record(s) — read the full ledger: \`git notes --ref=$NOTES_REF show <sha>\`)**"
@@ -712,7 +880,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   _mb_base=""; _contain_state="reachable-only (leg 2 not evaluated)"
   # Same reason, C8: the verdict reads it under `set -u`, and an unset value would kill the run with
   # no diagnostic on the one path that is supposed to be a PASS.
-  CB_RECORD_TYPE="design"; CB_GOV_SUBSET_JUDGED=0
+  CB_RECORD_TYPE="design"; CB_GOV_SUBSET_JUDGED=0; CB_INH_DESC=""
   while [ $# -gt 0 ]; do
     case "$1" in
       # --pre-push — B2 Δ1′ (docs/architecture/2026-08-07-b2-go-records-prepush-design.md §3a): the
@@ -1051,8 +1219,14 @@ $_cdr_out"
     echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; defects render at CI)."
     echo "    Matched on key: $_survivor_key."
     echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
-    echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact"
-    echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+    if [ -n "$CB_INH_DESC" ]; then
+      echo "    Approved by: $_appr, in a GO scoped to this branch."
+      echo "    $CB_INH_DESC The child approved commit is CONTAINED"
+      echo "    in this head's history — containment: $_contain_state."
+    else
+      echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact"
+      echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+    fi
     echo "    CI matches this SAME branch key — no re-record at PR creation ([S4]#7 retired 2026-08-11)."
     if [ "$CB_RECORD_TYPE" = "governance" ]; then
       echo "    GOVERNANCE ARM: the change-set is a SUBSET of the governance set (derived by"
@@ -1066,8 +1240,14 @@ $_cdr_out"
   echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; ALL matches render at CI)."
   echo "    Matched on key: $_survivor_key."
   echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
-  echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact"
-  echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+  if [ -n "$CB_INH_DESC" ]; then
+    echo "    Approved by: $_appr, in a GO scoped to this change."
+    echo "    $CB_INH_DESC The child approved commit is CONTAINED"
+    echo "    in this head's history — containment: $_contain_state."
+  else
+    echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact"
+    echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+  fi
   if [ "$CB_RECORD_TYPE" = "governance" ] && [ "$CB_GOV_SUBSET_JUDGED" = 1 ]; then
     echo "    GOVERNANCE ARM: the change-set is a SUBSET of the governance set (derived by"
     echo "    promotion-readiness.sh --changed-files, the same authority the class comes from)."
@@ -1076,6 +1256,229 @@ $_cdr_out"
     echo "    the owner's read of the artifact at the sitting is the content control)."
   fi
   echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
+  return 0
+}
+
+# _inh_fail <line>... — the refusal prefix of the inherited arm, on stderr, always rc 2 for the caller.
+# _cb_clean <text> — control characters removed (m3): a hand-minted note can carry ESC sequences, and the
+# parent's go-by, scope and kit-row reach the CI log through the verdict and the refusal messages.
+_cb_clean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]'; }
+_inh_fail() {
+  echo "FAIL: ceremony-binding — INHERITED DESIGN: $(_cb_clean "$1")" >&2
+  shift
+  for _if_l in "$@"; do echo "      $(_cb_clean "$_if_l")" >&2; done
+}
+
+# check_inherited_parent <P as written in the child's basis> <path> — SWAS-392 (design 2.2 steps 2-5,
+# 2.3, 2.3a). Replaces ONLY the touch-the-basis check, and ONLY for the `<hex>:<path>` basis form on a
+# design record. Reads $_body (the CHILD), $_graded_head and NOTES_REF. Returns 0 = the child binds to
+# the owner's design GO at P (and sets CB_INH_DESC for the verdict); 2 = refused, reason on stderr.
+# Every refusal is rc 2 (the file's rule). What each step PROVES is stated in the design's section 3.
+# Four steps, in this order: _ip_parent_record (steps 2-3), _ip_parent_identity (label, forge, go-by,
+# touch), _ip_blob_identity (step 4), _ip_quote (step 5). They share the _ip_* variables.
+#
+# _hex_is_prefix <written hex> <resolved 40-hex> (F-3) — `rev-parse <hex>^{commit}` also resolves a BRANCH
+# or TAG that is spelled like hex, so a ref named `deadbee` could redirect P. The resolved commit must START
+# WITH the written hex (lower-cased), which no ref redirect can satisfy.
+_hex_is_prefix() {
+  _hx_w="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$2" in "$_hx_w"*) return 0 ;; esac
+  return 1
+}
+_ip_parent_record() {
+  # ---- step 2: the parent commit resolves (it is reachable only while a branch holds it, 2.4 (b)).
+  _ip_p40="$(git rev-parse -q --verify "${_ip_w}^{commit}" 2>/dev/null)" || _ip_p40=""
+  if [ -z "$_ip_p40" ]; then
+    _inh_fail "the GO'd commit $_ip_w is not in this clone: the branch that carries it must stay on origin (D-240819-4);" \
+      "restore it, or write a confirming design (skills/design)."
+    return 2
+  fi
+  if ! _hex_is_prefix "$_ip_w" "$_ip_p40"; then
+    _inh_fail "the written hex $_ip_w is not a prefix of the commit it resolves to ($_ip_p40): a branch or tag" \
+      "spelled like hex cannot stand in for a commit id."
+    return 2
+  fi
+  # ---- step 3: a design GO exists AT P, gate `design` only, approved-sha == P.
+  _ip_pb="$(git notes --ref="$NOTES_REF" show "$_ip_p40" 2>/dev/null)" || _ip_pb=""
+  _ip_pt="$(_record_gate_type "$_ip_pb")" || _ip_pt=""
+  if [ -z "$_ip_pt" ]; then
+    _inh_fail "no design GO record at $_ip_p40 (named by the child's basis as $_ip_w):" \
+      "a commit that merely touched a design file is not a GO."
+    return 2
+  fi
+  if [ "$_ip_pt" != "design" ]; then
+    _inh_fail "the parent gate is '$_ip_pt', and an inherited design needs a record of gate 'design' ONLY."
+    return 2
+  fi
+  _ip_pa="$(printf '%s\n' "$_ip_pb" | sed -n 's/^approved-sha: //p' | head -1)"
+  case "$_ip_pa" in
+    ''|*[!0123456789abcdefABCDEF]*)
+      _inh_fail "the parent approved-sha must be a hex object name, not a revision expression. Got: $_ip_pa"
+      return 2 ;;
+  esac
+  if [ "${#_ip_pa}" -lt 7 ] || [ "${#_ip_pa}" -gt 40 ]; then
+    _inh_fail "the parent approved-sha must be 7-40 hex characters. Got: $_ip_pa"
+    return 2
+  fi
+  _ip_pa40="$(git rev-parse -q --verify "${_ip_pa}^{commit}" 2>/dev/null)" || _ip_pa40=""
+  if [ "$_ip_pa40" != "$_ip_p40" ]; then
+    _inh_fail "the parent approved-sha $_ip_pa is not the GO'd commit $_ip_p40: a note re-keyed onto P is not a GO at P."
+    return 2
+  fi
+  if ! _hex_is_prefix "$_ip_pa" "$_ip_pa40"; then
+    _inh_fail "the parent approved-sha $_ip_pa is not a prefix of the commit it resolves to ($_ip_pa40): a branch or tag" \
+      "spelled like hex cannot stand in for a commit id."
+    return 2
+  fi
+  _ip_bs="$(printf '%s\n' "$_ip_pb" | sed -n 's/^basis: //p' | head -1)"
+  if [ -z "$_ip_bs" ]; then
+    _inh_fail "the parent record carries no basis line."
+    return 2
+  fi
+  if printf '%s\n' "$_ip_bs" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then
+    _inh_fail "the parent record's basis is itself in the inherited form ($_ip_bs): one hop only —" \
+      "a child cannot name another child as its parent."
+    return 2
+  fi
+  if [ "$_ip_bs" = "(none recorded)" ]; then
+    if ! _legacy_parent "$_ip_p40"; then
+      _inh_fail "parent $_ip_w names no basis and is not a legacy record; re-record the design GO with --basis <path>" \
+        "(a basis-less parent binds only when it is on this gate's committed legacy list; record refuses to mint new ones)."
+      return 2
+    fi
+  elif [ "$_ip_bs" != "$_ip_path" ]; then
+    _inh_fail "the parent record's basis '$_ip_bs' names another path than the child's '$_ip_path'."
+    return 2
+  fi
+  return 0
+}
+_ip_parent_identity() {
+  # the parent's label bar: [committer] or stronger on EVERY class (N3).
+  _ip_ap="$(printf '%s\n' "$_ip_pb" | sed -n 's/^approved-by: //p' | head -1)"
+  case "$_ip_ap" in
+    ?*\ \[*\]) : ;;
+    *) _inh_fail "the parent record carries no valid 'approved-by: <id> [<label>]' line."; return 2 ;;
+  esac
+  _ip_lab="${_ip_ap##*\[}"; _ip_lab="${_ip_lab%]}"
+  _ip_id="${_ip_ap%% \[*}"
+  case "$_ip_id" in *'['*|*']'*|'') _inh_fail "the parent approver id must not contain '[' or ']'. Got: $_ip_ap"; return 2 ;; esac
+  if [ "$_ip_ap" != "$_ip_id [$_ip_lab]" ]; then
+    _inh_fail "the parent 'approved-by:' must be exactly '<id> [<label>]'. Got: $_ip_ap"
+    return 2
+  fi
+  case "$_ip_lab" in
+    "signed: gpg"|committer|"authenticated: "*-review) : ;;
+    *) _inh_fail "the parent assurance label [$_ip_lab] is too weak: a design that stands in for other slices' GOs" \
+         "needs [committer] or stronger on EVERY change class (not only control-plane)."
+       return 2 ;;
+  esac
+  # the forge-identity check (2.3, F1) — STRICTER than design 2.3 (F-1/I2, a disclosed, fail-closed
+  # deviation, coordinator ruling): the parent is judged WITHOUT containment, so a note minted on any
+  # squash commit on main must not serve as a parent. TWO UNCONDITIONAL refusals, same trimmed,
+  # case-insensitive compare: (a) P's committer name OR email is on the forge list, whatever the
+  # approver; (b) the parent's approver id is on the forge list, whatever P's committer.
+  _ip_cn="$(git log -1 --no-show-signature --format=%cn "$_ip_p40" 2>/dev/null)" || _ip_cn=""
+  _ip_ce="$(git log -1 --no-show-signature --format=%ce "$_ip_p40" 2>/dev/null)" || _ip_ce=""
+  for _ip_c in "$_ip_cn" "$_ip_ce"; do
+    _ip_fr=0; _forge_has "$_ip_c" || _ip_fr=$?
+    if [ "$_ip_fr" -ne 1 ]; then
+      _inh_fail "the parent commit $_ip_p40 was committed by a forge identity ('$_ip_c'): a squash-merge makes the forge the" \
+        "committer, so a design GO there is not a human's, whoever the approver names."
+      return 2
+    fi
+  done
+  _ip_fr=0; _forge_has "$_ip_id" || _ip_fr=$?
+  if [ "$_ip_fr" -ne 1 ]; then
+    _inh_fail "the parent's approver '$_ip_id' is a forge identity, whoever committed $_ip_p40: that is not a human approval" \
+      "and cannot stand in for the owner's GO."
+    return 2
+  fi
+  _ip_gb="$(printf '%s\n' "$_ip_pb" | sed -n 's/^go-by: //p' | head -1)"
+  _ip_gn="${_ip_gb% \[self-asserted\]}"
+  _ip_nogo=0
+  if [ "$_ip_gb" = "(none recorded)" ] || [ -z "$(_forge_norm "$_ip_gn")" ]; then
+    _ip_nogo=1
+  else
+    _ip_fr=0; _forge_has "$_ip_gn" || _ip_fr=$?
+    if [ "$_ip_fr" -ne 1 ]; then _ip_nogo=1; fi
+  fi
+  if [ "$_ip_nogo" -eq 1 ]; then
+    _inh_fail "the parent record names no human GO-giver (its go-by is '${_ip_gb:-<absent>}'): an inherited design" \
+      "quotes a GO a named person gave; a forge identity or (none recorded) is not one."
+    return 2
+  fi
+  # F-4: the path is a LITERAL pathspec, so a `*` in a basis cannot match through glob magic.
+  if [ "$(git rev-list -1 "$_ip_p40" -- ":(literal)$_ip_path" 2>/dev/null)" != "$_ip_p40" ]; then
+    _inh_fail "the parent commit does not touch $_ip_path: the GO'd commit must be the one that wrote the design."
+    return 2
+  fi
+  return 0
+}
+# _ip_tree_entry <commit> <path> -> "<mode> <type> <object>" of EXACTLY that path ('' when absent). ls-tree
+# takes patterns (and rejects `:(literal)` magic), so the answer is filtered to the line whose path IS the
+# literal path (F-4).
+_ip_tree_entry() {
+  _te_tab="$(printf '\t')"
+  git -c core.quotePath=false ls-tree "$1" -- "$2" 2>/dev/null | while IFS= read -r _te_l; do
+    if [ "${_te_l#*"$_te_tab"}" = "$2" ]; then printf '%s\n' "${_te_l%%"$_te_tab"*}"; fi
+  done
+}
+_ip_blob_identity() {
+  # ---- step 4: blob AND mode identity between the GO'd commit and the graded head.
+  _ip_lp="$(_ip_tree_entry "$_ip_p40" "$_ip_path")"
+  _ip_lh="$(_ip_tree_entry "$_graded_head" "$_ip_path")"
+  # shellcheck disable=SC2086 # deliberate word-split of "<mode> <type> <object>"
+  set -- $_ip_lp; _ip_pm="${1:-}"; _ip_pty="${2:-}"; _ip_po="${3:-}"
+  # shellcheck disable=SC2086
+  set -- $_ip_lh; _ip_hm="${1:-}"; _ip_hty="${2:-}"; _ip_ho="${3:-}"
+  if [ -z "$_ip_pm" ] || [ -z "$_ip_hm" ] || [ "$_ip_pm" != "$_ip_hm" ]; then
+    _inh_fail "the mode differs: the GO'd commit has '${_ip_pm:-absent}' at $_ip_path, the branch head has '${_ip_hm:-absent}'."
+    return 2
+  fi
+  if [ "$_ip_pty" != blob ] || { [ "$_ip_pm" != 100644 ] && [ "$_ip_pm" != 100755 ]; }; then
+    _inh_fail "$_ip_path must be a regular file at the GO'd commit (mode $_ip_pm): a symlink is not a design."
+    return 2
+  fi
+  if [ -z "$_ip_po" ] || [ "$_ip_po" != "$_ip_ho" ]; then
+    _inh_fail "the branch's copy differs from the GO'd blob: $_ip_path is ${_ip_po:-absent} at $_ip_w but ${_ip_ho:-absent} here." \
+      "An edited design needs its own GO; an inherited one must be byte-identical."
+    return 2
+  fi
+  return 0
+}
+_ip_quote() {
+  # ---- step 5: the child QUOTES the parent — go-by byte for byte, token exactly (N2, M1, M2).
+  _ip_cgb="$(printf '%s\n' "$_body" | sed -n 's/^go-by: //p' | head -1)"
+  if [ "$_ip_cgb" != "$_ip_gb" ]; then
+    _inh_fail "the child's go-by must equal the parent's byte for byte (the child cannot name a different GO-giver)." \
+      "expected --go-by '$_ip_gn'"
+    return 2
+  fi
+  _ip_ptk="$(_cb_unquote "$(printf '%s\n' "$_ip_pb" | sed -n 's/^approval-token: //p' | head -1)")"
+  if [ -z "$(printf '%s' "$_ip_ptk" | tr -d ' \t')" ]; then
+    _inh_fail "the parent token is empty after stripping its quotes: there is no GO text to quote, so it cannot be inherited."
+    return 2
+  fi
+  _ip_ctk="$(_cb_unquote "$(printf '%s\n' "$_body" | sed -n 's/^approval-token: //p' | head -1)")"
+  _ip_want="inherits $_ip_w: $_ip_ptk"
+  if [ "$_ip_ctk" != "$_ip_want" ]; then
+    _inh_fail "the child's token must be exactly 'inherits <P>: <the parent's token>' (equality, not containment)." \
+      "expected --token '$_ip_want'" \
+      "and --go-by '$_ip_gn' (copy <P> into --token exactly as it is written in --basis)."
+    return 2
+  fi
+  _ip_ps="$(_cb_clean "$(printf '%s\n' "$_ip_pb" | sed -n 's/^scope: //p' | head -1)")"
+  _ip_pr="$(_cb_clean "$(printf '%s\n' "$_ip_pb" | sed -n 's/^kit-row: //p' | head -1)")"
+  _ip_gc="$(_cb_clean "$_ip_gn")"
+  CB_INH_DESC="INHERITED: $_ip_path at blob $(printf '%.12s' "$_ip_po") mode $_ip_pm, GO'd at $_ip_w by $_ip_gc (parent scope $_ip_ps, kit-row $_ip_pr); this branch's copy is identical."
+  return 0
+}
+check_inherited_parent() {
+  _ip_w="$1"; _ip_path="$2"
+  _ip_parent_record || return 2
+  _ip_parent_identity || return 2
+  _ip_blob_identity || return 2
+  _ip_quote || return 2
   return 0
 }
 
@@ -1094,6 +1497,7 @@ check_design_record() {
   # Reset per record: pass 2 re-adjudicates the survivor in THIS shell, so a flag left set by an
   # earlier record would let one record's judgment vouch for another's verdict line.
   CB_GOV_SUBSET_JUDGED=0
+  CB_INH_DESC=""
   _rt="$(_record_gate_type "$_body")" || _rt=""
   if [ "$_rt" = "design+governance" ]; then
     echo "FAIL: ceremony-binding — the GO record carries BOTH 'gate: design' and 'gate: governance'." >&2
@@ -1215,6 +1619,15 @@ check_design_record() {
     echo "FAIL: ceremony-binding — the '--gate design' record on $_design_note names no artifact." >&2
     echo "      Re-record it with --basis <path-to-the-design-doc>." >&2
     return 2
+  fi
+  # SWAS-392 — THE INHERITED FORM. A DESIGN record whose basis matches `^<7-40 hex>:` names the owner's
+  # GO'd design as `<P>:<path>`. ANCHORED (a basis that merely contains a `:` is a bare path, judged
+  # exactly as before), and design arm only (the governance arm's glob refuses the form). From here on
+  # `_basis` is the PATH; every path check below applies to it unchanged, and only the touch check is
+  # replaced (by check_inherited_parent).
+  _inh=0; _inh_p=""
+  if [ "$_rt" = "design" ] && printf '%s\n' "$_basis" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then
+    _inh=1; _inh_p="${_basis%%:*}"; _basis="${_basis#*:}"
   fi
 
   # PATH SAFETY. `basis:` is free text written by a human at GO time, so it is untrusted input to this
@@ -1347,7 +1760,12 @@ check_design_record() {
   # GO could name design doc A while approving commit B, and neither would constrain the other.
   # $_basis, not $CB_DESIGN_DOC: this validation now runs BEFORE that assignment, and under `set -u`
   # naming it here aborts the run with no diagnostic — which is precisely how it failed.
-  if [ "$(git rev-list -1 "$_asha" -- "$_basis" 2>/dev/null)" != "$_asha" ]; then
+  if [ "$_inh" = 1 ]; then
+    # SWAS-392: the child's approved commit need not touch the design (it is a plan commit on the
+    # branch); what binds is the OWNER's GO at P and the byte-identical blob. Containment (below) is
+    # unchanged and still runs on the child's approved sha.
+    check_inherited_parent "$_inh_p" "$_basis" || return 2
+  elif [ "$(git rev-list -1 "$_asha" -- "$_basis" 2>/dev/null)" != "$_asha" ]; then
     echo "FAIL: ceremony-binding — the approved commit does not touch the artifact it approves." >&2
     echo "      approved-sha: $_asha" >&2
     echo "      basis:        $_basis" >&2
@@ -1366,6 +1784,12 @@ check_design_record() {
     echo "        full design artifact: it records what it confirms, scope coverage, whether the" >&2
     echo "        inherited sizing still holds, deltas, and inherited obligations. See" >&2
     echo "        skills/design ('Design provenance')." >&2
+    echo "        Or, when this branch carries the owner's GO'd design BYTE FOR BYTE (same blob, same mode):" >&2
+    echo "        record --basis <the GO'd commit>:<path> (git's own <commit>:<path> notation) on a" >&2
+    echo "        NON-HEAD branch commit such as this slice's plan commit, with the parent's --go-by" >&2
+    echo "        and --token 'inherits <P>: <the parent token, verbatim>'. Copy <P> into --token exactly" >&2
+    echo "        as it is written in --basis (the same hex, the same length); a refusal prints the" >&2
+    echo "        exact expected --token. The GO'd commit must stay reachable from origin (D-240819-4)." >&2
     echo "      Do NOT instead point approved-sha at some older design's own commit to make this" >&2
     echo "      pass: NOTHING here binds the artifact's CONTENT to this change (only the RECORD is" >&2
     echo "      scope-bound), so that satisfies the gate with no design for the work at hand." >&2
@@ -2575,6 +2999,224 @@ selftest() {
   _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/a/AGENTS.md" "a nested agent-instruction file in docs/reviews is OUTSIDE the governance set"
   _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/2026-08-15-a/AGENTS.md" "a DATED nested agent-instruction file in docs/reviews is OUTSIDE the governance set"
 
+  # =====================================================================================================
+  # SWAS-392 — THE INHERITED DESIGN (design docs/architecture/2026-10-25-ceremony-binding-inherited-
+  # design-design.md, section 7). A slice that carries a design the owner already GO'd, byte for byte,
+  # records `--basis <P>:<path>` on a NON-HEAD branch commit. Every cell differs from the passing one
+  # (IN1) in exactly ONE respect, and every negative asserts its specific refusal text.
+  # =====================================================================================================
+  _self="$DIR/conformance/ceremony-binding.sh"
+  _cp="$_tmp/changed-cp"
+  printf 'auth/x.js\n' > "$_tmp/changed-sens"; _sens="$_tmp/changed-sens"
+  unset CB_FORGE_COMMITTERS
+  # LEGACY-DEFAULT (no injection): the PRODUCTION list, as the file assigned it at load, parsed by the
+  # production _legacy_parent. Both real legacy parents must be found and an off-list sha must not.
+  _legs=$((_legs+1))   # LEGACY-DEFAULT
+  _ld_ok=1
+  for _ld in 77c374a33cbf0377517091b28e91acc7f99b4797 68b5980606d90ac48026e666ad60a30373e22aa3; do
+    _legacy_parent "$_ld" || _ld_ok=0
+  done
+  if _legacy_parent 0123456789abcdef0123456789abcdef01234567 || _legacy_parent 77c374a; then _ld_ok=0; fi
+  if [ "$_ld_ok" = 1 ]; then
+    echo "PASS LEGACY-DEFAULT: the production CB_LEGACY_PARENTS finds 77c374a3… and 68b59806… and refuses an off-list sha and a prefix"
+  else
+    echo "FAIL LEGACY-DEFAULT: the production legacy list does not parse to exactly its two entries"; _fails=$((_fails+1))
+  fi
+  CB_LEGACY_PARENTS=''      # only selftest() ever assigns the list; each cell injects its own fixture sha
+  _dm="docs/architecture/d-design.md"
+
+  _mkinh "$_tmp/i1"
+  _inh_pos IN1 "$_tmp/i1" "$_cp" "INHERITED" "main carries D at blob B; the child on the plan commit quotes the parent's go-by and token"
+  _inh_has IN1 "$_tmp/i1" "$_cp" "this branch's copy is" "the verdict states the identity, not a touch claim"
+  _inh_hasnot IN1 "$_tmp/i1" "$_cp" "whose commit touches that artifact" "the inherited verdict does not claim a touch"
+  _ih_where=branch; _mkinh "$_tmp/i2"
+  _inh_pos IN2 "$_tmp/i2" "$_cp" "INHERITED" "the branch adds D itself at the same blob (no main copy)"
+  _ih_edit=1; _mkinh "$_tmp/i3"
+  _inh_neg IN3 "$_tmp/i3" "$_cp" "differs from the GO'd blob" "the branch edited D (a different blob)"
+  _ih_pnote=0; _mkinh "$_tmp/i4"
+  _inh_neg IN4 "$_tmp/i4" "$_cp" "no design GO record at" "P carries no note"
+  _ih_pbasis="docs/architecture/other-design.md"; _mkinh "$_tmp/i5"
+  _inh_neg IN5 "$_tmp/i5" "$_cp" "names another path" "the parent's basis names another path"
+  _ih_pbasis="@P@:$_dm"; _mkinh "$_tmp/i6"
+  _inh_neg IN6 "$_tmp/i6" "$_cp" "one hop" "the parent's basis is itself in the inherited form"
+  _ih_plabel=self-asserted; _mkinh "$_tmp/i7"
+  _inh_neg IN7 "$_tmp/i7" "$_cp" "parent assurance label" "a [self-asserted] parent on control-plane"
+  _inh_neg IN7 "$_tmp/i7" "$_sens" "parent assurance label" "a [self-asserted] parent on a SENSITIVE change (N3: the bar is the same on every class)"
+  _ih_cbasis="abcdef1234567:$_dm"; _mkinh "$_tmp/i8"
+  _inh_neg IN8 "$_tmp/i8" "$_cp" "must stay on origin" "P does not resolve -> the branch-retention cause is named"
+  _n9=0
+  for _b9 in "HEAD:$_dm" "main:$_dm" "abc123:$_dm" "0123456789abcdef0123456789abcdef012345678:$_dm"; do
+    _n9=$((_n9+1)); _ih_cbasis="$_b9"; _mkinh "$_tmp/i9_$_n9"
+    _inh_neg IN9 "$_tmp/i9_$_n9" "$_cp" "not a design artifact" "a non-anchored-hex head ($_b9) is judged as a bare path"
+  done
+  _ih_cbasis="@P@:../x"; _mkinh "$_tmp/i9_t"
+  _inh_neg IN9 "$_tmp/i9_t" "$_cp" "absolute or contains" "P:../x"
+  _ih_cbasis="@P@:/abs"; _mkinh "$_tmp/i9_a"
+  _inh_neg IN9 "$_tmp/i9_a" "$_cp" "absolute or contains" "P:/abs"
+  _ih_cwhere=main; _mkinh "$_tmp/i10"
+  _inh_neg IN10 "$_tmp/i10" "$_cp" "ALREADY-INTEGRATED" "the child's approved sha is already in the base"
+  _ih_cbasis="$_dm"; _mkinh "$_tmp/i11"
+  _inh_neg IN11 "$_tmp/i11" "$_cp" "does not touch the artifact" "a BARE basis on a commit that does not touch D (leg18 unchanged)"
+  _ih_pat=M; _ih_pby=GitHub; _mkinh "$_tmp/i12"
+  _inh_neg IN12 "$_tmp/i12" "$_cp" "forge identity" "a parent minted on the main squash commit, approver GitHub"
+  _ih_pgoby="(none recorded)"; _mkinh "$_tmp/i12b"
+  _inh_neg IN12 "$_tmp/i12b" "$_cp" "no human GO-giver" "a parent whose go-by is (none recorded)"
+  _inh_sub IN12a "$_tmp/i12" 2 "CB_FORGE_COMMITTERS" "an EMPTY CB_FORGE_COMMITTERS is refused" "CB_FORGE_COMMITTERS="
+  _inh_sub IN12b "$_tmp/i12" 2 "forge identity" "a decoy extension cannot remove a default" "CB_FORGE_COMMITTERS=Nobody"
+  _inh_sub IN12b "$_tmp/i12" 2 "CB_FORGE_COMMITTERS" "a charset-bad extension is refused" "CB_FORGE_COMMITTERS=GitHub;*"
+  _ih_ptouch=0; _mkinh "$_tmp/i13"
+  _inh_neg IN13 "$_tmp/i13" "$_cp" "parent commit does not touch" "the parent commit does not touch the path"
+  _ih_pasha=@OTHER@; _mkinh "$_tmp/i14"
+  _inh_neg IN14 "$_tmp/i14" "$_cp" "parent approved-sha" "the parent's approved-sha is not P"
+  _ih_pasha=HEAD; _mkinh "$_tmp/i14b"
+  _inh_neg IN14 "$_tmp/i14b" "$_cp" "parent approved-sha" "the parent's approved-sha is a revision expression"
+  _ih_pgate=governance; _mkinh "$_tmp/i15"
+  _inh_neg IN15 "$_tmp/i15" "$_cp" "parent gate" "the parent's gate is governance"
+  _ih_pgate="design+governance"; _mkinh "$_tmp/i15b"
+  _inh_neg IN15 "$_tmp/i15b" "$_cp" "parent gate" "the parent's gate is design+governance"
+  _ih_cwhere=side; _mkinh "$_tmp/i16"
+  _inh_neg IN16 "$_tmp/i16" "$_cp" "NOT an ancestor of the graded head" "the child's approved sha is not in the head's history"
+  _ih_rename=1; _ih_cbasis="@P@:docs/architecture/d2-design.md"; _mkinh "$_tmp/i17"
+  _inh_neg IN17 "$_tmp/i17" "$_cp" "names another path" "renamed D to D2 at the same blob: the child names P:D2"
+  _ih_rename=1; _mkinh "$_tmp/i17b"
+  _inh_neg IN17 "$_tmp/i17b" "$_cp" "not a tracked file" "renamed: P:D where D is untracked at the head"
+  _ih_psymlink=1; _mkinh "$_tmp/i18"
+  _inh_neg IN18 "$_tmp/i18" "$_cp" "mode differs" "at P, D is a symlink"
+  _ih_ctok="inherits @P@: a paraphrase"; _mkinh "$_tmp/i19a"
+  _inh_neg IN19 "$_tmp/i19a" "$_cp" "token must be exactly" "the child paraphrases the parent's token"
+  _inh_has IN19 "$_tmp/i19a" "$_cp" "expected --token 'inherits " "the refusal prints the exact expected --token (M1)"
+  _ih_ctok="inherits @P@: GO the design plus extra"; _mkinh "$_tmp/i19b"
+  _inh_neg IN19 "$_tmp/i19b" "$_cp" "token must be exactly" "the child's token holds the parent's plus extra text (containment is not enough)"
+  _ih_ptok=""; _ih_ctok="inherits @P@: "; _mkinh "$_tmp/i19c"
+  _inh_neg IN19 "$_tmp/i19c" "$_cp" "parent token is empty" "an EMPTY parent token cannot be quoted"
+  _ih_cgoby="someone else [self-asserted]"; _mkinh "$_tmp/i19d"
+  _inh_neg IN19 "$_tmp/i19d" "$_cp" "go-by must equal" "the child names a different GO-giver"
+  _ih_ptok='"quoted" GO'; _ih_ctok='inherits @P@: "quoted" GO'; _mkinh "$_tmp/i19q"
+  _inh_pos IN19q "$_tmp/i19q" "$_cp" "INHERITED" "a parent token with inner quotes binds when ONE outer pair is stripped"
+  _ih_ptok='"quoted" GO'; _ih_ctok='inherits @P@: quoted GO'; _mkinh "$_tmp/i19r"
+  _inh_neg IN19q "$_tmp/i19r" "$_cp" "token must be exactly" "a child that strips inner AND outer quotes is refused"
+  _ih_pgoby=" github  [self-asserted]"; _mkinh "$_tmp/i19g1"
+  _inh_neg IN19g "$_tmp/i19g1" "$_cp" "no human GO-giver" "go-by ' github ' (trimmed, case-insensitive)"
+  _ih_pgoby="NOREPLY@GITHUB.COM [self-asserted]"; _mkinh "$_tmp/i19g2"
+  _inh_neg IN19g "$_tmp/i19g2" "$_cp" "no human GO-giver" "go-by NOREPLY@GITHUB.COM"
+  # F-1/I2 (stricter than design 2.3, DISCLOSED in the plan): the forge check is TWO unconditional refusals,
+  # (a) P's committer name OR email is a forge identity, whatever the approver, and (b) the parent's
+  # approver is a forge identity, whatever P's committer.
+  _ih_pat=M; _mkinh "$_tmp/i12c"
+  _inh_neg IN12c "$_tmp/i12c" "$_cp" "forge identity" "a forge-committed P with a HUMAN approver labelled [committer] (leg a)"
+  _ih_pat=M; _ih_plabel="signed: gpg"; _mkinh "$_tmp/i12d"
+  _inh_neg IN12d "$_tmp/i12d" "$_cp" "forge identity" "a forge-committed P with a human approver labelled [signed: gpg] (leg a)"
+  _ih_pby=github; _mkinh "$_tmp/i12e"
+  _inh_neg IN12e "$_tmp/i12e" "$_cp" "forge identity" "approver 'github [committer]' on a HUMAN-committed P (leg b)"
+  # REAL-PARENTS (coordinator ruling): the two legacy-list parents' REAL committers must not be on the forge
+  # list, or the two refusals above would refuse the parents this slice exists to bind. These commits exist
+  # only in the kit's own history; elsewhere the cell says N-A and why, and never passes silently.
+  for _rp in 77c374a33cbf0377517091b28e91acc7f99b4797 68b5980606d90ac48026e666ad60a30373e22aa3; do
+    if ! git -C "$DIR" cat-file -e "${_rp}^{commit}" 2>/dev/null; then
+      echo "N-A REALPARENTS: $_rp is not in this clone (an adopter tree or a shallow clone); the real committer cannot be read here, so this cell asserts nothing"
+      continue
+    fi
+    _legs=$((_legs+1))
+    _rpn="$(git -C "$DIR" log -1 --no-show-signature --format=%cn "$_rp")"; _rpe="$(git -C "$DIR" log -1 --no-show-signature --format=%ce "$_rp")"
+    _rpr1=0; _forge_has "$_rpn" || _rpr1=$?; _rpr2=0; _forge_has "$_rpe" || _rpr2=$?
+    if [ "$_rpr1" = 1 ] && [ "$_rpr2" = 1 ]; then
+      echo "PASS REALPARENTS: the real committer of $_rp ('$_rpn' <$_rpe>) is not on the forge list"
+    else
+      echo "FAIL REALPARENTS: the real committer of $_rp ('$_rpn' <$_rpe>) IS on the forge list (rc $_rpr1/$_rpr2): the legacy parent would be refused"
+      _fails=$((_fails+1))
+    fi
+  done
+  # F-3: a branch or tag named like hex must not redirect P or the parent's approved-sha.
+  _ih_hexbranch=deadbee; _ih_cbasis="deadbee:$_dm"; _ih_ctok="inherits deadbee: GO the design"; _mkinh "$_tmp/i3a"
+  _inh_neg IN23 "$_tmp/i3a" "$_cp" "not a prefix" "a branch named deadbee redirects the child's P"
+  _ih_hexbranch=deadbee; _ih_pasha=deadbee; _mkinh "$_tmp/i3b"
+  _inh_neg IN23 "$_tmp/i3b" "$_cp" "parent approved-sha deadbee is not a prefix" "a branch named deadbee redirects the parent's approved-sha"
+  # F-4: a path is a LITERAL pathspec. A real file named with `*` exists at the head; at P only D was touched.
+  _ih_starfile=1; _ih_pbasis='docs/architecture/*-design.md'; _ih_cbasis='@P@:docs/architecture/*-design.md'; _mkinh "$_tmp/i24"
+  _inh_neg IN24 "$_tmp/i24" "$_cp" "parent commit does not touch" "a path with * does not match through glob magic"
+  # M1: ONLY the mode differs (same blob), both directions.
+  _ih_pexec=1; _mkinh "$_tmp/i18b"
+  _inh_neg IN18b "$_tmp/i18b" "$_cp" "mode differs" "D is 100755 at P and 100644 at the head, same blob"
+  # F-6: control characters never reach the parent-summary line.
+  _esc="$(printf '\033')"
+  _ih_pgoby="owner ${_esc}[31mX [self-asserted]"; _mkinh "$_tmp/i25"
+  _legs=$((_legs+1))   # IN25
+  _o25="$( cd "$_tmp/i25" && run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" || true
+  _l25="$(printf '%s\n' "$_o25" | grep -F 'kit-row SWAS-PARENT' | head -1)"
+  case "$_l25" in
+    '') echo "FAIL IN25: no parent summary line rendered: $_o25"; _fails=$((_fails+1)) ;;
+    *"$_esc"*) echo "FAIL IN25: a control character reached the parent-summary line"; _fails=$((_fails+1)) ;;
+    *) echo "PASS IN25: control characters are stripped from the parent-summary fields" ;;
+  esac
+  # IN25b/c (m3): the same hand-minted ESC must not reach the CI log through the INHERITED verdict line or
+  # through a refusal message either (the child quotes the same ESC go-by, so IN25b binds).
+  _inh_run "$_tmp/i25" "$_cp"; _legs=$((_legs+1))   # IN25b
+  case "$_ir_rc:$_ir_out" in
+    0:*"INHERITED"*"$_esc"*|0:*"$_esc"*"INHERITED"*) echo "FAIL IN25b: a control character reached the INHERITED verdict"; _fails=$((_fails+1)) ;;
+    0:*"INHERITED"*) echo "PASS IN25b: the INHERITED verdict line carries no control character" ;;
+    *) echo "FAIL IN25b: expected the ESC-go-by parent to bind (rc 0), got rc=$_ir_rc"; _fails=$((_fails+1)) ;;
+  esac
+  _ih_pgoby="owner ${_esc}[31mX [self-asserted]"; _ih_ctok="inherits @P@: a paraphrase"; _mkinh "$_tmp/i25c"
+  _inh_run "$_tmp/i25c" "$_cp"; _legs=$((_legs+1))   # IN25c
+  case "$_ir_rc:$_ir_out" in
+    2:*"$_esc"*) echo "FAIL IN25c: a control character reached a refusal message"; _fails=$((_fails+1)) ;;
+    2:*"token must be exactly"*) echo "PASS IN25c: a refusal message carries no control character" ;;
+    *) echo "FAIL IN25c: expected the token refusal (rc 2), got rc=$_ir_rc: $_ir_out"; _fails=$((_fails+1)) ;;
+  esac
+  # IN21 — THE REAL PARENT replayed (shape of the 77c374a3 note: no basis, class ordinary, en dash).
+  _ih_pbasis="(none recorded)"; _ih_pclass=ordinary; _ih_pgoby="owner (reviewer-login) [self-asserted]"
+  _ih_ptok="GO SWAS-314 design, Q1–Q11 as recommended"
+  _ih_ctok="inherits @P@: GO SWAS-314 design, Q1–Q11 as recommended"; _mkinh "$_tmp/i21"
+  CB_LEGACY_PARENTS="$(cat "$_tmp/i21/.P")  kit-row SWAS-314  scope branch/docs/ci-shaping-314"
+  _inh_pos IN21 "$_tmp/i21" "$_cp" "INHERITED" "the real SWAS-314 parent shape, judged as control-plane, P on the injected legacy list"
+  CB_LEGACY_PARENTS="0000000000000000000000000000000000000001  kit-row SWAS-1  scope branch/x"
+  _inh_neg IN22 "$_tmp/i21" "$_cp" "not a legacy record" "the same parent with P NOT on the legacy list"
+  _ih_pbasis="(none recorded)"; _ih_pclass=ordinary; _ih_pgoby="owner (reviewer-login) [self-asserted]"
+  _ih_ptok="GO SWAS-314 design, Q1–Q11 as recommended"; _ih_prec=2026-01-01T00:00:00Z
+  _ih_ctok="inherits @P@: GO SWAS-314 design, Q1–Q11 as recommended"; _mkinh "$_tmp/i22"
+  _inh_neg IN22 "$_tmp/i22" "$_cp" "not a legacy record" "a parent BACKDATED to 2026-01-01 and off the list"
+  _inh_sub IN22b "$_tmp/i21" 2 "not a legacy record" "the production entry ignores an env-supplied legacy list" "CB_LEGACY_PARENTS=$(cat "$_tmp/i21/.P")"
+  CB_LEGACY_PARENTS=''
+  # IN20 — the render: parent summary ahead of the fence even past the 8 KB cut; an unresolved P is visible.
+  _ih_cpad=1; _mkinh "$_tmp/i20"
+  _legs=$((_legs+1))   # IN20
+  _o20="$( cd "$_tmp/i20" && run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" && _rc20=0 || _rc20=$?
+  _l_sum="$(printf '%s\n' "$_o20" | grep -n -F 'kit-row SWAS-PARENT' | head -1 | cut -d: -f1)"
+  _l_nop="$(printf '%s\n' "$_o20" | grep -n -F 'NO PARENT RECORD AT deadbeef1234' | head -1 | cut -d: -f1)"
+  _l_fen="$(printf '%s\n' "$_o20" | grep -n -F -e '--- record ' | head -1 | cut -d: -f1)"
+  if [ "$_rc20" = 0 ] && [ -n "$_l_sum" ] && [ -n "$_l_nop" ] && [ -n "$_l_fen" ] \
+     && [ "$_l_sum" -lt "$_l_nop" ] && [ "$_l_nop" -lt "$_l_fen" ] \
+     && printf '%s\n' "$_o20" | grep -qF 'truncated at 8 KB' \
+     && printf '%s\n' "$_o20" | grep -qF 'approved-by Fixture Human' \
+     && printf '%s\n' "$_o20" | grep -qF 'go-by owner (Fixture)' \
+     && printf '%s\n' "$_o20" | grep -qF -e 'unresolved commit'; then
+    echo "PASS IN20: --render prints the resolved parent's summary, then NO PARENT RECORD AT <P>, ahead of the fence, and announces the 8 KB cut"
+  else
+    echo "FAIL IN20: render order/content wrong (rc=$_rc20 sum=$_l_sum nop=$_l_nop fence=$_l_fen): $(printf '%s\n' "$_o20" | head -30)"
+    _fails=$((_fails+1))
+  fi
+  _legs=$((_legs+1))   # IN20b
+  _mkinh "$_tmp/i20b"
+  _o20b="$( cd "$_tmp/i20b" && run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" || true
+  if printf '%s\n' "$_o20b" | grep -qF -e '--- inherited parent '; then
+    echo "PASS IN20b: --render reproduces the full parent record directly after its child"
+  else
+    echo "FAIL IN20b: the full parent record is not rendered: $_o20b"; _fails=$((_fails+1))
+  fi
+  # IN20c (M5): more than 2 KB of RESOLVED parent lines. The block's own bound cuts, ANNOUNCES the cut, and the
+  # unresolved tail is the first thing to go.
+  _ih_many=20; _ih_cbad=1; _mkinh "$_tmp/i20c"
+  _legs=$((_legs+1))   # IN20c
+  _o20c="$( cd "$_tmp/i20c" && run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" || true
+  if printf '%s\n' "$_o20c" | grep -qF 'inherited-parents block truncated at 2 KB' \
+     && printf '%s\n' "$_o20c" | grep -qF 'kit-row SWAS-PARENT' \
+     && ! printf '%s\n' "$_o20c" | grep -qF 'NO PARENT RECORD AT deadbeef1234'; then
+    echo "PASS IN20c: past 2 KB of resolved parent lines the cut is announced and the unresolved tail dropped first"
+  else
+    echo "FAIL IN20c: expected an announced 2 KB cut, resolved lines kept and the unresolved line cut: $(printf '%s\n' "$_o20c" | head -20)"
+    _fails=$((_fails+1))
+  fi
+
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
     # after the ordering legs were deleted — and a hardcoded total is a claim the file makes about
@@ -3165,6 +3807,206 @@ _mkreplay() {
       'recorded-at: 2026-08-11T21:48:47Z' \
       | git notes --ref=promotions add -f -F - HEAD 2>/dev/null
   )
+}
+
+# ---- SWAS-392 inherited-design fixtures and kill assertions (BELOW the marker, for the usual reason).
+#
+# _mkinh <dir> — the inherited-design fixture. Shape (the passing one, IN1):
+#   main:  base, then M (a "forge squash" commit, committer GitHub) carrying the design D at blob B.
+#   side:  base, then P — the owner's GO'd design commit, which also carries D at blob B and has a
+#          [committer] design record (a parent) whose go-by and token the child must quote.
+#   feat:  from M. Plan commit C1 (the CHILD record's key, NON-HEAD), then head C2 (touches
+#          conformance/x.sh, so the production entry also derives control-plane from this tree).
+# Knobs are globals `_ih_*` read here with `${var-default}` (an EMPTY value is meaningful) and unset
+# again at the end, so one cell's knob cannot leak into the next. Each cell changes ONE respect.
+_ih_reset() {
+  unset _ih_where _ih_edit _ih_pnote _ih_pbasis _ih_pgate _ih_plabel _ih_pby _ih_pgoby _ih_ptok \
+        _ih_pasha _ih_ptouch _ih_psymlink _ih_pat _ih_pclass _ih_prec _ih_cbasis _ih_ctok _ih_cgoby \
+        _ih_cwhere _ih_rename _ih_cpad _ih_pexec _ih_starfile _ih_hexbranch _ih_many _ih_cbad
+}
+_ih_doc() {   # the design D: >= 8 non-blank lines under a heading, or the substance floor fires instead
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' \
+    '# Design — fixture' '' '## Approach' \
+    'The gate derives the change class from the single hardened authority and refuses to' \
+    'classify a change-set it cannot read. The trade-off is that a stricter refusal costs' \
+    'an operator an explicit correction when the base is unreachable, which is the fail-safe' \
+    'direction and the one this kit takes everywhere else.' \
+    'Identification rides on the GO record rather than a registry, so the binding claim' \
+    'here is non-trivial instead of vacuously true of every document in history.' \
+    '## Honest ceiling' \
+    'Proves existence and record binding only; it does not prove the design is sound.' \
+    > "$1"
+}
+_ih_commit() {   # <message> [committer name] [committer email]
+  GIT_COMMITTER_NAME="${2:-Fixture Human}" GIT_COMMITTER_EMAIL="${3:-fixture@example.invalid}" \
+    git commit -q -m "$1" >/dev/null 2>&1
+}
+_mkinh() {
+  _hd="$1"; mkdir -p "$_hd"
+  (
+    cd "$_hd" || exit 1
+    _hdm="docs/architecture/d-design.md"
+    git init -q 2>/dev/null
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    git config commit.gpgsign false; git config diff.renames true
+    mkdir -p docs/architecture docs/plans conformance
+    printf 'fixture repo\n' > README.md
+    git add -A 2>/dev/null; _ih_commit base
+    _hb=$(git rev-parse HEAD)
+    # ---- the owner's GO'd design commit P, on a side branch the head does not contain
+    git checkout -q -b side
+    mkdir -p docs/architecture
+    _hspecial=0
+    if [ "${_ih_psymlink-0}" = 1 ] || [ "${_ih_pexec-0}" = 1 ]; then
+      # ONLY the mode differs from the head's copy (M1): the SAME blob, entered with another mode
+      # straight into the index (no worktree file, so `git add -A` must not run for this commit).
+      _hspecial=1; _ih_doc .git/ih-doc; _hblob=$(git hash-object -w .git/ih-doc)
+      _hmode=120000; if [ "${_ih_pexec-0}" = 1 ]; then _hmode=100755; fi
+      git update-index --add --cacheinfo "$_hmode,$_hblob,$_hdm"
+    else
+      _ih_doc "$_hdm"
+    fi
+    if [ "${_ih_ptouch-1}" = 0 ]; then
+      git add -A 2>/dev/null; _ih_commit "D, before the parent"
+      printf 'other\n' > other.txt
+    fi
+    if [ "$_hspecial" = 0 ]; then git add -A 2>/dev/null; fi
+    _ih_commit parent
+    _hp=$(git rev-parse HEAD)
+    # ---- the branch: D arrives through main (a forge squash) or is added by the branch itself
+    git checkout -q main
+    _hm=""
+    case "${_ih_where-main}" in
+      main)
+        _ih_doc "$_hdm"; git add -A 2>/dev/null
+        _ih_commit "squash: the design lands on main" GitHub noreply@github.com
+        _hm=$(git rev-parse HEAD)
+        git checkout -q -b feat ;;
+      *)
+        git checkout -q -b feat
+        _ih_doc "$_hdm"; git add -A 2>/dev/null; _ih_commit "the branch carries the design" ;;
+    esac
+    if [ "${_ih_edit-0}" = 1 ]; then
+      printf 'A later edit to the design.\n' >> "$_hdm"; git add -A 2>/dev/null; _ih_commit "edit D"
+    fi
+    if [ "${_ih_rename-0}" = 1 ]; then
+      git mv "$_hdm" docs/architecture/d2-design.md; _ih_commit "rename D to D2"
+    fi
+    if [ "${_ih_starfile-0}" = 1 ]; then   # a LITERAL file named with `*`: glob magic would match D through it
+      _ih_doc 'docs/architecture/*-design.md'; git add -A 2>/dev/null; _ih_commit "a literal star file"
+    fi
+    mkdir -p docs/plans conformance
+    printf '# plan\n' > docs/plans/p.md; git add -A 2>/dev/null; _ih_commit plan
+    _hc1=$(git rev-parse HEAD)
+    git checkout -q -b side2 "$_hb"; printf 's\n' > s2.txt; git add -A 2>/dev/null; _ih_commit side2
+    _hs2=$(git rev-parse HEAD)
+    git checkout -q feat
+    _hn=0; : > .git/ih-many
+    while [ "$_hn" -lt "${_ih_many-0}" ]; do   # N more non-head commits, each the key of one inherited child
+      _hn=$((_hn+1)); git commit -q --allow-empty -m "m$_hn" >/dev/null 2>&1
+      git rev-parse HEAD >> .git/ih-many
+    done
+    printf '#!/bin/sh\necho x\n' > conformance/x.sh; git add -A 2>/dev/null; _ih_commit head
+    _hc2=$(git rev-parse HEAD)
+    # ---- the parent record. P is the side commit, or M for the forge-parent cells.
+    _hpar="$_hp"; if [ "${_ih_pat-side}" = M ]; then _hpar="$_hm"; fi
+    _hpw=$(git rev-parse --short=12 "$_hpar")
+    if [ -n "${_ih_hexbranch-}" ]; then git branch "$_ih_hexbranch" "$_hpar" 2>/dev/null; fi   # F-3: a ref named like hex
+    _hsub() { printf '%s' "$1" | sed "s/@P@/$_hpw/g"; }
+    _hgoby="${_ih_pgoby-owner (Fixture) [self-asserted]}"
+    _hptok="${_ih_ptok-GO the design}"
+    if [ "${_ih_pnote-1}" = 1 ]; then
+      case "${_ih_pasha-}" in '') _hpa="$_hpar" ;; @OTHER@) _hpa="$_hb" ;; *) _hpa="$_ih_pasha" ;; esac
+      case "${_ih_pgate-design}" in
+        design+governance) _hg1="gate: design"; _hg2="gate: governance" ;;
+        *) _hg1="gate: ${_ih_pgate-design}"; _hg2="rung: integration" ;;
+      esac
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $_hpa" \
+        "approved-by: ${_ih_pby-Fixture Human} [${_ih_plabel-committer}]" "go-by: $_hgoby" \
+        "$_hg1" "$_hg2" "change-class: ${_ih_pclass-control-plane}" "kit-row: SWAS-PARENT" \
+        "scope: branch/parent-x" "approval-token: \"$_hptok\"" \
+        "basis: $(_hsub "${_ih_pbasis-$_hdm}")" "recorded-at: ${_ih_prec-2026-10-24T16:49:20Z}" \
+        | git notes --ref=promotions add -f -F - "$_hpar" 2>/dev/null
+    fi
+    # ---- the child record, keyed on a NON-HEAD commit (the plan commit by default)
+    case "${_ih_cwhere-plan}" in
+      main) _hck="$_hm" ;; side) _hck="$_hs2" ;; *) _hck="$_hc1" ;;
+    esac
+    _hctok="inherits $_hpw: $_hptok"; if [ -n "${_ih_ctok+x}" ]; then _hctok="$(_hsub "$_ih_ctok")"; fi
+    {
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $_hck" \
+        "approved-by: Fixture Human [committer]" "go-by: ${_ih_cgoby-$_hgoby}" "gate: design" \
+        "rung: integration" "change-class: control-plane" "kit-row: SWAS-CHILD" "scope: PR-1" \
+        "approval-token: \"$_hctok\"" "basis: $(_hsub "${_ih_cbasis-@P@:$_hdm}")" \
+        "recorded-at: 2026-10-25T10:00:00Z"
+      if [ "${_ih_cpad-0}" = 1 ]; then   # the volume attack in miniature: this body alone passes 8 KB
+        awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 12; j++) print s }'
+      fi
+    } | git notes --ref=promotions add -f -F - "$_hck" 2>/dev/null
+    while IFS= read -r _hmk; do   # one inherited child per extra commit (the summary-block 2 KB bound)
+      [ -n "$_hmk" ] || continue
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $_hmk" \
+        "approved-by: Fixture Human [committer]" "go-by: $_hgoby" "gate: design" "rung: integration" \
+        "change-class: control-plane" "kit-row: SWAS-CHILDN" "scope: PR-1" \
+        "approval-token: \"$_hctok\"" "basis: $(_hsub "${_ih_cbasis-@P@:$_hdm}")" \
+        "recorded-at: 2026-10-25T10:00:00Z" \
+        | git notes --ref=promotions add -f -F - "$_hmk" 2>/dev/null
+    done < .git/ih-many
+    if [ "${_ih_cpad-0}" = 1 ] || [ "${_ih_cbad-0}" = 1 ]; then   # a SECOND inherited child whose P resolves to nothing
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $_hc2" \
+        "approved-by: Fixture Human [committer]" "go-by: $_hgoby" "gate: design" "rung: integration" \
+        "change-class: control-plane" "kit-row: SWAS-CHILD2" "scope: PR-1" \
+        "approval-token: \"inherits deadbeef1234: x\"" "basis: deadbeef1234:$_hdm" \
+        "recorded-at: 2026-10-25T10:00:00Z" \
+        | git notes --ref=promotions add -f -F - "$_hc2" 2>/dev/null
+    fi
+    printf '%s\n' "$_hpar" > .P
+  )
+  _ih_reset
+}
+_inh_run() {   # <dir> <listing> -> _ir_out, _ir_rc  (in-process, the same entry the other cells use)
+  _ir_out="$( cd "$1" && run_ceremony_binding "$2" --scope PR-1 2>&1 )" && _ir_rc=0 || _ir_rc=$?
+}
+_inh_neg() {   # <leg> <dir> <listing> <needle> <desc>   rc 2 AND the specific text
+  _legs=$((_legs+1)); _inh_run "$2" "$3"
+  if [ "$_ir_rc" != 2 ]; then
+    echo "FAIL $1: $5 should be rc 2, got rc=$_ir_rc: $_ir_out"; _fails=$((_fails+1)); return 0
+  fi
+  case "$_ir_out" in
+    *"$4"*) echo "PASS $1: $5 -> rc 2 naming '$4'" ;;
+    *) echo "FAIL $1: $5 refused for the WRONG reason — expected '$4', got: $_ir_out"; _fails=$((_fails+1)) ;;
+  esac
+}
+_inh_pos() {   # <leg> <dir> <listing> <needle> <desc>   rc 0 AND the text
+  _legs=$((_legs+1)); _inh_run "$2" "$3"
+  case "$_ir_rc:$_ir_out" in
+    0:*"$4"*) echo "PASS $1: $5 -> rc 0, '$4'" ;;
+    *) echo "FAIL $1: $5 should PASS naming '$4', got rc=$_ir_rc: $_ir_out"; _fails=$((_fails+1)) ;;
+  esac
+}
+_inh_has() {   # <leg> <dir> <listing> <needle> <desc>   the verdict (any rc) contains the text
+  _legs=$((_legs+1)); _inh_run "$2" "$3"
+  case "$_ir_out" in
+    *"$4"*) echo "PASS $1: $5" ;;
+    *) echo "FAIL $1: $5 — expected '$4' in: $_ir_out"; _fails=$((_fails+1)) ;;
+  esac
+}
+_inh_hasnot() {   # <leg> <dir> <listing> <needle> <desc>
+  _legs=$((_legs+1)); _inh_run "$2" "$3"
+  case "$_ir_out" in
+    *"$4"*) echo "FAIL $1: $5 — '$4' must NOT appear in: $_ir_out"; _fails=$((_fails+1)) ;;
+    *) echo "PASS $1: $5" ;;
+  esac
+}
+_inh_sub() {   # <leg> <dir> <rc> <needle> <desc> <VAR=value>   through the PRODUCTION entry (a subprocess)
+  _legs=$((_legs+1))
+  _is_out="$( cd "$2" && env "$6" sh "$_self" --scope PR-1 2>&1 )" && _is_rc=0 || _is_rc=$?
+  case "$_is_rc:$_is_out" in
+    "$3":*"$4"*) echo "PASS $1: $5 -> rc $3 naming '$4'" ;;
+    *) echo "FAIL $1: $5 expected rc $3 naming '$4', got rc=$_is_rc: $_is_out"; _fails=$((_fails+1)) ;;
+  esac
 }
 
 case "${1:-}" in

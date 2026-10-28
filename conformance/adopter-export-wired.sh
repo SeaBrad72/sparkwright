@@ -50,7 +50,7 @@ ROOT="${EXPORT_ROOT:-.}"
 # only when the file is ABSENT. It MUST be listed here as well as in .gitattributes: the omission is
 # SILENT in the safe direction until the ledger gains one markdown link to another export-ignored
 # target, at which point the link scan reds on a file the real export never ships.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/reviews/ docs/kit-internals/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md WALKTHROUGH.md .publish-identifiers .kit/dials.conf"
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/reviews/ docs/kit-internals/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md WALKTHROUGH.md .publish-identifiers .kit/dials.conf .kit/boundary-optout.conf"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +
@@ -302,6 +302,7 @@ run() {
     # below). Its reader-level observe-by-absence proof lives at the right layer: loop-state.sh's own
     # T7c `dm-absent` cross-reader selftest. Here, (a) forbids the conf that would flip SCOPE at all.
     [ -e "$_d/.kit/dials.conf" ] && { echo "FAIL: export kept .kit/dials.conf (every adopter would inherit the kit's enforce dials — the two push dials AND KIT_SCOPE_MODE=enforce — at their first hook re-copy)"; rc=1; }
+    [ -e "$_d/.kit/boundary-optout.conf" ] && { echo "FAIL: export kept .kit/boundary-optout.conf (the kit's own boundary declaration would ship to every adopter; 352d plan: the declaration never ships)"; rc=1; }
     _dl=0; _dlo=$( cd "$_d" && printf 'refs/heads/x %s refs/heads/x %s\n' "$(git rev-parse HEAD)" \
       0000000000000000000000000000000000000000 | sh hooks/pre-push 2>&1 ) || _dl=$?
     if [ "$_dl" -ne 0 ] || ! printf '%s' "$_dlo" | grep -q 'kit pre-push (observe):'; then
@@ -429,6 +430,13 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (empty .gitattributes still passed)"; sfail=1
   fi
   rm -rf "$_n" 2>/dev/null || true
+  # negative (SWAS-352): .gitattributes minus the boundary-optout export-ignore line must NAME it (IGN entry + block (a)).
+  _b=$(mktemp -d)
+  mkdir "$_b/scripts" && cp "$ROOT/scripts/adopter-export.sh" "$_b/scripts/"
+  grep -v '^\.kit/boundary-optout\.conf' "$ROOT/.gitattributes" > "$_b/.gitattributes" || true
+  ( ROOT="$_b"; run ) 2>&1 | grep -q 'missing export-ignore for \.kit/boundary-optout\.conf' \
+    || { echo "adopter-export-wired --selftest: FAIL (an unprotected boundary-optout export-ignore was NOT flagged)"; sfail=1; }
+  rm -rf "$_b" 2>/dev/null || true
   # negative (F1): a tree identical to HEAD but whose README hardcodes a count must FAIL the lock.
   _r=$(mktemp -d)
   ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_r" 2>/dev/null || true

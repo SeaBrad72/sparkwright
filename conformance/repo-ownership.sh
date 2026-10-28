@@ -89,7 +89,7 @@ echo "== repo-ownership: fixtures under $T (kit: $KIT_ROOT) =="
 # ---------------------------------------------------------------------------------------------
 make_parent "$T/n1"
 lay_kit "$T/n1/child"
-out=$( cd "$T/n1/child" && sh scripts/preflight.sh 2>&1 ); rc=$?
+out=$( cd "$T/n1/child" && sh scripts/preflight.sh --boundary-advisory 2>&1 ); rc=$?   # advisory: rc is N1's refusal, never an UNDECLARED boundary
 if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'Adopter environment'; then
   bad "N1 preflight nested — exit 0 and reported the PARENT as the adopter environment"
 elif [ "$rc" -eq 0 ]; then
@@ -201,6 +201,8 @@ if [ "$rc1" -ne 0 ]; then
   printf '     last: %s\n' "$(printf '%s' "$out1" | tail -1)"
 elif [ ! -f "$T/p1/.git/hooks/pre-push" ]; then
   bad "P1 standalone greenfield — the pre-push hook did NOT land locally"
+elif ! printf '%s' "$out1" | grep -q 'agent boundary (advice'; then
+  bad "P1 standalone greenfield — incept completed but printed no agent-boundary advice (SWAS-355 incept-prints-boundary-lines)"
 else
   pass "P1 standalone greenfield — git init ran, hook landed locally"
 fi
@@ -266,7 +268,7 @@ fi
 make_parent "$T/e2-stranger"
 lay_kit "$T/e2-victim"
 out=$( cd "$T/e2-victim" && GIT_DIR="$T/e2-stranger/.git" GIT_WORK_TREE="$T/e2-victim" \
-       sh scripts/preflight.sh 2>&1 ); rc=$?
+       sh scripts/preflight.sh --boundary-advisory 2>&1 ); rc=$?
 if [ "$rc" -eq 0 ]; then
   bad "E2 preflight env-redirect — exit 0 (must refuse: env points git at a repo it does not own)"
 elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
@@ -369,7 +371,7 @@ fi
 mkdir -p "$T/e2b-target" "$T/e2b-victim"
 lay_kit "$T/e2b-victim"
 out=$( cd "$T/e2b-victim" && GIT_DIR="$T/e2b-target" GIT_WORK_TREE="$T/e2b-victim" \
-       sh scripts/preflight.sh 2>&1 ); rc=$?
+       sh scripts/preflight.sh --boundary-advisory 2>&1 ); rc=$?
 if [ "$rc" -eq 0 ]; then
   bad "E2b preflight env-redirect to a non-repo dir — exit 0 (must refuse: GIT_DIR is set)"
 elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
@@ -377,6 +379,26 @@ elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
 else
   pass "E2b preflight env-redirect to a non-repo dir — refused, named GIT_DIR"
 fi
+
+# SWAS-355 (DC27) — N1, E2 and E2b read preflight's rc, and two of them expect NON-ZERO. They run --boundary-advisory, so a non-zero rc can only come from the
+# refusal. Prove it: in a copy with the three refusals neutered, the same E2 / E2b run exits 0 although the boundary is OFF and undeclared (a bfail leak makes it non-zero).
+for _nv in "e2-victim|$T/e2-stranger/.git" "e2b-victim|$T/e2b-target" "n1/child|"; do
+  _nvd=${_nv%%|*}; _nvg=${_nv#*|}
+  sed -e 's/^if git_env_redirected; then/if false; then/' -e 's/^elif git_dir_outside .*; then/elif false; then/' -e 's/^if ! owns_itself .*; then/if false; then/' \
+    "$T/$_nvd/scripts/preflight.sh" > "$T/$_nvd/scripts/pf-neutered.sh"
+  if [ -n "$_nvg" ]; then
+    out=$( cd "$T/$_nvd" && GIT_DIR="$_nvg" GIT_WORK_TREE="$T/$_nvd" sh scripts/pf-neutered.sh --boundary-advisory 2>&1 ); rc=$?
+  else
+    out=$( cd "$T/$_nvd" && sh scripts/pf-neutered.sh --boundary-advisory 2>&1 ); rc=$?   # N1: no redirect, the nesting alone is neutered
+  fi
+  if cmp -s "$T/$_nvd/scripts/preflight.sh" "$T/$_nvd/scripts/pf-neutered.sh"; then
+    bad "$_nvd non-vacuity — the refusal-neutering sed matched nothing (a mutant that did not apply proves nothing)"
+  elif [ "$rc" -ne 0 ]; then
+    bad "$_nvd non-vacuity — with the refusals neutered the advisory run still exits $rc, so a non-zero rc above may not be the refusal ($out)"
+  else
+    pass "$_nvd non-vacuity — refusals neutered, the advisory run exits 0 (the refusal, not the boundary, carries E2/E2b's non-zero rc)"
+  fi
+done
 
 # N-sym — a NORMAL repo reached via a SYMLINK. The containment compare must use pwd -P on BOTH sides or it
 #         false-refuses under /tmp on macOS. (CP-4's N6, for CP-11.)

@@ -1,0 +1,32 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "excludedCommands": [],
+    "network": {
+      "strictAllowlist": true,
+      "allowedDomains": ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "registry.npmjs.org"],
+      "allowLocalBinding": true,
+      "allowUnixSockets": []
+    },
+    "filesystem": {
+      "allowWrite": ["./"],
+      "denyWrite": [
+        "~/.claude/settings.json", "~/.claude/settings.local.json", "~/.claude.json",
+        "~/.claude/hooks", "~/.claude/agents", "~/.claude/skills", "~/.claude/commands", "~/.claude/CLAUDE.md",
+        "~/Library/LaunchAgents", "~/.config/systemd/user", "~/.config/autostart",
+        "~/.zshrc", "~/.zshenv", "~/.zprofile", "~/.zlogin", "~/.zlogout",
+        "~/.bashrc", "~/.bash_profile", "~/.bash_login", "~/.bash_logout", "~/.profile",
+        "~/.config/fish", "~/.inputrc", "~/.gitconfig", "~/.config/git", "~/.ssh",
+        "./.envrc"
+      ],
+      "denyRead": [
+        "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/secrets", "**/secret",
+        "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.azure", "~/.kube", "~/.docker/config.json",
+        "~/.netrc", "~/.git-credentials", "~/.npmrc", "~/.pypirc", "~/.config/op", "~/.password-store", "~/.gnupg",
+        "~/.claude/.credentials.json", "~/.claude.json", "~/.claude/settings.json", "~/.claude/settings.local.json",
+        "~/.sparkwright-canary"
+      ]
+    }
+  }
+}

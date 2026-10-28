@@ -4,7 +4,7 @@
 #
 # Three modes:
 #   record  --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> --class <c> \
-#           --scope <pr> --token "<explicit approval string>" [--basis <text>]
+#           --scope <pr> --token "<explicit approval string>" [--basis <text> (required with --gate design)]
 #       -> BIND a structured GO record to the approved commit as a git NOTE under
 #          refs/notes/promotions (tree-invariant: the commit's tree/SHA is unchanged, so `check`
 #          can NEVER false-fail because of the record). The `approved-by` line is written with a
@@ -234,7 +234,7 @@ _pv_unwind() {
 usage() {
   echo "usage:" >&2
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
-  echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t>]" >&2
+  echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t> (required with --gate design)]" >&2
   echo "                             [--go-by <name>] [--no-push]" >&2
   echo "        record is a TRANSACTION: it fetches refs/notes/<ref> from origin first, refuses if" >&2
   echo "        the local ledger has diverged, writes the note, PUBLISHES it, and unwinds its own" >&2
@@ -636,6 +636,26 @@ do_record() {
     echo "record: invalid --class '$cls' — must be one of: ordinary | sensitive | control-plane" >&2
     echo "        (case-insensitive). The class DECIDES whether \`actuate\` may merge, so an" >&2
     echo "        unrecognised value would record a GO no consumer can classify. Rejected (fail closed)." >&2
+    return 2
+  fi
+  # A DESIGN GO MUST NAME ITS ARTIFACT (SWAS-392, design 2.3a). The gate that reads a design GO
+  # (conformance/ceremony-binding.sh) refuses one whose basis is empty or `(none recorded)` as "names no
+  # artifact", and an inherited-design child binds only to a parent whose basis is a path (or a LEGACY
+  # basis-less parent on a committed list). So the front door stops minting basis-less design GOs: the
+  # tool makes no new one, and the committed list names the only ones the gate accepts. EXACTLY the gate value `design` (the one value the exact-line
+  # classifier accepts, G5); every other gate keeps the optional basis. PLACEMENT (H2): after every
+  # argument validation above (control characters, scope shape, brackets, class), BEFORE
+  # derive_assurance, the forge-review upgrade and the record transaction, so a refusal writes no note
+  # and makes no forge or network call. `sync` is deliberately unchanged: it re-validates a note's
+  # shape and must not refuse the legacy notes already in the ledger.
+  # THE DEFAULT, TYPED (F-2/M3): the literal `(none recorded)` is what an omitted basis becomes, so for a
+  # design GO it is refused as an explicit --basis too (trimmed, case-insensitive), or the refusal would
+  # be bypassed by typing the default.
+  _basis_lit="$(printf '%s' "$basis" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  if [ "$gate" = design ] && { [ -z "$basis" ] || [ "$_basis_lit" = "(none recorded)" ]; }; then
+    echo "record: --gate design requires --basis <path-to-the-design-artifact> — a design GO that names no" >&2
+    echo "        artifact (omitted, or the literal '(none recorded)') binds nothing (ceremony-binding.sh refuses it" >&2
+    echo "        as 'names no artifact'). Rejected." >&2
     return 2
   fi
   [ -n "$basis" ] || basis="(none recorded)"

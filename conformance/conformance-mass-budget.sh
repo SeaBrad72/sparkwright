@@ -5,15 +5,29 @@
 # lines and 39 new checks in the 35 days after the design skill's "prefer extending a gate" sentence
 # shipped. A preference with no surfaceable answer did not bind; a gate does.
 #
-#   sh conformance/conformance-mass-budget.sh [--selftest]
+#   sh conformance/conformance-mass-budget.sh [--selftest | --list-legs | --grade-cells <n> <workspace|tmpclone> | --grade-cells-listing]
 # Exit: 0 = within the ratified ceiling (or N/A off-kit) · 1 = over budget / ledger broken · 2 = usage.
-# POSIX sh; dash-clean. No git, no base ref, no network: every number is a property of the tree in
-# front of it, so the verdict cannot change with the base a runner happened to check out.
+# POSIX sh; dash-clean. No network: every number is a property of the tree in front of it, so the verdict cannot
+# change with the base a runner happened to check out. ONE EXCEPTION (SWAS-281): mb_genesis_lock reads the merge-base
+# with git, on a pull_request event only, to stop a PR moving its own GENESIS_ lines; elsewhere it prints N/A.
 #
-# ── SCOPE CEILING (say it before anyone infers more). This gate counts exactly three things:
+# ── SCOPE CEILING (say it before anyone infers more). This gate counts exactly seven things:
 #   (a) total lines of the NON-RECURSIVE conformance/*.sh glob,
 #   (b) how many such files there are,
-#   (c) the `^check control ` row count of conformance/verify.sh.
+#   (c) the `^check control ` row count of conformance/verify.sh,
+#   and, since SWAS-281 (CI-TIME-BUDGET, design 2026-10-24-ci-time-budget-design.md), four counts of what CI RUNS, each a property of
+#   the tree and each zero-headroom (a rise costs one ack line, like `files` and `census`):
+#   (d) `rows`  -- the verify.sh `^check ` rows that are not `control` rows (so (c) and (d) partition the registry),
+#   (e) `cells` -- the guard battery's cells: the line count of `agent-autonomy.sh --list-cells` (one line per cell, follows lines
+#                  included; the --join's `listed` set is built from that same output, and leg ci-b15 locks that coupling). DIMS-DEPENDENT
+#                  (listed 4168 workspace, 4167 tmpclone in CI), so one genesis per variant; graded in the guard-battery join (see MB_CELLS_MODE),
+#                  so a LOCAL pre-push does NOT catch a cells rise: CI's join does,
+#   (f) `legs`  -- the selftest legs of the literal MB_HEAVY_CHECKS list, each check's own `--list-legs` count,
+#   (g) `jobs`  -- the runner jobs one full run starts: `ci-gates.sh --count-legs` (matrix size per job, over every workflow with a
+#                  pull_request or push trigger).
+#   HOSTED-RUNNER MINUTES ARE NOT BUDGETED HERE and never red anywhere: a +46% swing on one job across three runs was seen on unchanged
+#   inputs [attested]. Minutes are a WARN (scripts/ci-time-report.sh, the non-required ci-time-report job). These counts are PROXIES for
+#   time: the design's section 8 states their ceiling (a slower cell or row with no count change is not stopped, only annotated).
 # Everything else is OUTSIDE the budget and always was: the .md checklists in conformance/, the
 # conformance/ subdirectories (fixtures/, incept-manifests/), scripts/, hooks/, guard-core. It counts
 # whether growth was DECLARED, never whether it was WORTHWHILE — the reason cell of an ack is prose a
@@ -151,6 +165,32 @@ GENESIS_CENSUS=128      # measured exactly; `^check control ` rows in conformanc
 # the pre-split gate's own count, which is how the boundary rule was cross-checked in the first place).
 GENESIS_LOGIC=31200     # measured 31141 by the VERBATIM command above at HEAD b067d8c5 (the post-diff tree of this PR, this slice's own new gate logic included), rounded up to the next 100 per the genesis convention. ZERO acks: MAX_LOGIC == GENESIS_LOGIC, so every future logic line costs a ratified ack.
 GENESIS_FIXTURE=25000   # measured 24969 by the VERBATIM command above at HEAD b067d8c5, rounded up to the next 100. ⚠️ RE-DERIVE, DO NOT ACCEPT, AND NOTE THAT THE TREE MOVED UNDER THESE CONSTANTS: logic·fixture measured 31141·24969 at b067d8c5 (the genesis-setting head), 31174·25052 at beeabb55 (the pre-push fix round), and 31186·25069 at the PR head (this commit, which adds comment and selftest-leg lines the *.sh glob does count); all three fit the ratified ceilings, so genesis is deliberately NOT re-based — re-basing to fit a diff is a silent re-ratification, and the shrinking logic residual is the signal the zero-headroom surface exists to give.
+
+# ── THE FOUR CI-TIME COUNTS (SWAS-281, CI-TIME-BUDGET). Each GENESIS_ is the exact count measured on the head of the PR that introduced
+# them (first-live-run dogfood), with ZERO headroom: every rise needs one ack line in conformance/mass-acks.txt, whose reason says what grew
+# and why (by convention with a cost estimate from the design's section 1 rates, labelled [E]; the estimate is conduct, not checked).
+# ⚠️ GENESIS IS SET ONCE. A PR cannot move its own origin: on a pull_request event mb_genesis_lock compares every GENESIS_ line with the
+# merge-base's copy and reds on any difference; the introducing PR is the one stated exception (these four names are absent at its base).
+GENESIS_ROWS=20
+# THE CELL COUNT IS DIMS-DEPENDENT, so `cells` has ONE GENESIS PER CI VARIANT, recorded with the dims it was measured at; the join passes its variant (`--grade-cells <n> <variant>`).
+# MEASURED [M] in CI run 40158226802: job 121066165278 (workspace) printed `agent-autonomy --join: listed cells: 4168`; job 121066165222 (tmpclone) printed `listed cells: 4167`.
+# WHY LISTED < EXECUTED: the graded measure is the deduplicated LISTED set (aa_cell_skip indexes one cell per distinct label and counts a repeat of the previous label once, and
+# the inner gates of a nested cell are run but never indexed); the join's OK line counts cells EXECUTED (4186 / 4185), 18 more. A first seed from that OK line left 18 free: wrong.
+GENESIS_CELLS_WORKSPACE=4168   # dims case0-tmp0-git1-uid00 (the kit checkout under $GITHUB_WORKSPACE); one `cells` ack line raises both ceilings
+GENESIS_CELLS_TMPCLONE=4167    # dims case0-tmp1-git1-uid00 (a git clone under /tmp)
+GENESIS_LEGS=55   # measured: the label count of this script's own --list-legs on the introducing head (the one heavy check on MB_HEAVY_CHECKS)
+GENESIS_JOBS=66   # measured: ci-gates.sh --count-legs total on the introducing head (includes the new ci-time-report job)
+# The heavy checks whose selftest legs are budgeted: each must answer `--list-legs` (one label per line) and its own --selftest must run
+# exactly those legs (this file's wrapper below does that for itself). SEEDED with this gate alone; the design's rule for growing it is
+# "the selftests whose conformance-selftests steps take >= 60 s in the jobs API's per-step times", which needs a live run to measure.
+MB_HEAVY_CHECKS="conformance-mass-budget.sh"
+# HOW `cells` IS MEASURED (the design's section 2.3 fallback, taken because the listing was MEASURED at ~2 minutes of wall on the introducing head,
+# against the design's 30 s bound): `agent-autonomy.sh --list-cells` runs the whole battery script in list mode, which is far too slow for the
+# every-push light job, for verify.sh --kitself and for the local core pre-push. So the default run does NOT list: its cells line says N/A (not a pass),
+# `--grade-cells <n>` grades a count the caller supplies (the guard-battery join job passes the join's own listed-set size, printed by `agent-autonomy.sh
+# --join` after a green join), and `--grade-cells-listing` lists on demand (about 2 minutes; the deliberate local act). Set here unconditionally and from
+# argv only, like agent-autonomy.sh's mode, so an environment value is ignored. GENESIS_CELLS is held by the genesis lock on every PR either way.
+MB_CELLS_MODE=na
 
 # ── THE GLIDE SEAM (A1/C7b), the D-240828-4 ratchet-never-cut counter: present, and never
 # agent-actuated. EMPTY means no target and the report says so. Setting it to a number prints an
@@ -357,8 +397,8 @@ mb_ledger_check() {
       # here would red all ten historical rows and take the WHOLE ledger dark — files and census
       # verification with it. Retirement is enforced by the row-count pin in mb_verdict instead, which
       # is also the only thing that can see a zero-sum +N/-N forgery the arithmetic passes.
-      lines|logic|fixture|files|census) : ;;
-      *) echo "conformance-mass-budget: FAIL -- mass-acks.txt line $_no names an unknown surface [$(printf '%s' "$_s" | mb_san)] (want one of: logic fixture files census; \`lines\` is RETIRED but stays grammatical for its history)."
+      lines|logic|fixture|files|census|rows|cells|legs|jobs) : ;;
+      *) echo "conformance-mass-budget: FAIL -- mass-acks.txt line $_no names an unknown surface [$(printf '%s' "$_s" | mb_san)] (want one of: logic fixture files census rows cells legs jobs; \`lines\` is RETIRED but stays grammatical for its history)."
          _lbad=1; continue ;;
     esac
     if ! mb_delta_ok "$_dl"; then
@@ -439,7 +479,7 @@ mb_no_literal_max() {
     echo "conformance-mass-budget: FAIL -- the source lock cannot read [$(printf '%s' "$_nlm" | mb_san)]. An unreadable subject is a printed FAIL, never a silent pass: a lock that cannot see its subject has no teeth."
     return 1
   fi
-  _nhits=$(LC_ALL=C grep -nE '^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+|local[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+-?[a-z]*[[:space:]]+)?MAX_(LINES|FILES|CENSUS|LOGIC|FIXTURE)=[[:space:]]*["'"'"']?[+-]?[0-9]' "$_nlm" || :)
+  _nhits=$(LC_ALL=C grep -nE '^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+|local[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+-?[a-z]*[[:space:]]+)?MAX_(LINES|FILES|CENSUS|LOGIC|FIXTURE|ROWS|CELLS|LEGS|JOBS)=[[:space:]]*["'"'"']?[+-]?[0-9]' "$_nlm" || :)
   if [ -n "$_nhits" ]; then
     printf '%s\n' "$_nhits" | while IFS= read -r _nh; do
       echo "conformance-mass-budget: FAIL -- a MAX_ LITERAL IS BACK in $(printf '%s' "${_nlm##*/}" | mb_san), at line $(printf '%s' "$_nh" | mb_san). The ceiling is DERIVED from conformance/mass-acks.txt on every run (GENESIS + the scoped deltas); a constant beside it is a cache that two branches in flight both have to edit, which is the defect MASS-CEILING-ADDITIVE removed. Delete the line and append an ack instead."
@@ -613,7 +653,7 @@ EOF
 # catch. `lines_gen` is still passed so the retired surface's history keeps being read out and
 # row-count-pinned; nothing is MEASURED against it any more.
 mb_verdict() {
-  _root=$1; _lgen=$2; _fgen=$3; _cgen=$4; _ggen=$5; _xgen=$6; _lpin=$7
+  _root=$1; _lgen=$2; _fgen=$3; _cgen=$4; _ggen=$5; _xgen=$6; _lpin=$7; _cigen=${8:-}
   _bad=0
 
   # ── ARMING FIRST, before any enumeration (vet A1.3). An adopter tree carries neither kit marker;
@@ -702,6 +742,15 @@ mb_verdict() {
   mb_surface files   "$_files" "$_fmax" file || _bad=1
   mb_surface census  "$_cen"   "$_cmax" row  || _bad=1
 
+  # ── SWAS-281: the four CI-time counts (rows, cells, legs, jobs), only when the caller passed their four genesis values as the 8th
+  # argument. run() always does (leg ci-run locks that); the older selftest legs call this function with seven arguments and are not about
+  # these surfaces. The genesis lock follows: on a pull_request a moved GENESIS_ line reds.
+  if [ -n "$_cigen" ]; then
+    # shellcheck disable=SC2086  # the four numbers are deliberately word-split into four arguments
+    mb_ci_surfaces "$_root" "$_led" $_cigen || _bad=1
+    mb_genesis_lock "$_root" || _bad=1
+  fi
+
   # ── COMPOSITION (A1/C1). The sweep does NOT police the marker boundary, so a marker move that
   # reprices several hundred lines from logic to fixture has to be READABLE — in this summary, by the
   # same person who ratifies the ack. Report-only; no verdict.
@@ -746,6 +795,263 @@ mb_verdict() {
   # GUARD-ADAPTER-MASS-REPORT: the LAST act, a subshell, `|| :` — the advisory block cannot move the rc.
   ( mb_unbudgeted "$_root" ) || :
   return "$_bad"
+}
+
+# ══ SWAS-281 (CI-TIME-BUDGET): THE FOUR CI-TIME COUNTS ═══════════════════════════════════════════════════════════════════════════════
+# Each count is a property of the TREE (no base ref, no clock, no runner), so the verdict cannot move with the runner a job landed on.
+# FAIL-CLOSED throughout: a count that cannot be measured is a printed `conformance-mass-budget: FAIL --` line, NEVER 0 (a broken counter
+# must not buy headroom by being broken). The printed text names the thing that broke, which may be the BATTERY or a WORKFLOW, not this gate.
+
+# mb_count_rows <root>: the verify.sh `^check ` rows that are not `^check control ` rows (the `census` surface counts those, so the two
+# partition the registry and no row is charged twice). COLUMN-0 LOCK: a `check` call indented outside the selftest region would be missed by
+# the grep, so it is a FAIL naming the line, EXCEPT a marked replay (`# mb:replay <name>`, judged below, printed as seen). HONEST CEILING: a
+# row added by a loop or an UNMARKED helper that CALLS `check` is not seen (a marker is something the author writes, not something the lock
+# finds), and a call that does not begin its line with `check` stays invisible, as before. The match is lexical: an obfuscated spelling (for example c""heck inside $(...) or backticks, or a quote-escape trick that hides a ;) evades it on any line, column 0 included; the durable fix is counting the registry's runtime listing (boarded; design section 8).
+# A marked replay is judged on kind plus name, not arguments: the lock counts rows, and a replay adds none, so a replay may pass different arguments under an existing row's name (ruled a ceiling, not closed). How many replays a row has is SHOWN on the info line, not graded.
+mb_count_rows() {
+  _rv="$1/conformance/verify.sh"
+  if [ ! -r "$_rv" ]; then
+    echo "conformance-mass-budget: FAIL -- rows cannot be MEASURED: conformance/verify.sh is missing or unreadable on a kit-marked tree. An unmeasurable surface is never priced at 0."
+    return 1
+  fi
+  # The lock scans EVERYTHING except the `if [ "${1:-}" = "--selftest" ]` ... `fi` block (the same range verify.sh's own K1 leg strips). It used to
+  # stop at mb_first_marker, which on the real file sits at line 554 while the registry rows sit at 1416-2027, so the lock was dead on the real tree.
+  # MARKED REPLAYS are seen and judged, not skipped: an indented `check <kind> <name> ...  # mb:replay <name>` is accepted ONLY when the marker
+  # name equals the call's own name AND exactly one column-0 `check <kind> <name> ` row exists (the replay re-runs a registry row, it adds none).
+  # Any other indented check, and any replay that fails either test, is the same FAIL. The awk prints `BAD <line> <plain|marked>` or `OK` followed
+  # by one `<name> <count>` line per replayed name. An UNMARKED helper that calls `check` is still the stated ceiling below.
+  _rscan=$(LC_ALL=C awk '
+    /^if \[ "\$\{1:-\}" = "--selftest" \]/ { skip = 1 }
+    skip { if ($0 ~ /^fi$/) skip = 0; next }
+    /^check[ \t]/ { split($0, cf, /[ \t]+/); twin[cf[2] " " cf[3]]++ }   # column 0: cf[1] is the word check
+    /^[ \t]+check[ \t]/ {
+      if (match($0, /# mb:replay [^ \t]+[ \t]*$/)) {
+        mname = substr($0, RSTART + 12, RLENGTH - 12); sub(/[ \t]+$/, "", mname)
+        # ONE check only: a second `check` word, or an unquoted ; | && before the marker, is a second command (an uncounted row).
+        body = substr($0, 1, RSTART - 1); cw = body; nchk = gsub(/(^|[^A-Za-z0-9_.\/-])check([^A-Za-z0-9_.\/-]|$)/, "&", cw)
+        gsub("\"[^\"]*\"", "", body); gsub("\047[^\047]*\047", "", body)
+        multi = (nchk > 1 || body ~ /;/ || body ~ /\|/ || body ~ /&&/)
+        split($0, rf, /[ \t]+/); nrep++; rl[nrep] = NR; rbad[nrep] = multi; rk[nrep] = rf[3] " " rf[4]; rn[nrep] = rf[4]; rm[nrep] = mname
+      } else if (!bad || NR < bad) { bad = NR; why = "plain" }
+    }
+    END {
+      for (i = 1; i <= nrep; i++) {
+        if (rm[i] != rn[i] || rbad[i] || twin[rk[i]] != 1) { if (!bad || rl[i] < bad) { bad = rl[i]; why = "marked" } }
+        else { if (!(rn[i] in seen)) { seen[rn[i]] = 1; order[++nn] = rn[i] }; cnt[rn[i]]++ }
+      }
+      if (bad) { print "BAD " bad " " why; exit }
+      print "OK"
+      for (j = 1; j <= nn; j++) print order[j] " " cnt[order[j]]
+    }' "$_rv")
+  case "$_rscan" in
+    BAD*)
+      _rind=$(printf '%s\n' "$_rscan" | awk '{ print $2 }'); _rwhy=$(printf '%s\n' "$_rscan" | awk '{ print $3 }')
+      _rnote="Put the registry row at column 0, or count the registry's runtime listing."
+      if [ "$_rwhy" = marked ]; then _rnote="Its mb:replay marker is honoured only when the marker name equals the call's own name and exactly one column-0 row of that kind and name exists, and the line is a single check (no second check word, no unquoted ; | &&)."; fi
+      echo "conformance-mass-budget: FAIL -- rows cannot be MEASURED: conformance/verify.sh line $(printf '%s' "$_rind" | mb_san) is an INDENTED check call outside the selftest region, which the column-0 row count would not see. $_rnote"
+      return 1 ;;
+    OK*) ;;
+    *)
+      echo "conformance-mass-budget: FAIL -- rows cannot be MEASURED: the verify.sh indented-check scan returned no verdict. An unmeasurable surface is never priced at 0."
+      return 1 ;;
+  esac
+  _rrep=$(printf '%s\n' "$_rscan" | awk 'NR > 1 { n += $2; s = s (s == "" ? "" : ", ") $1 " ×" $2 } END { if (n) print n " replay(s) seen and judged: " s }')
+  if [ -n "$_rrep" ]; then echo "conformance-mass-budget: rows: $_rrep" >&2; fi
+  _rall=$(LC_ALL=C grep -c '^check ' "$_rv" 2>/dev/null) || _rall=0
+  _rctl=$(LC_ALL=C grep -c '^check control ' "$_rv" 2>/dev/null) || _rctl=0
+  if ! mb_marker_ok "$_rall" || ! mb_marker_ok "$_rctl" || [ "$_rctl" -gt "$_rall" ]; then
+    echo "conformance-mass-budget: FAIL -- rows cannot be MEASURED: the verify.sh counts came back as all=[$(printf '%s' "$_rall" | mb_san)] control=[$(printf '%s' "$_rctl" | mb_san)]."
+    return 1
+  fi
+  printf '%s\n' "$((_rall - _rctl))"
+}
+
+# mb_count_cells <root>: the line count of `agent-autonomy.sh --list-cells`. ONE LINE PER CELL (a follower's line carries its producer as extra
+# fields), and the --join builds its `listed` set from this same output, so the count has one definition and this gate parses nothing of its
+# own; leg ci-b15 pins the coupling. The only sanity check is that every line holds a TAB (a stray diagnostic is not a cell).
+mb_count_cells() {
+  _cs="$1/conformance/agent-autonomy.sh"
+  if [ ! -r "$_cs" ]; then
+    echo "conformance-mass-budget: FAIL -- cells cannot be MEASURED: conformance/agent-autonomy.sh (the guard battery) is missing on a kit-marked tree."
+    return 1
+  fi
+  _crc=0
+  _cout=$( cd "$1" && sh conformance/agent-autonomy.sh --list-cells 2>/dev/null ) || _crc=$?
+  if [ "$_crc" -ne 0 ] || [ -z "$_cout" ]; then
+    echo "conformance-mass-budget: FAIL -- cells cannot be MEASURED: \`agent-autonomy.sh --list-cells\` (the guard battery's list mode, not this budget) exited $_crc and printed $(printf '%s' "$_cout" | LC_ALL=C awk 'END { print NR }') line(s). An unlistable battery is a FAIL, never 0 cells."
+    return 1
+  fi
+  _cbad=$(printf '%s\n' "$_cout" | LC_ALL=C awk -F "$TAB" 'NF < 2 { print NR; exit }')
+  if [ -n "$_cbad" ]; then
+    echo "conformance-mass-budget: FAIL -- cells cannot be MEASURED: line $(printf '%s' "$_cbad" | mb_san) of \`agent-autonomy.sh --list-cells\` (the guard battery's list mode) holds no TAB, so it is not a cell."
+    return 1
+  fi
+  # The DEDUPLICATED set, by the join's own pipeline (agent-autonomy.sh builds `listed` as awk '{ print $1 "\t" $2 }' | sort -u): the same
+  # derivation the CI path uses (the join prints that set's size), so the two ways to get `cells` cannot disagree. Leg ci-b15 pins the text.
+  printf '%s\n' "$_cout" | LC_ALL=C awk -F "$TAB" '{ print $1 "\t" $2 }' | LC_ALL=C sort -u | LC_ALL=C awk 'END { print NR }'
+}
+
+# mb_count_legs <root> <list>: the sum of each listed heavy check's `--list-legs` label count. A listed check that is missing, that does not
+# answer `--list-legs`, or that prints an off-shape label is a FAIL.
+mb_count_legs() {
+  _lt=0
+  for _lc in $2; do
+    case "$_lc" in *[!A-Za-z0-9._-]*|'') echo "conformance-mass-budget: FAIL -- legs cannot be MEASURED: heavy check name [$(printf '%s' "$_lc" | mb_san)] is off-shape."; return 1 ;; esac
+    if [ ! -r "$1/conformance/$_lc" ]; then echo "conformance-mass-budget: FAIL -- legs cannot be MEASURED: the listed heavy check $_lc is missing."; return 1; fi
+    _lrc=0
+    _lo=$( cd "$1" && sh "conformance/$_lc" --list-legs 2>/dev/null ) || _lrc=$?
+    if [ "$_lrc" -ne 0 ] || [ -z "$_lo" ]; then
+      echo "conformance-mass-budget: FAIL -- legs cannot be MEASURED: the listed heavy check $_lc does not answer --list-legs (exit $_lrc). A check enters the heavy list only with a --list-legs its own --selftest asserts it ran."
+      return 1
+    fi
+    if printf '%s\n' "$_lo" | LC_ALL=C grep -qvE '^[A-Za-z0-9.-]+$'; then
+      echo "conformance-mass-budget: FAIL -- legs cannot be MEASURED: $_lc --list-legs printed a label outside [A-Za-z0-9.-]+."
+      return 1
+    fi
+    _lt=$((_lt + $(printf '%s\n' "$_lo" | LC_ALL=C awk 'END { print NR }')))
+  done
+  printf '%s\n' "$_lt"
+}
+
+# mb_list_legs <script>: this gate's own legs, one label per line -- the `leg <label>` of every PASS/FAIL/SKIP line the selftest can print.
+mb_list_legs() {
+  LC_ALL=C sed -nE -e 's/^.*(PASS|FAIL|SKIP): selftest -- leg ([A-Za-z0-9.-]+) .*$/\2/p' -e 's/^[[:space:]]*cib_(red|green) (ci-[A-Za-z0-9.-]+) .*$/\2/p' "$1" | LC_ALL=C sort -u
+}
+
+# mb_legs_crosscheck <listed-file> <ran-file>: both sorted label lists; 0 iff identical. A leg listed but never run, or run but not listed, reds.
+mb_legs_crosscheck() {
+  _lx=$(LC_ALL=C comm -3 "$1" "$2")
+  [ -z "$_lx" ] && return 0
+  echo "conformance-mass-budget: FAIL -- the selftest legs and --list-legs disagree (first difference, listed<TAB>ran: $(printf '%s' "$_lx" | head -n 1 | mb_san | tr '\t' '/')). A leg must be listed AND run."
+  return 1
+}
+
+# mb_count_jobs <root>: `ci-gates.sh --count-legs`'s total (the matrix-aware count of runner jobs over every workflow with a pull_request or
+# push trigger). Its refusals (expression matrix, reusable uses: job, workflow_run, an unallowlisted pull_request_target) are forwarded.
+mb_count_jobs() {
+  if [ ! -r "$1/conformance/ci-gates.sh" ]; then
+    echo "conformance-mass-budget: FAIL -- jobs cannot be MEASURED: conformance/ci-gates.sh (the job counter) is missing on a kit-marked tree."
+    return 1
+  fi
+  _jrc=0
+  _jo=$( cd "$1" && sh conformance/ci-gates.sh --count-legs . 2>&1 ) || _jrc=$?
+  if [ "$_jrc" -ne 0 ]; then
+    printf '%s\n' "$_jo" | LC_ALL=C grep -E '^FAIL' | head -n 3 | while IFS= read -r _jl; do
+      echo "conformance-mass-budget: FAIL -- jobs cannot be MEASURED (ci-gates.sh --count-legs, not this budget): $(printf '%s' "$_jl" | mb_san)"
+    done
+    echo "conformance-mass-budget: FAIL -- jobs cannot be MEASURED: ci-gates.sh --count-legs exited $_jrc. A refusal is a FAIL, never 0 jobs."
+    return 1
+  fi
+  _jt=$(printf '%s\n' "$_jo" | LC_ALL=C sed -n 's/^total \([0-9][0-9]*\)$/\1/p' | tail -n 1)
+  if ! mb_marker_ok "$_jt" || [ "$_jt" -eq 0 ]; then
+    echo "conformance-mass-budget: FAIL -- jobs cannot be MEASURED: ci-gates.sh --count-legs printed no usable total line (got [$(printf '%s' "$_jt" | mb_san)])."
+    return 1
+  fi
+  printf '%s\n' "$_jt"
+}
+
+# mb_genesis_lock <root>: a PR cannot move its own origin. On a pull_request event, every `GENESIS_<NAME>=<digits>` line of this script is
+# compared with the merge-base's copy; any difference (or a deleted line) reds. The introducing PR is the one stated exception: GENESIS_ROWS,
+# _CELLS, _LEGS and _JOBS may be ABSENT at the base, once. On a push, and on a tree with no merge-base, it prints N/A (honest: the lock then
+# binds nothing). HONEST CEILING: it pins only the GENESIS_ lines; a PR can still edit the counting logic, so a reviewer must diff the count
+# functions on any PR that touches them (conduct, not enforced).
+# mb_genesis_forms <script>: the SOURCE LOCK for the origin lines, the twin of mb_no_literal_max. mb_genesis_lock reads only the canonical form
+# (`GENESIS_NAME=<digits>` at column 0), so a PR could move an origin by writing it another way (indented, readonly/export/declare, quoted,
+# `$((...))`) or by assigning it twice (the later wins). Any GENESIS_ assignment that is not canonical, and any name assigned twice, is a FAIL.
+mb_genesis_forms() {
+  if [ ! -r "$1" ]; then echo "conformance-mass-budget: FAIL -- the genesis-form lock cannot read [$(printf '%s' "$1" | mb_san)]."; return 1; fi
+  _gfo=$(LC_ALL=C awk '
+    /^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+|local[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+-?[a-z]*[[:space:]]+)?GENESIS_[A-Z_]+=/ {
+      if ($0 ~ /^GENESIS_[A-Z_]+=[0-9]+([ \t]|$)/) { n = $0; sub(/=.*/, "", n); if (seen[n]++) print NR ": " n " is assigned twice"; next }
+      print NR ": a GENESIS_ assignment that is not the canonical column-0 GENESIS_NAME=<digits> form"
+    }' "$1")
+  [ -z "$_gfo" ] && return 0
+  printf '%s\n' "$_gfo" | head -n 3 | while IFS= read -r _gfl; do
+    echo "conformance-mass-budget: FAIL -- genesis-form lock, line $(printf '%s' "$_gfl" | mb_san). An origin is written ONE way (column 0, bare digits, once) so the merge-base genesis lock reads what the gate uses."
+  done
+  return 1
+}
+MB_NEW_GENESIS="GENESIS_ROWS GENESIS_CELLS_WORKSPACE GENESIS_CELLS_TMPCLONE GENESIS_LEGS GENESIS_JOBS"
+MB_CELLS_VARIANT=workspace   # which cells genesis run() uses; set from argv only (--grade-cells <n> <variant>)
+mb_genesis_lock() {
+  _gl="conformance-mass-budget: genesis lock"
+  case "${GITHUB_EVENT_NAME:-}" in pull_request) : ;; *) echo "$_gl: N/A (not a pull_request event, so there is no merge-base to compare with; this lock then binds nothing)"; return 0 ;; esac
+  _gb=${GITHUB_BASE_REF:-}
+  if ! printf '%s' "$_gb" | LC_ALL=C grep -qE '^[A-Za-z0-9._/-]+$'; then echo "$_gl: N/A (GITHUB_BASE_REF is empty or off-shape)"; return 0; fi
+  if [ -z "$(command -v git 2>/dev/null || :)" ] || ! git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "$_gl: N/A (no git work tree here)"; return 0; fi
+  _gref="refs/remotes/origin/$_gb"
+  if ! git -C "$1" rev-parse --verify -q "$_gref^{commit}" >/dev/null 2>&1; then echo "$_gl: N/A (the base ref $_gref is not in this checkout)"; return 0; fi
+  _gmb=$(git -C "$1" merge-base "$_gref" HEAD 2>/dev/null) || { echo "$_gl: N/A (no merge-base between $_gref and HEAD)"; return 0; }
+  _gbase=$(git -C "$1" show "$_gmb:conformance/conformance-mass-budget.sh" 2>/dev/null) || { echo "$_gl: N/A (this script does not exist at the merge-base)"; return 0; }
+  _gbp=$(printf '%s\n' "$_gbase" | LC_ALL=C sed -nE 's/^(GENESIS_[A-Z_]+)=([0-9]+).*$/\1=\2/p')
+  _ghp=$(LC_ALL=C sed -nE 's/^(GENESIS_[A-Z_]+)=([0-9]+).*$/\1=\2/p' "$1/conformance/conformance-mass-budget.sh")
+  _glbad=0
+  for _gp in $_ghp; do
+    _gn=${_gp%%=*}; _gv=${_gp#*=}
+    _gbv=$(printf '%s\n' "$_gbp" | LC_ALL=C sed -n "s/^$_gn=//p")
+    if [ -z "$_gbv" ]; then
+      case " $MB_NEW_GENESIS " in
+        *" $_gn "*) echo "$_gl: $_gn absent at the merge-base (the genesis-setting diff; allowed once, graded by the reviewer re-running the count)"; continue ;;
+      esac
+      echo "conformance-mass-budget: FAIL -- genesis lock: $_gn is new here and absent at the merge-base. Only the four SWAS-281 genesis names are excused, once; a PR cannot add an origin of its own."
+      _glbad=1; continue
+    fi
+    if [ "$_gbv" != "$_gv" ]; then
+      echo "conformance-mass-budget: FAIL -- genesis lock: $_gn is $_gv here but $_gbv at the merge-base. A PR cannot move its own origin: GENESIS is set once; append an ack line to conformance/mass-acks.txt instead."
+      _glbad=1
+    fi
+  done
+  for _gp in $_gbp; do
+    _gn=${_gp%%=*}
+    case " $(printf '%s' "$_ghp" | tr '\n' ' ') " in
+      *" $_gn="*) : ;;
+      *) echo "conformance-mass-budget: FAIL -- genesis lock: $_gn exists at the merge-base and is deleted here. A PR cannot remove an origin."; _glbad=1 ;;
+    esac
+  done
+  [ "$_glbad" -eq 0 ] || return 1
+  echo "$_gl: OK -- every GENESIS_ line is unchanged from the merge-base ($_gmb)"
+  return 0
+}
+
+# mb_ci_measure <surface> <root>: dispatch to the surface's counter (stdout: the count, or the FAIL text; rc 1 on FAIL).
+mb_ci_measure() {
+  case "$1" in
+    rows)  mb_count_rows "$2" ;;
+    cells)
+      case "$MB_CELLS_MODE" in
+        na)   return 2 ;;
+        list) mb_count_cells "$2" ;;
+        *)    printf '%s\n' "$MB_CELLS_MODE" ;;
+      esac ;;
+    legs)  mb_count_legs "$2" "$MB_HEAVY_CHECKS" ;;
+    *)     mb_count_jobs "$2" ;;
+  esac
+}
+
+# mb_ci_surfaces <root> <ledger> <g_rows> <g_cells> <g_legs> <g_jobs>: grade the four counts against GENESIS + the scoped acks, print each
+# surface line, its banked SLACK (a negative or positive ack that leaves room must show on every run), and its provenance. rc 1 on any red.
+mb_ci_surfaces() {
+  # ⚠️ EVERY VARIABLE HERE IS `_ci_`-PREFIXED, deliberately: sh has no locals, and this runs in mb_verdict's shell, which still reads its own
+  # _cgen/_csum/_cmax (the census genesis, sum and ceiling) when it prints the CENSUS provenance after this returns.
+  _ci_root=$1; _ci_led=$2; _ci_bad=0
+  for _ci_item in rows:$3 cells:$4 legs:$5 jobs:$6; do
+    _ci_name=${_ci_item%%:*}; _ci_gen=${_ci_item#*:}
+    _ci_rc=0; _ci_cnt=$(mb_ci_measure "$_ci_name" "$_ci_root") || _ci_rc=$?
+    _ci_sum=$(mb_ledger_sum "$_ci_led" "$_ci_name")
+    _ci_max=$((_ci_gen + _ci_sum))
+    _ci_up=$(printf '%s' "$_ci_name" | LC_ALL=C tr 'a-z' 'A-Z')
+    if [ "$_ci_rc" -eq 2 ]; then
+      echo "conformance-mass-budget: $_ci_name N/A in this run (NOT a pass): the guard battery's --list-cells takes ~2 min of wall [M], so the cells count is graded by the guard-battery join job (it passes the join's own listed-set size and its variant: sh conformance/conformance-mass-budget.sh --grade-cells <n> <variant>) or on demand with --grade-cells-listing; GENESIS_CELLS is held by the genesis lock either way."
+      mb_provenance "$_ci_up" "$_ci_gen" "$_ci_max" "$_ci_led" "$_ci_name" "$_ci_sum"
+      continue
+    fi
+    if [ "$_ci_rc" -ne 0 ]; then printf '%s\n' "$_ci_cnt"; _ci_bad=1; continue; fi
+    case "$_ci_name" in rows) _ci_unit=row ;; cells) _ci_unit=cell ;; legs) _ci_unit=leg ;; *) _ci_unit=job ;; esac
+    mb_surface "$_ci_name" "$_ci_cnt" "$_ci_max" "$_ci_unit" || _ci_bad=1
+    if [ "$_ci_cnt" -le "$_ci_max" ]; then echo "conformance-mass-budget: slack $_ci_name $((_ci_max - _ci_cnt)) free (ceiling $_ci_max, count $_ci_cnt)"; fi
+    mb_provenance "$_ci_up" "$_ci_gen" "$_ci_max" "$_ci_led" "$_ci_name" "$_ci_sum"
+  done
+  return "$_ci_bad"
 }
 
 selftest() {
@@ -1448,6 +1754,279 @@ selftest() {
     echo "PASS: selftest -- leg xxxiv the baseline data file is export-ignored and on the adopter-export absence list"
   else echo "FAIL: selftest -- leg xxxiv the baseline data file is not export-ignored or not on the adopter-export absence list"; sfail=1; fi
 
+  # ═══ SWAS-281 (CI-TIME-BUDGET) legs ci-b1 .. ci-b20: the four CI-time counts (rows, cells, legs, jobs), the genesis lock, the ledger grammar ═══
+  # Each leg is a design-promised control (design section 9, B-numbers). Mutants are function shadows in a subshell: the production function is
+  # replaced by the wrong one and the leg asserts the fixture SEES it (a mutant the fixture cannot see would make the control vacuous).
+  unset GITHUB_EVENT_NAME GITHUB_BASE_REF
+  _cib_save_heavy=$MB_HEAVY_CHECKS; MB_HEAVY_CHECKS="hv.sh"; _cib_save_cm=$MB_CELLS_MODE; MB_CELLS_MODE=list   # the stub listing stands in for the ~2 min real one
+  cib_fix() {   # <dir> <control-rows> <non-control-rows> <cells> <jobs-total>: an armed kit fixture with verify.sh, a cells/jobs/legs stub each
+    mb_fixture "$1" 2 5
+    : > "$1/conformance/verify.sh"
+    _cj=0; while [ "$_cj" -lt "$2" ]; do printf 'check control c%s sh x\n' "$_cj" >> "$1/conformance/verify.sh"; _cj=$((_cj + 1)); done
+    _cj=0; while [ "$_cj" -lt "$3" ]; do printf 'check n%s sh x\n' "$_cj" >> "$1/conformance/verify.sh"; _cj=$((_cj + 1)); done
+    : > "$1/conformance/cells.out"; _cj=0
+    while [ "$_cj" -lt "$4" ]; do printf '%s\tcell %s\n' "$_cj" "$_cj" >> "$1/conformance/cells.out"; _cj=$((_cj + 1)); done
+    printf '#!/bin/sh\nif [ "${1:-}" = --list-cells ]; then cat conformance/cells.out; exit "$(cat conformance/cells.rc 2>/dev/null || echo 0)"; fi\nexit 2\n' > "$1/conformance/agent-autonomy.sh"
+    printf 'a.yml j 1\ntotal %s\n' "$5" > "$1/conformance/jobs.out"
+    printf '#!/bin/sh\nif [ "${1:-}" = --count-legs ]; then cat conformance/jobs.out; exit "$(cat conformance/jobs.rc 2>/dev/null || echo 0)"; fi\nexit 2\n' > "$1/conformance/ci-gates.sh"
+    printf 'l1\nl2\nl3\n' > "$1/conformance/legs.out"
+    printf '#!/bin/sh\nif [ "${1:-}" = --list-legs ]; then cat conformance/legs.out; exit 0; fi\nexit 2\n' > "$1/conformance/hv.sh"
+  }
+  cib_v() { mb_verdict "$1" 0 99 999 99999 99999 0 "$2" 2>&1; }   # <dir> "<rows cells legs jobs genesis>" -> output; the caller reads rc
+  cib_red() {   # <leg> <dir> <genesis> <needle> <what>: the verdict must be RED and name <needle>
+    if _co=$(cib_v "$2" "$3"); then echo "FAIL: selftest -- leg $1 $5 was GREEN: [$_co]"; sfail=1
+    elif printf '%s\n' "$_co" | grep -Fq -- "$4"; then echo "PASS: selftest -- leg $1 $5 reds and names [$4]"
+    else echo "FAIL: selftest -- leg $1 $5 redded without naming [$4]: [$_co]"; sfail=1; fi
+  }
+  cib_green() { # <leg> <dir> <genesis> <needle> <what>
+    if _co=$(cib_v "$2" "$3") && printf '%s\n' "$_co" | grep -Fq -- "$4"; then echo "PASS: selftest -- leg $1 $5 is green and shows [$4]"
+    else echo "FAIL: selftest -- leg $1 $5 was not green with [$4]: [$_co]"; sfail=1; fi
+  }
+
+  # ci-b1 -- `rows` counts the non-control rows exactly: +1 reds with the remedy, a matching ack greens, double-charging control rows is seen.
+  cib_fix "$W/b1" 3 2 5 3
+  cib_green ci-b1 "$W/b1" "2 5 3 3" "rows 2/2" "3 control + 2 non-control rows against genesis 2"
+  cib_fix "$W/b1b" 3 3 5 3
+  cib_red ci-b1 "$W/b1b" "2 5 3 3" "rows 3/2, over by 1" "a third non-control row without an ack"
+  mb_ack "$W/b1b" "2026-10-24\trows\t+1\tleg-ci-b1-declared"
+  cib_green ci-b1 "$W/b1b" "2 5 3 3" "leg-ci-b1-declared" "the same row WITH a matching ack"
+  if ( mb_count_rows() { LC_ALL=C grep -c '^check ' "$1/conformance/verify.sh"; }; cib_v "$W/b1" "2 5 3 3" ) >/dev/null; then
+    echo "FAIL: selftest -- leg ci-b1 MUTANT count-every-check-row (double-charging the control rows) stayed green on the fixture"; sfail=1
+  else echo "PASS: selftest -- leg ci-b1 MUTANT count-every-check-row reds on the fixture (the 3 control rows would be charged twice)"; fi
+
+  # ci-b2 -- `cells` fails closed: an exit 1, an empty listing and a malformed line each FAIL naming the battery, never 0.
+  cib_fix "$W/b2" 1 2 5 3; printf '1\n' > "$W/b2/conformance/cells.rc"
+  cib_red ci-b2 "$W/b2" "2 5 3 3" "agent-autonomy.sh" "a --list-cells that exits 1"
+  cib_fix "$W/b2e" 1 2 0 3
+  cib_red ci-b2 "$W/b2e" "2 5 3 3" "agent-autonomy.sh" "an empty listing"
+  cib_fix "$W/b2m" 1 2 5 3; printf 'no-tab-here\n' >> "$W/b2m/conformance/cells.out"
+  cib_red ci-b2 "$W/b2m" "2 5 3 3" "agent-autonomy.sh" "a line with no TAB"
+  if ( mb_count_cells() { echo 0; }; cib_v "$W/b2" "2 5 3 3" ) >/dev/null; then
+    echo "PASS: selftest -- leg ci-b2 MUTANT treat-a-failed-listing-as-0 would be GREEN where the real gate is red, so the fixture can tell them apart"
+  else echo "FAIL: selftest -- leg ci-b2 the failed-listing fixture cannot tell treat-as-0 from fail-closed"; sfail=1; fi
+
+  # ci-b3 -- `cells` counts the listing: N labels read N, one more reds without an ack.
+  cib_fix "$W/b3" 1 2 5 3
+  cib_green ci-b3 "$W/b3" "2 5 3 3" "cells 5/5" "a 5-label listing against genesis 5"
+  cib_fix "$W/b3b" 1 2 6 3
+  cib_red ci-b3 "$W/b3b" "2 5 3 3" "cells 6/5, over by 1" "a 6th cell without an ack"
+
+  # ci-b4 -- the cells fallback (listing measured ~2 min against the design's 30 s): the default run lists nothing and says N/A (never a pass, never
+  # red); a count supplied by the join job is graded; the CLI refuses a missing, non-numeric or zero count rather than falling back to N/A.
+  MB_CELLS_MODE=na
+  cib_green ci-b4 "$W/b2" "2 5 3 3" "cells N/A in this run (NOT a pass)" "the default run with an UNLISTABLE battery (nothing is listed)"
+  MB_CELLS_MODE=5; cib_green ci-b4 "$W/b3" "2 5 3 3" "cells 5/5" "a supplied count of 5 against genesis 5"
+  MB_CELLS_MODE=6; cib_red ci-b4 "$W/b3" "2 5 3 3" "cells 6/5, over by 1" "a supplied count of 6"
+  MB_CELLS_MODE=list
+  _ca_nl=$(printf '5\n7')
+  for _ca in "" "abc" "0" "-3" "4x" "1 2" "$_ca_nl" "12345678901"; do
+    if sh "$0" --grade-cells "$_ca" workspace >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b4 --grade-cells [$_ca] was accepted"; sfail=1
+    else echo "PASS: selftest -- leg ci-b4 --grade-cells [$_ca] is refused (exit non-zero)"; fi
+  done
+  for _cv in "" bogus Workspace; do
+    if sh "$0" --grade-cells 5 "$_cv" >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b4 --grade-cells 5 with variant [$_cv] was accepted"; sfail=1
+    else echo "PASS: selftest -- leg ci-b4 --grade-cells 5 with variant [$_cv] is refused (each variant has its own genesis)"; fi
+  done
+  if sh "$0" --grade-cells 5 >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b4 --grade-cells 5 with no variant was accepted"; sfail=1
+  else echo "PASS: selftest -- leg ci-b4 --grade-cells 5 with no variant is refused"; fi
+  if sh "$0" --grade-cells >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b4 --grade-cells with no count was accepted"; sfail=1
+  else echo "PASS: selftest -- leg ci-b4 --grade-cells with no count is refused"; fi
+
+  # ci-b5 -- `legs` is graded and honest: a listed check without --list-legs FAILs; a leg run but not listed (and the reverse) FAILs.
+  cib_fix "$W/b5" 1 2 5 3
+  cib_green ci-b5 "$W/b5" "2 5 3 3" "legs 3/3" "a listed heavy check answering --list-legs (3 labels)"
+  printf '#!/bin/sh\nexit 2\n' > "$W/b5/conformance/hv.sh"
+  cib_red ci-b5 "$W/b5" "2 5 3 3" "hv.sh" "a listed heavy check with no --list-legs"
+  printf 'a\nb\nc\n' > "$W/lg-listed.txt"; printf 'a\nb\nc\nd\n' > "$W/lg-ran-extra.txt"; printf 'a\nb\n' > "$W/lg-ran-short.txt"
+  if mb_legs_crosscheck "$W/lg-listed.txt" "$W/lg-listed.txt" >/dev/null 2>&1 &&
+     ! mb_legs_crosscheck "$W/lg-listed.txt" "$W/lg-ran-extra.txt" >/dev/null 2>&1 &&
+     ! mb_legs_crosscheck "$W/lg-listed.txt" "$W/lg-ran-short.txt" >/dev/null 2>&1; then
+    echo "PASS: selftest -- leg ci-b5 a selftest that runs a leg --list-legs omits, or omits a listed leg, reds; an exact match is green"
+  else echo "FAIL: selftest -- leg ci-b5 the legs cross-check is wrong in at least one direction"; sfail=1; fi
+
+  # ci-b5w -- the WRAPPER itself (mb_selftest_checked), driven with a stub selftest that runs leg `a` while --list-legs names `a` and `b`: it must
+  # red; with the cross-check shadowed to a pass (the wrapper mutant) it would be green, so the fixture can tell them apart.
+  # (the stub's output line is spelled in two pieces so mb_list_legs, which scans this file's text, does not list the stub's leg `a`)
+  if ( selftest() { echo "PASS: selftest -- le""g a x"; exit 0; }; mb_list_legs() { printf 'a\nb\n'; }; mb_selftest_checked ) >/dev/null 2>&1; then
+    echo "FAIL: selftest -- leg ci-b5w the wrapper stayed green with a listed leg that never ran"; sfail=1
+  else echo "PASS: selftest -- leg ci-b5w the wrapper reds on a listed leg that never ran"; fi
+  if ( selftest() { echo "PASS: selftest -- le""g a x"; exit 0; }; mb_list_legs() { printf 'a\nb\n'; }; mb_legs_crosscheck() { return 0; }; mb_selftest_checked ) >/dev/null 2>&1; then
+    echo "PASS: selftest -- leg ci-b5w MUTANT cross-check-always-passes would be GREEN where the real wrapper is red, so the fixture sees it"
+  else echo "FAIL: selftest -- leg ci-b5w the wrapper fixture cannot tell the always-pass cross-check from the real one"; sfail=1; fi
+
+  # ci-b6 -- the grammar takes rows/cells/legs/jobs and still rejects a misspelt surface; the existing ledger stays green.
+  for _cs in rows cells legs jobs; do
+    printf '# l\n2026-10-24\t%s\t+3\tgrammar leg\n' "$_cs" > "$W/g.txt"
+    if mb_ledger_check "$W/g.txt" >/dev/null 2>&1; then echo "PASS: selftest -- leg ci-b6 an ack on surface [$_cs] is grammatical"
+    else echo "FAIL: selftest -- leg ci-b6 surface [$_cs] was refused by the grammar"; sfail=1; fi
+  done
+  printf '2026-10-24\tcell\t+3\tmisspelt\n' > "$W/g.txt"
+  if mb_ledger_check "$W/g.txt" >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b6 a misspelt surface [cell] was accepted"; sfail=1
+  else echo "PASS: selftest -- leg ci-b6 a misspelt surface [cell] is refused"; fi
+  if [ -f "$_xroot/conformance/mass-acks.txt" ] && mb_ledger_check "$_xroot/conformance/mass-acks.txt" >/dev/null 2>&1; then
+    echo "PASS: selftest -- leg ci-b6 the real ledger still passes the extended grammar"
+  elif [ ! -f "$_xroot/conformance/mass-acks.txt" ]; then echo "SKIP: selftest -- leg ci-b6 real ledger NOT EXERCISED (no ledger in this tree)"
+  else echo "FAIL: selftest -- leg ci-b6 the real ledger fails the extended grammar"; sfail=1; fi
+
+  # ci-b7 -- no cached ceiling for a new surface: the source lock reds on a MAX_<new surface> literal in each direct form.
+  for _lf in 'MAX_CELLS=4186' 'MAX_ROWS="20"' "MAX_LEGS='3'" 'readonly MAX_JOBS=26' 'export MAX_CELLS=+4186'; do
+    printf '#!/bin/sh\n%s\n' "$_lf" > "$W/lit4.sh"
+    if mb_no_literal_max "$W/lit4.sh" >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b7 the source lock MISSED [$_lf]"; sfail=1
+    else echo "PASS: selftest -- leg ci-b7 the source lock catches [$_lf]"; fi
+  done
+
+  # ci-b8 -- the genesis is the count on the introducing head, printed with `0 ack(s)` per new surface.
+  cib_fix "$W/b8" 1 2 5 3
+  _o8=$(cib_v "$W/b8" "2 5 3 3" || true)
+  for _s8 in ROWS=2 CELLS=5 LEGS=3 JOBS=3; do
+    if printf '%s\n' "$_o8" | grep -Fq "MAX_${_s8%=*}=${_s8#*=} = genesis ${_s8#*=} + (+0) over 0 ack(s)"; then echo "PASS: selftest -- leg ci-b8 MAX_${_s8%=*} prints its genesis ${_s8#*=} and 0 ack(s)"
+    else echo "FAIL: selftest -- leg ci-b8 MAX_${_s8%=*} derivation line missing: [$_o8]"; sfail=1; fi
+  done
+
+  # ci-b9 -- removal is never punished: one row fewer with no ack is green; a negative ack lowers the ceiling, so growth back reds.
+  cib_fix "$W/b9" 1 1 5 3
+  cib_green ci-b9 "$W/b9" "2 5 3 3" "rows 1/2" "one row fewer than genesis and no ack"
+  mb_ack "$W/b9" "2026-10-24\trows\t-1\tleg-ci-b9-cut"
+  cib_green ci-b9 "$W/b9" "2 5 3 3" "rows 1/1" "a negative ack lowers the ceiling to the new count"
+  cib_fix "$W/b9b" 1 2 5 3; mb_ack "$W/b9b" "2026-10-24\trows\t-1\tleg-ci-b9-cut"
+  cib_red ci-b9 "$W/b9b" "2 5 3 3" "rows 2/1, over by 1" "growth back past a lowered ceiling"
+
+  # ci-b15 -- the cells count is one definition: the listing's line count equals the join's `listed` set on a fixture WITH follows lines,
+  # the join's own pipeline text is still in agent-autonomy.sh (so the coupling cannot drift silently), and a count that parses is seen.
+  cib_fix "$W/b15" 1 2 4 3
+  printf '4\tcell 4\tfollows\t3\n' >> "$W/b15/conformance/cells.out"
+  printf '0\tcell 0\n' >> "$W/b15/conformance/cells.out"   # a duplicated line: the join's `sort -u` makes ONE cell of it
+  _lc15=$(mb_count_cells "$W/b15"); _jl15=$(awk -F'\t' '{ print $1 "\t" $2 }' "$W/b15/conformance/cells.out" | LC_ALL=C sort -u | awk 'END { print NR }')
+  if [ "$_lc15" = 5 ] && [ "$_jl15" = 5 ]; then echo "PASS: selftest -- leg ci-b15 the count (5 of 6 lines: one a follows line, one a duplicate) equals the join's deduplicated listed-set count"
+  else echo "FAIL: selftest -- leg ci-b15 count [$_lc15] and the join's listed count [$_jl15] disagree on a follows+duplicate fixture"; sfail=1; fi
+  if ( mb_count_cells() { awk 'END { print NR }' "$1/conformance/cells.out"; }; [ "$(mb_count_cells "$W/b15")" = "$_jl15" ] ); then
+    echo "FAIL: selftest -- leg ci-b15 MUTANT count-raw-lines agrees with the join, so the duplicate fixture cannot see it"; sfail=1
+  else echo "PASS: selftest -- leg ci-b15 MUTANT count-raw-lines miscounts the duplicate fixture (6 against the join's 5) and is seen"; fi
+  # Declared deviation (design B15): the byte-identical-across-dims check is replaced by ONE GENESIS PER CI VARIANT, because CI measured 4168
+  # (workspace) against 4167 (tmpclone): the listing is not identical across dims, so each variant is graded against its own origin.
+  if [ -f "$_xroot/conformance/agent-autonomy.sh" ]; then
+    if grep -Fq 'awk -F'"'"'\t'"'"' '"'"'{ print $1 "\t" $2 }'"'"' "$_jr_list" | LC_ALL=C sort -u > "$_jr_d/listed"' "$_xroot/conformance/agent-autonomy.sh"; then
+      echo "PASS: selftest -- leg ci-b15 the join still builds its listed set from the --list-cells output by that exact pipeline (the coupling holds)"
+    else echo "FAIL: selftest -- leg ci-b15 agent-autonomy.sh --join no longer builds its listed set by the pipeline this leg pins; re-derive the cells definition"; sfail=1; fi
+    # ...and the join prints that set's size (the count the CI step after the join hands to --grade-cells), after a green join, from aa_join_main.
+    if grep -Fq 'echo "agent-autonomy --join: listed cells: $_jr_ng"' "$_xroot/conformance/agent-autonomy.sh"; then
+      echo "PASS: selftest -- leg ci-b15 the join still prints its listed-set size for the --grade-cells step (the line the workflow extracts)"
+    else echo "FAIL: selftest -- leg ci-b15 agent-autonomy.sh --join no longer prints 'listed cells: N'; the guard-battery join's --grade-cells step would extract nothing"; sfail=1; fi
+  else echo "SKIP: selftest -- leg ci-b15 join coupling NOT EXERCISED (no agent-autonomy.sh in this tree)"; fi
+
+  # ci-b16 -- an indented `check` call outside the selftest region is a FAIL naming the line; at column 0 it is counted.
+  cib_fix "$W/b16" 1 2 5 3; printf '  check hidden sh x\n' >> "$W/b16/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16" "2 5 3 3" "verify.sh line 4" "an indented check call"
+  cib_fix "$W/b16b" 1 2 5 3; printf 'check visible sh x\n' >> "$W/b16b/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16b" "2 5 3 3" "rows 3/2" "the same call at column 0 is counted"
+  # ...the lock is LIVE on a verify.sh that HAS a selftest block before its registry rows (the real shape): an indented check INSIDE the block is
+  # skipped, one AFTER its `fi` reds. (The first version stopped at the selftest marker, so on the real file it scanned nothing.)
+  cib_fix "$W/b16c" 1 2 5 3
+  { printf 'if [ "${1:-}" = "--selftest" ]; then\n  check inside-selftest sh x\nfi\n'; cat "$W/b16c/conformance/verify.sh"; printf '  check hidden-after-block sh x\n'; } > "$W/b16c/v.new"
+  mv "$W/b16c/v.new" "$W/b16c/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16c" "2 5 3 3" "verify.sh line 7" "an indented check AFTER a selftest block (the block's own indented check is skipped)"
+  cib_fix "$W/b16d" 1 2 5 3
+  { printf 'if [ "${1:-}" = "--selftest" ]; then\n  check inside-selftest sh x\nfi\n'; cat "$W/b16d/conformance/verify.sh"; } > "$W/b16d/v.new"
+  mv "$W/b16d/v.new" "$W/b16d/conformance/verify.sh"
+  cib_green ci-b16 "$W/b16d" "2 5 3 3" "rows 2/2" "an indented check only INSIDE the selftest block"
+  # ...a MARKED REPLAY (an indented `check <kind> <name> ...  # mb:replay <name>`) is SEEN and JUDGED: it is accepted only when the marker name is
+  # the call's own name and exactly one column-0 row of that kind and name exists. The unmarked b16/b16c cells above stay the negatives.
+  cib_fix "$W/b16e" 1 2 5 3; printf '  check control c0 sh x  # mb:replay c0\n' >> "$W/b16e/conformance/verify.sh"
+  cib_green ci-b16 "$W/b16e" "2 5 3 3" "rows 2/2" "a marked replay of the one column-0 row c0 (the row count is unchanged)"
+  cib_green ci-b16 "$W/b16e" "2 5 3 3" "replay(s) seen and judged: c0 ×1" "the same marked replay, which the lock prints as seen and judged"
+  cib_fix "$W/b16f" 1 2 5 3; printf '  check control zz sh x  # mb:replay zz\n' >> "$W/b16f/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16f" "2 5 3 3" "honoured only when" "a marked replay with NO column-0 twin"
+  cib_fix "$W/b16g" 1 2 5 3; printf '  check control c0 sh x  # mb:replay other\n' >> "$W/b16g/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16g" "2 5 3 3" "honoured only when" "a marker name that differs from the call's name"
+  cib_fix "$W/b16h" 1 2 5 3; printf 'check control c0 sh x\n  check control c0 sh x  # mb:replay c0\n' >> "$W/b16h/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16h" "2 5 3 3" "honoured only when" "a marked replay whose column-0 twin is not unique (two rows)"
+  # ...a marked line must be ONE check: a second command on it would add a row the column-0 count never sees (H1); a wrong KIND is no twin (F-1).
+  cib_fix "$W/b16i" 1 2 5 3; printf '  check control c0 sh x; check new n sh y  # mb:replay c0\n' >> "$W/b16i/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16i" "2 5 3 3" "honoured only when" "a marked replay chained with ; to a second check (an uncounted row)"
+  cib_fix "$W/b16j" 1 2 5 3; printf '  check control c0 sh x && check new n sh y  # mb:replay c0\n' >> "$W/b16j/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16j" "2 5 3 3" "honoured only when" "a marked replay chained with && to a second check (an uncounted row)"
+  cib_fix "$W/b16k" 1 2 5 3; printf '  check other c0 sh x  # mb:replay c0\n' >> "$W/b16k/conformance/verify.sh"
+  cib_red ci-b16 "$W/b16k" "2 5 3 3" "honoured only when" "a WRONG-KIND replay (other c0) beside the column-0 control c0 row"
+  cib_fix "$W/b16l" 1 2 5 3; printf '  check control c0 sh x > "$out"   # mb:replay c0\n' >> "$W/b16l/conformance/verify.sh"
+  cib_green ci-b16 "$W/b16l" "2 5 3 3" "replay(s) seen and judged: c0 ×1" "a marked replay with a quoted > redirect (the real verify.sh shape)"
+  # ...the fail-closed arm (F-2): a scan that yields NO verdict is a FAIL naming it, never a count. A PATH-shadowed awk that prints nothing drives it.
+  cib_fix "$W/b16n" 1 2 5 3; mkdir "$W/b16n/bin"; printf '#!/bin/sh\nexit 0\n' > "$W/b16n/bin/awk"; chmod +x "$W/b16n/bin/awk"
+  if _co=$( PATH="$W/b16n/bin:$PATH"; mb_count_rows "$W/b16n" 2>&1 ); then echo "FAIL: selftest -- leg ci-b16 a scan with no verdict was ACCEPTED: [$_co]"; sfail=1
+  elif printf '%s\n' "$_co" | grep -Fq "returned no verdict"; then echo "PASS: selftest -- leg ci-b16 a scan with no verdict reds (rc 1) and names [returned no verdict]"
+  else echo "FAIL: selftest -- leg ci-b16 a scan with no verdict redded without naming it: [$_co]"; sfail=1; fi
+  if [ -f "$_xroot/docs/ROADMAP-KIT.md" ] || [ -f "$_xroot/.github/workflows/golden-path.yml" ]; then
+    if _rr=$(mb_count_rows "$_xroot") && mb_marker_ok "$_rr" && [ "$_rr" -gt 0 ]; then echo "PASS: selftest -- leg ci-b16r the lock is live on the REAL verify.sh and finds no hidden indented row ($_rr non-control rows)"
+    else echo "FAIL: selftest -- leg ci-b16r the real verify.sh reds the column-0 lock or yields no rows: [$_rr]"; sfail=1; fi
+  else echo "SKIP: selftest -- leg ci-b16r real-tree row lock NOT EXERCISED (no kit marker)"; fi
+
+  # ci-b17 -- `jobs` reads ci-gates.sh --count-legs (its own legs are B4/B17 in ci-gates.sh --selftest): the total is graded, a refusal is a FAIL.
+  cib_fix "$W/b17" 1 2 5 3
+  cib_green ci-b17 "$W/b17" "2 5 3 3" "jobs 3/3" "the counter's total"
+  printf '1\n' > "$W/b17/conformance/jobs.rc"; printf 'FAIL: count-legs -- x.yml job [u] is a reusable-workflow uses: job\n' > "$W/b17/conformance/jobs.out"
+  cib_red ci-b17 "$W/b17" "2 5 3 3" "reusable-workflow" "a counter refusal (a FAIL, never 0)"
+  cib_fix "$W/b17b" 1 2 5 4
+  cib_red ci-b17 "$W/b17b" "2 5 3 3" "jobs 4/3, over by 1" "a fourth runner job"
+  if [ -f "$_xroot/docs/ROADMAP-KIT.md" ] || [ -f "$_xroot/.github/workflows/golden-path.yml" ]; then
+    if _jo=$(cd "$_xroot" && sh conformance/ci-gates.sh --count-legs "$_xroot" 2>&1) && printf '%s\n' "$_jo" | grep -Eq '^total [0-9]+$'; then
+      echo "PASS: selftest -- leg ci-b17 the real tree's workflows all parse and total (count-legs rc 0)"
+    else echo "FAIL: selftest -- leg ci-b17 count-legs refused the real tree: [$_jo]"; sfail=1; fi
+  else echo "SKIP: selftest -- leg ci-b17 real-tree count NOT EXERCISED (no kit marker)"; fi
+
+  # ci-b18 -- a PR cannot move its own genesis: a changed GENESIS_ reds, an unchanged one is green, the introducing diff is allowed once.
+  cib_g() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
+  _gdir="$W/b18"; rm -rf "$_gdir"; mkdir -p "$_gdir/conformance"
+  printf 'GENESIS_LOGIC=100\nGENESIS_CELLS=10\n' > "$_gdir/conformance/conformance-mass-budget.sh"
+  cib_g init -q "$_gdir" && cib_g -C "$_gdir" symbolic-ref HEAD refs/heads/main && cib_g -C "$_gdir" add -A && cib_g -C "$_gdir" commit -q -m base \
+    && cib_g -C "$_gdir" update-ref refs/remotes/origin/main HEAD && cib_g -C "$_gdir" checkout -q -b pr
+  _gl() { ( GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main; mb_genesis_lock "$_gdir" 2>&1 ); }
+  if _o=$(_gl) && printf '%s\n' "$_o" | grep -Fq 'unchanged'; then echo "PASS: selftest -- leg ci-b18 an unchanged genesis is green"
+  else echo "FAIL: selftest -- leg ci-b18 an unchanged genesis was not green: [$_o]"; sfail=1; fi
+  printf 'GENESIS_LOGIC=100\nGENESIS_CELLS=11\n' > "$_gdir/conformance/conformance-mass-budget.sh"; cib_g -C "$_gdir" commit -q -am move
+  if _o=$(_gl); then echo "FAIL: selftest -- leg ci-b18 a PR that moved GENESIS_CELLS 10 -> 11 was green: [$_o]"; sfail=1
+  elif printf '%s\n' "$_o" | grep -Fq 'GENESIS_CELLS'; then echo "PASS: selftest -- leg ci-b18 a moved GENESIS_CELLS reds and names it"
+  else echo "FAIL: selftest -- leg ci-b18 the red did not name GENESIS_CELLS: [$_o]"; sfail=1; fi
+  printf 'GENESIS_LOGIC=100\nGENESIS_CELLS=10\nGENESIS_ROWS=7\n' > "$_gdir/conformance/conformance-mass-budget.sh"; cib_g -C "$_gdir" commit -q -am set
+  if _o=$(_gl) && printf '%s\n' "$_o" | grep -Fq 'GENESIS_ROWS absent at the merge-base'; then echo "PASS: selftest -- leg ci-b18 the genesis-setting diff (GENESIS_ROWS absent at base) is allowed once"
+  else echo "FAIL: selftest -- leg ci-b18 the introducing diff was refused: [$_o]"; sfail=1; fi
+  printf 'GENESIS_LOGIC=100\nGENESIS_CELLS=10\nGENESIS_FIXTURE=5\n' > "$_gdir/conformance/conformance-mass-budget.sh"; cib_g -C "$_gdir" commit -q -am other
+  if _o=$(_gl); then echo "FAIL: selftest -- leg ci-b18 a NEW non-CI GENESIS_FIXTURE absent at base was allowed: [$_o]"; sfail=1
+  else echo "PASS: selftest -- leg ci-b18 only the four introduced names may be absent at the base; another new GENESIS_ reds"; fi
+  printf 'GENESIS_CELLS=10\n' > "$_gdir/conformance/conformance-mass-budget.sh"; cib_g -C "$_gdir" commit -q -am drop
+  if _o=$(_gl); then echo "FAIL: selftest -- leg ci-b18 a deleted GENESIS_LOGIC was allowed: [$_o]"; sfail=1
+  else echo "PASS: selftest -- leg ci-b18 a GENESIS_ line deleted at head reds"; fi
+  if _o=$( GITHUB_EVENT_NAME=push mb_genesis_lock "$_gdir" 2>&1 ) && printf '%s\n' "$_o" | grep -Fq 'N/A'; then echo "PASS: selftest -- leg ci-b18 on a push event the lock prints N/A and does not red"
+  else echo "FAIL: selftest -- leg ci-b18 the push-event arm did not N/A: [$_o]"; sfail=1; fi
+
+  # ci-b18f -- the genesis-FORM lock: any GENESIS_ assignment but the canonical column-0 bare-digits one, and any name assigned twice, reds.
+  for _gf in '  GENESIS_ROWS=20' 'readonly GENESIS_ROWS=20' 'export GENESIS_ROWS=20' 'GENESIS_ROWS=$((20))' 'GENESIS_ROWS="20"' 'declare -r GENESIS_ROWS=20'; do
+    printf '#!/bin/sh\n%s\n' "$_gf" > "$W/gf.sh"
+    if mb_genesis_forms "$W/gf.sh" >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b18f the genesis-form lock MISSED [$_gf]"; sfail=1
+    else echo "PASS: selftest -- leg ci-b18f the genesis-form lock catches [$_gf]"; fi
+  done
+  printf '#!/bin/sh\nGENESIS_ROWS=20\nGENESIS_ROWS=21\n' > "$W/gf.sh"
+  if mb_genesis_forms "$W/gf.sh" >/dev/null 2>&1; then echo "FAIL: selftest -- leg ci-b18f a name assigned twice (the later wins) was allowed"; sfail=1
+  else echo "PASS: selftest -- leg ci-b18f a GENESIS_ name assigned twice reds"; fi
+  printf '#!/bin/sh\nGENESIS_ROWS=20   # a comment\n# GENESIS_ROWS=99 in a comment\nGENESIS_CELLS_WORKSPACE=4\n' > "$W/gf.sh"
+  if mb_genesis_forms "$W/gf.sh" >/dev/null 2>&1; then echo "PASS: selftest -- leg ci-b18f canonical lines (with a trailing comment, and a comment mention) pass"
+  else echo "FAIL: selftest -- leg ci-b18f the form lock reds canonical lines (vacuously red)"; sfail=1; fi
+
+  # ci-b20 -- slack is visible: a banked +10 ack with an unchanged count prints `10 free` on that surface.
+  cib_fix "$W/b20" 1 2 5 3; mb_ack "$W/b20" "2026-10-24\trows\t+10\tleg-ci-b20-banked"
+  cib_green ci-b20 "$W/b20" "2 5 3 3" "slack rows 10 free" "a +10 ack with an unchanged count"
+
+  # ci-run -- the production run passes the four genesis values AND runs the genesis lock (a mutant that drops either would silently skip the surfaces).
+  _runsrc=$(awk '/^run\(\) \{/ { p = 1 } p { print } p && /^}/ { exit }' "$0")
+  _verdsrc=$(awk '/^mb_verdict\(\) \{/ { p = 1 } p { print } p && /^}/ { exit }' "$0")
+  _runall=1
+  for _rn in GENESIS_ROWS GENESIS_CELLS_WORKSPACE GENESIS_CELLS_TMPCLONE GENESIS_LEGS GENESIS_JOBS mb_genesis_forms; do case "$_runsrc" in *"$_rn"*) : ;; *) _runall=0 ;; esac; done
+  case "$_runall" in
+    1)
+      case "$_verdsrc" in *'mb_ci_surfaces'*'mb_genesis_lock'*) echo "PASS: selftest -- leg ci-run run() passes the four CI-time genesis values, and mb_verdict then grades them and runs the genesis lock" ;;
+        *) echo "FAIL: selftest -- leg ci-run mb_verdict does not call mb_ci_surfaces and mb_genesis_lock"; sfail=1 ;; esac ;;
+    *) echo "FAIL: selftest -- leg ci-run run() does not pass the four CI-time genesis values to mb_verdict (the new surfaces would be skipped)"; sfail=1 ;;
+  esac
+  MB_HEAVY_CHECKS=$_cib_save_heavy; MB_CELLS_MODE=$_cib_save_cm
+
   [ "$sfail" -eq 0 ] && { echo "OK: conformance-mass-budget selftest"; exit 0; } || { echo "FAIL: conformance-mass-budget selftest"; exit 1; }
 }
 
@@ -1460,14 +2039,47 @@ run() {
   cd "$(dirname "$0")/.."
   _rrc=0
   mb_no_literal_max "$_self" || _rrc=1
+  mb_genesis_forms "$_self" || _rrc=1
+  case "$MB_CELLS_VARIANT" in tmpclone) _rcg=$GENESIS_CELLS_TMPCLONE ;; *) _rcg=$GENESIS_CELLS_WORKSPACE ;; esac
   mb_verdict . "$GENESIS_LINES" "$GENESIS_FILES" "$GENESIS_CENSUS" \
-               "$GENESIS_LOGIC" "$GENESIS_FIXTURE" "$HISTORICAL_LINES_ACKS" || _rrc=1
+               "$GENESIS_LOGIC" "$GENESIS_FIXTURE" "$HISTORICAL_LINES_ACKS" \
+               "$GENESIS_ROWS $_rcg $GENESIS_LEGS $GENESIS_JOBS" || _rrc=1
   return "$_rrc"
 }
 
+# --selftest runs the legs in a subshell and then cross-checks them against --list-legs: a leg listed but never run, or run but not listed,
+# reds (the same contract every heavy check on MB_HEAVY_CHECKS owes, SWAS-281 B5). --list-legs prints this script's own leg labels.
+mb_selftest_checked() {
+  _sw=$(mktemp -d) || { echo "FAIL: conformance-mass-budget selftest -- mktemp failed"; exit 1; }
+  _swrc=0
+  ( selftest ) > "$_sw/out" 2>&1 || _swrc=$?
+  cat "$_sw/out"
+  mb_list_legs "$0" > "$_sw/listed"
+  LC_ALL=C sed -nE 's/^(PASS|FAIL|SKIP): selftest -- leg ([A-Za-z0-9.-]+) .*$/\2/p' "$_sw/out" | LC_ALL=C sort -u > "$_sw/ran"
+  _swx=0
+  mb_legs_crosscheck "$_sw/listed" "$_sw/ran" || _swx=1
+  rm -rf "$_sw"
+  if [ "$_swrc" -ne 0 ] || [ "$_swx" -ne 0 ]; then echo "FAIL: conformance-mass-budget selftest (legs rc=$_swrc, legs cross-check=$_swx)"; exit 1; fi
+  exit 0
+}
+
 case "${1:-}" in
-  --selftest) selftest ;;
-  "")         run ;;
-  *)          echo "usage: conformance-mass-budget.sh [--selftest]" >&2; exit 2 ;;
+  --selftest)  mb_selftest_checked ;;
+  --list-legs) mb_list_legs "$0"; exit 0 ;;
+  --grade-cells)
+    # the cells count supplied by the guard-battery join job (its listed-set size). FAIL-CLOSED on a missing, non-numeric or zero value: an
+    # empty extraction in the workflow must red, never fall back to N/A.
+    # `case`, never `grep -q`: grep grades line by line, so a value like "5<newline>x" would pass; a case pattern sees the WHOLE string.
+    _gcbad=0
+    [ "$#" -eq 3 ] || _gcbad=1
+    case "${2:-}" in ''|0*|*[!0-9]*|??????????*) _gcbad=1 ;; esac
+    if [ "$_gcbad" -ne 0 ]; then
+      echo "conformance-mass-budget: FAIL -- --grade-cells needs a positive integer (the guard-battery join's listed-cells count) and a variant; got [$(printf '%s' "${2:-}" | mb_san)] [$(printf '%s' "${3:-}" | mb_san)]. An unreadable count is a failure, never N/A." >&2; exit 2
+    fi
+    case "$3" in workspace|tmpclone) MB_CELLS_VARIANT=$3 ;; *) echo "conformance-mass-budget: FAIL -- --grade-cells variant must be workspace or tmpclone (each has its own genesis: the count is dims-dependent)" >&2; exit 2 ;; esac
+    MB_CELLS_MODE=$2; run ;;
+  --grade-cells-listing) MB_CELLS_MODE=list; run ;;   # lists on THIS machine's dims, graded against the workspace genesis: a local figure is advisory, CI's per-variant grade is the verdict
+  "")          run ;;
+  *)           echo "usage: conformance-mass-budget.sh [--selftest | --list-legs | --grade-cells <n> | --grade-cells-listing]" >&2; exit 2 ;;
 esac
 exit $?

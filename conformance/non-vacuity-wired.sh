@@ -25,6 +25,20 @@ cd "$(dirname "$0")/.." 2>/dev/null || true
 
 CI_WF="${NV_WIRED_WF:-.github/workflows/ci.yml}"
 
+# ── _matrix_legs <workflow> : the integers of the `shard: [...]` matrix of the job that carries the non-vacuity invocation.
+_matrix_legs() {
+  # A job block runs from a job-key header to the next one; the block holding the (unsuppressed) invocation owns the matrix. The job-key indent is
+  # read from the first key line after `jobs:` (not assumed), a header may carry a trailing comment, and a file with NO header prints NOJOBS (fail closed).
+  grep -vE '^[[:space:]]*#' "$1" | awk '
+    function flush() { if (inv && !done) { done = 1; print legs; exit } legs = ""; inv = 0 }
+    /^jobs:[ \t]*(#.*)?$/ { injobs = 1; next }
+    injobs && !ji && /^ +[A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { match($0, /^ +/); ji = RLENGTH }
+    ji && /^ +[A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { match($0, /^ +/); if (RLENGTH == ji) { nhdr++; flush() } }
+    /^[ \t]*shard:[ \t]*\[/ && legs == "" { legs = $0 }
+    /non-vacuity\.sh[ \t]+--shard/ && !/\|\| true/ { inv = 1 }
+    END { if (!done) { if (inv && !nhdr) { print "NOJOBS"; exit } flush() } }' | sed 's/.*\[//; s/\].*//; s/,/ /g'
+}
+
 # ── assert_wired <workflow> : 0 iff the sharded sweep is completely wired.
 assert_wired() {
   _wf=$1
@@ -45,9 +59,11 @@ assert_wired() {
   fi
 
   # The matrix legs. `shard: [1, 2, 3, 4]` -> the integers.
-  _legs=$(grep -vE '^[[:space:]]*#' "$_wf" \
-          | grep -E '^[[:space:]]*shard:[[:space:]]*\[' \
-          | head -1 | sed 's/.*\[//; s/\].*//; s/,/ /g')
+  _legs=$(_matrix_legs "$_wf")
+  if [ "$_legs" = NOJOBS ]; then
+    echo "FAIL: $_wf declares --shard <i>/$_n but no job header was found under 'jobs:' — the matrix cannot be tied to the job that runs the sweep" >&2
+    return 1
+  fi
   if [ -z "$_legs" ]; then
     echo "FAIL: $_wf declares --shard <i>/$_n but has no 'shard: [...]' matrix — how many legs actually run?" >&2
     return 1
@@ -71,7 +87,7 @@ assert_wired() {
 #    than no lock, because it certifies the hole. Every negative below is the real defect it must catch.
 selftest() {
   st=0; d=$(mktemp -d)
-  _mk() { printf '%s\n' "$2" > "$d/$1"; }
+  _mk() { if [ "${2#jobs:}" != "$2" ]; then printf '%s\n' "$2"; else printf 'jobs:\n  j:\n%s\n' "$2"; fi > "$d/$1"; }   # a bare snippet is wrapped in one job
 
   # GOOD — denominator 4, legs 1..4.
   _mk ok.yml '        shard: [1, 2, 3, 4]
@@ -107,6 +123,118 @@ selftest() {
   if NV_WIRED_WF="$d/supp.yml" assert_wired "$d/supp.yml" >/dev/null 2>&1; then
     echo "FAIL: accepted a '|| true'-suppressed sweep (a gate that cannot fail)"; st=1
   else echo "PASS: a '|| true'-suppressed sweep -> FAIL"; fi
+
+  # ANOTHER JOB'S MATRIX EARLIER IN THE FILE (the S3 shape: cf-verify-enforced-shard `shard: [1, 2]` sits above the sweep's own job). The lock
+  # reads the matrix of the job that carries the non-vacuity invocation, so a neighbour's `shard:` cannot be mistaken for it.
+  _mk other.yml 'jobs:
+  other-job:
+    strategy:
+      matrix:
+        shard: [1, 2]
+    steps:
+      - run: sh conformance/verify.sh --shard ${{ matrix.shard }}/2
+  nv-job:
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/other.yml" assert_wired "$d/other.yml" >/dev/null 2>&1; then
+    echo "PASS: another job's earlier shard matrix [1 2] does not shadow the sweep's own [1 2 3 4]"
+  else echo "FAIL: another job's earlier shard matrix was read as the sweep's"; st=1; fi
+  # ...and the sweep's OWN matrix disagreeing with its denominator still reds when another job's matrix precedes it.
+  _mk othergap.yml 'jobs:
+  other-job:
+    strategy:
+      matrix:
+        shard: [1, 2]
+    steps:
+      - run: sh conformance/verify.sh --shard ${{ matrix.shard }}/2
+  nv-job:
+    strategy:
+      matrix:
+        shard: [1, 2]
+    steps:
+      - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/othergap.yml" assert_wired "$d/othergap.yml" >/dev/null 2>&1; then
+    echo "FAIL: accepted the sweep's own matrix [1 2] against /4 because another job's [1 2] preceded it"; st=1
+  else echo "PASS: the sweep's own matrix [1 2] against /4 -> FAIL even with another job's matrix earlier"; fi
+  # MUTANT: the unscoped reader (first `shard:` in the file) must be SEEN by the other-job cell, or that cell is vacuous.
+  if ( _matrix_legs() { grep -vE '^[[:space:]]*#' "$1" | grep -E '^[[:space:]]*shard:[[:space:]]*\[' | head -1 | sed 's/.*\[//; s/\].*//; s/,/ /g'; }
+       NV_WIRED_WF="$d/other.yml" assert_wired "$d/other.yml" >/dev/null 2>&1 ); then
+    echo "FAIL: MUTANT unscoped-first-matrix still accepts the other-job fixture, so that cell cannot see the bug"; st=1
+  else echo "PASS: MUTANT unscoped-first-matrix reds the other-job fixture and is seen"; fi
+
+  # JOB-HEADER SHAPES (F-A): a header with a trailing comment, or job keys indented by four, must still split blocks; a file with NO job header
+  # fails closed (it would silently restore first-matrix-in-file). Each fixture puts a neighbour's [1 2 3 4] ABOVE the sweep's own [1 2 3] of /4.
+  _mk cmt.yml 'jobs:
+  other-job:
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - run: sh conformance/verify.sh --shard ${{ matrix.shard }}/4
+  nv-job:  # the sweep
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/cmt.yml" assert_wired "$d/cmt.yml" >/dev/null 2>&1; then
+    echo "FAIL: a commented job header merged the blocks and the neighbour's [1 2 3 4] stood in for the sweep's [1 2 3]"; st=1
+  else echo "PASS: a commented job header still splits blocks (the sweep's own [1 2 3] against /4 -> FAIL)"; fi
+  _mk ind4.yml 'jobs:
+    other-job:
+      strategy:
+        matrix:
+          shard: [1, 2, 3, 4]
+      steps:
+        - run: sh conformance/verify.sh --shard ${{ matrix.shard }}/4
+    nv-job:
+      strategy:
+        matrix:
+          shard: [1, 2, 3]
+      steps:
+        - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/ind4.yml" assert_wired "$d/ind4.yml" >/dev/null 2>&1; then
+    echo "FAIL: four-space job keys merged the blocks and the neighbour's [1 2 3 4] stood in for the sweep's [1 2 3]"; st=1
+  else echo "PASS: four-space job keys still split blocks (the sweep's own [1 2 3] against /4 -> FAIL)"; fi
+  _mk ind4ok.yml 'jobs:
+    other-job:
+      strategy:
+        matrix:
+          shard: [1, 2]
+      steps:
+        - run: sh conformance/verify.sh --shard ${{ matrix.shard }}/2
+    nv-job:
+      strategy:
+        matrix:
+          shard: [1, 2, 3, 4]
+      steps:
+        - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/ind4ok.yml" assert_wired "$d/ind4ok.yml" >/dev/null 2>&1; then
+    echo "PASS: four-space job keys: the sweep's own [1 2 3 4] beside a neighbour's [1 2] is accepted"
+  else echo "FAIL: four-space job keys: rejected a correct wiring"; st=1; fi
+  printf '        shard: [1, 2, 3, 4]\n        run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4\n' > "$d/nojobs.yml"
+  if NV_WIRED_WF="$d/nojobs.yml" assert_wired "$d/nojobs.yml" >/dev/null 2>&1; then
+    echo "FAIL: accepted a workflow with no job header at all (first-matrix-in-file behaviour restored silently)"; st=1
+  else echo "PASS: no job header at all -> FAIL (fail closed)"; fi
+  # F-B: the invocation's job declares NO `shard: [...]` matrix (none at all, or only an include: list) -> FAIL, never a pass.
+  _mk nomat.yml 'jobs:
+  nv-job:
+    steps:
+      - run: sh conformance/non-vacuity.sh --shard 1/4'
+  _mk incl.yml 'jobs:
+  nv-job:
+    strategy:
+      matrix:
+        include:
+          - shard: 1
+    steps:
+      - run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4'
+  if NV_WIRED_WF="$d/nomat.yml" assert_wired "$d/nomat.yml" >/dev/null 2>&1 || NV_WIRED_WF="$d/incl.yml" assert_wired "$d/incl.yml" >/dev/null 2>&1; then
+    echo "FAIL: accepted an invocation whose job has no shard: [...] matrix (none, or include: only)"; st=1
+  else echo "PASS: an invocation with no shard matrix in its job (none, or include: only) -> FAIL"; fi
 
   rm -rf "$d"
   [ "$st" = 0 ] && echo "non-vacuity-wired --selftest: OK" || { echo "non-vacuity-wired --selftest: FAIL" >&2; return 1; }

@@ -70,6 +70,7 @@
 #   sh conformance/guard-wired.sh [project-dir]        (default: .)
 #   sh conformance/guard-wired.sh --rung1-only [project-dir]
 #   sh conformance/guard-wired.sh --selftest
+#   sh conformance/guard-wired.sh --boundary-only [project-dir]   (the boundary leg alone, for `sparkwright doctor --boundary`; 0 / 1 / 2 UNVERIFIED)
 #   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the strict
 #     profile? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
 # Beyond the guard, check_dir accepts the shipped default (the OS sandbox OFF: no `sandbox` key is shipped, and
@@ -77,6 +78,11 @@
 # templates/sandbox-strict.settings.local.json, whose load-bearing keys (enabled, allowUnsandboxedCommands
 # false, denyWrite a superset of the enforcement layer, the temp roots) are checked in the kit's own tree, and
 # on an adopter's EFFECTIVE block (settings.json merged with settings.local.json) when that turns the sandbox on.
+# SWAS-354 (slice 352b): the agent boundary ON by default. A GRADER judges a settings document (sandbox on, read-deny paired with Read
+# rules, only the two template names in allowRead, WebFetch denied, no sockets, no loopback bind, no wildcard host, no home in allowWrite,
+# the write belt paired with Edit rules, no duplicate key); the committed .claude/settings.json is graded once it makes any boundary
+# claim, and on a kit tree the PATCH LEG holds Q16: docs/patches/*.settings.patch touches only .claude/settings.json, applies, its result
+# passes the grader and its sha256 is recorded in docs/plans or docs/reviews. See the block above `_gw_boundary_grade`.
 # Exit: 0 = wired · 1 = NOT wired (dark) · 2 = UNVERIFIED (jq absent). POSIX sh; dash-clean.
 set -eu
 
@@ -225,6 +231,18 @@ _gw_merge_json() {
   fi
 }
 
+# _gw_merge_clash <project settings.json> <local settings.json> -> 0 iff no value under the local file's `sandbox` has a DIFFERENT type from the
+# project's value at the same path where the project's is a list or an object. _GW_DM concatenates lists and merges objects only when both sides
+# agree; a scalar (or null, or a string) over a list would silently REPLACE it, dropping a deny, and the real merge is docs-stated, not measured.
+_gw_merge_clash() {
+  jq -s -e '.[0] as $p | .[1] as $l
+    | if ($l | type) == "object" and ($l | has("sandbox")) then
+        [ ({sandbox: $l.sandbox} | paths) as $q
+          | (($p | getpath($q)) | type) as $pt | (($l | getpath($q)) | type) as $lt
+          | select(($pt == "array" or $pt == "object") and $lt != $pt) ] | length == 0
+      else true end' "$1" "$2" >/dev/null 2>&1
+}
+
 # _gw_edit_denies <settings.json> -> the Edit and Write tools are denied the enforcement layer, in EVERY profile.
 _gw_edit_denies() {
   _ed_rc=0
@@ -245,8 +263,8 @@ _gw_sandbox_keys() {
     || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in $_sk_l — a command could opt out of the sandbox"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '.sandbox.autoAllowBashIfSandboxed == false' >/dev/null 2>&1 \
     || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in $_sk_l — sandboxed Bash would be auto-approved, skipping the permission prompt"; _sl_rc=1; }
-  printf '%s\n' "$_sk_j" | jq -e '((.sandbox.excludedCommands // []) | length) == 0' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.excludedCommands is set in $_sk_l — those commands run outside the sandbox"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '(.sandbox // {}) | ((has("excludedCommands") | not) or (.excludedCommands == []))' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.excludedCommands is set in $_sk_l (it must be absent or exactly []; an empty string, an object or null is not an empty list) — those commands run outside the sandbox"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '(.sandbox.enableWeakerNestedSandbox // false) == false' >/dev/null 2>&1 \
     || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in $_sk_l — the sandbox runs in its weaker nested form"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '(.sandbox.network.allowAllUnixSockets // false) == false' >/dev/null 2>&1 \
@@ -279,7 +297,7 @@ _gw_sandbox_leg() {
   if printf '%s\n' "$_sg_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1; then
     _gw_sandbox_keys "$_sg_eff" "the effective sandbox block (settings.json merged with settings.local.json)" || _sg_rc=1
   else
-    echo "PASS: the OS sandbox is off (the shipped default); the guard hook and the Edit deny rules are the local layer, the strict profile is $SANDBOX_STRICT_TEMPLATE"
+    echo "PASS: the OS sandbox is off in the effective settings (the pre-boundary default, or a local opt-out); the guard hook and the Edit deny rules are the local layer, the strict profile is $SANDBOX_STRICT_TEMPLATE"
   fi
   return "$_sg_rc"
 }
@@ -299,6 +317,430 @@ _gw_template_check() {
     echo "FAIL: $SANDBOX_STRICT_TEMPLATE is not valid JSON"; return 1
   fi
   _gw_sandbox_keys "$(jq -c . "$_tc_f")" "$SANDBOX_STRICT_TEMPLATE"
+}
+
+# ── SWAS-354 (slice 352b, b1): the agent boundary ON by default ──────────────────────────────────────────────
+# Design: docs/architecture/2026-10-23-agent-boundary-on-by-default-design.md rev 1.3 (section 3 item 2, 2A-repo; Q16; Q17 = 1b;
+# Q18). The default ships as a reviewed PATCH (docs/patches/*.settings.patch): agents never edit settings, the owner applies it.
+# Three pieces: the GRADER (_gw_boundary_grade) judges one settings document; the COMMITTED leg (_gw_boundary_leg) grades the shipped
+# .claude/settings.json once it makes any boundary claim, so a half-removed boundary is graded, never N/A; the PATCH leg
+# (_gw_boundary_patch_leg) holds Q16's binds on a kit tree: the patch touches only .claude/settings.json, applies, its result passes
+# the grader, and its sha256 is recorded where a reviewer reads it.
+# Path forms are the MEASURED ones: bare **/x and ~/x in the sandbox lists (owner run 3, K1-K11, U1-U4); Read(./**/x) and Read(~/x) in
+# permissions (run 2 R26; run 3 K7-K11, U4). Never ./**/x in a sandbox list (run 2 R24) and never Read(/**/x) (run 2 R27): neither binds,
+# and a document that carries one reads as protected while it is not. The grader matches a required entry byte for byte, so a case or
+# trailing-slash variant is a MISSING entry. It reads the raw text for a duplicate key (jq keeps the last copy, a reviewer reads the first).
+# GW_BD_TABLES is the single source of the deny set: read[] = [sandbox denyRead entry, its Read(...) twin], belt[] = [sandbox denyWrite
+# entry, its Edit(...) twin], templates[] = the only allowRead names (Q17 = 1b). A directory twin takes the documented /** suffix
+# (inferred; the measured forms were a file and a prefix).
+GW_BD_TABLES='{
+  "read": [
+    ["**/.env", "Read(./**/.env)"],
+    ["**/.env.*", "Read(./**/.env.*)"],
+    ["**/*.pem", "Read(./**/*.pem)"],
+    ["**/*.key", "Read(./**/*.key)"],
+    ["**/id_rsa*", "Read(./**/id_rsa*)"],
+    ["**/secrets/**", "Read(./**/secrets/**)"],
+    ["**/secret/**", "Read(./**/secret/**)"],
+    ["~/.ssh", "Read(~/.ssh/**)"],
+    ["~/.aws", "Read(~/.aws/**)"],
+    ["~/.config/gcloud", "Read(~/.config/gcloud/**)"],
+    ["~/.azure", "Read(~/.azure/**)"],
+    ["~/.kube", "Read(~/.kube/**)"],
+    ["~/.docker/config.json", "Read(~/.docker/config.json)"],
+    ["~/.netrc", "Read(~/.netrc)"],
+    ["~/.git-credentials", "Read(~/.git-credentials)"],
+    ["~/.npmrc", "Read(~/.npmrc)"],
+    ["~/.pypirc", "Read(~/.pypirc)"],
+    ["~/.config/op", "Read(~/.config/op/**)"],
+    ["~/.password-store", "Read(~/.password-store/**)"],
+    ["~/.gnupg", "Read(~/.gnupg/**)"],
+    ["~/.claude/.credentials.json", "Read(~/.claude/.credentials.json)"],
+    ["~/.claude.json", "Read(~/.claude.json)"],
+    ["~/.claude/settings.json", "Read(~/.claude/settings.json)"],
+    ["~/.claude/settings.local.json", "Read(~/.claude/settings.local.json)"],
+    ["~/.claude/settings.json.*", "Read(~/.claude/settings.json.*)"],
+    ["~/.claude/settings.local.json.*", "Read(~/.claude/settings.local.json.*)"],
+    ["~/.sparkwright-canary", "Read(~/.sparkwright-canary/**)"]
+  ],
+  "belt": [
+    ["./.claude/settings.local.json", "Edit(./.claude/settings.local.json)"],
+    ["./.git/hooks", "Edit(./.git/hooks/**)"],
+    ["./.git/config", "Edit(./.git/config)"],
+    ["./.git/modules/*/hooks", "Edit(./.git/modules/*/hooks/**)"],
+    ["./.git/modules/*/config", "Edit(./.git/modules/*/config)"],
+    ["./.git/config.worktree", "Edit(./.git/config.worktree)"],
+    ["./.mcp.json", "Edit(./.mcp.json)"],
+    ["./.vscode", "Edit(./.vscode/**)"],
+    ["./.idea", "Edit(./.idea/**)"],
+    ["**/.envrc", "Edit(./**/.envrc)"],
+    ["~/.claude/settings.json", "Edit(~/.claude/settings.json)"],
+    ["~/.claude/settings.local.json", "Edit(~/.claude/settings.local.json)"],
+    ["~/.claude.json", "Edit(~/.claude.json)"],
+    ["~/.claude/hooks", "Edit(~/.claude/hooks/**)"],
+    ["~/.claude/agents", "Edit(~/.claude/agents/**)"],
+    ["~/.claude/skills", "Edit(~/.claude/skills/**)"],
+    ["~/.claude/commands", "Edit(~/.claude/commands/**)"],
+    ["~/.claude/CLAUDE.md", "Edit(~/.claude/CLAUDE.md)"],
+    ["~/.claude/plugins", "Edit(~/.claude/plugins/**)"],
+    ["~/Library/LaunchAgents", "Edit(~/Library/LaunchAgents/**)"],
+    ["~/.config/systemd/user", "Edit(~/.config/systemd/user/**)"],
+    ["~/.config/autostart", "Edit(~/.config/autostart/**)"],
+    ["~/.zshrc", "Edit(~/.zshrc)"],
+    ["~/.zshenv", "Edit(~/.zshenv)"],
+    ["~/.zprofile", "Edit(~/.zprofile)"],
+    ["~/.zlogin", "Edit(~/.zlogin)"],
+    ["~/.zlogout", "Edit(~/.zlogout)"],
+    ["~/.bashrc", "Edit(~/.bashrc)"],
+    ["~/.bash_profile", "Edit(~/.bash_profile)"],
+    ["~/.bash_login", "Edit(~/.bash_login)"],
+    ["~/.bash_logout", "Edit(~/.bash_logout)"],
+    ["~/.profile", "Edit(~/.profile)"],
+    ["~/.config/fish", "Edit(~/.config/fish/**)"],
+    ["~/.inputrc", "Edit(~/.inputrc)"],
+    ["~/.gitconfig", "Edit(~/.gitconfig)"],
+    ["~/.config/git", "Edit(~/.config/git/**)"],
+    ["~/.ssh", "Edit(~/.ssh/**)"],
+    ["~/.config/direnv", "Edit(~/.config/direnv/**)"],
+    ["~/.cargo/env", "Edit(~/.cargo/env)"],
+    ["~/.cargo/bin", "Edit(~/.cargo/bin/**)"],
+    ["~/go/bin", "Edit(~/go/bin/**)"],
+    ["~/.rustup/toolchains", "Edit(~/.rustup/toolchains/**)"],
+    ["~/.cache/pre-commit", "Edit(~/.cache/pre-commit/**)"],
+    ["~/.cache/p10k-*", "Edit(~/.cache/p10k-*)"],
+    ["~/.cache/gitstatus", "Edit(~/.cache/gitstatus/**)"]
+  ],
+  "templates": ["**/.env.example", "**/.env.sample"],
+  "write": ["/private/tmp", "/tmp", "/private/var/folders", "/var/folders", "~/.npm", "~/.cache", "~/go", "~/.gradle", "~/.m2", "~/.cargo", "~/.rustup", "~/.nuget", "~/Library/Caches"]
+}'
+
+# The grader program: reads one settings document with --argjson t "$GW_BD_TABLES" and prints one line per gap (nothing = a pass). Every
+# lookup goes through arr(), and only a DENY list can read as EMPTY there (a missing or wrongly-typed one): that fails closed through its missing required entries.
+# Every GRANTING list (allowRead, allowWrite, allowedDomains, permissions.allow and ask) is checked for presence and type by lstbad and FAILS on a non-list.
+# The keys of sandbox, sandbox.network, sandbox.filesystem and permissions are CLOSED (unk): an unknown key is a gap.
+# Control characters are replaced before a line is printed (an entry from the file must not forge a line).
+# CLOSED SCHEMA (Architect steer, round 3): every granting list is judged against a closed grammar, never by "does it contain something bad".
+# allowRead = exactly the two templates; allowWrite = exactly $t.write (the temp roots and the named Q13 caches, in the patch spellings, so a
+# glob, a ~user, a case variant, a /./ or a trailing slash is simply NOT IN THE LIST); allowedDomains = exact host names; permissions.allow =
+# no Read(, Edit( or Write( form at all (the patch has no closed list of such forms, so the rule stays "none"). Types are exact: a list key that
+# is present must be a list of strings; the boolean flags are exact booleans. (No apostrophe may appear in the program below: it is shell-quoted.)
+GW_BD_JQ='def has_(a; e): any(a[]; . == e);
+def unk(o; $a; $l): ((try o catch null) | if type == "object" then (keys_unsorted[] | select(. as $k | has_($a; $k) | not) | "\($l) uses the unknown key \(.) (the schema is closed on KEYS: only the keys the default uses or the grader judges are allowed)") else empty end);
+def nonstr(o; k): ((try o catch null) | if type == "object" and has(k) and ((.[k] | type) == "array") then any(.[k][]; type != "string") else false end);
+def tybad(o; $l; $k; $w): ((try o catch null) | if type == "object" and has($k) and ((.[$k] | type) as $ty | any($w[]; . == $ty) | not) then "\($l).\($k) has the wrong type (expected \($w | join(" or ")); a PASS or WARN bucket is graded on its type as well as its presence)" else empty end);
+def lstbad(o; k): ((try o catch null) | if type == "object" then (has(k) and ((.[k] | type) != "array")) else false end);
+def arr(f): ((try f catch null) | if type == "array" then . else [] end);
+def sb_of($p):
+  (([$p | capture("^Read\\((?<x>.*)\\)$")] | first) // null) as $c
+  | if $c == null then []
+    else ($c.x) as $x
+      | if ($x | startswith("./**/")) then ["**/" + ($x | ltrimstr("./**/"))]
+        elif ($x | startswith("~/")) then [$x, ($x | rtrimstr("/**"))]
+        else [] end
+    end;
+def perm_of($e):
+  if ($e | startswith("**/")) then ["Read(./" + $e + ")"]
+  elif ($e | startswith("~/")) then ["Read(" + $e + ")", "Read(" + $e + "/**)"]
+  else [] end;
+arr(.permissions.deny) as $pd | arr(.permissions.allow) as $pa | arr(.permissions.ask) as $pk
+| arr(.sandbox.filesystem.denyRead) as $dr | arr(.sandbox.filesystem.allowRead) as $ar
+| arr(.sandbox.filesystem.denyWrite) as $dw | arr(.sandbox.filesystem.allowWrite) as $aw
+| arr(.sandbox.network.allowedDomains) as $ad
+| [
+    (if (try (.sandbox.enabled == true) catch false) then empty else "sandbox.enabled is not the boolean true (missing, false or a string): the OS layer under the guard is off" end),
+    ($t.read[] | select(.[0] as $s | has_($dr; $s) | not) | "denyRead lacks \(.[0])"),
+    ($dr[] | select(type != "string") | "denyRead holds a non-string entry \(tojson)"),
+    ($dr[] | select(type == "string" and (startswith("./**") or startswith("/**"))) | "denyRead entry \(.) uses a form the sandbox does not bind (./** and /** never bind; a bare **/x or ~/x does)"),
+    ($t.read[] | select(.[1] as $p | has_($pd; $p) | not) | "permissions.deny lacks \(.[1])"),
+    ($pd[] | select(type == "string" and startswith("Read(/")) | "permissions.deny holds \(.) which does not bind (a Read rule takes Read(./**/x) or Read(~/x), never a leading /)"),
+    ($pd[] | select(type == "string" and startswith("Read(")) | select(any(sb_of(.)[]; . as $s | has_($dr; $s)) | not) | "permissions.deny \(.) has no sandbox denyRead twin"),
+    ($dr[] | select(type == "string" and ((startswith("./**") or startswith("/**")) | not)) | select(any(perm_of(.)[]; . as $p | has_($pd; $p)) | not) | "denyRead entry \(.) has no Read(...) twin in permissions.deny"),
+    ($ar[] | select(. as $x | any($t.templates[]; . == $x) | not) | "allowRead holds \(tojson), beyond the two template names"),
+    ($t.templates[] | select(. as $x | has_($ar; $x) | not) | "~INFO allowRead lacks the carve-out \(.) (stricter than the default: the shell cannot read that template)"),
+    ($pa[] | select(type == "string" and startswith("Read(")) | "permissions.allow holds a Read(...) rule (\(.)): a permission allow never overrides a deny (Q18); templates are read through the sandbox allowRead only"),
+    (if has_($pd; "WebFetch") then empty else "permissions.deny lacks the bare WebFetch deny (2a)" end),
+    ($pk[] | select(type == "string" and startswith("WebFetch")) | "WebFetch is in permissions.ask (\(.)): the tool is denied, not asked"),
+    ($pa[] | select(type == "string" and startswith("WebFetch")) | "WebFetch is in permissions.allow (\(.)): an allow-list never bound WebFetch, only the bare deny does"),
+    (if has_($pa; "WebSearch") then empty else "~INFO WebSearch is not allowed (permissions.allow lacks WebSearch; the default allows it, design rev 1.3 line 22, an Architect note): stricter, not a bypass" end),
+    (if has_($pd; "WebSearch") then "~INFO WebSearch is in permissions.deny (the default allows it; stricter, not a bypass)" else empty end),
+    (if (try (.sandbox.network.allowLocalBinding == false) catch false) then empty else "sandbox.network.allowLocalBinding is not false (no loopback-only form exists, run 3 L2/L3; a UI stack opts in by a declared part)" end),
+    (if (try (.sandbox.network.allowUnixSockets == []) catch false) then empty else "sandbox.network.allowUnixSockets is not an empty list (the Docker socket is a full sandbox escape, Q4)" end),
+    (if (try (.sandbox.network.allowedDomains | type == "array") catch false) then empty else "sandbox.network.allowedDomains is not a list" end),
+    ($ad[] | select((type != "string") or ((test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$") and test("\\.[a-z0-9-]*[a-z][a-z0-9-]*$")) | not)) | "allowedDomains entry \(tojson) is not an exact host name (no wildcard, scheme, port or IP literal: the final label must contain a letter)"),
+    (if (try (.sandbox.network | has("strictAllowlist")) catch false) then "~WARN sandbox.network.strictAllowlist in a project file is ineffective (docs-stated: Claude Code ignores it at project scope); set it at user scope (Q14). Not a failure: preflight keeps saying egress: NOT ENFORCED" else empty end),
+    ($aw[] | select(. as $x | any($t.write[]; . == $x) | not) | "allowWrite holds \(tojson), which is not in the closed list (the temp roots and the named Q13 caches, in the patch spellings: no home directory, parent of it, glob, ~user, case variant, .. or /./)"),
+    (if nonstr(.sandbox.filesystem; "denyWrite") then "sandbox.filesystem.denyWrite holds a non-string member (every boundary list is a list of strings)" else empty end),
+    (if nonstr(.permissions; "deny") then "permissions.deny holds a non-string member (every boundary list is a list of strings)" else empty end),
+    (if nonstr(.permissions; "allow") then "permissions.allow holds a non-string member (every boundary list is a list of strings)" else empty end),
+    (if nonstr(.permissions; "ask") then "permissions.ask holds a non-string member (every boundary list is a list of strings)" else empty end),
+    (if (try (.sandbox | type == "object" and has("enableWeakerNestedSandbox") and (.enableWeakerNestedSandbox != false)) catch false) then "sandbox.enableWeakerNestedSandbox is true, or present and not the boolean false" else empty end),
+    (if (try (.sandbox.network | type == "object" and has("allowAllUnixSockets") and (.allowAllUnixSockets != false)) catch false) then "sandbox.network.allowAllUnixSockets is true, or present and not the boolean false" else empty end),
+    (if (try (.sandbox | type == "object" and has("autoAllowBashIfSandboxed") and (.autoAllowBashIfSandboxed != false)) catch false) then "sandbox.autoAllowBashIfSandboxed is true, or present and not the boolean false" else empty end),
+    ($pa[] | select(type == "string" and (startswith("Edit(") or startswith("Write("))) | "permissions.allow holds an Edit(...) or Write(...) rule (\(.)): the patch has no closed list of such forms, so none is allowed"),
+    (if lstbad(.sandbox.filesystem; "allowRead") then "sandbox.filesystem.allowRead is present but not a list (a granting list that would otherwise read as empty)" else empty end),
+    (if lstbad(.sandbox.filesystem; "allowWrite") then "sandbox.filesystem.allowWrite is present but not a list (a granting list that would otherwise read as empty)" else empty end),
+    (if lstbad(.permissions; "allow") then "permissions.allow is present but not a list (a granting list that would otherwise read as empty)" else empty end),
+    (if lstbad(.permissions; "ask") then "permissions.ask is present but not a list (it would otherwise read as empty)" else empty end),
+    (if lstbad(.sandbox.network; "allowedDomains") then "sandbox.network.allowedDomains is present but not a list (a granting list that would otherwise read as empty)" else empty end),
+    (if (try (.sandbox | type == "object" and has("excludedCommands") and (.excludedCommands != [])) catch false) then "sandbox.excludedCommands must be absent or exactly [] (those commands run outside the sandbox; an empty string, an object or null is not an empty list)" else empty end),
+    unk(.sandbox; ["enabled", "autoAllowBashIfSandboxed", "allowUnsandboxedCommands", "excludedCommands", "enableWeakerNestedSandbox", "enableWeakerNetworkIsolation", "network", "filesystem", "failIfUnavailable", "ignoreViolations", "allowNestedUserNamespaces", "allowAppleEvents", "bwrapPath", "socatPath", "ripgrep", "credentials"]; "sandbox"),
+    unk(.sandbox.network; ["allowedDomains", "allowLocalBinding", "allowUnixSockets", "allowAllUnixSockets", "strictAllowlist", "deniedDomains", "allowMachLookup", "allowManagedDomainsOnly", "httpProxyPort", "socksProxyPort", "tlsTerminate"]; "sandbox.network"),
+    unk(.sandbox.filesystem; ["allowWrite", "denyWrite", "denyRead", "allowRead", "allowManagedReadPathsOnly", "disabled"]; "sandbox.filesystem"),
+    unk(.permissions; ["allow", "ask", "deny", "defaultMode", "additionalDirectories", "disableBypassPermissionsMode", "blockReadsOutsideWorkingDirectories", "disableAutoMode"]; "permissions"),
+    unk(.sandbox.credentials; ["files", "envVars", "allowPlaintextInject", "awsPairs", "sigv4", "injectHosts"]; "sandbox.credentials"),
+    (if (try (.sandbox | type == "object" and has("failIfUnavailable") and (.failIfUnavailable != true)) catch false) then "sandbox.failIfUnavailable is present and not the boolean true (the sandbox must refuse to start without its OS layer, never run unsandboxed)" else empty end),
+    (if (try (.sandbox | type == "object" and has("allowNestedUserNamespaces") and (.allowNestedUserNamespaces != false)) catch false) then "sandbox.allowNestedUserNamespaces is true, or present and not the boolean false" else empty end),
+    (if (try (.sandbox | type == "object" and has("allowAppleEvents") and (.allowAppleEvents != false)) catch false) then "sandbox.allowAppleEvents is true, or present and not the boolean false (Apple Events script other apps from inside the sandbox)" else empty end),
+    ((try .sandbox catch null) | if type == "object" then (("bwrapPath", "socatPath", "ripgrep") as $k | select(has($k)) | "sandbox.\($k) is set in a project or local file (a binary-path override is managed or user scope only)") else empty end),
+    (if (try (.sandbox.credentials | type == "object" and has("allowPlaintextInject") and (.allowPlaintextInject != false)) catch false) then "sandbox.credentials.allowPlaintextInject is true, or present and not the boolean false" else empty end),
+    ((try .sandbox.credentials catch null) | if type == "object" then (("awsPairs", "injectHosts") as $k | select(has($k)) | "~WARN sandbox.credentials.\($k) is set (the proxy sends a real credential to those hosts; honored only from user or managed settings, so inert in a project file, a human reads it)") else empty end),
+    ((try .sandbox.credentials catch null) | if type == "object" then (("files", "envVars") as $k | select(has($k)) | .[$k] | (if type == "array" then .[] elif type == "object" then .[] else empty end) | select(((type == "object") and has("mode") and (.mode == "deny" or .mode == "mask")) | not) | "sandbox.credentials.\($k) holds an entry whose mode is not deny or mask (an entry must be an object carrying that mode)") else empty end),
+    tybad(.sandbox; "sandbox"; "ignoreViolations"; ["object"]),
+    tybad(.sandbox; "sandbox"; "credentials"; ["object"]),
+    tybad(.sandbox.credentials; "sandbox.credentials"; "files"; ["array", "object"]),
+    tybad(.sandbox.credentials; "sandbox.credentials"; "envVars"; ["array", "object"]),
+    tybad(.sandbox.credentials; "sandbox.credentials"; "sigv4"; ["array", "object"]),
+    tybad(.sandbox.network; "sandbox.network"; "deniedDomains"; ["array"]),
+    (if nonstr(.sandbox.network; "deniedDomains") then "sandbox.network.deniedDomains holds a non-string member (every boundary list is a list of strings)" else empty end),
+    tybad(.sandbox.network; "sandbox.network"; "allowManagedDomainsOnly"; ["boolean"]),
+    tybad(.sandbox.filesystem; "sandbox.filesystem"; "allowManagedReadPathsOnly"; ["boolean"]),
+    tybad(.permissions; "permissions"; "disableBypassPermissionsMode"; ["string"]),
+    tybad(.permissions; "permissions"; "blockReadsOutsideWorkingDirectories"; ["boolean"]),
+    tybad(.permissions; "permissions"; "disableAutoMode"; ["string", "boolean"]),
+    tybad(.permissions; "permissions"; "additionalDirectories"; ["array"]),
+    ((try .sandbox.network catch null) | if type == "object" then (("httpProxyPort", "socksProxyPort") as $k | select(has($k)) | "sandbox.network.\($k) is set (documented: it stops Claude Code applying its domain lists)") else empty end),
+    (if (try (.sandbox.network | type == "object" and has("tlsTerminate")) catch false) then "sandbox.network.tlsTerminate is set in a project or local file (TLS termination is managed or user scope only)" else empty end),
+    (if (try (.sandbox.network | type == "object" and has("allowMachLookup") and (.allowMachLookup != [])) catch false) then "sandbox.network.allowMachLookup is not empty (a Mach service is a path out of the sandbox)" else empty end),
+    (if (try (.sandbox.filesystem | type == "object" and has("disabled") and (.disabled != false)) catch false) then "sandbox.filesystem.disabled is true, or present and not the boolean false (the filesystem layer is off)" else empty end),
+    (if (try (.permissions | type == "object" and has("defaultMode") and ((.defaultMode | IN("default", "acceptEdits", "plan", "auto", "dontAsk", "manual")) | not)) catch false) then "permissions.defaultMode is bypassPermissions or not a documented mode (default, acceptEdits, plan, auto, dontAsk, manual): bypass turns the permission layer off" else empty end),
+    (if (try (.permissions | type == "object" and has("additionalDirectories") and (.additionalDirectories != [])) catch false) then "permissions.additionalDirectories is not empty: additionalDirectories widens the Edit/Write tools reach outside the sandbox; set it in your user settings, a personal choice" else empty end),
+    (if nonstr(.permissions; "additionalDirectories") then "permissions.additionalDirectories holds a non-string member (every boundary list is a list of strings)" else empty end),
+    (if (try (.permissions | type == "object" and .defaultMode == "auto") catch false) then "~WARN permissions.defaultMode is auto (the classifier decides what to approve; a human reads it)" else empty end),
+    tybad(.sandbox.network; "sandbox.network"; "strictAllowlist"; ["boolean"]),
+    tybad(.sandbox.credentials; "sandbox.credentials"; "awsPairs"; ["array", "object"]),
+    tybad(.sandbox.credentials; "sandbox.credentials"; "injectHosts"; ["array", "object"]),
+    ($t.belt[] | select(.[0] as $s | has_($dw; $s) | not) | "denyWrite lacks belt entry \(.[0])"),
+    ($t.belt[] | select(.[1] as $p | has_($pd; $p) | not) | "permissions.deny lacks Edit twin \(.[1]) of denyWrite entry \(.[0])"),
+    (if (try (.sandbox | type == "object" and has("enableWeakerNetworkIsolation") and (.enableWeakerNetworkIsolation != false)) catch false) then "sandbox.enableWeakerNetworkIsolation is true, or present and not the boolean false (the weaker isolation reopens a path around the proxy)" else empty end)
+  ] | .[] | gsub("[[:cntrl:]]"; "?")'
+
+# Duplicate keys, read from the raw text through jq's stream (the streaming parser does not de-duplicate). A leaf event is always a new
+# key occurrence; a container that was closed and then entered again by the same key is a repeat.
+GW_BD_DUPJQ='reduce inputs as $e ({seen: {}, closed: {}, prev: [], dup: false};
+  $e[0] as $p |
+  if ($e | length) == 1 then
+    (if ($p | length) == 1 then . else .closed[($p[0:($p | length) - 1] | tojson)] = true end)
+  else
+    reduce range(0; $p | length) as $i (.;
+      ($p[0:$i + 1]) as $pre | ($pre | tojson) as $k |
+      if ($i != (($p | length) - 1)) and (.prev[0:$i + 1] == $pre) and ((.closed[$k] // false) | not) then .
+      elif .seen[$k] then .dup = true
+      else .seen[$k] = true | .closed[$k] = false
+      end)
+    | .prev = $p
+    | if (($e[1] | type) == "object") or (($e[1] | type) == "array") then .closed[($p | tojson)] = true else . end
+  end) | .dup'
+
+# _gw_bd_dupkeys <file> -> 0 iff no object in the raw text repeats a key (an unreadable file is NOT clean).
+_gw_bd_dupkeys() {
+  _dk=$(jq -n --stream "$GW_BD_DUPJQ" "$1" 2>/dev/null) || return 1
+  [ "$_dk" = false ]
+}
+
+# _gw_bd_strict <file> -> 0 iff the text is STRICT JSON where jq is laxer than JSON.parse (the parser Claude Code reads settings with). jq accepts a
+# leading BOM, the literals nan / NaN / Infinity, and the numbers 01, .5 and +1; JSON.parse refuses all of them, so a settings file carrying one
+# would pass this grader and be unparseable to Claude Code, which would then apply none of it. Strings are removed first, so a value such as
+# "nan" is not a literal; CR is blanked so CRLF files pass. (jq is STRICTER than JSON.parse on comments, trailing commas, single quotes and raw
+# control characters: those fail "not valid JSON" here, the safe direction.)
+_gw_bd_strict() {
+  # Any byte below 0x20 other than tab, LF and CR (a NUL included) is refused before awk reads the file: BSD awk truncates a record at NUL, so a
+  # leading or trailing NUL would otherwise hide the rest of the text from the token check, while jq reads past it.
+  [ "$(LC_ALL=C tr -d '\011\012\015\040-\377' < "$1" 2>/dev/null | wc -c | tr -d ' ')" = 0 ] || return 1
+  [ "$(head -c 3 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" != efbbbf ] || return 1
+  awk '{ gsub(/\r/, " "); gsub(/"([^"\\]|\\.)*"/, ""); gsub(/[][{},:]/, " ")
+         for (i = 1; i <= NF; i++) { t = $i
+           if (t == "true" || t == "false" || t == "null") continue
+           if (t ~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) continue
+           bad = 1 } }
+       END { exit bad }' "$1" 2>/dev/null
+}
+
+# _gw_bd_gate <file> <label> -> THE ONE STRICT-PARSE GATE (Architect steer, round 3): 0 iff the text is exactly one STRICT JSON document with
+# no control byte, no BOM, no NaN / Infinity / non-RFC number, no duplicate key (compared decoded) and none of the keys __proto__, constructor and
+# prototype. Anything non-standard FAILs here, before any grading, so every later test reads a document Claude Code's parser reads the same way.
+_gw_bd_gate() {
+  _gt_f="$1"; _gt_l="$2"
+  jq -e . "$_gt_f" >/dev/null 2>&1 || { printf '%s\n' "FAIL: boundary: $_gt_l is not valid JSON"; return 1; }
+  _gt_docs=$(jq -n '[inputs] | length' "$_gt_f" 2>/dev/null) || _gt_docs=0
+  [ "$_gt_docs" = 1 ] || { printf '%s\n' "FAIL: boundary: $_gt_l holds more than one JSON document (exactly one is read, and a reader sees only the first)"; return 1; }
+  _gw_bd_strict "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l is not strict JSON (a control byte such as NUL, a BOM, or a NaN, Infinity, leading-zero, .5 or +1 number: jq reads it but JSON.parse refuses it, so Claude Code could not parse the file and would apply none of it)"; return 1; }
+  _gw_bd_dupkeys "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l has a duplicate JSON key (jq and Claude Code keep the last copy, a reader sees the first)"; return 1; }
+  jq -e '[.. | objects | keys_unsorted[] | select(. == "__proto__" or . == "constructor" or . == "prototype")] | length == 0' "$_gt_f" >/dev/null 2>&1 \
+    || { printf '%s\n' "FAIL: boundary: $_gt_l uses the key __proto__, constructor or prototype (a prototype-pollution name: refused anywhere in the settings)"; return 1; }
+  return 0
+}
+
+# _gw_bd_claims <file> -> 0 iff the document makes ANY boundary claim (a read-deny or template carve-out in the sandbox, a Read(...) rule,
+# or the WebFetch deny). Only a document with none is "not yet applied"; one with some is graded, so removing the sandbox block while the
+# Read rules stay does not read as N/A. A document jq cannot evaluate counts as a claim (the grader then says why).
+_gw_bd_claims() {
+  _bc=0
+  # More than one JSON document: jq -e judges only the LAST, so a trailing {} would read as "no claim". It counts as a claim; the grader refuses it.
+  _gw_bd_gate "$1" "the document" >/dev/null 2>&1 || return 0
+  jq -e '(try ((.sandbox.filesystem.denyRead // []) | length != 0) catch true)
+    or (try ((.sandbox.filesystem.allowRead // []) | length != 0) catch true)
+    or (try (any((.permissions.deny // [])[]; type == "string" and (startswith("Read(") or . == "WebFetch"))) catch true)
+    or (try (any((.permissions.allow // [])[]; type == "string" and startswith("Read("))) catch true)' "$1" >/dev/null 2>&1 || _bc=$?
+  [ "$_bc" -ne 1 ]
+}
+
+# _gw_boundary_grade <settings file> <label> -> PASS/FAIL lines; returns 1 on any gap. jq is already confirmed present by the caller.
+_gw_boundary_grade() {
+  _bg_f="$1"; _bg_l="$2"; _bg_rc=0
+  _gw_bd_gate "$_bg_f" "$_bg_l" || return 1
+  _bg_msgs=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "${HOME:-}" "$GW_BD_JQ" "$_bg_f" 2>/dev/null) || { printf '%s\n' "FAIL: boundary: the grader could not read $_bg_l"; return 1; }
+  if [ -n "$_bg_msgs" ]; then
+    # A line starting ~WARN or ~INFO is advice, not a gap: WARN for a setting that does nothing where it is, INFO for a stricter-than-default one.
+    printf '%s\n' "$_bg_msgs" | while IFS= read -r _bg_m; do
+      case "$_bg_m" in
+        "~WARN "*) printf '%s\n' "WARN: boundary: ${_bg_m#"~WARN "}" ;;
+        "~INFO "*) printf '%s\n' "INFO: boundary: ${_bg_m#"~INFO "}" ;;
+        *) printf '%s\n' "FAIL: boundary: $_bg_m" ;;
+      esac
+    done
+    _bg_gaps=$(printf '%s\n' "$_bg_msgs" | grep -v -e '^~WARN ' -e '^~INFO ' || true)
+    [ -z "$_bg_gaps" ] || _bg_rc=1
+  fi
+  _gw_sandbox_keys "$(jq -c . "$_bg_f")" "$_bg_l" || _bg_rc=1
+  [ "$_bg_rc" -ne 0 ] || echo "PASS: boundary: $_bg_l carries the full agent-boundary default (sandbox on; read-deny paired with Read rules; the template carve-out only; WebFetch denied; no sockets; no loopback bind; the write belt paired with Edit rules)"
+  return "$_bg_rc"
+}
+
+# _gw_boundary_leg <project-dir> -> grades the committed .claude/settings.json once it makes any boundary claim; N/A before (the default
+# arrives as docs/patches/*.settings.patch, which the patch leg grades). An adopter tree is graded whenever it carries the claim.
+_gw_boundary_leg() {
+  _bl_f="$1/.claude/settings.json"
+  [ -f "$_bl_f" ] || return 0
+  if ! _gw_bd_claims "$_bl_f"; then
+    echo "N/A: boundary default - .claude/settings.json makes no read-deny, template or WebFetch claim yet (the boundary default is not in this settings file; on a kit tree the patch leg grades the patch that carries it)"
+    return 0
+  fi
+  _bl_rc=0
+  _gw_boundary_grade "$_bl_f" "the committed .claude/settings.json" || _bl_rc=1
+  # The EFFECTIVE document: Claude Code merges settings.local.json over the project file (scalars local over project, the sandbox lists
+  # concatenate; _gw_merge_json mirrors that for the sandbox block). A local file that shadows the read-deny, allows unsandboxed commands or
+  # adds an excluded command FAILS here. A local `enabled: false` is a human opt-out: WARN (preflight says boundary: OFF), not a failure,
+  # so the kit's own maintainers' declared opt-out does not red the check in their main checkout.
+  _bl_loc="$1/.claude/settings.local.json"
+  if [ -f "$_bl_loc" ] && jq -e . "$_bl_loc" >/dev/null 2>&1; then
+    # The local file passes the SAME strict gate as the project file (the merge below is jq's output and would hide a NUL, a repeated key or a NaN).
+    if ! _gw_bd_gate "$_bl_loc" ".claude/settings.local.json"; then
+      _bl_rc=1
+    else
+      _bl_m=$(mktemp 2>/dev/null) || _bl_m=""
+      if [ -z "$_bl_m" ]; then
+        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json (no scratch file could be created), so the effective settings were NOT graded"; _bl_rc=1
+      elif ! _gw_merge_clash "$_bl_f" "$_bl_loc"; then
+        printf '%s\n' "FAIL: boundary: settings.local.json replaces a list or object of settings.json with a different type (a scalar, null or another shape): the merge cannot be mirrored, and a replaced list is a dropped deny"; _bl_rc=1
+      elif ! _gw_merge_json "$_bl_f" "$_bl_loc" > "$_bl_m" 2>/dev/null; then
+        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json, so the effective settings were NOT graded"; _bl_rc=1
+      elif jq -e '.sandbox.enabled == false' "$_bl_m" >/dev/null 2>&1; then
+        # L1: a local opt-out that is TRACKED by git reaches every clone, which is no longer a human's own choice on one machine.
+        if _gw_git -C "$1" ls-files --error-unmatch .claude/settings.local.json >/dev/null 2>&1; then
+          printf '%s\n' "FAIL: boundary: .claude/settings.local.json is tracked by git and turns the sandbox OFF: a committed opt-out reaches every clone (a local opt-out is untracked)"; _bl_rc=1
+        else
+          echo "WARN: boundary: the effective settings (settings.json merged with settings.local.json) turn the sandbox OFF: a local opt-out. The boundary is not on in this checkout; preflight says boundary: OFF"
+        fi
+      else
+        _gw_boundary_grade "$_bl_m" "the effective settings (settings.json merged with settings.local.json)" || _bl_rc=1
+      fi
+      [ -z "$_bl_m" ] || rm -f "$_bl_m"
+    fi
+  fi
+  return "$_bl_rc"
+}
+
+# _gw_boundary_only <project-dir> -> the boundary leg ALONE (`sparkwright doctor --boundary`): 0 = graded or N/A, 1 = FAIL, 2 = UNVERIFIED (jq absent, or jq
+# cannot read a settings file). No new grading logic: the one grader above judges it.
+_gw_boundary_only() {
+  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent"; return 2; }
+  for _bo_f in "$1/.claude/settings.json" "$1/.claude/settings.local.json"; do
+    [ -f "$_bo_f" ] || continue
+    jq -e . "$_bo_f" >/dev/null 2>&1 || { echo "UNVERIFIED: jq could not read $_bo_f"; return 2; }
+  done
+  _gw_boundary_leg "$1"   # MUT-BOUNDARY-ONLY
+}
+
+# _gw_sha256 <file> -> the lowercase hex sha256 on stdout (empty when no tool is present).
+_gw_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+# _gw_bp_one <project-dir> <patch> -> Q16's binds for one patch: it touches ONLY .claude/settings.json (no rename, create, delete or mode
+# change), it applies to the committed file (forward = pending, reverse = already applied), its RESULT passes the grader, and its
+# sha256 is recorded under docs/plans or docs/reviews, so the owner can check the file they apply against the file a reviewer read.
+_gw_bp_one() {
+  _bo_dir="$1"; _bo_n=${2##*/}; _bo_rc=0
+  _bo_abs=$(CDPATH='' cd -- "$(dirname -- "$2")" 2>/dev/null && pwd -P) || { printf '%s\n' "FAIL: boundary patch: $_bo_n cannot be resolved"; return 1; }
+  _bo_abs="$_bo_abs/$_bo_n"
+  _bo_num=$(_gw_git apply --numstat "$_bo_abs" 2>/dev/null) || { printf '%s\n' "FAIL: boundary patch: $_bo_n is not a patch git can read"; return 1; }
+  _bo_files=$(printf '%s\n' "$_bo_num" | awk -F'\t' '{print $3}')
+  _bo_sum=$(_gw_git apply --summary "$_bo_abs" 2>/dev/null) || _bo_sum="unreadable"
+  if [ "$_bo_files" = ".claude/settings.json" ] && [ -z "$_bo_sum" ]; then
+    echo "PASS: boundary patch: $_bo_n touches only .claude/settings.json (no rename, create, delete or mode change)"
+  else
+    printf '%s\n' "FAIL: boundary patch: $_bo_n touches more than .claude/settings.json, or renames, creates, deletes or changes a mode (Q16: the patch is one file)"; _bo_rc=1
+  fi
+  _bo_t=$(mktemp -d 2>/dev/null) || { printf '%s\n' "FAIL: boundary patch: could not create a scratch directory"; return 1; }
+  mkdir -p "$_bo_t/.claude"
+  if ! cp "$_bo_dir/.claude/settings.json" "$_bo_t/.claude/settings.json" 2>/dev/null; then
+    printf '%s\n' "FAIL: boundary patch: there is no .claude/settings.json to apply $_bo_n to"; rm -rf "$_bo_t"; return 1
+  fi
+  if ( cd "$_bo_t" && _gw_git apply --check "$_bo_abs" ) >/dev/null 2>&1; then
+    if ! ( cd "$_bo_t" && _gw_git apply "$_bo_abs" ) >/dev/null 2>&1; then
+      printf '%s\n' "FAIL: boundary patch: $_bo_n passed --check but did not apply"; _bo_rc=1
+    elif _gw_boundary_grade "$_bo_t/.claude/settings.json" "the patched .claude/settings.json ($_bo_n)"; then
+      echo "PASS: boundary patch: $_bo_n applies cleanly and its result passes the boundary grader (pending: the owner applies it)"
+    else
+      printf '%s\n' "FAIL: boundary patch: $_bo_n applies, but its result fails the boundary grader"; _bo_rc=1
+    fi
+  elif ( cd "$_bo_t" && _gw_git apply --check --reverse "$_bo_abs" ) >/dev/null 2>&1; then
+    echo "PASS: boundary patch: $_bo_n is already applied (the committed .claude/settings.json is graded as the shipped default)"
+  elif _gw_bd_claims "$_bo_dir/.claude/settings.json" && _gw_boundary_grade "$_bo_dir/.claude/settings.json" "the committed .claude/settings.json" >/dev/null 2>&1; then
+    # Retired: the owner's apply commit may `git rm` the patch, and a later edit to the file moves it past the patch. The committed file is
+    # graded by the committed-default leg, so nothing is left unjudged; a patch that does not apply to a file that FAILS is still a FAIL.
+    echo "N/A: boundary patch: $_bo_n applies in neither direction; patch retired (the committed .claude/settings.json is graded by the committed-default leg)"
+    rm -rf "$_bo_t"
+    return "$_bo_rc"
+  else
+    printf '%s\n' "FAIL: boundary patch: $_bo_n does not apply to .claude/settings.json, forward or reverse (the file moved since the patch was written)"; _bo_rc=1
+  fi
+  rm -rf "$_bo_t"
+  _bo_sha=$(_gw_sha256 "$_bo_abs")
+  if [ -z "$_bo_sha" ]; then
+    printf '%s\n' "FAIL: boundary patch: no sha256 tool (sha256sum or shasum) to record $_bo_n with"; _bo_rc=1
+  elif grep -rqF -- "$_bo_sha" "$_bo_dir/docs/plans" "$_bo_dir/docs/reviews" 2>/dev/null; then
+    echo "PASS: boundary patch: the sha256 of $_bo_n is recorded under docs/plans or docs/reviews"
+  else
+    printf '%s\n' "FAIL: boundary patch: the sha256 is not recorded under docs/plans or docs/reviews (record $_bo_sha in the plan and the review record, so the owner can check the file they apply)"; _bo_rc=1
+  fi
+  return "$_bo_rc"
+}
+
+# _gw_boundary_patch_leg <project-dir> -> runs _gw_bp_one on every docs/patches/*.settings.patch of a KIT-SOURCE tree. N/A elsewhere (an
+# adopter's export-ignores docs/patches/) and when no patch is present.
+_gw_boundary_patch_leg() {
+  _gw_kitsource "$1" || { echo "N/A: boundary patch leg - not a kit-source tree"; return 0; }
+  _bp_n=0; _bp_rc=0
+  for _bp_f in "$1"/docs/patches/*.settings.patch; do
+    [ -f "$_bp_f" ] || continue
+    _bp_n=$((_bp_n + 1))
+    _gw_bp_one "$1" "$_bp_f" || _bp_rc=1
+  done
+  [ "$_bp_n" -gt 0 ] || { echo "N/A: boundary patch leg - no docs/patches/*.settings.patch in this tree"; return 0; }
+  return "$_bp_rc"
 }
 
 # ── B3 rung-leg helpers (production code — pre-marker, swept by non-vacuity.sh) ────────────────────
@@ -522,6 +964,8 @@ check_dir() {
         _gw_dayone_text_leg "$dir" || fail=1
         _gw_ec_bite_leg "$dir" || fail=1
         _gw_sandbox_leg "$dir" || fail=1
+        _gw_boundary_leg "$dir" || fail=1
+        _gw_boundary_patch_leg "$dir" || fail=1
         _gw_template_check "$dir" || fail=1
       fi
     else
@@ -927,6 +1371,388 @@ selftest() {
     # A template missing a home entry: the dotfile write lands under the runtime, so leg 1 must go red.
     d="$base/sbx_enf_nozshrc"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "~/.zshrc"))'
     _enf_fail "$d" "with a template missing ~/.zshrc"
+
+    # ── SWAS-354 (352b, b1): the boundary grader and the patch leg. Cells first: each cut below must FAIL naming the control it removes.
+    # _bd_good prints a document that passes the grader, built from the grader's own tables; the real-tree cell further down grades the
+    # SHIPPED patch with the same grader, so the tables are not only graded against themselves.
+    _bd_good() {
+      jq -n --argjson t "$GW_BD_TABLES" '{
+        permissions: {allow: ["Read", "Grep", "Glob", "WebSearch"],
+                      deny: (["WebFetch", "Edit(/.claude/**)", "Edit(/hooks/**)", "Edit(/.kit/**)"] + ($t.read | map(.[1])) + ($t.belt | map(.[1])))},
+        sandbox: {enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false,
+                  network: {allowedDomains: ["github.com", "api.github.com"], allowLocalBinding: false, allowUnixSockets: []},
+                  filesystem: {allowWrite: ["/tmp", "/private/tmp", "/private/var/folders", "/var/folders", "~/.npm"],
+                               denyWrite: (["./.claude", "./hooks", "./.kit", "./.git/hooks", "./.git/config", "./.mcp.json", "~/.gitconfig", "~/.config/git", "~/.zshrc", "~/.zshenv", "~/.zprofile", "~/.bashrc", "~/.bash_profile", "~/.profile"] + ($t.belt | map(.[0])) | unique),
+                               denyRead: ($t.read | map(.[0])), allowRead: $t.templates}}}'
+    }
+    mk_bd() {  # <dir> <jq-filter>: the guard-wired fixture carrying the full boundary document, then <jq-filter> (a mutant)
+      _bd_last="fixture $1"
+      mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+      jq --argjson g "$(_bd_good)" '. as $b | $g | .hooks = $b.hooks | '"$2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
+    }
+    _bd_n=0
+    # LOUD ABORT: a command that fails outside an `if` ends this selftest under set -e. While the boundary section runs (_bd_in=1) an EXIT trap turns
+    # such an abort into a named FAIL that says which cell was last started (set by every helper), so it can never end with no FAIL line again.
+    _bd_in=1; _bd_last="(before the first cell)"
+    trap '[ "${_bd_in:-0}" = 1 ] && echo "selftest FAIL: the boundary section ABORTED (a command failed outside an if, under set -e) after the cell: ${_bd_last}; fixture dir: ${d:-?}"' EXIT
+    _bd_mut() {  # <name> <jq-filter> <expected-substring>: check_dir on the cut fixture must exit 1 naming the cut
+      [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_mut called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" "$2"
+      if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+    }
+    # ALL the cell helpers are defined here, before the first cell, so a call can never precede its definition (a helper used before it existed once
+    # killed the whole selftest with rc 127). Each checks its argument count and prints a named FAIL; the presence loop below names a missing one.
+    _bd_adv() {  # <name> <jq-filter> <expected-substring>: check_dir exits 0 and prints the advice line
+      [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_adv called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" "$2"
+      if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> advice, wired"; else echo "selftest FAIL: boundary $1 should exit 0 printing '$3' (rc=$rc)"; st=1; fi
+    }
+    _bd_cut() {  # <name> <jq-filter> <expected-substring>: the grader's jq program alone on the cut document (two forks, not a whole check_dir)
+      [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_cut called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); _bd_last="cut $1"; _bd_good | jq "$2" > "$base/bdc$_bd_n.json"
+      out=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "${_bd_home:-${HOME:-}}" "$GW_BD_JQ" "$base/bdc$_bd_n.json" 2>&1 </dev/null) || out="<the grader program errored>"
+      if printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (got: $out)"; st=1; fi
+    }
+    _bd_loc() {  # <name> <local file text> <expected rc> <expected substring>
+      [ "$#" -eq 4 ] || { echo "selftest FAIL: boundary helper _bd_loc called with $# arguments (4 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" '.'; printf '%s\n' "$2" > "$d/.claude/settings.local.json"
+      if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$3" ] && printf '%s' "$out" | grep -qF -- "$4"; then echo "selftest PASS: boundary local file $1"; else echo "selftest FAIL: boundary local file $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
+    }
+    _bd_lax() {  # <name> <text opened before the first key; the document's first line is dropped>
+      [ "$#" -eq 2 ] || { echo "selftest FAIL: boundary helper _bd_lax called with $# arguments (2 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" '.'
+      { printf '%s' "$2"; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+      if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not strict JSON'; then echo "selftest PASS: boundary parser differential $1 -> FAIL"; else echo "selftest FAIL: boundary parser differential $1 should FAIL as not strict JSON (rc=$rc)"; st=1; fi
+      if ( _gw_bd_strict() { return 0; }; _gw_boundary_grade "$d/.claude/settings.json" "witness" >/dev/null 2>&1 ); then echo "selftest PASS: boundary parser differential $1 witness - with the strictness check neutered the document passes, so only that check catches it"; else echo "selftest FAIL: boundary parser differential $1 witness - the document fails for another reason too, the cell is not isolating the strictness check"; st=1; fi
+    }
+    _bd_nul() {  # <name> <lead|trail>
+      [ "$#" -eq 2 ] || { echo "selftest FAIL: boundary helper _bd_nul called with $# arguments (2 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
+      _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" '.'
+      if [ "$2" = lead ]; then { printf '\000'; cat "$d/.claude/settings.json"; } > "$d/s.new"; else { cat "$d/.claude/settings.json"; printf '\000'; } > "$d/s.new"; fi
+      mv "$d/s.new" "$d/.claude/settings.json"
+      if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qE 'is not (strict|valid) JSON'; then echo "selftest PASS: boundary a $2 NUL byte -> FAIL"; else echo "selftest FAIL: boundary a $2 NUL byte should FAIL as not strict / not valid JSON (rc=$rc)"; st=1; fi
+      if [ "$2" = trail ]; then
+        # The witness shows the strictness check is the ONLY catch, so it needs a jq that reads the document (macOS jq does; a Linux jq 1.7 refuses a
+        # trailing NUL, and then the gate's own "not valid JSON" catches it first). Where jq refuses, the _bd_jqrefuse cells below are the replacement.
+        if ! jq -e . "$d/.claude/settings.json" >/dev/null 2>&1; then echo "selftest PASS: boundary the trailing NUL witness not applicable on this jq (it refuses the document itself; the jq-refusal cells below cover the fail-closed path)"
+        elif ( _gw_bd_strict() { return 0; }; _gw_boundary_grade "$d/.claude/settings.json" "witness" >/dev/null 2>&1 ); then echo "selftest PASS: boundary the trailing NUL witness - with the strictness check neutered the document passes, so only that check catches it"; else echo "selftest FAIL: boundary the trailing NUL witness - jq did not accept the document, the cell is not isolating the strictness check"; st=1; fi
+      fi
+    }
+    for _bd_h in _bd_good mk_bd _bd_mut _bd_adv _bd_cut _bd_loc _bd_lax _bd_nul; do
+      command -v "$_bd_h" >/dev/null 2>&1 || { echo "selftest FAIL: boundary helper $_bd_h is not defined (a cell below would crash the selftest)"; st=1; }
+    done
+    d="$base/bd_good"; mk_bd "$d" '.'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document -> wired and graded"; else echo "selftest FAIL: boundary the full document should be wired and graded (rc=$rc)"; st=1; fi
+    # A jq that prints a partial result and then fails (what a Linux jq 1.7 does on a trailing NUL) must give ONE fail-closed line from the strict gate,
+    # never a pass and never a second result. A PATH-stub jq makes this testable on every platform.
+    d="$base/bd_jqrefuse"; mk_bd "$d" '.'; mkdir -p "$d/stub"
+    { printf '#!/bin/sh\n'; printf 'echo "{\\"sandbox\\":"\nexit 2\n'; } > "$d/stub/jq"; chmod +x "$d/stub/jq"
+    out=$( PATH="$d/stub:$PATH"; export PATH; _gw_bd_gate "$d/.claude/settings.json" "witness" 2>&1 ) && rc=0 || rc=$?
+    if [ "$rc" -eq 1 ] && [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a jq that prints a partial result then fails -> one fail-closed line (not valid JSON)"; else echo "selftest FAIL: boundary a jq refusal should give exactly one 'not valid JSON' line and rc 1 (rc=$rc, got: $out)"; st=1; fi
+    # The good document under CI=true with HOME at an empty directory (no ~/.claude) still grades and passes: nothing in the boundary leg may depend on either.
+    d="$base/bd_ci_home"; mk_bd "$d" '.'; mkdir -p "$d/emptyhome"
+    out=$( CI=true; export CI; HOME="$d/emptyhome"; export HOME; check_dir "$d" 2>&1 </dev/null ) && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document under CI=true with an empty HOME -> wired and graded"; else echo "selftest FAIL: boundary the full document should grade under CI=true with an empty HOME (rc=$rc)"; st=1; fi
+    d="$base/bd_none"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'N/A: boundary default'; then echo "selftest PASS: boundary a tree with no claim yet (today's default) -> N/A, wired"; else echo "selftest FAIL: boundary a tree with no claim should be N/A and wired (rc=$rc)"; st=1; fi
+    printf '{ not json\n' > "$base/bd_bad.json"
+    if out=$(_gw_boundary_grade "$base/bd_bad.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a document that is not JSON -> FAIL"; else echo "selftest FAIL: boundary a non-JSON document should FAIL (rc=$rc)"; st=1; fi
+    d="$base/bd_dup"; mk_bd "$d" '.'
+    awk '/^    "enabled": true,$/ {print "    \"enabled\": false,"} {print}' "$d/.claude/settings.json" > "$d/.claude/settings.json.new" && mv "$d/.claude/settings.json.new" "$d/.claude/settings.json"
+    if ! grep -qF '"enabled": false,' "$d/.claude/settings.json"; then echo "selftest FAIL: boundary the duplicate-key fixture was not built"; st=1; fi
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key' && ! printf '%s' "$out" | grep -qF 'sandbox.enabled is not'; then echo "selftest PASS: boundary a duplicate key whose last copy passes -> FAIL (raw text read)"; else echo "selftest FAIL: boundary a duplicate key whose last copy passes should FAIL on the raw text (rc=$rc)"; st=1; fi
+    _bd_mut enabled_false '.sandbox.enabled = false' 'sandbox.enabled is not the boolean true'
+    _bd_mut enabled_string '.sandbox.enabled = "true"' 'sandbox.enabled is not the boolean true'
+    _bd_mut enabled_missing 'del(.sandbox.enabled)' 'sandbox.enabled is not the boolean true'
+    _bd_mut sandbox_block_gone 'del(.sandbox)' 'sandbox.enabled is not the boolean true'
+    _bd_mut dotstar_sandbox_form '.sandbox.filesystem.denyRead |= map(if . == "**/.env" then "./**/.env" else . end)' 'does not bind'
+    _bd_mut slashstar_read_rule '.permissions.deny |= map(if . == "Read(./**/.env)" then "Read(/**/.env)" else . end)' 'does not bind'
+    _bd_mut allowread_shadows_env '.sandbox.filesystem.allowRead += ["**/.env"]' 'beyond the two template names'
+    _bd_mut allowread_trailing_slash '.sandbox.filesystem.allowRead += ["**/.env.example/"]' 'beyond the two template names'
+    _bd_mut allowread_case '.sandbox.filesystem.allowRead += ["**/.ENV.example"]' 'beyond the two template names'
+    # Advice lines (rc 0): a stricter-than-default setting is INFO, a setting that does nothing in a project file is WARN; neither is a gap.
+    _bd_adv allowread_carveout_short_is_info '.sandbox.filesystem.allowRead = ["**/.env.example"]' 'INFO: boundary: allowRead lacks the carve-out **/.env.sample'
+    _bd_adv websearch_missing_is_info '.permissions.allow -= ["WebSearch"]' 'INFO: boundary: WebSearch is not allowed'
+    _bd_adv websearch_denied_is_info '.permissions.deny += ["WebSearch"]' 'INFO: boundary: WebSearch is in permissions.deny'
+    _bd_adv strict_in_project_file_is_warn '.sandbox.network.strictAllowlist = true' 'WARN: boundary: sandbox.network.strictAllowlist in a project file is ineffective'
+    _bd_mut ip_literal_host '.sandbox.network.allowedDomains += ["169.254.169.254"]' 'is not an exact host name'
+    _bd_mut allowwrite_dotslash_home '.sandbox.filesystem.allowWrite += ["~/."]' 'allowWrite holds'
+    _bd_mut allowwrite_double_slash_home '.sandbox.filesystem.allowWrite += ["~//"]' 'allowWrite holds'
+    _bd_mut allowwrite_dotdot '.sandbox.filesystem.allowWrite += ["~/x/.."]' 'allowWrite holds'
+    # A local file is graded through the merge (settings.json + settings.local.json), as Claude Code reads it. (_bd_loc is defined with the other helpers.)
+    _bd_loc "adding allowRead **/.env -> FAIL" '{"sandbox":{"filesystem":{"allowRead":["**/.env"]}}}' 1 'beyond the two template names'
+    _bd_loc "setting allowUnsandboxedCommands true -> FAIL in the merged document" '{"sandbox":{"allowUnsandboxedCommands":true}}' 1 'in the effective settings (settings.json merged with settings.local.json)'
+    _bd_loc "setting enabled false -> WARN, wired (a human opt-out)" '{"sandbox":{"enabled":false}}' 0 'WARN: boundary: the effective settings'
+    _bd_loc "that changes nothing -> wired and graded" '{"sandbox":{}}' 0 'PASS: boundary: the effective settings'
+    d="$base/bd_empty_dup"; mk_bd "$d" '.'
+    { printf '{"sandbox":{},'; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key'; then echo "selftest PASS: boundary an empty sandbox object before the real one -> FAIL (empty containers close)"; else echo "selftest FAIL: boundary an empty sandbox object before the real one should FAIL as a duplicate key (rc=$rc)"; st=1; fi
+    d="$base/bd_two_docs"; mk_bd "$d" '.'; printf '{}\n' >> "$d/.claude/settings.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'more than one JSON document'; then echo "selftest PASS: boundary a second JSON document after the real one -> FAIL"; else echo "selftest FAIL: boundary a second JSON document should FAIL (rc=$rc)"; st=1; fi
+    # Parser differentials (security scan): where jq accepts a document that JSON.parse, the parser Claude Code reads settings with, refuses.
+    # Each reproduction must FAIL as "not strict JSON", and its WITNESS neuters the strictness check in a subshell and shows the rest of the grader
+    # passes the same document, so the cell is load-bearing (a mutant of the check goes red here). (_bd_lax is defined with the other helpers.)
+    _bd_lax nan_literal '{"zz":nan,'
+    _bd_lax capital_nan_literal '{"zz":NaN,'
+    _bd_lax infinity_literal '{"zz":Infinity,'
+    _bd_lax leading_zero_number '{"zz":01,'
+    _bd_lax bare_fraction_number '{"zz":.5,'
+    _bd_lax plus_sign_number '{"zz":+1,'
+    _bd_lax byte_order_mark "$(printf '\357\273\277{')"
+    # Not differentials, shown by cells: jq is STRICTER than JSON.parse on comments and trailing commas (a safe FAIL); a CRLF file and a key spelled
+    # with a \u escape parse the same in both (jq and the stream reader decode keys, nothing matches raw text); a repeated key spelled two ways is caught.
+    printf '{"a":1,}\n' > "$base/bd_trailing.json"
+    if out=$(_gw_boundary_grade "$base/bd_trailing.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a trailing comma -> FAIL (jq is stricter than JSON5, the safe direction)"; else echo "selftest FAIL: boundary a trailing comma should FAIL (rc=$rc)"; st=1; fi
+    printf '{"a":1} // comment\n' > "$base/bd_comment.json"
+    if out=$(_gw_boundary_grade "$base/bd_comment.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a comment -> FAIL (the safe direction)"; else echo "selftest FAIL: boundary a comment should FAIL (rc=$rc)"; st=1; fi
+    d="$base/bd_crlf"; mk_bd "$d" '.'
+    awk '{ printf "%s\r\n", $0 }' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a CRLF file grades like the LF file"; else echo "selftest FAIL: boundary a CRLF file should grade like the LF file (rc=$rc)"; st=1; fi
+    d="$base/bd_escaped_key"; mk_bd "$d" '.'
+    # The backslash comes from sprintf("%c", 92): awk implementations differ on how they treat a backslash-u inside a string or a replacement.
+    awk '{ i = index($0, "\"denyRead\""); if (i) $0 = substr($0, 1, i) "deny" sprintf("%c", 92) "u0052ead" substr($0, i + 9); print }' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+    # (the build check greps the backslash-free tail: the old check typed the escape as backslash-u and the tooling that wrote it decoded it to the plain key, so it looked for denyRead)
+    if ! grep -qF 'u0052ead' "$d/.claude/settings.json"; then echo "selftest FAIL: boundary the escaped-key fixture was not built"; st=1; fi
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a key spelled with a \\u escape grades as the decoded key"; else echo "selftest FAIL: boundary a key spelled with a \\u escape should grade as the decoded key (rc=$rc)"; st=1; fi
+    d="$base/bd_escaped_dup"; mk_bd "$d" '.'
+    { printf '{"sand\\u0062ox":{"enabled":false},'; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key'; then echo "selftest PASS: boundary a repeated key spelled with a \\u escape -> FAIL (keys are compared decoded)"; else echo "selftest FAIL: boundary a repeated key spelled with a \\u escape should FAIL as a duplicate (rc=$rc)"; st=1; fi
+    # ── Round 3 (security FAIL, Architect steer): a CLOSED schema. Wrong-typed fields, a NUL byte, a looser allowWrite, a tracked opt-out and the
+    # prototype-pollution names. Each cell fails on 462a9854 by construction (the old program read a present non-list as EMPTY, so it reported
+    # nothing) and the record shows the old program passing these documents.
+    _bd_mut allowread_string '.sandbox.filesystem.allowRead = "**/.env"' 'allowRead is present but not a list'
+    _bd_mut allowread_null '.sandbox.filesystem.allowRead = null' 'allowRead is present but not a list'
+    _bd_mut allowwrite_string '.sandbox.filesystem.allowWrite = "~"' 'allowWrite is present but not a list'
+    _bd_mut excluded_empty_string '.sandbox.excludedCommands = ""' 'excludedCommands'
+    _bd_mut excluded_empty_object '.sandbox.excludedCommands = {}' 'excludedCommands'
+    _bd_mut excluded_null '.sandbox.excludedCommands = null' 'excludedCommands'
+    _bd_mut permissions_allow_string '.permissions.allow = "Read"' 'permissions.allow is present but not a list'
+    _bd_mut permissions_ask_string '.permissions.ask = "WebFetch"' 'permissions.ask is present but not a list'
+    _bd_mut allowed_domains_string '.sandbox.network.allowedDomains = "github.com"' 'allowedDomains is present but not a list'
+    _bd_mut denywrite_non_string_member '.sandbox.filesystem.denyWrite += [1]' 'denyWrite holds a non-string member'
+    _bd_mut permissions_deny_non_string_member '.permissions.deny += [{}]' 'permissions.deny holds a non-string member'
+    _bd_mut autoallow_string '.sandbox.autoAllowBashIfSandboxed = "false"' 'autoAllowBashIfSandboxed'
+    _bd_mut unix_sockets_flag_null '.sandbox.network.allowAllUnixSockets = null' 'allowAllUnixSockets'
+    _bd_mut weaker_isolation_null '.sandbox.enableWeakerNetworkIsolation = null' 'enableWeakerNetworkIsolation'
+    _bd_mut weaker_nested_string '.sandbox.enableWeakerNestedSandbox = "false"' 'enableWeakerNestedSandbox'
+    _bd_mut permissions_allow_edit_rule '.permissions.allow += ["Edit(./**/.env)"]' 'permissions.allow holds an Edit(...) or Write(...) rule'
+    _bd_mut permissions_allow_write_rule '.permissions.allow += ["Write(~/x)"]' 'permissions.allow holds an Edit(...) or Write(...) rule'
+    _bd_mut proto_key '.sandbox["__proto__"] = {"x": 1}' 'uses the key __proto__, constructor or prototype'
+    _bd_mut constructor_key '.permissions["constructor"] = []' 'uses the key __proto__, constructor or prototype'
+    # Round 4 (security S3-B1, Architect ruling) and ruling B: the KEYS of sandbox, sandbox.network, sandbox.filesystem, sandbox.credentials and
+    # permissions are closed on the DOCUMENTED key set (settings-reference and sandboxing pages, retrieved 2026-10-25). Only a key outside it is
+    # "unknown"; every documented key is graded by value (FAIL, WARN or PASS), the table is in the review record.
+    _bd_mut unknown_network_key '.sandbox.network.zzz = 1' 'sandbox.network uses the unknown key zzz'
+    _bd_mut unknown_filesystem_key '.sandbox.filesystem.foo = []' 'sandbox.filesystem uses the unknown key foo'
+    _bd_mut unknown_sandbox_key '.sandbox.zzz = 1' 'sandbox uses the unknown key zzz'
+    _bd_mut unknown_permissions_key '.permissions.zzz = 1' 'permissions uses the unknown key zzz'
+    _bd_mut unknown_credentials_key '.sandbox.credentials = {"zzz": 1}' 'sandbox.credentials uses the unknown key zzz'
+    _bd_loc "an unknown sandbox.network key in the local file -> FAIL" '{"sandbox":{"network":{"zzz":1}}}' 1 'uses the unknown key zzz'
+    # FAIL by value (one cell per rule). The design own values are graded exactly: allowLocalBinding true, enableWeakerNestedSandbox true,
+    # autoAllowBashIfSandboxed not false, excludedCommands not absent-or-[] (the cells for the first and last four are earlier or just below).
+    _bd_mut autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'autoAllowBashIfSandboxed is true'
+    _bd_mut excluded_commands_listed '.sandbox.excludedCommands = ["docker"]' 'excludedCommands must be absent or exactly []'
+    _bd_mut weaker_nested_true '.sandbox.enableWeakerNestedSandbox = true' 'enableWeakerNestedSandbox is true'
+    _bd_mut fail_if_unavailable_false '.sandbox.failIfUnavailable = false' 'sandbox.failIfUnavailable is present and not the boolean true'
+    _bd_mut nested_userns_true '.sandbox.allowNestedUserNamespaces = true' 'sandbox.allowNestedUserNamespaces is true'
+    _bd_mut apple_events_true '.sandbox.allowAppleEvents = true' 'sandbox.allowAppleEvents is true'
+    _bd_mut bwrap_path_set '.sandbox.bwrapPath = "/tmp/bwrap"' 'sandbox.bwrapPath is set in a project or local file'
+    _bd_mut socat_path_set '.sandbox.socatPath = "/tmp/socat"' 'sandbox.socatPath is set in a project or local file'
+    _bd_mut ripgrep_set '.sandbox.ripgrep = {"command": "/tmp/rg"}' 'sandbox.ripgrep is set in a project or local file'
+    _bd_mut plaintext_inject_true '.sandbox.credentials = {"allowPlaintextInject": true}' 'sandbox.credentials.allowPlaintextInject is true'
+    _bd_mut credentials_files_bad_mode '.sandbox.credentials = {"files": [{"path": "~/.x", "mode": "expose"}]}' 'sandbox.credentials.files holds an entry whose mode is not deny or mask'
+    _bd_mut credentials_envvars_bad_mode '.sandbox.credentials = {"envVars": [{"name": "X", "mode": "expose"}]}' 'sandbox.credentials.envVars holds an entry whose mode is not deny or mask'
+    _bd_mut all_unix_sockets_true '.sandbox.network.allowAllUnixSockets = true' 'allowAllUnixSockets is true'
+    _bd_mut mach_lookup_set '.sandbox.network.allowMachLookup = ["com.apple.x"]' 'sandbox.network.allowMachLookup is not empty'
+    _bd_mut http_proxy_port_set '.sandbox.network.httpProxyPort = 8080' 'sandbox.network.httpProxyPort is set'
+    _bd_mut socks_proxy_port_set '.sandbox.network.socksProxyPort = 1080' 'sandbox.network.socksProxyPort is set'
+    _bd_mut tls_terminate_set '.sandbox.network.tlsTerminate = {"x": 1}' 'sandbox.network.tlsTerminate is set in a project or local file'
+    _bd_mut filesystem_disabled_true '.sandbox.filesystem.disabled = true' 'sandbox.filesystem.disabled is true'
+    _bd_mut default_mode_bypass '.permissions.defaultMode = "bypassPermissions"' 'permissions.defaultMode is bypassPermissions or not a documented mode'
+    _bd_mut default_mode_undocumented '.permissions.defaultMode = "yolo"' 'permissions.defaultMode is bypassPermissions or not a documented mode'
+    _bd_loc "an httpProxyPort in the local file -> FAIL" '{"sandbox":{"network":{"httpProxyPort":8080}}}' 1 'sandbox.network.httpProxyPort is set'
+    # WARN (advice, wired): widened reach, credential signing or injection (types unverified), strictAllowlist in a project file (earlier).
+    _bd_mut additional_directories_fail '.permissions.additionalDirectories = ["../x"]' 'additionalDirectories widens the Edit/Write tools reach outside the sandbox'
+    _bd_mut additional_directories_non_string_member '.permissions.additionalDirectories = [1]' 'permissions.additionalDirectories holds a non-string member'
+    _bd_adv additional_directories_empty_passes '.permissions.additionalDirectories = []' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv default_mode_auto_warn '.permissions.defaultMode = "auto"' 'WARN: boundary: permissions.defaultMode is auto'
+    _bd_adv credentials_aws_pairs_warn '.sandbox.credentials = {"awsPairs": []}' 'WARN: boundary: sandbox.credentials.awsPairs is set'
+    _bd_adv credentials_inject_hosts_warn '.sandbox.credentials = {"injectHosts": []}' 'WARN: boundary: sandbox.credentials.injectHosts is set'
+    # PASS by value: the kit strict template shape (failIfUnavailable true), a tightening, every documented non-bypass mode, a deny or mask entry.
+    _bd_adv strict_template_with_fail_if_unavailable '.sandbox.failIfUnavailable = true' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv ignore_violations_pass '.sandbox.ignoreViolations = {"*": ["/x"]}' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv credentials_sigv4_pass '.sandbox.credentials = {"sigv4": []}' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv disable_auto_mode_pass '.permissions.disableAutoMode = "disable"' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv denied_domains_pass '.sandbox.network.deniedDomains = ["evil.example"]' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv managed_only_flags_pass '.sandbox.network.allowManagedDomainsOnly = true | .sandbox.filesystem.allowManagedReadPathsOnly = true' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv permission_tightenings_pass '.permissions.disableBypassPermissionsMode = "disable" | .permissions.blockReadsOutsideWorkingDirectories = true' 'PASS: boundary: the committed .claude/settings.json carries'
+    _bd_adv credentials_deny_mask_pass '.sandbox.credentials = {"files": [{"path": "~/.x", "mode": "deny"}], "envVars": [{"name": "X", "mode": "mask"}]}' 'PASS: boundary: the committed .claude/settings.json carries'
+    for _bd_mode in default acceptEdits plan auto dontAsk manual; do
+      _bd_adv "default_mode_$_bd_mode" ".permissions.defaultMode = \"$_bd_mode\"" 'PASS: boundary: the committed .claude/settings.json carries'
+    done
+    # Wrong TYPE on a documented key (security BG-B2, fail-open-validation): a PASS or WARN bucket is graded on its type as well as its presence.
+    _bd_mut ignore_violations_string '.sandbox.ignoreViolations = "x"' 'sandbox.ignoreViolations has the wrong type'
+    _bd_mut credentials_array '.sandbox.credentials = []' 'sandbox.credentials has the wrong type'
+    _bd_mut credentials_string '.sandbox.credentials = "x"' 'sandbox.credentials has the wrong type'
+    _bd_mut credentials_files_string '.sandbox.credentials = {"files": "x"}' 'sandbox.credentials.files has the wrong type'
+    _bd_mut credentials_files_scalar_entry '.sandbox.credentials = {"files": ["x"]}' 'sandbox.credentials.files holds an entry whose mode is not deny or mask'
+    _bd_mut credentials_files_no_mode '.sandbox.credentials = {"envVars": [{"name": "X"}]}' 'sandbox.credentials.envVars holds an entry whose mode is not deny or mask'
+    _bd_mut credentials_sigv4_string '.sandbox.credentials = {"sigv4": "x"}' 'sandbox.credentials.sigv4 has the wrong type'
+    _bd_mut denied_domains_string '.sandbox.network.deniedDomains = "x"' 'sandbox.network.deniedDomains has the wrong type'
+    _bd_mut denied_domains_non_string_member '.sandbox.network.deniedDomains = [1]' 'sandbox.network.deniedDomains holds a non-string member'
+    _bd_mut managed_domains_only_string '.sandbox.network.allowManagedDomainsOnly = "yes"' 'allowManagedDomainsOnly has the wrong type'
+    _bd_mut managed_read_only_number '.sandbox.filesystem.allowManagedReadPathsOnly = 1' 'allowManagedReadPathsOnly has the wrong type'
+    _bd_mut disable_bypass_mode_bool '.permissions.disableBypassPermissionsMode = []' 'disableBypassPermissionsMode has the wrong type'
+    _bd_mut block_reads_string '.permissions.blockReadsOutsideWorkingDirectories = "true"' 'blockReadsOutsideWorkingDirectories has the wrong type'
+    _bd_mut disable_auto_mode_number '.permissions.disableAutoMode = 1' 'permissions.disableAutoMode has the wrong type'
+    _bd_mut additional_directories_string '.permissions.additionalDirectories = "../x"' 'permissions.additionalDirectories has the wrong type'
+    _bd_mut strict_allowlist_string '.sandbox.network.strictAllowlist = "yes"' 'sandbox.network.strictAllowlist has the wrong type'
+    _bd_mut credentials_aws_pairs_string '.sandbox.credentials = {"awsPairs": "x"}' 'sandbox.credentials.awsPairs has the wrong type'
+    _bd_mut credentials_inject_hosts_string '.sandbox.credentials = {"injectHosts": "x"}' 'sandbox.credentials.injectHosts has the wrong type'
+    _bd_mut default_mode_number '.permissions.defaultMode = 1' 'permissions.defaultMode is bypassPermissions or not a documented mode'
+    _bd_mut default_mode_null '.permissions.defaultMode = null' 'permissions.defaultMode is bypassPermissions or not a documented mode'
+    # allowWrite is a CLOSED list (the temp roots and the named caches, exact spellings): any other spelling is simply not in it, whatever its shape.
+    # The comparison is on the RAW entry against the exact spelling: no prefix match, no normalisation, no expansion, no case folding. So a spelling that
+    # would normalise INTO the list (/tmp/, /private/tmp/., ~/Library/Caches/) or that merely starts with a listed root (/tmpfoo, /tmp/../Users, /tmp/**)
+    # is rejected too; the cells below are the class, and a normalising or prefix-matching comparison would accept them (a security flag, allowlist-semantic-escape).
+    _bd_home=/Users/x
+    # shellcheck disable=SC2088  # the tilde is literal text in a settings entry, never expanded
+    for _aw in '~/*' '~/**' '$HOME/*' '/Users/x/*' '~root/x' '/users/x' '/Users/./x' '~/.NPM' '~/.npm/' '/opt/never-seen-before' '~/.cache/../x' '*' '/tmpfoo' '/tmp/../Users' '/TMP' '/tmp/' '/tmp/**' '~/.npm/**' '/private/tmp/.' '~/Library/Caches/'; do
+      _bd_cut "allowwrite_not_in_the_closed_list $_aw" ".sandbox.filesystem.allowWrite += [\"$_aw\"]" 'allowWrite holds'
+    done
+    unset _bd_home
+    # A local file: a scalar over a list is a FAIL, a local empty list does not empty the project list (concatenation is docs-stated, owed C39).
+    _bd_loc "a scalar replacing a list -> FAIL" '{"sandbox":{"filesystem":{"denyRead":"x"}}}' 1 'replaces a list or object of settings.json'
+    _bd_loc "null replacing an object -> FAIL" '{"sandbox":{"network":null}}' 1 'replaces a list or object of settings.json'
+    _bd_loc "an empty denyRead list over the project list -> still graded (concatenation, docs-stated)" '{"sandbox":{"filesystem":{"denyRead":[]}}}' 0 'PASS: boundary: the effective settings'
+    d="$base/bd_tracked_local"; mk_bd "$d" '.'; printf '{"sandbox":{"enabled":false}}\n' > "$d/.claude/settings.local.json"
+    # `add -f`: a global gitignore that lists settings.local.json (common on a developer machine) makes a plain `git add` fail, and a failing command
+    # outside an `if` ends this selftest under set -e with no FAIL line. Both git calls are guarded and the build is checked by name.
+    _gw_git -C "$d" init -q >/dev/null 2>&1 || :
+    _gw_git -C "$d" add -f .claude/settings.local.json >/dev/null 2>&1 || :
+    _gw_git -C "$d" ls-files --error-unmatch .claude/settings.local.json >/dev/null 2>&1 || { echo "selftest FAIL: boundary the tracked-opt-out fixture was not built (git could not track settings.local.json)"; st=1; }
+    if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is tracked by git and turns the sandbox OFF'; then echo "selftest PASS: boundary a TRACKED settings.local.json that turns the sandbox off -> FAIL"; else echo "selftest FAIL: boundary a tracked settings.local.json that turns the sandbox off should FAIL (rc=$rc)"; st=1; fi
+    # A NUL byte: jq reads a trailing NUL and BSD awk truncates at it. Each shape must FAIL; the trailing one carries a witness (jq accepts it).
+    _bd_nul leading_nul lead
+    _bd_nul trailing_nul trail
+    _bd_mut denyread_case '.sandbox.filesystem.denyRead |= map(if . == "**/.env" then "**/.ENV" else . end)' 'denyRead lacks **/.env'
+    _bd_mut denyread_trailing_slash '.sandbox.filesystem.denyRead |= map(if . == "**/.env" then "**/.env/" else . end)' 'denyRead lacks **/.env'
+    # The settings-backup glob (~/.claude/settings.json.bak-<label> and .kit-<label>): the dot plus at least the star's own match is required, so it
+    # never names ~/.claude/settings.json itself (which preflight reads from a terminal); case and trailing-slash variants are missing entries.
+    _bd_mut backup_glob_case '.sandbox.filesystem.denyRead |= map(if . == "~/.claude/settings.json.*" then "~/.claude/Settings.json.*" else . end)' 'denyRead lacks ~/.claude/settings.json.*'
+    _bd_mut backup_glob_trailing_slash '.sandbox.filesystem.denyRead |= map(if . == "~/.claude/settings.json.*" then "~/.claude/settings.json.*/" else . end)' 'denyRead lacks ~/.claude/settings.json.*'
+    _bd_mut template_read_allow '.permissions.allow += ["Read(./**/.env.example)"]' 'permissions.allow holds a Read(...) rule'
+    _bd_mut denyread_without_twin '.sandbox.filesystem.denyRead += ["**/extra"]' 'has no Read(...) twin'
+    _bd_mut read_rule_without_twin '.permissions.deny += ["Read(./**/extra)"]' 'has no sandbox denyRead twin'
+    _bd_mut webfetch_deny_removed '.permissions.deny -= ["WebFetch"]' 'lacks the bare WebFetch deny'
+    _bd_mut webfetch_asked '.permissions.ask = ["WebFetch"]' 'WebFetch is in permissions.ask'
+    _bd_mut webfetch_allowed '.permissions.allow += ["WebFetch(domain:example.org)"]' 'WebFetch is in permissions.allow'
+    _bd_mut loopback_binding_on '.sandbox.network.allowLocalBinding = true' 'allowLocalBinding is not false'
+    _bd_mut loopback_binding_missing 'del(.sandbox.network.allowLocalBinding)' 'allowLocalBinding is not false'
+    _bd_mut docker_socket_listed '.sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]' 'allowUnixSockets is not an empty list'
+    _bd_mut sockets_key_missing 'del(.sandbox.network.allowUnixSockets)' 'allowUnixSockets is not an empty list'
+    _bd_mut domain_star '.sandbox.network.allowedDomains += ["*"]' 'is not an exact host name'
+    _bd_mut domain_wildcard '.sandbox.network.allowedDomains += ["*.example.com"]' 'is not an exact host name'
+    _bd_mut allowwrite_home '.sandbox.filesystem.allowWrite += ["~"]' 'allowWrite holds'
+    _bd_mut weaker_network_isolation '.sandbox.enableWeakerNetworkIsolation = true' 'enableWeakerNetworkIsolation is true'
+    # One cut per table entry: the read-deny set (sandbox side, then its Read twin) and the write belt (sandbox side, then its Edit twin), run through
+    # _bd_cut (defined with the other helpers above the first cell).
+    _bd_tab=$(printf '\t')
+    printf '%s\n' "$GW_BD_TABLES" | jq -r '.read[] | @tsv' > "$base/bd_read.tsv"
+    printf '%s\n' "$GW_BD_TABLES" | jq -r '.belt[] | @tsv' > "$base/bd_belt.tsv"
+    while IFS="$_bd_tab" read -r _bd_s _bd_p; do
+      _bd_cut "denyRead_cut_$_bd_s" "del(.sandbox.filesystem.denyRead[] | select(. == \"$_bd_s\"))" "denyRead lacks $_bd_s"
+      _bd_cut "read_rule_cut_$_bd_p" "del(.permissions.deny[] | select(. == \"$_bd_p\"))" "permissions.deny lacks $_bd_p"
+    done < "$base/bd_read.tsv"
+    while IFS="$_bd_tab" read -r _bd_s _bd_p; do
+      _bd_cut "belt_cut_$_bd_s" "del(.sandbox.filesystem.denyWrite[] | select(. == \"$_bd_s\"))" "denyWrite lacks belt entry $_bd_s"
+      _bd_cut "edit_twin_cut_$_bd_p" "del(.permissions.deny[] | select(. == \"$_bd_p\"))" "permissions.deny lacks Edit twin $_bd_p"
+    done < "$base/bd_belt.tsv"
+    # allowWrite against the running user's home, in its absolute spelling and as a parent of it; a temp root stays allowed even when HOME sits under it.
+    _bd_home=/Users/x
+    _bd_cut allowwrite_absolute_home '.sandbox.filesystem.allowWrite += ["/Users/x"]' 'allowWrite holds'
+    _bd_cut allowwrite_parent_of_home '.sandbox.filesystem.allowWrite += ["/Users"]' 'allowWrite holds'
+    _bd_home=/tmp/h
+    _bd_good > "$base/bdt.json"
+    out=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "$_bd_home" "$GW_BD_JQ" "$base/bdt.json" 2>&1 </dev/null) || out="<the grader program errored>"
+    case "$out" in
+      *"allowWrite holds"*|*errored*) echo "selftest FAIL: boundary a temp root in allowWrite must stay allowed when HOME sits under it ($out)"; st=1 ;;
+      *) echo "selftest PASS: boundary a temp root in allowWrite stays allowed when HOME sits under it" ;;
+    esac
+    unset _bd_home
+    # The patch leg (Q16). _bp_mk builds a kit-marker tree: a small settings.json, a patch from it to the (filtered) good document, and a
+    # plan record of the patch's sha256.
+    _bp_mk() {  # <dir> <jq-filter for the patched result>
+      mkdir -p "$1/docs/patches" "$1/docs/plans" "$1/.claude"; : > "$1/docs/ROADMAP-KIT.md"
+      printf '{"permissions":{"deny":["Edit(/.claude/**)"]},"hooks":{}}\n' | jq . > "$1/old.json"
+      _bd_good | jq "$2" > "$1/new.json"
+      # A plain `diff -u` between pa/ and pb/: git apply strips one leading component (-p1), so both sides name .claude/settings.json.
+      mkdir -p "$1/pa/.claude" "$1/pb/.claude"; cp "$1/old.json" "$1/pa/.claude/settings.json"; cp "$1/new.json" "$1/pb/.claude/settings.json"
+      ( cd "$1" && diff -u pa/.claude/settings.json pb/.claude/settings.json > docs/patches/t.settings.patch ) || true
+      cp "$1/old.json" "$1/.claude/settings.json"
+      _bp_rec "$1"
+    }
+    _bp_rec() {  # <dir>: (re)record the sha256 of the patch in the plan
+      printf '%s\n' "recorded sha256: $(_gw_sha256 "$1/docs/patches/t.settings.patch")" > "$1/docs/plans/p.md"
+    }
+    _bp_cell() {  # <name> <dir> <expected rc> <expected substring>
+      if out=$(_gw_boundary_patch_leg "$2" 2>&1 </dev/null); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$3" ] && printf '%s' "$out" | grep -qF -- "$4"; then echo "selftest PASS: boundary patch $1"; else echo "selftest FAIL: boundary patch $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
+    }
+    d="$base/bp_good"; _bp_mk "$d" '.'
+    _bp_cell "a good patch (one file, applies, result passes, sha recorded) -> pending, wired" "$d" 0 'applies cleanly and its result passes the boundary grader'
+    d="$base/bp_applied"; _bp_mk "$d" '.'; cp "$d/new.json" "$d/.claude/settings.json"
+    _bp_cell "already applied (the reverse applies) -> wired" "$d" 0 'is already applied'
+    d="$base/bp_second_file"; _bp_mk "$d" '.'; printf 'a\n' > "$d/pa/README.md"; printf 'b\n' > "$d/pb/README.md"
+    ( cd "$d" && diff -u pa/README.md pb/README.md >> docs/patches/t.settings.patch ) || true; _bp_rec "$d"
+    _bp_cell "touching a second file -> FAIL" "$d" 1 'touches more than .claude/settings.json'
+    d="$base/bp_mode"; _bp_mk "$d" '.'
+    { printf 'diff --git a/.claude/settings.json b/.claude/settings.json\nold mode 100644\nnew mode 100755\n'; cat "$d/docs/patches/t.settings.patch"; } > "$d/pm.tmp" && mv "$d/pm.tmp" "$d/docs/patches/t.settings.patch"; _bp_rec "$d"
+    _bp_cell "carrying a mode change -> FAIL" "$d" 1 'touches more than .claude/settings.json'
+    d="$base/bp_moved"; _bp_mk "$d" '.'; printf '{"unrelated":true}\n' > "$d/.claude/settings.json"
+    _bp_cell "against a settings file that moved (neither direction applies) -> FAIL" "$d" 1 'does not apply to .claude/settings.json'
+    d="$base/bp_retired"; _bp_mk "$d" '.'; _bd_good | jq '.sandbox.network.allowedDomains += ["example.org"]' > "$d/.claude/settings.json"
+    _bp_cell "applies in neither direction but the committed file passes the grader -> N/A, retired" "$d" 0 'patch retired'
+    d="$base/bp_retired_failing"; _bp_mk "$d" '.'; _bd_good | jq '.sandbox.enabled = false' > "$d/.claude/settings.json"
+    _bp_cell "applies in neither direction and the committed file does NOT pass the grader -> FAIL, not retired" "$d" 1 'does not apply to .claude/settings.json'
+    # A merge that cannot run (no scratch file) must FAIL naming it, never skip the effective settings silently. Skipped where mktemp still works.
+    d="$base/bd_nomktemp"; mk_bd "$d" '.'; printf '{"sandbox":{}}\n' > "$d/.claude/settings.local.json"
+    if ( TMPDIR=/nonexistent-dir-for-the-selftest; export TMPDIR; mktemp >/dev/null 2>&1 ); then
+      echo "selftest SKIP: the mktemp-failure cell (mktemp still works with TMPDIR unusable on this platform)"
+    else
+      if out=$( TMPDIR=/nonexistent-dir-for-the-selftest; export TMPDIR; _gw_boundary_leg "$d" 2>&1 </dev/null ); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'could not merge settings.json with settings.local.json'; then echo "selftest PASS: boundary a merge that cannot create its scratch file -> FAIL"; else echo "selftest FAIL: boundary a merge that cannot create its scratch file should FAIL (rc=$rc)"; st=1; fi
+    fi
+    d="$base/bp_bad_result"; _bp_mk "$d" '.sandbox.enabled = false'
+    _bp_cell "whose result fails the grader -> FAIL" "$d" 1 'its result fails the boundary grader'
+    d="$base/bp_unrecorded"; _bp_mk "$d" '.'; printf 'nothing recorded\n' > "$d/docs/plans/p.md"
+    _bp_cell "whose sha256 is not recorded -> FAIL" "$d" 1 'sha256 is not recorded'
+    d="$base/bp_edited"; _bp_mk "$d" '.'
+    sed 's/api\.github\.com/api.github.org/' "$d/docs/patches/t.settings.patch" > "$d/pe.tmp" && mv "$d/pe.tmp" "$d/docs/patches/t.settings.patch"
+    if ! grep -qF 'api.github.org' "$d/docs/patches/t.settings.patch"; then echo "selftest FAIL: boundary patch the edited-patch fixture was not built"; st=1; fi
+    _bp_cell "edited after its sha256 was recorded -> FAIL" "$d" 1 'sha256 is not recorded'
+    d="$base/bp_nopatch"; mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
+    _bp_cell "no patch in a kit tree -> N/A" "$d" 0 'N/A: boundary patch leg - no docs/patches'
+    d="$base/bp_adopter"; mkdir -p "$d"
+    _bp_cell "not a kit tree -> N/A" "$d" 0 'N/A: boundary patch leg - not a kit-source tree'
+    _bd_in=0; trap - EXIT
   else
     echo "selftest SKIP: static sandbox legs (jq absent)"
   fi
@@ -968,6 +1794,54 @@ selftest() {
     echo "selftest FAIL: kit tree has no .github/workflows/ci.yml, so the rc-3 pin cannot run (export-face latch)"; st=1
   elif _gw_ci_ok "$_gw_ci"; then echo "selftest PASS: ci.yml sandbox-enforcement step exits non-zero on rc 3 and has no continue-on-error (a SKIP fails the kit's CI)"
   else echo "selftest FAIL: ci.yml sandbox-enforcement step must exit non-zero on rc 3 (no exit 0, an exit 1) and carry no continue-on-error"; st=1
+  fi
+
+  # SWAS-354: the REAL tree. On a kit tree the shipped boundary patch passes its own legs (it applies to the committed settings.json or is
+  # already applied, its result passes the grader, its sha256 is recorded) and the committed settings.json is graded once it claims the
+  # boundary. An adopter export carries no docs/patches (export-ignored) and no kit marker: SKIP.
+  if [ ! -f "$_gw_root/docs/ROADMAP-KIT.md" ]; then
+    echo "selftest SKIP: the real-tree boundary cells (no kit marker: adopter, N/A)"
+  elif ! command -v jq >/dev/null 2>&1; then
+    echo "selftest SKIP: the real-tree boundary cells (jq absent)"
+  else
+    if out=$(_gw_boundary_patch_leg "$_gw_root" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then echo "selftest PASS: the shipped boundary patch passes its legs on the real tree"; else echo "selftest FAIL: the shipped boundary patch fails its legs on the real tree: $out"; st=1; fi
+    if out=$(_gw_boundary_leg "$_gw_root" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then echo "selftest PASS: the committed settings.json passes the boundary leg on the real tree (graded, or N/A before the patch is applied)"; else echo "selftest FAIL: the committed settings.json fails the boundary leg on the real tree: $out"; st=1; fi
+  fi
+
+  # SWAS-355: --boundary-only is the boundary leg ALONE (doctor --boundary): 0 graded or N/A, 1 FAIL, 2 UNVERIFIED. One grader, no new grading logic.
+  if command -v jq >/dev/null 2>&1; then
+    bo="$base/bo"; mkdir -p "$bo/claim/.claude" "$bo/noclaim/.claude" "$bo/badjson/.claude" "$bo/empty" "$bo/nojq" "$bo/stub"
+    printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env"]}}}\n' > "$bo/claim/.claude/settings.json"
+    printf '{"permissions":{}}\n' > "$bo/noclaim/.claude/settings.json"
+    printf '{"sandbox":\n' > "$bo/badjson/.claude/settings.json"
+    if out=$(sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '^FAIL: boundary: denyRead lacks'; then echo "selftest PASS: --boundary-only on a settings.json that claims the boundary and fails the grader -> FAIL rc 1"; else echo "selftest FAIL: --boundary-only on a failing boundary claim should exit 1 with the grader's lines (rc=$rc): $out"; st=1; fi
+    if out=$(sh "$0" --boundary-only "$bo/noclaim" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A: boundary default'; then echo "selftest PASS: --boundary-only with no boundary claim -> N/A rc 0"; else echo "selftest FAIL: --boundary-only with no claim should be N/A rc 0 (rc=$rc): $out"; st=1; fi
+    if out=$(sh "$0" --boundary-only "$bo/empty" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then echo "selftest PASS: --boundary-only with no settings.json -> rc 0 (nothing to grade)"; else echo "selftest FAIL: --boundary-only with no settings.json should exit 0 (rc=$rc): $out"; st=1; fi
+    if out=$(sh "$0" --boundary-only "$bo/badjson" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^UNVERIFIED: jq could not read'; then echo "selftest PASS: --boundary-only on a settings file jq cannot read -> UNVERIFIED rc 2"; else echo "selftest FAIL: --boundary-only on an unreadable settings file should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
+    if out=$(PATH="$bo/nojq" /bin/sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^UNVERIFIED: jq absent'; then echo "selftest PASS: --boundary-only without jq -> UNVERIFIED rc 2 (never a pass)"; else echo "selftest FAIL: --boundary-only without jq should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
+    # a jq that prints a PARTIAL result and then fails reads as exactly one UNVERIFIED line, never a PASS, never an abort
+    bo_jq=$(command -v jq)
+    printf '%s\n' '#!/bin/sh' 'echo "{\"sandbox\":"' 'exit 2' > "$bo/stub/jq"; chmod +x "$bo/stub/jq"
+    if out=$(PATH="$bo/stub:$PATH" sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
+    bo_n=$(printf '%s\n' "$out" | grep -c 'UNVERIFIED' || true)
+    if [ "$rc" -eq 2 ] && [ "$bo_n" -eq 1 ] && ! printf '%s' "$out" | grep -q '^PASS'; then echo "selftest PASS: --boundary-only with a partial-then-fail jq -> exactly one UNVERIFIED line, rc 2"; else echo "selftest FAIL: a partial-then-fail jq should give one UNVERIFIED line and rc 2 (rc=$rc, lines=$bo_n): $out ($bo_jq)"; st=1; fi
+    # mutant boundary-only-skips-grader: with the one grader call replaced, the failing claim must no longer FAIL (the failing cell above goes red)
+    sed '/MUT-BOUNDARY-ONLY/s/_gw_boundary_leg "\$1"/return 0/' "$0" > "$bo/m.sh"
+    if cmp -s "$0" "$bo/m.sh"; then echo "selftest FAIL: mutant boundary-only-skips-grader did not apply"; st=1
+    elif ! sh -n "$bo/m.sh" 2>/dev/null; then echo "selftest FAIL: mutant boundary-only-skips-grader does not parse"; st=1
+    else
+      if out=$(sh "$bo/m.sh" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ]; then echo "selftest FAIL: mutant boundary-only-skips-grader survived (the failing claim still fails)"; st=1; else echo "selftest PASS: mutant boundary-only-skips-grader is killed"; fi
+    fi
+  else
+    echo "selftest SKIP: --boundary-only cells (jq absent)"
   fi
 
   d="$base/full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
@@ -1756,15 +2630,20 @@ sandbox_enforce() {
 mode=full
 proj_dir="."
 enforce=0
+bonly=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --selftest) selftest; exit $? ;;
     --rung1-only) mode=rung1only ;;
     --sandbox-enforce) enforce=1 ;;
+    --boundary-only) bonly=1 ;;
     *) proj_dir="$1" ;;
   esac
   shift
 done
 if [ "$enforce" -eq 1 ]; then sandbox_enforce "$proj_dir"; exit $?; fi
+if [ "$bonly" -eq 1 ]; then
+  if _gw_boundary_only "$proj_dir"; then exit 0; else exit $?; fi
+fi
 check_dir "$proj_dir" "$mode"
 exit $?

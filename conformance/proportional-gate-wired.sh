@@ -557,6 +557,28 @@ _job_if() { _job_block "$1" "$2" | grep -E '^    if[[:space:]]*:'; }
 # comment is stripped, never read: it cannot make a wrong clause compare equal.
 _job_if_canon() { _job_if "$1" "$2" | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]'; }
 
+# _pg_docs_lock <file> -> 0 iff every `conformance-docs-<n>` LEG carries exactly the push-graded-only `if:` and the `conformance-docs` JOIN carries
+# exactly `!cancelled()` plus that clause (SWAS-409). Each break is printed as a FAIL line naming the job. No legs at all is a break too: the join
+# would grade nothing, and the docs-only/push-graded skips would keep standing on a job that no longer exists.
+_pg_docs_lock() {
+  _pd_bad=0
+  _pd_legs=$(grep -E "^  ${CI_IF_PUSH_GRADED_ONLY}-[0-9]+:[[:space:]]*\$" "$1" 2>/dev/null | tr -d ' :')
+  if [ -z "$_pd_legs" ]; then
+    echo "FAIL: $1 has no job keyed conformance-docs-<n> — the always-run doc job runs as legs, and a renamed or missing leg key leaves this lock pointed at nothing while the docs-only and push-graded skips keep standing on it"; _pd_bad=1
+  fi
+  for _pd_ctx in $_pd_legs; do
+    _pd_cif=$(_job_if_canon "$1" "$_pd_ctx")
+    [ "$_pd_cif" = "$CI_IF_PUSH_GRADED_CANONICAL" ] || {
+      echo "FAIL: $1's $_pd_ctx job-level \`if:\` is '$_pd_cif', not exactly \`if: needs.changes.outputs.push_graded != 'true'\`. That is the ONE clause a docs leg may carry: the push-graded skip is sound because the graded PR's own run ran this very job. THE DOCS-ONLY CLAUSE IS FORBIDDEN HERE — on a docs-only PR the docs legs are the only jobs grading the change (every check that can read a .md was moved into them), so skipping one there would leave that lane graded by nothing and would falsify the push-graded induction's premise. Removing the \`if:\` entirely reds too: the leg would re-run on every push over a tree the PR already graded"; _pd_bad=1; }
+  done
+  _has_job_key "$1" "$CI_IF_PUSH_GRADED_JOIN" || {
+    echo "FAIL: $1 has no job keyed exactly '$CI_IF_PUSH_GRADED_JOIN' — the docs join is the name the aggregator and the push-graded induction bind to; a renamed key leaves them pointed at nothing"; _pd_bad=1; }
+  _pd_jif=$(_job_if_canon "$1" "$CI_IF_PUSH_GRADED_JOIN")
+  [ "$_pd_jif" = "$CI_IF_PUSH_GRADED_JOIN_CANONICAL" ] || {
+    echo "FAIL: $1's $CI_IF_PUSH_GRADED_JOIN job-level \`if:\` is '$_pd_jif', not exactly \`if: \${{ !cancelled() && needs.changes.outputs.push_graded != 'true' }}\`. The join must run when a leg failed or was cancelled (a plain needs: join is SKIPPED then, and its explicit per-leg result check never runs), and it carries the same one clause as the legs: no docs-only clause, and no other"; _pd_bad=1; }
+  return "$_pd_bad"
+}
+
 # THE ALLOWED JOB-LEVEL `if:` PER REQUIRED CONTEXT — the table anchor (5) below reads.
 # ⚠️ SOURCE OF TRUTH IS REQUIRED-CHECKS.md; this table says what each of those contexts is ALLOWED to
 # condition itself on, which that file does not record. Both drift directions are asserted below, so
@@ -581,8 +603,14 @@ CI_IF_CANONICAL="if:github.event_name=='pull_request'"
 #                 whose tree the merged PR already graded (that PR's run ran this very job, which the
 #                 push-graded predicate requires), and it may NOT carry the docs-only clause: on a
 #                 docs-only PR it is the only job grading the change.
-CI_IF_PUSH_GRADED_ONLY="conformance-docs"
+#   SWAS-409 (CI-SHAPING S4): `conformance-docs` is now a JOIN over the legs `conformance-docs-1..n`. The ONE-CLAUSE rule moves to the LEGS
+#                 (every `conformance-docs-<n>` job carries exactly the canonical form below, never the docs-only clause: on a docs-only PR the
+#                 legs are the only job grading the change). The JOIN keeps the push-graded clause behind `!cancelled()` — a plain `needs:` join
+#                 is SKIPPED when a leg fails, which would hide the red from the join's own verdict — and its canonical form is pinned too.
+CI_IF_PUSH_GRADED_ONLY="conformance-docs"   # the LEG job keys are <this>-<n>; the join keeps this name (CI_IF_PUSH_GRADED_JOIN)
 CI_IF_PUSH_GRADED_CANONICAL="if:needs.changes.outputs.push_graded!='true'"
+CI_IF_PUSH_GRADED_JOIN="conformance-docs"
+CI_IF_PUSH_GRADED_JOIN_CANONICAL="if:\${{!cancelled()&&needs.changes.outputs.push_graded!='true'}}"
 
 _posts_nothing() {
   # `[[:space:]]+`, NOT `*`: a YAML permissions entry is always `checks: write`, and the zero-space
@@ -1043,13 +1071,7 @@ selftest() {
     # required status context (it is adjudicated through the `conformance` aggregator's `needs:`),
     # so REQUIRED-CHECKS.md neither declares it nor should. The lock pins the exact SHAPE, so
     # REMOVING the clause reds too — not only adding a forbidden one.
-    for _ctx in $CI_IF_PUSH_GRADED_ONLY; do
-      _has_job_key "$CI_WF" "$_ctx" || {
-        echo "FAIL: $CI_WF has no job keyed exactly '$_ctx' — the always-run doc job is where every doc-sensitive check now lives, and a renamed key leaves this lock pointed at nothing while the docs-only and push-graded skips keep standing on it"; st=1; continue; }
-      _cif=$(_job_if_canon "$CI_WF" "$_ctx")
-      [ "$_cif" = "$CI_IF_PUSH_GRADED_CANONICAL" ] || {
-        echo "FAIL: $CI_WF's $_ctx job-level \`if:\` is '$_cif', not exactly \`if: needs.changes.outputs.push_graded != 'true'\`. That is the ONE clause it may carry: the push-graded skip is sound because the graded PR's own run ran this very job. THE DOCS-ONLY CLAUSE IS FORBIDDEN HERE — on a docs-only PR this job is the only one grading the change (every check that can read a .md was moved into it), so skipping it there would leave that lane graded by nothing and would falsify the push-graded induction's premise. Removing the \`if:\` entirely reds too: the job would re-run on every push over a tree the PR already graded"; st=1; }
-    done
+    _pg_docs_lock "$CI_WF" || st=1
     # BOTH DRIFT DIRECTIONS between the table and REQUIRED-CHECKS.md — the reason this is a table and
     # not six hardcoded greps. Without these, a context added to the declaration would be silently
     # unconditioned, and a name that stopped being required would keep a lock pointed at nothing.
@@ -1246,6 +1268,49 @@ selftest() {
   printf 'jobs:\n  conformance-docs:\n    steps:\n      - run: echo x\n        if: needs.changes.outputs.push_graded != %strue%s\n' "'" "'" > "$_mx/pg-steplevel.yml"
   [ "$(_job_if_canon "$_mx/pg-steplevel.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
     && { echo "FAIL: mutant PG-4 — a STEP-level if: must NOT read as the job-level push-graded guard"; st=1; }
+
+  # ── mutants for the DOCS LEGS and JOIN (SWAS-409, CI-SHAPING S4) ─────────────────────────────────────────────────────
+  # `conformance-docs` is a join over `conformance-docs-1..n`. The legs carry the one push-graded clause (never the docs-only clause); the join carries
+  # it behind `!cancelled()`. _pg_docs_lock must be green on the sound fixture and red, NAMING the job, on each of: the docs-only clause on a leg, a
+  # leg with no `if:`, a join with no `!cancelled()`, a join carrying the docs-only clause, and a file with no docs legs at all.
+  _pg_q="'"
+  _pg_leg() {  # <leg> <if-clause-or-empty>
+    printf '  %s:\n    needs: changes\n' "$1"
+    [ -z "$2" ] || printf '    if: %s   # not a required check -> a job-level skip is safe\n' "$2"
+    printf '    steps:\n      - run: echo x\n'
+  }
+  _pg_join() {  # <if-clause>
+    printf '  conformance-docs:\n    needs:\n      - changes\n      - conformance-docs-1\n      - conformance-docs-2\n    if: %s\n    steps:\n      - run: echo x\n' "$1"
+  }
+  _pg_pgc="needs.changes.outputs.push_graded != ${_pg_q}true${_pg_q}"
+  _pg_doc="needs.changes.outputs.docs_only != ${_pg_q}true${_pg_q} && $_pg_pgc"
+  _pg_jif="\${{ !cancelled() && $_pg_pgc }}"
+  _pg_try() {  # <name> <want: ok|a job name> <file> -> the lock's verdict on a fixture
+    if _pg_o=$(_pg_docs_lock "$3" 2>&1); then _pg_rc=0; else _pg_rc=1; fi
+    if [ "$2" = ok ]; then
+      if [ "$_pg_rc" = 0 ]; then echo "PASS: mutant $1 — the sound docs legs-and-join fixture passes _pg_docs_lock"
+      else echo "FAIL: mutant $1 — the sound docs legs-and-join fixture must pass _pg_docs_lock: $_pg_o"; st=1; fi
+    elif [ "$_pg_rc" = 1 ] && case "$_pg_o" in *"$2"*) true ;; *) false ;; esac; then
+      echo "PASS: mutant $1 — _pg_docs_lock reds, naming '$2'"
+    else echo "FAIL: mutant $1 — _pg_docs_lock must red naming $2 (rc=$_pg_rc): $_pg_o"; st=1; fi
+  }
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_pgc"; _pg_join "$_pg_jif"; } > "$_mx/pgl-ok.yml"
+  _pg_try PGL-0 ok "$_mx/pgl-ok.yml"
+  # PGL-1 (load-bearing): the docs-only clause on LEG 2 — the doc-sensitive checks would stop running on the one lane where nothing else grades a `.md`.
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_doc"; _pg_join "$_pg_jif"; } > "$_mx/pgl-1.yml"
+  _pg_try PGL-1 conformance-docs-2 "$_mx/pgl-1.yml"
+  # PGL-2: a leg whose `if:` was removed — it would re-run on every push over a tree the PR already graded.
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 ""; _pg_join "$_pg_jif"; } > "$_mx/pgl-2.yml"
+  _pg_try PGL-2 conformance-docs-2 "$_mx/pgl-2.yml"
+  # PGL-3: the join without `!cancelled()` — a failed leg would SKIP the join, and its explicit per-leg result check would never run (Q5).
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_pgc"; _pg_join "$_pg_pgc"; } > "$_mx/pgl-3.yml"
+  _pg_try PGL-3 "!cancelled()" "$_mx/pgl-3.yml"
+  # PGL-4: the join carrying the docs-only clause (behind `!cancelled()`).
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_pgc"; _pg_join "\${{ !cancelled() && $_pg_doc }}"; } > "$_mx/pgl-4.yml"
+  _pg_try PGL-4 "conformance-docs job-level" "$_mx/pgl-4.yml"
+  # PGL-5: no `conformance-docs-<n>` leg at all (the legs renamed or deleted).
+  { printf 'jobs:\n'; _pg_leg conformance-docs-v2 "$_pg_pgc"; _pg_join "$_pg_jif"; } > "$_mx/pgl-5.yml"
+  _pg_try PGL-5 "no job keyed conformance-docs-<n>" "$_mx/pgl-5.yml"
 
   # ── mutants for the RENDERING anchors (RATIFICATION-WAITING-IS-GREEN, 2026-08-28; rebuilt after
   # review round 1, finding 3 — see the note above the helpers). The CLEAN fixture is the obedient

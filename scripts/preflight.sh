@@ -11,6 +11,7 @@
 set -eu
 
 miss=0; rec=0
+bfail=0; bunv=0   # SWAS-355: bfail = an UNDECLARED opt-out or a malformed declaration (moves the exit); bunv = a boundary line that could not be judged
 # RULE 3 THROUGHOUT THIS FILE (see the K11 refusal block, "THE THREE OUTPUT RULES"): `printf '%s\n'`,
 # never `echo`, for any line carrying a VARIABLE. dash's builtin echo expands backslash escapes and dash
 # IS /bin/sh on the ubuntu-latest runner, so a `\n` inside an interpolated value forges a whole extra
@@ -120,9 +121,9 @@ check_git_capability() {  # advisory: does the installed git support `merge-tree
 }
 
 # --- the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX) -------------------------------------
-# The strict profile (opt-in) turns on Claude Code's OS sandbox, which keeps the enforcement
-# layer read-only to the agent's shell. With `failIfUnavailable:false` (by design) a machine where it
-# cannot start runs the session UNSANDBOXED, so this reports that loudly. WARN-only: it never sets `miss`.
+# Claude Code's OS sandbox (shipped on) keeps the enforcement layer read-only to the agent's shell.
+# With `failIfUnavailable:false` (by design) a machine where it cannot start runs the session
+# UNSANDBOXED, so this reports that loudly. WARN-only: it never sets `miss`.
 # FLAG-NOT-ENV, like the git seam above: the PREFLIGHT_SANDBOX_* seams are honored only under a seam flag.
 # SANDBOX_REASON is set (not printed) so the selftest can assert it without parsing output.
 sandbox_unavailable_reason() {  # prints a reason and returns 1 when the sandbox cannot start; 0 if it can
@@ -155,14 +156,13 @@ sandbox_enabled_in() {  # <settings file> -> prints true, false or unset (the fi
   jq -r '.sandbox | if type == "object" and has("enabled") then (if .enabled == true then "true" else "false" end) else "unset" end' "$1" 2>/dev/null || echo unset
 }
 
-# The profile line (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN). The shipped .claude/settings.json carries NO sandbox
-# key (so a developer's own user-level setting is not overridden); the strict profile is the template
-# templates/sandbox-strict.settings.local.json merged into .claude/settings.local.json. Claude Code takes
+# The profile line. The shipped .claude/settings.json carries the sandbox block, so the default is ON; off means
+# turned off in a scope, or no block. Claude Code takes
 # scalars from the highest-precedence scope that sets them: managed > local > project > user. So the EFFECTIVE
 # enabled is the first of those files (in that order) that sets sandbox.enabled; none sets it = off. The managed
 # file is read where readable (macOS /Library/Application Support/ClaudeCode/managed-settings.json, Linux
-# /etc/claude-code/managed-settings.json). The "cannot start here" warn is shown only under strict: with the
-# sandbox off there is nothing to start. Informational: never sets `miss`.
+# /etc/claude-code/managed-settings.json). The "cannot start here" warn shows whenever enabled resolves true:
+# with the sandbox off there is nothing to start. Informational: never sets `miss`.
 check_sandbox() {
   _sfile=".claude/settings.json"; _sloc=".claude/settings.local.json"; _suser="${HOME:-}/.claude/settings.json"
   case "$(uname -s 2>/dev/null)" in
@@ -180,19 +180,716 @@ check_sandbox() {
     if [ "$_sen" != unset ]; then _seff=$_sen; break; fi
   done
   if [ "$_seff" != true ]; then
-    echo "  ok   agent OS sandbox: off (default). The strict profile is available: templates/sandbox-strict.settings.local.json"
+    echo "  ok   agent OS sandbox: off (the shipped default is on; here it is turned off in a settings scope or the settings carry no sandbox block; to restore it, remove the override; to keep it off, declare the opt-out in .kit/boundary-optout.conf)"
     return 0
   fi
-  echo "  ok   agent OS sandbox: strict (the guard files are read-only to the shell; an update that changes them is one terminal git command)"
+  echo "  ok   agent OS sandbox: on (the guard files are read-only to the shell; an update that changes them is one terminal git command)"
   if _sreason=$(sandbox_unavailable_reason); then
     echo "  ok   agent OS sandbox can start here"
   else
     printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
-    echo "       The strict profile is configured but Claude Code will run WITHOUT the sandbox: the guard still runs,"
+    echo "       The sandbox is configured but Claude Code will run WITHOUT it: the guard still runs,"
     echo "       but the guard files (.claude/, hooks/, .kit/, .git/hooks, .git/config) are not read-only to the shell."
     echo "       Fix: install the missing piece (Linux/WSL2: bubblewrap and socat), or accept the reduced"
     echo "       protection. See docs/operations/runtime-guards.md, section \"Below the text layer: the strict profile (opt-in)\"."
     rec=1
+  fi
+}
+
+# --- the agent boundary, read from the settings (SWAS-354, slice 352b; design 2026-10-23-agent-boundary-on-by-default, section 6.1) ---------
+# Names the three states the day-one default is about: read-deny, write-protect and egress. KEYS ONLY: each scope is read through one jq filter
+# that returns booleans (is the key present, does the list hold this one name); no value, no other key, no env block is stored or printed (a user
+# settings file can hold tokens; the selftest plants one and fails if it appears). Scopes, in Claude Code's precedence: managed > local > project
+# > user. `enabled` is a scalar (the first scope that sets it decides, and only when no higher scope was unreadable); the lists concatenate (any
+# readable scope that holds the name counts). `strictAllowlist` counts ONLY from managed or user scope: Claude Code ignores it in a repo file
+# (doc fact 3), so the line says so instead of reading a repo copy as enforced (Q14). The user scope is read-denied to the agent's own shell by
+# design (S-2): unreadable there, or the in-session marker SANDBOX_RUNTIME set (measured, owner runs 1-3), reads UNVERIFIED, never ON and never
+# NOT ENFORCED. The marker can only LOSE information if spoofed. A static read is a declaration, not a proof: the line is labelled [static].
+# It never sets `miss` or `rec`. SWAS-355 (355a): ONE state moves the exit, through its own accumulator `bfail`: an opt-out with no matching entry in
+# .kit/boundary-optout.conf on origin's default branch (`and UNDECLARED`), or a malformed declaration. A declared opt-out is loud and does not fail.
+# Under CI (CI or GITHUB_ACTIONS set) only the committed project block is read and the line says so: [declared], never [static]. FLAG-NOT-ENV, like
+# check_sandbox: the PREFLIGHT_SANDBOX_* and PREFLIGHT_BOUNDARY_OPTOUT seams are honoured only under a seam flag.
+boundary_read_scope() {  # <file> -> "absent", "unreadable", or one JSON line of booleans and the enabled word (never a value)
+  [ -e "$1" ] || [ -L "$1" ] || { echo absent; return 0; }
+  # A scope that is not a regular file (a FIFO, a symlink to /dev/zero) is unreadable and is never opened: `tr < file` on it would hang the run.
+  [ -f "$1" ] || { echo unreadable; return 0; }   # MUT-ISFILE
+  # jq is laxer than JSON.parse (Claude Code's parser): a BOM, nan / NaN / Infinity and the numbers 01, .5, +1 read here but make the file unparseable
+  # there, so such a file is UNVERIFIED, never read as ON (the same test as guard-wired.sh `_gw_bd_strict`).
+  # A byte below 0x20 other than tab, LF and CR (a NUL) is refused first: BSD awk truncates a record at NUL, which would hide the rest from the token test.
+  [ "$(LC_ALL=C tr -d '\011\012\015\040-\377' < "$1" 2>/dev/null | wc -c | tr -d ' ')" = 0 ] || { echo unreadable; return 0; }
+  [ "$(head -c 3 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" != efbbbf ] || { echo unreadable; return 0; }
+  awk '{ gsub(/\r/, " "); gsub(/"([^"\\]|\\.)*"/, ""); gsub(/[][{},:]/, " ")
+         for (i = 1; i <= NF; i++) { t = $i
+           if (t == "true" || t == "false" || t == "null") continue
+           if (t ~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) continue
+           bad = 1 } }
+       END { exit bad }' "$1" 2>/dev/null || { echo unreadable; return 0; }
+  # Captured, never streamed: a jq that prints a value and then fails on trailing bytes (some Linux builds, on a NUL) would otherwise leave a JSON line
+  # AND "unreadable" on stdout, and the caller's second jq would abort the whole run under set -e.
+  _brs=$(jq -c '{
+      e: (try (.sandbox.enabled | if . == true then "true" elif . == false then "false" else "unset" end) catch "unset"),
+      rt: (try (any(.sandbox.filesystem.denyRead[]?; . == "**/.env")) catch false),
+      rh: (try (any(.sandbox.filesystem.denyRead[]?; . == "~/.ssh")) catch false),
+      wp: (try (any(.sandbox.filesystem.denyWrite[]?; . == "./.claude")) catch false),
+      wu: (try (any(.sandbox.filesystem.denyWrite[]?; . == "~/.claude/settings.json")) catch false),
+      st: (try (.sandbox.network.strictAllowlist == true) catch false),
+      wf: (try (any(.permissions.deny[]?; . == "WebFetch")) catch false),
+      ax: (try (.sandbox.filesystem | if type == "object" and has("allowRead") then (.allowRead | if type == "array" then any(.[]; . != "**/.env.example" and . != "**/.env.sample") else true end) else false end) catch false),
+      au: (try (.sandbox.allowUnsandboxedCommands | (. != null and . != false)) catch false)
+    }' "$1" 2>/dev/null) || { echo unreadable; return 0; }
+  # Exactly ONE non-empty line: `jq -c` prints one line per JSON document (rc 0), so a two-document file would be read as its first document, and an empty or
+  # whitespace-only file prints nothing. Claude Code rejects both, so both are unreadable.
+  case "$_brs" in   # MUT-ONEDOC
+    ''|*"$_bd_nl"*) echo unreadable; return 0 ;;
+  esac
+  printf '%s\n' "$_brs"
+}
+
+# --- SWAS-355 (355a): the opt-out declaration, .kit/boundary-optout.conf, read from ORIGIN'S DEFAULT BRANCH (D-241023-2 item 4; design 2026-10-25-352c) ---
+# Never the working tree: an uncommitted agent edit declares nothing. Sets BD_STATE (absent | ok | malformed | unreadable | untrusted: an integrity refusal, D-241026-2, which fails like UNDECLARED), BD_REMEDY, BD_WHY (the reason; for a malformed
+# file "line <n>: <rule>", never the text) and BD_RECS (one "<part> <since> <lost>" line per record). A malformed file declares NOTHING (fail closed).
+# KEEP boundary_rel_blob IN STEP with scripts/doctor.sh _fg_rel_blob and scripts/promotion-verify.sh pv_rel_blob; a selftest cell asserts the load-bearing lines.
+BD_STATE=""; BD_WHY=""; BD_RECS=""; _bcs=""; _bcl=""
+_bd_nl='
+'
+boundary_rel_blob() {  # <tip> <path>: the blob (regular files only); rc 0 printed | 1 absent | 2 present but not a regular file
+  _bb_ent=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | head -1 || true)
+  if [ -z "$_bb_ent" ]; then
+    case "$2" in
+      */*)
+        _bb_d=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "${2%%/*}" 2>/dev/null | head -1 || true)
+        if [ -n "$_bb_d" ] && [ "${_bb_d%% *}" != 040000 ]; then return 2; fi ;;
+    esac
+    return 1
+  fi
+  case "${_bb_ent%% *}" in
+    100644|100755) ;;
+    *) return 2 ;;
+  esac
+  _bb_o=${_bb_ent#* }; _bb_o=${_bb_o#* }; _bb_o=${_bb_o%%"$(printf '\t')"*}
+  GIT_NO_REPLACE_OBJECTS=1 git cat-file blob "$_bb_o" 2>/dev/null
+}
+_bo_ssh='ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes'   # MUT-STRICTHOST. S4: an ssh remote that stalls after connecting is cut off in about 10 s; S8: a changed or unknown host key is refused, never accepted silently
+# D-241026-2: the ONE place that classifies a refusal. UNTRUSTED = an integrity refusal (the origin read would come from a repository this directory does not
+# own, or would run a configured program): from a human terminal it FAILs like UNDECLARED. UNVERIFIED = could not be read (network, an unfetched tip, ...): gates like UNDECLARED
+# from a terminal only while a part is OFF (S20); with every part ON it never gates. --boundary-offline (typed) turns that FAIL into a WARN (and doctor reads UNVERIFIED).
+# Move a reason between the two with a one-line change here.
+boundary_refusal_class() {  # <reason key> -> UNTRUSTED | UNVERIFIED
+  case "$1" in
+    url-differs|env-redirect|git-dir-outside|uploadpack|local-origin|helper-origin|no-origin|fetch-refspec|tip-object-missing) echo UNTRUSTED ;;   # MUT-CLASS
+    *) echo UNVERIFIED ;;
+  esac
+}
+boundary_refuse() {  # <reason key> <why> [remedy]: sets BD_WHY and BD_REMEDY; rc 4 for an UNTRUSTED reason, rc 3 for an UNVERIFIED one
+  BD_WHY=$2; BD_REMEDY=${3:-}; BD_CAUSE=$1
+  [ "$(boundary_refusal_class "$1")" = UNTRUSTED ] || return 3
+  return 4
+}
+# A git directory outside the tree is trusted only for a linked worktree whose back-links agree and whose main repository vouches for it (never a bare pointer):
+#   .git is a regular file naming <common>/worktrees/<name>, whose `gitdir` file names THIS directory's .git; <common> is a real <root>/.git of a repository that owns
+#   itself; and `git worktree list` run on <common> names this directory. The origin is then read from <common>'s config.
+# Anything else (a symlinked .git, a submodule, a pointer with no back-link, a forged pointer) is not trusted. Still forgeable, stated plainly: an agent that writes .git
+# internals can write the admin entry too, or run `git remote set-url` to a forged forge; that is the drift-control residual, not a boundary.
+boundary_gitdir_trusted() {  # <dir> -> 0 iff the git dir is inside the tree, or a linked worktree git's own records vouch for; sets _gt_common (the common dir) for a worktree, _gt_kind=submodule for a submodule
+  _gt_common=""; _gt_kind=""
+  git_dir_outside "$1" || return 0
+  { [ -f "$1/.git" ] && [ ! -L "$1/.git" ]; } || return 1
+  _gt_l=$(head -1 "$1/.git" 2>/dev/null) || return 1
+  case "$_gt_l" in "gitdir: "?*) ;; *) return 1 ;; esac
+  _gt_g=${_gt_l#gitdir: }; case "$_gt_g" in /*) ;; *) _gt_g=$1/$_gt_g ;; esac
+  _gt_gp=$(CDPATH='' cd "$_gt_g" 2>/dev/null && pwd -P) || return 1
+  _gt_me=$(CDPATH='' cd "$1" 2>/dev/null && pwd -P) || return 1
+  case "$_gt_gp" in
+    */worktrees/?*)
+      [ -f "$_gt_gp/gitdir" ] || return 1
+      _gt_b=$(head -1 "$_gt_gp/gitdir" 2>/dev/null) || return 1
+      case "$_gt_b" in /*) ;; *) _gt_b=$_gt_gp/$_gt_b ;; esac
+      [ "${_gt_b##*/}" = .git ] || return 1
+      _gt_bp=$(CDPATH='' cd "${_gt_b%/*}" 2>/dev/null && pwd -P) || return 1
+      [ "$_gt_bp" = "$_gt_me" ] || return 1   # MUT-BACKLINK
+      # The back-link is a file an agent can write too, so it is not enough alone: the common dir must be a real <root>/.git of a repository that owns itself, with no
+      # redirect variable, and ITS OWN `git worktree list` must name this directory. The origin is then read from that common dir's config (the caller compares it).
+      # I2: a BARE common dir (`git clone --bare` + `git worktree add`, or the `.bare` layout) is trusted when git itself says core.bare is true.
+      _gt_cd=${_gt_gp%/worktrees/*}
+      { [ -d "$_gt_cd" ] && [ ! -L "$_gt_cd" ]; } || return 1
+      ! git_env_redirected || return 1
+      case "$_gt_cd" in
+        */.git)
+          _gt_main=${_gt_cd%/.git}
+          [ "$(owning_repo_root "$_gt_main")" = "$_gt_main" ] || return 1 ;;   # belt: no coded mutant, a hand-made main repository cannot be built to fail only this
+        *)
+          [ "$(git --git-dir="$_gt_cd" config --bool core.bare 2>/dev/null)" = true ] || return 1 ;;   # MUT-BARE
+      esac
+      _gt_hit=$(git --git-dir="$_gt_cd" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r _gt_w; do
+        _gt_wp=$(CDPATH='' cd "$_gt_w" 2>/dev/null && pwd -P) || continue
+        if [ "$_gt_wp" = "$_gt_me" ]; then echo y; break; fi
+      done)
+      [ "$_gt_hit" = y ] || return 1   # belt: no coded mutant, a real admin entry is always listed and a half-made one is rejected by git first
+      _gt_common=$_gt_cd
+      return 0 ;;
+    */.git/modules/?*)
+      # A submodule's gitdir, its core.worktree and the superproject's .gitmodules are all files an agent can write, so a submodule binds to nothing it cannot forge:
+      # it is NOT trusted (a person runs preflight from the superproject).
+      _gt_kind=submodule
+      return 1 ;;
+  esac
+  return 1
+}
+boundary_refuse_gitdir() {  # the refusal for a git dir outside the tree that boundary_gitdir_trusted did not vouch for
+  if [ "$_gt_kind" = submodule ]; then
+    boundary_refuse git-dir-outside "the git directory is outside this tree (a submodule checkout, whose gitdir and .gitmodules entry an agent can write), so origin is not this project's" "run preflight from the superproject"
+  else
+    boundary_refuse git-dir-outside "the git directory is outside this tree and git's own records do not vouch for it (a symlinked .git, or a .git pointer with no matching linked-worktree entry), so origin is not this project's" "run it from the repository's own main worktree or a real 'git worktree add' checkout"
+  fi
+}
+boundary_url_host() {  # <url> -> its lower-case host (empty for a path)
+  case "$1" in
+    # S23: the authority ends at the FIRST of / ? # (so `https://evil.example#@good.example/` is host evil.example); an IPv6 `[` host keeps its `[` and the remedy counts it as a change
+    *://*) _bh=${1#*://}; _bh=${_bh%%/*}; _bh=${_bh%%\?*}; _bh=${_bh%%#*}; _bh=${_bh##*@}; _bh=${_bh%%:*} ;;
+    *:*) _bh=${1%%:*}; _bh=${_bh##*@} ;;
+    *) _bh="" ;;
+  esac
+  printf '%s' "$_bh" | tr 'A-Z' 'a-z'
+}
+boundary_url_path() {  # <url> -> its path with the leading / or : and a trailing / and .git stripped (empty for a path-less value)
+  case "$1" in
+    *://*)
+      _bp=${1#*://}
+      case "$_bp" in
+        */*) _bp=${_bp#*/} ;;
+        *) _bp="" ;;
+      esac ;;
+    *:*) _bp=${1#*:} ;;
+    *) _bp="" ;;
+  esac
+  _bp=${_bp#/}; _bp=${_bp%/}; _bp=${_bp%.git}
+  printf '%s' "$_bp"
+}
+# The remedy for a rewritten origin. It never tells the user to adopt a URL on another HOST, and it prints a set-url command only for a plain, safe URL (so no
+# attacker text reaches a copy-pasted shell). The rule and its file are named; they are printed as data, never inside a command.
+boundary_rewrite_remedy() {  # <stored url> <effective url> -> the remedy text
+  _rw_tab=$(printf '\t')
+  _rw_rule=$(git config --show-origin --get-regexp '^url\..*\.insteadof$' 2>/dev/null | while IFS= read -r _rw_l; do
+    _rw_r=${_rw_l#*"$_rw_tab"}; _rw_v=${_rw_r#* }
+    if [ "${1#"$_rw_v"}" != "$1" ]; then printf '%s in %s' "${_rw_r%% *}" "${_rw_l%%"$_rw_tab"*}" | tr -cd '[:print:]'; break; fi
+  done)
+  _rw_m=""; [ -z "$_rw_rule" ] || _rw_m="; matched: $(boundary_url_show "$_rw_rule")"
+  _rw_t="origin is rewritten by a url.<...>.insteadOf rule (git config --show-origin --get-regexp '^url\\.' shows where$_rw_m)"
+  _rw_h1=$(boundary_url_host "$1"); _rw_h2=$(boundary_url_host "$2")
+  case "$_rw_h1$_rw_h2" in   # an IPv6 host is never judged equal
+    *'['*) _rw_h2="[$_rw_h2" ;;
+  esac
+  if [ "$_rw_h1" != "$_rw_h2" ]; then
+    printf '%s' "$_rw_t; the rewrite changes the HOST: do NOT adopt it unless you know it; remove that rule"; return 0
+  fi
+  # S21: set-url is offered ONLY for a pure transport swap (same host, same repository path); any other rewrite changes the REPOSITORY.
+  if [ "$(boundary_url_path "$1")" != "$(boundary_url_path "$2")" ]; then   # MUT-REPO
+    printf '%s' "$_rw_t; the rewrite changes the REPOSITORY: do NOT adopt it; remove that rule"; return 0
+  fi
+  _bu_s=$(boundary_url_show "$2")
+  if [ "$_bu_s" != "$2" ] && printf '%s' "$2" | tr -cd '[:print:]' | grep -Eq '@'; then   # userinfo present: it never reaches a command
+    printf "%s; remove that rule, or if the rewrite is your own SSH preference, confirm the effective URL is your forge and then run: git remote set-url origin '<your forge URL>'" "$_rw_t"
+  elif [ "$_bu_s" = "$2" ] && printf '%s' "$_bu_s" | grep -Eq '^(https://|ssh://|git@)[A-Za-z0-9._~:/@%+-]+$'; then   # MUT-URLSAFE
+    printf "%s; remove that rule, or if the rewrite is your own SSH preference, confirm the effective URL is your forge and then run: git remote set-url origin '%s'" "$_rw_t" "$_bu_s"
+  else
+    printf '%s' "$_rw_t; remove that rule (no safe set-url command is offered for this URL)"
+  fi
+}
+boundary_url_show() {  # <url or text holding one>: THE one redaction every printed URL goes through. Printable bytes only; any userinfo becomes ***, except exactly `git` with no password and a single @ in the authority; an scp-like user:secret@host too
+  _bs_mk=$(printf '\001'); _bs_m2=$(printf '\002')
+  # S22: an scp-like `user@host:path` redacts the user unless it is exactly `git` (a token pasted as the user would otherwise print)
+  # m2: a git config rule name starts `url.`; that prefix is the rule's NAME and stays readable, only the URL part after it is redacted
+  _bs_pre=""; _bs_in=$1
+  case "$1" in
+    url.*) _bs_pre=url.; _bs_in=${1#url.} ;;
+  esac
+  printf '%s' "$_bs_pre"
+  printf '%s' "$_bs_in" | tr -cd '[:print:]' | sed -e "s#://git@\([^/@]*\)/#://${_bs_mk}\1/#" -e "s#://git@\([^/@]*\)\$#://${_bs_mk}\1#" -e "s#^git@\([^@]*\)\$#${_bs_m2}\1#" -e 's#\(://\)[^/]*@#\1***@#g' -e 's#^[^/@]*:[^/@]*@#***@#' -e 's#^[^/@:][^/@:]*@#***@#' -e "s#://${_bs_mk}#://git@#" -e "s#^${_bs_m2}#git@#"   # MUT-REDACT
+}
+_bo_nonforge='origin must be a network forge URL (https or ssh); this check can'"'"'t verify a local or unrecognised origin'
+boundary_origin_fetch() {  # <outfile>: rc 0 written | 1 absent | 2 not a regular file | 3 unreadable (BD_WHY says why) | 4 UNTRUSTED (BD_WHY, BD_REMEDY). Two ls-remote calls, no fetch.
+  BD_REMEDY=""; BD_MOVED=""; _gt_common=""; _gt_kind=""; _bo_retry=0  # _bo_retry=1 marks a failure worth ONE automatic retry (a network blip), never an integrity or structural refusal
+  # A redirected git environment or a nested tree would read a repository this directory does not own: preflight refuses both, but only a few lines after this call.
+  if git_env_redirected; then boundary_refuse git-env "the git environment is redirected (GIT_DIR or GIT_WORK_TREE), so origin is not this project's"; return $?; fi
+  owns_itself "$PWD" || { boundary_refuse not-own-root "this directory is not the root of its own git repository, so origin is not this project's"; return $?; }
+  # S10: a worktree, a submodule or a symlinked .git keeps its git dir outside this tree, so its origin is not this project's (preflight's own refusal is the same test).
+  # A linked worktree or a submodule whose back-links agree is trusted (boundary_gitdir_trusted); a symlinked .git or a pointer with no back-link is not.
+  if ! boundary_gitdir_trusted "$PWD"; then boundary_refuse_gitdir; return $?; fi   # MUT-GITDIR
+  # S1: a git environment redirected by variable, or an effective origin URL that is not the one this repository stores, reads a repository this directory does not
+  # own (url.*.insteadOf from the global or system config, include / includeIf). The declaration then reads UNVERIFIED and no remote is contacted.
+  for _bo_v in GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_EXEC_PATH; do
+    eval "_bo_set=\${$_bo_v+x}"
+    if [ -n "$_bo_set" ]; then boundary_refuse env-redirect "the git environment is redirected ($_bo_v is set), so origin is not this project's" "unset $_bo_v (only its name is printed, never its value)"; return $?; fi   # MUT-ENVSET
+  done
+  _bo_eff=$(git remote get-url origin 2>/dev/null) || { boundary_refuse no-origin "no origin remote" "add your forge as origin: git remote add origin '<your forge URL>'"; return $?; }
+  _bo_loc=$(git config --local --get remote.origin.url 2>/dev/null) || _bo_loc=""
+  if [ -z "$_bo_loc" ] || [ "$_bo_eff" != "$_bo_loc" ]; then boundary_refuse url-differs "the effective origin URL differs from this repository's own remote.origin.url (url.*.insteadOf or an include), so origin is not this project's" "$(boundary_rewrite_remedy "$_bo_loc" "$_bo_eff")"; return $?; fi   # MUT-URLDIFF
+  if [ -n "$_gt_common" ]; then   # a linked worktree: the origin is the common dir's own, not a per-worktree override
+    _bo_cc=$(git config -f "$_gt_common/config" --get remote.origin.url 2>/dev/null) || _bo_cc=""
+    if [ "$_bo_cc" != "$_bo_loc" ]; then boundary_refuse url-differs "the origin URL of this worktree is not the one its main repository stores, so origin is not this project's" "run it from the repository's own main worktree"; return $?; fi
+  fi
+  # S8: an effective origin that is a local path or file:// is a directory the agent can write, not a remote (the selftest's local bare repositories are allowed only under a seam flag).
+  # S13: default-deny. Only ssh://, git+ssh://, https://, http://, git:// and scp-like [user@]host:path (no slash in the host part, no "::") are remotes; a "::" form
+  # (a remote helper such as ext::) or any other scheme is refused before ls-remote can run it.
+  _bo_lp=0; _bo_hx=0
+  case "$_bo_eff" in
+    *::*) _bo_hx=1 ;;
+    ssh://*|git+ssh://*|https://*|http://*|git://*) ;;
+    file:*|/*|.*|'~'*) _bo_lp=1 ;;
+    *://*) _bo_hx=1 ;;
+    *:*) case "${_bo_eff%%:*}" in */*) _bo_lp=1 ;; esac ;;
+    *) _bo_lp=1 ;;
+  esac
+  if [ "$_bo_hx" -eq 1 ]; then boundary_refuse helper-origin "the effective origin is a remote-helper or unrecognised URL form, so it is not a remote this declaration can be trusted from" "$_bo_nonforge"; return $?; fi   # MUT-HELPER
+  if [ "$_bo_lp" -eq 1 ] && { [ "${SEAMS:-0}" -eq 0 ] || [ -n "${PREFLIGHT_BOUNDARY_REFUSE_LOCAL:-}" ]; }; then boundary_refuse local-origin "the effective origin is a local path or a file:// URL, so it is not a remote this declaration can be trusted from" "$_bo_nonforge"; return $?; fi   # MUT-LOCALPATH
+  # S8: a configured upload-pack or helper program runs whatever the config names in place of git's own transport, in any scope.
+  _bo_key=""; git config --get remote.origin.uploadpack >/dev/null 2>&1 && _bo_key=remote.origin.uploadpack; [ -n "$_bo_key" ] || { git config --get remote.origin.vcs >/dev/null 2>&1 && _bo_key=remote.origin.vcs; }
+  if [ -n "$_bo_key" ]; then boundary_refuse uploadpack "remote.origin.uploadpack or remote.origin.vcs is set, so the origin read would run a configured program" "git config --unset $_bo_key (in whichever scope sets it: local, global or system)"; return $?; fi   # MUT-UPLOADPACK
+  # S13 belt: no ext:: helper, and (outside the selftest's seam, whose fixtures are local bare repositories) no file transport.
+  _bo_belt='-c protocol.ext.allow=never'; [ "${SEAMS:-0}" -eq 0 ] && _bo_belt="$_bo_belt -c protocol.file.allow=never"   # MUT-BELT
+  _bo_hd=$(env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$_bo_ssh" git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 $_bo_belt ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)
+  case "$_bo_hd" in
+    refs/heads/?*) ;;
+    *) _bo_hd=refs/heads/main ;;
+  esac
+  case "$_bo_hd" in
+    *[!A-Za-z0-9._/-]*) _bo_hd=refs/heads/main ;;
+  esac
+  _bo_tip=$(env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$_bo_ssh" git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 $_bo_belt ls-remote origin "$_bo_hd" 2>/dev/null | awk -v r="$_bo_hd" '$2 == r { s = $1; n++ } END { if (n == 1) print s }' || true)
+  case "$_bo_tip" in
+    ''|*[!0-9a-f]*) BD_WHY="origin's default branch could not be read (offline, or no access)"; BD_CAUSE=net; _bo_retry=1; return 3 ;;
+  esac
+  if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${_bo_tip}^{commit}" 2>/dev/null; then
+    boundary_tip_unfetched "$_bo_hd" "$_bo_tip" || return $?   # MUT-TIPCALL
+  fi
+  # S4: at most 4097 bytes are read, so a blob over the 4 KiB cap is still detectable (the parser refuses it) and nothing larger is pulled into the scratch file.
+  # M3: the caller's scratch directory is private (mktemp -d), so the side file for the pipeline's rc is not a predictable sibling in a shared TMPDIR.
+  _bo_rcf=${1%/*}/rc; rm -f "$_bo_rcf"
+  { boundary_rel_blob "$_bo_tip" .kit/boundary-optout.conf; echo "$?" > "$_bo_rcf"; } | head -c 4097 > "$1"   # MUT-WTREAD
+  _bo_rc=$(cat "$_bo_rcf" 2>/dev/null) || _bo_rc=3; rm -f "$_bo_rcf"
+  if [ "$(wc -c < "$1" | tr -d ' ')" -gt 4096 ]; then return 0; fi   # MUT-HEADCAP: over the cap: the parser says so
+  case "$_bo_rc" in
+    0|1|2) return "$_bo_rc" ;;
+  esac
+  BD_WHY="the declaration blob could not be read"; BD_CAUSE=net; _bo_retry=1; return 3
+}
+# The ONE place that handles an origin default-branch tip that is not fetched here (it advanced since the last fetch). A retry cannot help, so none is made.
+# Owner ruling "Let's go with your recommendation on three" (D-241026-2): the declaration is then read from the LOCAL remote-tracking ref refs/remotes/origin/<default>
+# (the last fetch) with the same checks, and the line says "origin has moved". Only when NO such ref exists is it UNVERIFIED (remedy: a fetch). A fetch refspec that does
+# not fetch the default branch into that ref is UNTRUSTED. <default ref>: sets _bo_tip (the local commit) and BD_MOVED (its date) and returns 0, or returns 3 / 4.
+boundary_tip_unfetched() {  # <refs/heads/X>
+  _bt_br=${1#refs/heads/}
+  _bt_ok=0; _bt_neg=0
+  _bt_spec=$(git config --get-all remote.origin.fetch 2>/dev/null) || _bt_spec=""
+  _bt_ifs=$IFS; IFS=$_bd_nl; set -f
+  for _bt_s in $_bt_spec; do
+    case "$_bt_s" in
+      '^'*)   # S31: a negative refspec excludes only if it matches the default branch (the pattern is a glob; set -f is on, case still matches it)
+        _bt_p=${_bt_s#^}
+        # shellcheck disable=SC2254  # deliberate: the refspec pattern is a glob and must match as one
+        case "refs/heads/$_bt_br" in
+          $_bt_p) _bt_neg=1 ;;
+        esac ;;
+      "+refs/heads/*:refs/remotes/origin/*"|"refs/heads/*:refs/remotes/origin/*") _bt_ok=1 ;;
+      "+refs/heads/$_bt_br:refs/remotes/origin/$_bt_br"|"refs/heads/$_bt_br:refs/remotes/origin/$_bt_br") _bt_ok=1 ;;
+      *":refs/remotes/origin/$_bt_br") _bt_neg=1 ;;   # S38: an extra refspec that maps some OTHER source onto the default branch's tracking ref (the ok forms are matched above)
+    esac
+  done
+  set +f; IFS=$_bt_ifs
+  if [ "$_bt_ok" -eq 0 ] || [ "$_bt_neg" -eq 1 ]; then   # MUT-REFSPEC
+    boundary_refuse fetch-refspec "remote.origin.fetch does not fetch origin's default branch into refs/remotes/origin/$_bt_br, so the local copy of the declaration is not origin's" "restore the default fetch refspec: git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+    return $?
+  fi
+  # S29 (cell measured on git 2.48.1; on an older git for-each-ref may skip a ref whose object is missing, which fails toward the stated residual): the fallback fires whenever origin's tip object is absent locally, which a local agent can cause (delete the loose object, then forge the tracking ref). If ANY local
+  # ref (or HEAD) names the tip while its object is missing, the absence is local damage and not origin having moved: UNTRUSTED, never the fallback.
+  _bt_refs=$( { git for-each-ref --format='%(objectname)' 2>/dev/null; git rev-parse HEAD 2>/dev/null; } )
+  case "$_bd_nl$_bt_refs$_bd_nl" in
+    *"$_bd_nl$2$_bd_nl"*)   # MUT-TIPMISSING
+      boundary_refuse tip-object-missing "a local ref names origin's tip but its object is missing, so the absence is local and origin has not simply moved" "a local ref names origin's tip but its object is missing; run git fetch origin"
+      return $? ;;
+  esac
+  _bt_loc=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify -q "refs/remotes/origin/$_bt_br^{commit}" 2>/dev/null) || _bt_loc=""
+  case "$_bt_loc" in
+    ''|*[!0-9a-f]*) BD_WHY="origin's default branch tip is not fetched here, and no remote-tracking ref exists to read instead (git fetch origin)"; BD_CAUSE=tip; _bo_retry=0; return 3 ;;   # MUT-NOREF
+  esac
+  _bo_tip=$_bt_loc   # MUT-TRACKING
+  BD_MOVED=$(GIT_NO_REPLACE_OBJECTS=1 git log -1 --format=%cs "$_bt_loc" 2>/dev/null) || BD_MOVED=""   # S30: a replace ref cannot fake the date
+  [ -n "$BD_MOVED" ] || BD_MOVED="an unknown date"
+  return 0
+}
+# One remedy per UNVERIFIED cause (S27): a single reflexive "--boundary-offline" would train its use. An unknown cause (the seam, a scratch failure) gets the network remedy.
+boundary_unv_remedy() {  # reads BD_CAUSE
+  case "$BD_CAUSE" in
+    tip) printf '%s' "git fetch origin, then re-run" ;;
+    not-own-root) printf '%s' "run preflight from the repository root" ;;
+    git-env) printf '%s' "unset GIT_DIR and GIT_WORK_TREE" ;;
+    *) printf '%s' "retry when online, or type --boundary-offline" ;;
+  esac
+}
+# S20: the origin read is tried, and retried ONCE (after a pause) when the failure may be a network blip. The seam BLIP fails the first attempt only (selftest).
+boundary_fetch_retry() {  # <outfile> -> the rc of boundary_origin_fetch after at most one retry
+  _bf_first=1
+  boundary_fetch_try "$1" && return 0
+  _bf_rc=$?
+  [ "$_bf_rc" -eq 3 ] && [ "$_bo_retry" -eq 1 ] || return "$_bf_rc"   # MUT-RETRY
+  if [ "${SEAMS:-0}" -eq 1 ]; then sleep 0; else sleep 2; fi
+  _bf_first=0
+  boundary_fetch_try "$1"
+}
+boundary_fetch_try() {  # <outfile>
+  if [ "${SEAMS:-0}" -eq 1 ] && [ -n "${PREFLIGHT_BOUNDARY_BLIP:-}" ] && [ "$_bf_first" -eq 1 ]; then
+    BD_WHY="origin's default branch could not be read (offline, or no access)"; _bo_retry=1; return 3
+  fi
+  boundary_origin_fetch "$1"
+}
+boundary_date_ok() {  # <YYYY-MM-DD> -> 0 iff a real calendar date (years 2000-2099), not after today
+  case "$1" in
+    20[0-9][0-9]-[01][0-9]-[0-3][0-9]) ;;
+    *) return 1 ;;
+  esac
+  _bt_y=${1%%-*}; _bt_m=${1#*-}; _bt_d=${_bt_m#*-}; _bt_m=${_bt_m%%-*}; _bt_m=${_bt_m#0}; _bt_d=${_bt_d#0}
+  case "$_bt_m" in
+    1|3|5|7|8|10|12) _bt_max=31 ;;
+    4|6|9|11) _bt_max=30 ;;
+    2) _bt_max=28
+       if [ $((_bt_y % 4)) -eq 0 ] && { [ $((_bt_y % 100)) -ne 0 ] || [ $((_bt_y % 400)) -eq 0 ]; }; then _bt_max=29; fi ;;
+    *) return 1 ;;
+  esac
+  { [ "$_bt_d" -ge 1 ] && [ "$_bt_d" -le "$_bt_max" ]; } || return 1
+  [ "$(expr "$1" \> "$(date +%Y-%m-%d)")" = 0 ]   # the LOCAL date (R4): an author east of UTC writes today's local date, which is tomorrow in UTC for part of the day
+}
+boundary_decl_record() {  # <line>: rc 0 and sets _br_part, _br_since and _br_lost | rc 1 and sets BD_WHY to the broken rule
+  _br_l=$1
+  [ "${#_br_l}" -le 512 ] || { BD_WHY="a line is over 512 bytes"; return 1; }
+  case "$_br_l" in
+    part=*" reason="*" lost="*" since="*) ;;
+    *) BD_WHY="the fields must be part, reason, lost, since, in that order"; return 1 ;;
+  esac
+  [ "$(printf '%s' "$_br_l" | tr -cd '=' | wc -c | tr -d ' ')" = 4 ] || { BD_WHY="a value contains '='"; return 1; }   # MUT-EQ
+  _br_part=${_br_l#part=}; _br_part=${_br_part%% reason=*}
+  _br_rest=${_br_l#*" reason="}; _br_reason=${_br_rest%% lost=*}
+  _br_rest=${_br_rest#*" lost="}; _br_lost=${_br_rest%% since=*}; _br_since=${_br_rest#*" since="}
+  for _br_v in "$_br_part" "$_br_reason" "$_br_lost" "$_br_since"; do
+    case "$_br_v" in
+      ''|' '*|*' ') BD_WHY="a value is empty or has a leading or trailing space"; return 1 ;;
+    esac
+  done
+  case "$_br_part" in
+    read-deny|egress|write-protect|all) ;;
+    *) BD_WHY="an unknown part name"; return 1 ;;
+  esac
+  boundary_date_ok "$_br_since" || { BD_WHY="since is not a real date, or is in the future"; return 1; }
+  return 0
+}
+boundary_decl_parse() {  # <file>: sets BD_STATE (ok | malformed), BD_WHY and BD_RECS from the blob (printable ASCII, 4 KiB, 4 records)
+  BD_STATE=malformed; BD_RECS=""; BD_WHY=""
+  [ "$(wc -c < "$1" | tr -d ' ')" -le 4096 ] || { BD_WHY="the file is over 4 KiB"; return 0; }
+  [ "$(LC_ALL=C tr -d '\012\040-\176' < "$1" | wc -c | tr -d ' ')" = 0 ] || { BD_WHY="the file holds a control byte, a CR, a BOM or a non-ASCII byte"; return 0; }
+  _bp_n=0; _bp_recs=0; _bp_seen=" "; _bp_acc=""
+  while IFS= read -r _bp_l || [ -n "$_bp_l" ]; do
+    _bp_n=$((_bp_n + 1))
+    case "$_bp_l" in
+      ''|'#'*) continue ;;
+    esac
+    if ! boundary_decl_record "$_bp_l"; then BD_WHY="line $_bp_n: $BD_WHY"; return 0; fi   # MUT-MALFORMED
+    _bp_recs=$((_bp_recs + 1))
+    [ "$_bp_recs" -le 4 ] || { BD_WHY="line $_bp_n: more than 4 records"; return 0; }   # MUT-CAP
+    case "$_bp_seen" in
+      *" $_br_part "*) BD_WHY="line $_bp_n: part appears twice"; return 0 ;;
+    esac
+    _bp_seen="$_bp_seen$_br_part "
+    _bp_acc="$_bp_acc$_br_part $_br_since $_br_lost$_bd_nl"
+  done < "$1"
+  case "$_bp_seen" in
+    *" all "*) [ "$_bp_seen" = " all " ] || { BD_WHY="part=all appears with another part (one meaning per file)"; return 0; } ;;
+  esac
+  BD_RECS=$_bp_acc; BD_STATE=ok
+}
+boundary_decl_load() {  # sets BD_STATE (absent | ok | malformed | unreadable), BD_WHY, BD_RECS. The seam stands in for origin ONLY under a seam flag.
+  BD_STATE=unreadable; BD_WHY=""; BD_RECS=""; BD_REMEDY=""; BD_CAUSE=""; BD_MOVED=""
+  _bl_d=$(mktemp -d 2>/dev/null) || { BD_WHY="no scratch directory could be created"; return 0; }; _bl_f=$_bl_d/decl
+  _bl_rc=0
+  if [ "${SEAMS:-0}" -eq 1 ]; then
+    case "${PREFLIGHT_BOUNDARY_OPTOUT:-}" in
+      ''|@unreadable) BD_WHY="no origin read under the selftest"; _bl_rc=3 ;;
+      real) boundary_fetch_retry "$_bl_f" || _bl_rc=$? ;;
+      @absent) _bl_rc=1 ;;
+      @nonregular) _bl_rc=2 ;;
+      *) if [ -f "$PREFLIGHT_BOUNDARY_OPTOUT" ] && [ ! -L "$PREFLIGHT_BOUNDARY_OPTOUT" ]; then cp -- "$PREFLIGHT_BOUNDARY_OPTOUT" "$_bl_f" || _bl_rc=3; else _bl_rc=2; fi ;;
+    esac
+  else
+    boundary_fetch_retry "$_bl_f" || _bl_rc=$?
+  fi
+  case "$_bl_rc" in
+    0) boundary_decl_parse "$_bl_f" ;;
+    1) BD_STATE=absent ;;
+    2) BD_STATE=malformed; BD_WHY="the entry on origin's default branch is not a regular file" ;;   # MUT-NONREG
+    4) BD_STATE=untrusted ;;
+    *) BD_STATE=unreadable; [ -n "$BD_WHY" ] || BD_WHY="the declaration could not be read" ;;
+  esac
+  rm -rf "$_bl_d"
+}
+bd_lookup() {  # <part> [exact] -> 0 and sets _bcs and _bcl when the declaration names <part> (or, unless "exact", part=all)
+  _bl_r=$(printf '%s\n' "$BD_RECS" | sed -n "s/^$1 //p" | head -1)
+  if [ -z "$_bl_r" ] && [ "${2:-}" != exact ]; then _bl_r=$(printf '%s\n' "$BD_RECS" | sed -n 's/^all //p' | head -1); fi
+  [ -n "$_bl_r" ] || return 1
+  _bcs=${_bl_r%% *}; _bcl=${_bl_r#* }
+}
+bd_covered() {  # <tokens: a part, @all or @every> -> 0 iff every token is declared; leaves the first record's since and lost in _bcs and _bcl
+  _bc_ok=0; _bc_s=""; _bc_l=""
+  for _bc_t in $1; do
+    case "$_bc_t" in
+      @all) bd_lookup all exact || return 1 ;;
+      @every)
+        if ! bd_lookup all exact; then
+          bd_lookup read-deny exact && bd_lookup write-protect exact && bd_lookup egress exact || return 1
+        fi ;;
+      *) bd_lookup "$_bc_t" || return 1 ;;
+    esac
+    [ -n "$_bc_s" ] || { _bc_s=$_bcs; _bc_l=$_bcl; }
+    _bc_ok=1
+  done
+  [ "$_bc_ok" -eq 1 ] || return 1
+  _bcs=$_bc_s; _bcl=$_bc_l
+}
+# boundary_judge <name> <STATE> <detail> <tokens> <consequence> <fix> [kit sentence]: one FAIL line (a WARN line when declared) graded against the declaration (_bds). Only the UNDECLARED
+# branch sets bfail; a declared one is loud and does not, and an unreadable or unread declaration is never a pass but is not UNDECLARED either.
+boundary_judge() {
+  _bj_dp=""; [ -z "$3" ] || _bj_dp=" ($3)"
+  case "$_bds" in
+    unread)
+      printf '%s\n' "  FAIL $1: $2$_bj_dp $_bleg ($_bcin; the declaration is not read in CI) — $5"; bunv=1 ;;
+    unreadable)
+      printf '%s\n' "  FAIL $1: $2$_bj_dp, declaration UNVERIFIED $_bleg (could not read .kit/boundary-optout.conf on origin's default branch: $BD_WHY) — $5"; bunv=1 ;;
+    offline)   # a human typed --boundary-offline: the line is loud, the run does not fail on it, and nothing is counted as declared
+      printf '%s\n' "  FAIL $1: $2$_bj_dp, declaration not verified $_bleg (--boundary-offline) — $5" ;;
+    *)
+      if [ "$_bds" = ok ] && bd_covered "$4"; then
+        # owner ruling "Let's proceed with your Warn recommendation" (amends D-241023-2 4(c)): the declared opt-out is loud (WARN) and exits 0.
+        # The kit's own consequence sentence is printed once: when the repo's lost= sentence is identical to it, the "(kit: ...)" suffix is dropped.
+        _bj_k=${7:-$5}; _bj_ks=" (kit: $_bj_k)"; [ "$_bcl" != "$_bj_k" ] || _bj_ks=""
+        printf '%s\n' "  WARN $1: $2$_bj_dp $_bleg (opted out $_bcs, declared in .kit/boundary-optout.conf). Lost: $_bcl$_bj_ks"   # MUT-DECLWARN
+        :   # MUT-DECLARED
+      else
+        _bj_mv=""; [ -z "${BD_MOVED:-}" ] || _bj_mv=" origin has moved: git fetch origin, then re-run"   # m3: the declaration may be on the new tip
+        printf '%s\n' "  FAIL $1: $2$_bj_dp and UNDECLARED $_bleg — $5. Fix: $6$_bj_mv"
+        bfail=1   # MUT-BFAIL
+      fi ;;
+  esac
+}
+boundary_stale() {  # doctor --boundary only: a recorded part that is ON in this checkout is a STALE declaration (a warn, never an exit)
+  for _bs_p in read-deny write-protect egress all; do
+    bd_lookup "$_bs_p" exact || continue
+    case "$_bs_p" in
+      read-deny) _bs_st=$_prd ;;
+      write-protect) _bs_st=$_pwr ;;
+      egress) _bs_st=$_peg ;;
+      *) _bs_st=OFF; [ "$_prd$_pwr$_peg" != ONONON ] || _bs_st=ON ;;
+    esac
+    [ "$_bs_st" != ON ] || printf '%s\n' "  warn boundary: declaration for part=$_bs_p is STALE (the part is ON in this checkout)"   # MUT-STALE
+  done
+}
+boundary_user_hosts() {  # <user settings file>: how many hosts the user-level allowedDomains holds. A COUNT, never a host (SWAS-407 owns the grading).
+  [ -f "$1" ] || return 0
+  _bh_n=$(jq -r '.sandbox.network.allowedDomains | if type == "array" then length else 0 end' "$1" 2>/dev/null) || _bh_n=unreadable
+  case "$_bh_n" in
+    ''|*[!0-9]*) printf '%s\n' "  warn egress: the user-level allowedDomains could not be counted (UNVERIFIED)"; bunv=1 ;;
+    *) printf '%s\n' "  info egress: the user-level allowedDomains holds $_bh_n host(s); under strictAllowlist this is the whole list (project allowedDomains are ignored, D1 measured) and no kit check grades it (SWAS-407)" ;;
+  esac
+}
+# boundary_webfetch_allows <local settings file> <enforced | open | session>: DC20 (Q20), the saved WebFetch(domain:) allows. One captured jq result or
+# unreadable (a Linux jq prints a partial result and then fails). A host is printed only when it passes the exact-host grammar (lowercase labels, two or
+# more, a letter in the last one), at most 10; every other entry is counted and never printed.
+boundary_webfetch_allows() {
+  [ -f "$1" ] || return 0
+  _bw=$(jq -r '[.permissions.allow[]? | strings | select(startswith("WebFetch(domain:") and endswith(")")) | .[16:-1]] as $a
+    | [$a[] | select(test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$") and test("[a-z][a-z0-9-]*$"))] as $h
+    | "\($a | length) \($h | .[:10] | join(" "))"' "$1" 2>/dev/null) || _bw=unreadable   # MUT-DC20JQ
+  case "$_bw" in   # MUT-DC20NL
+    *"$_bd_nl"*) _bw=unreadable ;;
+  esac
+  _bwn=${_bw%% *}; _bwh=${_bw#* }
+  case "$_bwn" in
+    ''|*[!0-9]*) printf '%s\n' "  warn egress: .claude/settings.local.json could not be read for saved WebFetch(domain:) allows (UNVERIFIED)"; bunv=1; return 0 ;;
+    0) return 0 ;;
+  esac
+  _bwm=$2
+  set -f; set -- $_bwh; set +f   # the hosts passed the grammar above, so nothing here can glob
+  _bwk=$#; _bwx=""; [ "$_bwn" -le "$_bwk" ] || _bwx=" (and $((_bwn - _bwk)) more entries not printed)"
+  case "$_bwm" in
+    enforced) printf '%s\n' "  ok   egress: $_bwn saved WebFetch(domain:) allow(s) are overridden by user-scope strictAllowlist (C35, measured)" ;;
+    session) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt if strictAllowlist is not set at user scope: ${_bwh:-none printable}$_bwx" ;;
+    *) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt: ${_bwh:-none printable}$_bwx" ;;
+  esac
+}
+
+boundary_has_tty() {  # rc 0 iff a terminal is attached (stdin, stdout or stderr). The seam PREFLIGHT_TTY_SEAM=1|0 is live ONLY under the selftest flag (SEAMS=1), where an unset seam reads "no TTY" so a selftest does not depend on where it is run; there is NO env override in a real run
+  if [ "${SEAMS:-0}" -eq 1 ]; then [ "${PREFLIGHT_TTY_SEAM:-0}" = 1 ]; return $?; fi
+  [ -t 0 ] || [ -t 1 ] || [ -t 2 ]   # S32: stderr counts too (`preflight </dev/null >log` from a terminal is not CI)
+}
+
+check_boundary() {
+  _bfile=".claude/settings.json"; _bloc=".claude/settings.local.json"; _buser="${HOME:-}/.claude/settings.json"
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) _bmgd="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
+    *) _bmgd="/etc/claude-code/managed-settings.json" ;;
+  esac
+  if [ "${SEAMS:-0}" -eq 1 ]; then
+    _bfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_bfile}"; _bloc="${PREFLIGHT_SANDBOX_LOCAL:-$_bloc}"
+    _buser="${PREFLIGHT_SANDBOX_USER:-$_buser}"; _bmgd="${PREFLIGHT_SANDBOX_MANAGED:-$_bmgd}"
+  fi
+  command -v jq >/dev/null 2>&1 || { echo "  skip boundary — jq absent"; bunv=1; return 0; }
+  # The leg label says what was read. Under CI (CI or GITHUB_ACTIONS set AND no TTY attached, S25) only the committed project block is read: [declared].
+  # CI set WITH a TTY is a human terminal (an rc export or an editor's terminal env must not switch the whole gate off): judged in full, with one WARN naming the condition.
+  _bci=0; if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then _bci=1; fi
+  if [ "$_bci" -eq 1 ] && boundary_has_tty; then   # MUT-CITTY
+    printf '%s\n' "  WARN boundary: CI is set in an interactive terminal; judged as a human terminal"
+    printf '%s\n' "  Remedy: on a CI runner that allocates a TTY, run \`sh scripts/preflight.sh </dev/null 2>&1 | cat\` (CI runners only; this gives CI mode, which reads only the committed project block)"   # MUT-CIREMEDY
+    _bci=0
+  fi
+  _bleg=static; _bcin=""; _bcip=""
+  if [ "$_bci" -eq 1 ]; then _bleg=declared; _bcin="CI set: local and user scopes not read"; _bcip=" ($_bcin)"; fi
+  [ -z "${SANDBOX_RUNTIME:-}" ] || _bleg="$_bleg, agent-reported"   # MUT-AGENTMARK
+  _bleg="[$_bleg]"
+  _beff=""; _bblock=""; _brt=0; _brh=0; _bwp=0; _bwu=0; _bst=0; _bstrepo=0; _bwf=0; _buserunv=0; _bax=0; _bau=0
+  for _bn in managed local project user; do
+    if [ "$_bci" -eq 1 ] && [ "$_bn" = local ]; then continue; fi   # MUT-CILOCAL
+    if [ "$_bci" -eq 1 ] && { [ "$_bn" = user ] || [ "$_bn" = managed ]; }; then continue; fi   # MUT-CIUSER
+    case "$_bn" in managed) _bf=$_bmgd ;; local) _bf=$_bloc ;; project) _bf=$_bfile ;; *) _bf=$_buser ;; esac
+    _bs=$(boundary_read_scope "$_bf")
+    if [ "$_bn" = user ] && [ -n "${SANDBOX_RUNTIME:-}" ]; then _bs=unreadable; fi   # MUT-INSESSION: in an agent session the user scope is read-denied, so it is not read
+    case "$_bs" in
+      absent) continue ;;
+      unreadable)
+        [ "$_bn" != user ] || _buserunv=1
+        [ -n "$_beff" ] || [ -n "$_bblock" ] || _bblock=$_bn
+        continue ;;
+    esac
+    _bv=$(printf '%s' "$_bs" | jq -r '[.e, .rt, .rh, .wp, .wu, .st, .wf, .ax, .au] | join(" ")')
+    # shellcheck disable=SC2086  # deliberate word-split: nine plain words (a state word and eight booleans)
+    set -- $_bv
+    if [ -z "$_beff" ] && [ -z "$_bblock" ] && [ "$1" != unset ]; then _beff=$1; fi
+    [ "$2" != true ] || _brt=1
+    [ "$3" != true ] || _brh=1
+    [ "$4" != true ] || _bwp=1
+    [ "$5" != true ] || _bwu=1
+    [ "$7" != true ] || _bwf=1
+    [ "$8" != true ] || _bax=1
+    [ "$9" != true ] || _bau=1
+    if [ "$6" = true ]; then
+      case "$_bn" in managed|user) _bst=1 ;; *) _bstrepo=1 ;; esac   # MUT-STRICT-SCOPE: a repo-file copy is ignored by Claude Code
+    fi
+  done
+  # Part states, for the declaration (a part is OFF when it is not ON; egress is judged separately): _prd _pwr _peg are ON | OFF | UNV.
+  _boff=""; _bevery=0; _begn=0; _bmode=""; _bwhy=""; _prd=OFF; _pwr=OFF; _peg=OFF
+  case "$_beff" in
+    true)
+      # The settings enable the sandbox; if it cannot start here, Claude Code runs WITHOUT it (failIfUnavailable is false), so this is never ON.
+      if [ "$_bci" -eq 0 ] && ! _bwhy=$(sandbox_unavailable_reason); then   # MUT-CANTSTART
+        _bmode=nostart; _bevery=1
+      else
+        _bmode=on
+        _brd=OFF; [ "$_brt" -eq 1 ] && [ "$_brh" -eq 1 ] && _brd=ON
+        [ "$_bax" -eq 0 ] || _brd=SHADOWED
+        _bwr=OFF; [ "$_bwp" -eq 1 ] && _bwr=PARTIAL; [ "$_bwp" -eq 1 ] && [ "$_bwu" -eq 1 ] && _bwr=ON
+        [ "$_brd" != ON ] || _prd=ON
+        [ "$_bwr" != ON ] || _pwr=ON
+        [ "$_prd" = ON ] || _boff="$_boff read-deny"
+        [ "$_pwr" = ON ] || _boff="$_boff write-protect"
+        if [ "$_bst" -eq 1 ]; then _peg=ON; elif [ "$_bci" -eq 1 ] || [ "$_buserunv" -eq 1 ]; then _peg=UNV; else _begn=1; fi
+      fi ;;
+    false) _bmode=off; _bevery=1 ;;
+    *) if [ -n "$_bblock" ]; then _bmode=unv; _prd=UNV; _pwr=UNV; _peg=UNV; else _bmode=nosandbox; _bevery=1; fi ;;
+  esac
+  [ "$_bau" -eq 0 ] || { _prd=OFF; _pwr=OFF; _peg=OFF; }
+  # The declaration is read only when some part is not ON (an all-ON session makes no network call for it), by `--boundary-only` (the doctor leg,
+  # which also judges STALE), and never under CI: a shallow CI checkout lacks the default branch tip, so the declared tier never gates on it.
+  _bds=unread
+  boundary_decl_gates() {  # rc 0 iff some boundary part is OFF and so needs the declaration (the ONE gate for an UNTRUSTED declaration; S20 may widen it here)
+    [ -n "$_boff" ] || [ "$_bevery" -eq 1 ] || [ "$_begn" -eq 1 ] || [ "$_bau" -eq 1 ]
+  }
+  if [ "$_bci" -eq 0 ] && { [ "$BOUNDARY_ONLY" -eq 1 ] || boundary_decl_gates; }; then
+    boundary_decl_load
+    _bds=$BD_STATE
+    # the declaration was read from the last fetch while origin has moved: every line says so, and it is judged and gates exactly as usual
+    if [ -n "$BD_MOVED" ]; then _bleg="${_bleg%]}, declared, last fetched $BD_MOVED; origin has moved]"; fi
+    if [ "$_bds" = malformed ]; then
+      case "$BD_WHY" in
+        "line "*) _bsep=" " ;;
+        *) _bsep=": " ;;
+      esac
+      printf '%s\n' "  FAIL boundary: declaration MALFORMED (.kit/boundary-optout.conf$_bsep$BD_WHY) $_bleg — no part counts as declared"
+      bfail=1
+    fi
+    if [ "$_bds" = unreadable ] && boundary_decl_gates; then
+      # S20 (owner ruling "355a: B revised"): with a part OFF, a declaration that could not be read FAILs from a terminal (it is the cheap way to switch the gate off),
+      # unless --boundary-offline was typed on the command line (anyone can pass it: a visible act, not a control). --boundary-advisory and CI never move the exit (the same bfail); CI never reads the declaration at all.
+      if [ "$BOUNDARY_OFFLINE" -eq 1 ]; then   # MUT-OFFLINE
+        printf '%s\n' "  WARN boundary: declaration not verified (--boundary-offline typed on the command line; anyone can pass it: a visible act, not a control; the gate is not judged this run)"   # MUT-OFFLINELINE
+        _bds=offline
+        bunv=1   # S26: a plain preflight still exits 0 (the owner ruling), but doctor --boundary reads UNVERIFIED, never PASS   # MUT-OFFLINEUNV
+      else
+        printf '%s\n' "  FAIL boundary: declaration UNVERIFIED ($BD_WHY) while a part is OFF. Remedy: $(boundary_unv_remedy)"
+        bfail=1   # MUT-UNVGATE
+      fi
+    fi
+    if [ "$_bds" = untrusted ]; then
+      # D-241026-2: an integrity refusal fails like UNDECLARED (the same bfail: --boundary-advisory and CI never move the exit), with the remedy, but ONLY when
+      # some part is OFF and so needs the declaration (I1): a fully ON user is told, not failed. boundary_decl_gates is the ONE gate condition.
+      if boundary_decl_gates; then   # MUT-GATES
+        printf '%s\n' "  FAIL boundary: declaration UNTRUSTED ($BD_WHY). Remedy: $BD_REMEDY"   # MUT-REMEDY
+        bfail=1
+      else
+        printf '%s\n' "  info boundary: declaration UNTRUSTED ($BD_WHY); not judged (no part is off). Remedy: $BD_REMEDY"
+      fi
+    fi
+  fi
+  _bcons="an agent can read .env and ~/.ssh through an interpreter and send them to any host"
+  _bfix="or remove the override that turns it off"
+  case "$_bmode" in
+    nostart)
+      boundary_judge boundary OFF "cannot start: $_bwhy" @every "the settings enable the sandbox but it cannot start here, so the session runs unsandboxed: $_bcons" "declare it in .kit/boundary-optout.conf (part=all), $_bfix" "$_bcons" ;;
+    off)
+      boundary_judge boundary OFF "" @every "the agent OS sandbox is disabled in the highest scope that sets it: $_bcons" "declare it in .kit/boundary-optout.conf (part=all), $_bfix" "$_bcons" ;;
+    nosandbox)
+      boundary_judge boundary OFF "" @every "no scope enables the agent OS sandbox: $_bcons (where the default comes from: docs/operations/runtime-guards.md, \"The agent boundary: on by default\")" "declare it in .kit/boundary-optout.conf (part=all), $_bfix" "$_bcons" ;;
+    unv)
+      bunv=1
+      printf '%s\n' "  warn boundary: UNVERIFIED $_bleg — the $_bblock scope is unreadable here, so whether the sandbox is on cannot be read; run 'sh scripts/preflight.sh' from a terminal" ;;
+    on)
+      _bnote=""; [ "$_buserunv" -eq 0 ] || _bnote="; the user scope is unreadable here (read-denied to the agent's shell by design), so it is not counted"
+      if [ "$_prd" = ON ] && [ "$_pwr" = ON ] && [ "$_bau" -eq 0 ]; then
+        printf '%s\n' "  ok   boundary: ON $_bleg$_bcip — read-deny: ON, write-protect: ON (settings only; the probe, not this line, proves what the shell can do$_bnote)"
+      else
+        _bunsb=""; _bneed=$_boff
+        if [ "$_bau" -ne 0 ]; then _bunsb=", allowUnsandboxedCommands is true in a scope (a command can opt out of the sandbox)"; _bneed="$_bneed @all"; fi
+        _bfx=$(printf '%s' "$_boff" | sed 's/^ //; s/ /,/g'); [ "$_bau" -eq 0 ] || _bfx="all"
+        boundary_judge boundary PARTIAL "" "$_bneed" "the sandbox is on but read-deny: $_brd, write-protect: $_bwr$_bunsb (SHADOWED means an allowRead names more than the two env templates). Where the default comes from: docs/operations/runtime-guards.md, \"The agent boundary: on by default\"" "declare it in .kit/boundary-optout.conf (part=$_bfx), $_bfix" "$_bcons"
+      fi
+      if [ "$_bci" -eq 1 ]; then
+        printf '%s\n' "  ok   egress: N/A $_bleg — CI runs no agent session; the user-level act is per machine"
+      elif [ "$_bst" -eq 1 ]; then
+        printf '%s\n' "  ok   egress: ENFORCED $_bleg — strictAllowlist is set at user or managed scope"
+        [ -n "${SANDBOX_RUNTIME:-}" ] || boundary_user_hosts "$_buser"
+        boundary_webfetch_allows "$_bloc" enforced
+      elif [ "$_buserunv" -eq 1 ]; then
+        bunv=1
+        printf '%s\n' "  warn egress: UNVERIFIED $_bleg — strictAllowlist belongs at user scope, which is unreadable here; run 'sh scripts/preflight.sh' from a terminal to read it"
+        boundary_webfetch_allows "$_bloc" session
+      else
+        _bign=""; [ "$_bstrepo" -eq 0 ] || _bign=" (a strictAllowlist in a repo file is ignored by Claude Code, docs-stated)"
+        boundary_judge egress "NOT ENFORCED" "" egress "strictAllowlist is not set at user or managed scope$_bign. Until it is, an unlisted host is a prompt a person can approve, and a mode that approves without a person (auto, bypass) lets it through" "(1) merge the user-level block into ~/.claude/settings.json: \"sandbox\": {\"network\": {\"strictAllowlist\": true, \"allowedDomains\": [<the hosts you use>]}} (one human act per machine; it applies to every project on this machine; see docs/operations/runtime-guards.md); or (2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf (reviewed as control-plane)" "$_bcons"
+        boundary_webfetch_allows "$_bloc" open
+      fi ;;
+  esac
+  if [ "$BOUNDARY_ONLY" -eq 1 ] && [ "$_bci" -eq 0 ]; then
+    case "$_bds" in
+      ok) boundary_stale ;;
+      unreadable) printf '%s\n' "  info boundary: declaration not read ($BD_WHY); STALE not judged" ;;
+    esac
+  fi
+  if [ "$_bwf" -eq 1 ]; then
+    echo "  ok   web: WebFetch denied; read pages with sh scripts/fetch-text.sh <url>"   # MUT-WEBLINE
   fi
 }
 
@@ -353,7 +1050,13 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   [ -n "$_phys" ] || return 1
   _own=$(owning_repo_root "$1")
   [ -n "$_own" ] || return 0
-  [ "$_own" = "$_phys" ]
+  # Ask git whether <dir> is the root, never compare path strings: on a case-insensitive filesystem `cd` into a
+  # case-variant spelling keeps that spelling in `pwd -P` while git reports the toplevel as stored, so a string
+  # compare refused the repository's own root. `--show-prefix` prints an empty line exactly at the root.
+  # git also prints an empty prefix when the cwd is OUTSIDE the work tree (a `core.worktree` pointing elsewhere), so the same subshell requires
+  # `--is-inside-work-tree` to print exactly `true`; anything else refuses.
+  _pfx=$( CDPATH='' cd "$1" 2>/dev/null && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && git rev-parse --show-prefix 2>/dev/null ) || return 1   # MUT-OWNSINSIDE
+  [ -z "$_pfx" ]   # MUT-OWNSROOT
 }
 
 # --- CP-11: git-dir redirection is a hard precondition (closes CP-4 §6) --------------------
@@ -1001,6 +1704,15 @@ check_guard_installed() {
   fi
 }
 
+# SWAS-361 (352g F10): the guard's kill-switch exported in THIS environment is no longer silent. One FAIL line per run, naming
+# what is lost. Truthiness is the guard's own (selfedit_allowed in .claude/hooks/guard-core.sh: exactly "1"); the preflight
+# selftest has a coupling cell that reds if the guard's definition moves. INFORMATION ONLY: it never sets `miss`, so the exit code
+# is unchanged (the file's convention: only a missing required tool or the runtime floor fails the run).
+check_guard_killswitch() {
+  [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ] || return 0
+  echo "  FAIL KIT_GUARD_SELFEDIT=1 is set in this environment — every guard refusal is OFF for this session and nothing reaches the deny log (unset it: it is a human maintenance switch, not a session setting)"
+}
+
 check_repo_class() {  # warn when the repo is user-owned PRIVATE (SLSA provenance gate skips there)
   if [ -z "${PREFLIGHT_GH_CMD:-}" ] && ! command -v gh >/dev/null 2>&1; then
     echo "  skip repo-class — gh not installed (cannot detect repo visibility)"; return 0
@@ -1063,11 +1775,19 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
 
 # SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
 # on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
-STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0
+STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stack) [ $# -ge 2 ] || { echo "preflight: --stack requires a value" >&2; exit 2; }; STACK=$2; shift 2 ;;
-    --selftest) SELFTEST=1; SEAMS=1; shift ;;
+    # --boundary-only: print only the boundary block and exit with its verdict (0 / 1 UNDECLARED or malformed / 2 unverified); `sparkwright doctor --boundary` runs it.
+    --boundary-only) BOUNDARY_ONLY=1; shift ;;
+    # --boundary-advisory: the boundary lines print as usual, but `bfail` never reaches the exit. For every caller that reads this script's rc for something
+    # else (incept, repo-ownership, this script's own --selftest-e2e calls). An open hatch for anyone, stated in the design (section 10 item 13).
+    --boundary-advisory) BOUNDARY_ADVISORY=1; shift ;;
+    # --boundary-offline (S20, owner ruling "355a: B revised"): a TYPED flag, never an environment variable. A human who is offline (or cannot reach origin) says so: an
+    # unreadable declaration is then a loud WARN instead of a FAIL. It never relaxes UNTRUSTED, UNDECLARED or MALFORMED.
+    --boundary-offline) BOUNDARY_OFFLINE=1; shift ;;
+    --selftest)SELFTEST=1; SEAMS=1; shift ;;
     # --selftest-e2e: internal. Runs the REAL body with the injection seams live, so --selftest can prove
     # the git-floor check is WIRED end-to-end (a defined-but-uncalled check is decorative) without an
     # ambient env var being able to do the same thing in an adopter's shell. Not in --help: it is a test
@@ -1077,13 +1797,49 @@ while [ $# -gt 0 ]; do
     # --allow-runtime-mismatch: the NAMED escape from the stack's runtime floor. It proceeds on an
     # unsupported runtime, loudly, and suppresses the clean green — see the runtime-floor block above.
     --allow-runtime-mismatch) ALLOW_RUNTIME_MISMATCH=1; shift ;;
-    -h|--help) echo "usage: preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest] [--allow-nested]"; exit 0 ;;
+    -h|--help) echo "usage: preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest] [--allow-nested] [--boundary-only] [--boundary-advisory] [--boundary-offline]"; exit 0 ;;
     *) printf '%s\n' "preflight: unknown arg: $1" >&2; exit 2 ;;   # Rule 3 — $1 is raw argv
   esac
 done
 
+if [ "$SEAMS" -eq 1 ] && [ "$SELFTEST" -eq 0 ]; then
+  echo "NOTE: test seams live — not a report on this machine"   # MUT-BANNER
+fi
+
 if [ "$SELFTEST" -eq 1 ]; then
+  _st_ci=${CI:-}${GITHUB_ACTIONS:-}; unset CI GITHUB_ACTIONS   # S34: capture the runner's CI first (the weak-result branches fail under it), then the selftest is CI-hermetic; cells that test CI set it explicitly   # MUT-HERMETIC
   fail=0
+  # The hermetic entry is load-bearing: the unscoped self-invocations below (kill-switch, git floor, node floor, go stack, sandbox) would otherwise run in CI mode on a runner
+  # that exports CI (the sandbox cell's "cannot start" warning is skipped under CI). The check reads the line right after the selftest entry; a mutant that deletes it must go red.
+  _hm_ok() {  # <script file>: rc 0 iff the first line of the selftest block unsets CI and GITHUB_ACTIONS
+    _hm_l=$(sed -n '/^if \[ "\$SELFTEST" -eq 1 \]; then$/{n;p;}' "$1")
+    case "$_hm_l" in
+      "  _st_ci="*"; unset CI GITHUB_ACTIONS"*) return 0 ;;
+    esac
+    return 1
+  }
+  if _hm_ok "$0"; then echo "PASS: hermetic [entry-unset] the selftest unsets CI and GITHUB_ACTIONS at its entry"; else echo "FAIL: hermetic [entry-unset] the selftest does not unset CI and GITHUB_ACTIONS first"; fail=1; fi
+  _hm_m=$(mktemp -d); sed '/MUT-HERMETIC/d' "$0" > "$_hm_m/preflight.sh"
+  if cmp -s "$0" "$_hm_m/preflight.sh"; then echo "FAIL: mutant hermetic-unset-deleted did not apply"; fail=1
+  elif _hm_ok "$_hm_m/preflight.sh"; then echo "FAIL: mutant hermetic-unset-deleted survived"; fail=1
+  else echo "PASS: mutant hermetic-unset-deleted is killed"; fi
+  rm -rf "$_hm_m"
+  # S34: after the hermetic unset the runner's CI is gone, so every "weak result is a failure under CI" branch must read the value captured before it ($_st_ci). The check reads the
+  # selftest block (minus the capture line): it must name CI by its expansion nowhere and read $_st_ci in at least six branches.
+  _stci_ok() {  # <script file>: rc 0 iff the selftest block reads the captured CI and never the live one
+    _stci_p='$''{CI:-}'
+    _stci_body=$(sed -n '/^if \[ "\$SELFTEST" -eq 1 \]; then$/,$p' "$1" | grep -v '_st_ci=')
+    case "$_stci_body" in
+      *"$_stci_p"*) return 1 ;;
+    esac
+    [ "$(printf '%s\n' "$_stci_body" | grep -c '\[ -n "\$_st_ci" \]')" -ge 6 ]
+  }
+  if _stci_ok "$0"; then echo "PASS: s34 [weak-fails-under-captured-ci] the six weak-result branches read the CI captured before the hermetic unset"; else echo "FAIL: s34 [weak-fails-under-captured-ci] a weak-result branch reads the live (unset) CI or fewer than six read the captured one"; fail=1; fi
+  _hm_m=$(mktemp -d); sed "/e2e-drops-advisory is not observable here and CI is set/s/\"\\\$_st_ci\"/\"$_stci_p\"/" "$0" > "$_hm_m/preflight.sh"
+  if cmp -s "$0" "$_hm_m/preflight.sh"; then echo "FAIL: mutant weak-reads-live-ci did not apply"; fail=1
+  elif _stci_ok "$_hm_m/preflight.sh"; then echo "FAIL: mutant weak-reads-live-ci survived"; fail=1
+  else echo "PASS: mutant weak-reads-live-ci is killed (a branch that reads the unset CI again turns s34 red)"; fi
+  rm -rf "$_hm_m"
   if command -v kit_definitely_absent_tool_xyz >/dev/null 2>&1; then
     echo "FAIL: sentinel tool unexpectedly exists"; fail=1
   else
@@ -1202,13 +1958,53 @@ if [ "$SELFTEST" -eq 1 ]; then
   _sd=$(mktemp -d); _marker="$_sd/ran"
   printf '#!/bin/sh\ntouch "%s"\necho git version 2.25.1\n' "$_marker" > "$_sd/fakegit"
   chmod +x "$_sd/fakegit"
-  PREFLIGHT_GIT_VERSION_CMD="$_sd/fakegit" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" >/dev/null 2>&1 || true
+  # R7: CI=1 keeps this real run off the network (under CI the declaration is not read, so origin is never contacted)
+  env CI=1 PREFLIGHT_GIT_VERSION_CMD="$_sd/fakegit" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" >/dev/null 2>&1 </dev/null || true
   if [ -e "$_marker" ]; then
     echo "FAIL: an AMBIENT PREFLIGHT_GIT_VERSION_CMD was honored in a real run (env, not flag)"; fail=1
   else
     echo "PASS: a real run IGNORES an ambient PREFLIGHT_GIT_VERSION_CMD (the seam needs an explicit flag)"
   fi
   rm -rf "$_sd"
+
+  # SWAS-361 (352g F10): the kill-switch line. Set to "1" -> exactly ONE FAIL line naming what is lost; unset or "0" -> nothing;
+  # the exit code does not move; and the guard's truthiness is mirrored, so a coupling cell reds if the guard's definition moves.
+  out=$(KIT_GUARD_SELFEDIT=1 check_guard_killswitch 2>&1)
+  case "$out" in
+    *"FAIL KIT_GUARD_SELFEDIT=1"*"every guard refusal is OFF"*"deny log"*) echo "PASS: kill-switch exported prints a FAIL line naming what is lost" ;;
+    *) echo "FAIL: kill-switch exported did not print the FAIL line ($out)"; fail=1 ;;
+  esac
+  _ks_n=$(printf '%s\n' "$out" | grep -c 'FAIL KIT_GUARD_SELFEDIT')
+  if [ "$_ks_n" -eq 1 ]; then echo "PASS: exactly one kill-switch line"; else echo "FAIL: kill-switch line count $_ks_n, not 1"; fail=1; fi
+  out=$(KIT_GUARD_SELFEDIT=0 check_guard_killswitch 2>&1)
+  if [ -z "$out" ]; then echo "PASS: kill-switch value 0 prints nothing"; else echo "FAIL: kill-switch value 0 printed ($out)"; fail=1; fi
+  out=$(unset KIT_GUARD_SELFEDIT; check_guard_killswitch 2>&1)
+  if [ -z "$out" ]; then echo "PASS: kill-switch unset prints nothing"; else echo "FAIL: kill-switch unset printed ($out)"; fail=1; fi
+  _ks_rc_on=0; _ks_rc_off=0
+  KIT_GUARD_SELFEDIT=1 sh "$0" --selftest-e2e --boundary-advisory >/dev/null 2>&1 || _ks_rc_on=$?
+  env -u KIT_GUARD_SELFEDIT sh "$0" --selftest-e2e --boundary-advisory >/dev/null 2>&1 || _ks_rc_off=$?
+  if [ "$_ks_rc_on" -eq "$_ks_rc_off" ]; then echo "PASS: the kill-switch line leaves the exit code unchanged"; else echo "FAIL: the kill-switch line moved the exit ($_ks_rc_off -> $_ks_rc_on)"; fail=1; fi
+  if KIT_GUARD_SELFEDIT=1 sh "$0" --selftest-e2e --boundary-advisory 2>&1 | grep -q 'FAIL KIT_GUARD_SELFEDIT=1'; then echo "PASS: the kill-switch line is wired into the real body"; else echo "FAIL: the kill-switch line is not wired into the real body (defined-but-uncalled)"; fail=1; fi
+  # SWAS-361 load-bearing mutants: a sed mutation of a TEMP COPY of this script; the copy must no longer do the job (the cell would be
+  # red), and the mutation MUST apply (a vacuous mutant proves nothing).
+  _ks_mut() {  # <name> <sed expr> <env-value> <must-print: 1|0> : run the mutated copy's real body; FAIL if it behaves like the original
+    _ks_m=$(mktemp -d)
+    sed "$2" "$0" > "$_ks_m/preflight.sh"
+    if cmp -s "$0" "$_ks_m/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_ks_m"; return 0; fi
+    _ks_o=$(KIT_GUARD_SELFEDIT="$3" sh "$_ks_m/preflight.sh" --selftest-e2e --boundary-advisory 2>&1) || true
+    case "$_ks_o" in *"Recommended (GitHub-based flows"*) : ;; *) echo "FAIL: mutant $1 never ran the real body past the kill-switch call (vacuous)"; fail=1 ;; esac
+    _ks_hit=0; case "$_ks_o" in *"FAIL KIT_GUARD_SELFEDIT"*) _ks_hit=1 ;; esac
+    if [ "$_ks_hit" -eq "$4" ]; then echo "FAIL: mutant $1 survived (the kill-switch cell would stay green)"; fail=1; else echo "PASS: mutant $1 is killed"; fi
+    rm -rf "$_ks_m"
+  }
+  _ks_mut killswitch-uncalled 's/^check_guard_killswitch$/:/' 1 1
+  _ks_mut truthiness-nonempty 's/\[ "${KIT_GUARD_SELFEDIT:-0}" = "1" \] || return 0/[ -n "${KIT_GUARD_SELFEDIT:-}" ] || return 0/' 0 0
+  _ks_core="$(dirname "$0")/../.claude/hooks/guard-core.sh"
+  if [ ! -f "$_ks_core" ]; then
+    # On a kit tree (the kit's guard.sh is present) a missing guard-core.sh is a FAIL; elsewhere there is nothing to couple to, and no PASS is claimed.
+    if [ -f "$(dirname "$0")/../.claude/hooks/guard.sh" ]; then echo "FAIL: coupling - the kit's guard.sh is present but guard-core.sh is missing, so the selfedit truthiness cannot be checked"; fail=1; fi
+  elif grep -qF 'selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }' "$_ks_core"; then echo "PASS: coupling - the guard's selfedit truthiness is still exactly 1"
+  else echo "FAIL: coupling - the guard's selfedit truthiness moved; mirror it in check_guard_killswitch (preflight) and doctor"; fail=1; fi
 
   # NO GLOB: the version line is word-SPLIT, never pathname-expanded. `for _w in $1` unquoted splits AND
   # globs; a '*' in the string would expand against the CWD, so a file named e.g. '9.9.9' sitting in the
@@ -1228,7 +2024,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # is decorative. `--selftest-e2e` runs the REAL body with the injection seams live (the flag IS the
   # authorization — see the no-ambient-spoof assert above).
   e2e_rc=0
-  e2e=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || e2e_rc=$?
+  e2e=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e --boundary-advisory 2>&1) || e2e_rc=$?
   case "$e2e" in *warn*2.25*fallback*) echo "PASS: real preflight run names the git version + the fallback";; *) echo "FAIL: real run did not surface the git floor (rc=$e2e_rc)"; fail=1;; esac
   # DIFFERENTIAL, not absolute: `[ "$e2e_rc" -eq 0 ]` would assert a whole preflight run exits 0, which
   # folds in the AMBIENT environment (the CP-4 non-root refusal, a missing jq) — it reddens for reasons
@@ -1236,7 +2032,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # vacuous green, inverted. The claim is "the floor is ADVISORY", so assert exactly that: an old git
   # does not CHANGE preflight's exit code, whatever that code is in this environment.
   new_rc=0
-  PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e >/dev/null 2>&1 || new_rc=$?
+  PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e --boundary-advisory >/dev/null 2>&1 || new_rc=$?
   if [ "$e2e_rc" -eq "$new_rc" ]; then echo "PASS: the git floor does not change preflight's exit code (advisory, not blocking)"; else echo "FAIL: old git CHANGED the exit code (old=$e2e_rc modern=$new_rc)"; fail=1; fi
 
   # — T5 (CP-7 K3/K5): the DECLARED Node floor is ENFORCED, not merely declared ————————————
@@ -1363,7 +2159,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # in this repo). Drive all three legs through the REAL body via --selftest-e2e.
   rf_bad_rc=0
   rf_bad=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --stack typescript-node 2>&1) || rf_bad_rc=$?
+    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_bad_rc=$?
   case "$rf_bad" in *v20.20.2*) echo "PASS: a real below-floor run names the RUNNING version";; *) echo "FAIL: real run did not name the running version (rc=$rf_bad_rc): $rf_bad"; fail=1;; esac
   case "$rf_bad" in *"Node 24"*|*"node >= 24"*|*">= 24"*) echo "PASS: a real below-floor run names the REQUIRED floor";; *) echo "FAIL: real run did not name the floor: $rf_bad"; fail=1;; esac
   case "$rf_bad" in *--allow-runtime-mismatch*) echo "PASS: the refusal NAMES the escape in the same message (signpost, don't relax)";; *) echo "FAIL: refusal does not name --allow-runtime-mismatch: $rf_bad"; fail=1;; esac
@@ -1372,12 +2168,12 @@ if [ "$SELFTEST" -eq 1 ]; then
 
   rf_ok_rc=0
   rf_ok=$(PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --stack typescript-node 2>&1) || rf_ok_rc=$?
+    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_ok_rc=$?
   case "$rf_ok" in *"meets the Node 24 floor"*) echo "PASS: a real in-floor run states the version it verified";; *) echo "FAIL: in-floor run did not state the verified floor (rc=$rf_ok_rc): $rf_ok"; fail=1;; esac
 
   rf_esc_rc=0
   rf_esc=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --stack typescript-node --allow-runtime-mismatch 2>&1) || rf_esc_rc=$?
+    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node --allow-runtime-mismatch 2>&1) || rf_esc_rc=$?
   case "$rf_esc" in *UNSUPPORTED*) echo "PASS: a real waived run says UNSUPPORTED";; *) echo "FAIL: waived run does not say UNSUPPORTED (rc=$rf_esc_rc): $rf_esc"; fail=1;; esac
   # A SUPPRESSED REFUSAL MUST NEVER READ AS A PASS. DIFFERENTIAL, not absolute: assert the green is
   # absent under the escape *given that the same environment prints it in-floor* — an absolute assert
@@ -1387,13 +2183,60 @@ if [ "$SELFTEST" -eq 1 ]; then
       *"All prerequisites present"*) echo "FAIL: the escape printed the clean green — a suppressed refusal read as a pass"; fail=1 ;;
       *) echo "PASS: the same environment prints the green in-floor but NOT under the escape (differential)" ;;
     esac
+  elif [ -n "$_st_ci" ]; then
+    echo "FAIL: this environment prints no green even in-floor, so the green/no-green differential is not observable and CI is set (a weak result is a failure)"; fail=1
   else
     echo "PASS: (weak) this environment prints no green even in-floor — the green/no-green differential is not observable here"
   fi
 
+  # SWAS-355 floor-rc-is-the-floor (design r1.1, L1): the below-floor cell asserts a NON-ZERO exit, and on a developer terminal without the user-scope
+  # strictAllowlist `bfail` alone makes the rc non-zero, so that cell would pass vacuously. Every e2e call therefore passes --boundary-advisory, and this
+  # cell proves the non-zero rc comes from the floor. DIFFERENTIAL (the rule of the git-floor cell above): the boundary is pinned (an OFF sandbox that nothing
+  # declares, so bfail FIRES), and the below-floor rc is asserted non-zero only when the floor-met run exits 0 in the same environment; else the weak PASS.
+  _fl_fx=$(mktemp -d)
+  printf '{"sandbox":{"enabled":false}}\n' > "$_fl_fx/off.json"
+  printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}}}\n' > "$_fl_fx/on.json"
+  _flr() {  # <node version> <boundary flag or ""> <project settings>: the typescript-node e2e run with the boundary pinned; sets flr_rc
+    flr_rc=0
+    # shellcheck disable=SC2086  # $2 is one optional flag
+    env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME PREFLIGHT_NODE_VERSION_CMD="echo $1" PREFLIGHT_BOUNDARY_OPTOUT=@absent PREFLIGHT_SANDBOX_SETTINGS="$3" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Darwin PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$0" --selftest-e2e $2 --stack typescript-node >/dev/null 2>&1 || flr_rc=$?
+  }
+  _flr_cell() {  # <flag for the run on which bfail fires> -> _flr_res = ok | red | weak (weak: this environment exits non-zero even with the floor met and a clean boundary)
+    _flr v24.0.0 --boundary-advisory "$_fl_fx/on.json"; _flr_ok=$flr_rc
+    _flr v24.0.0 "$1" "$_fl_fx/off.json"; _flr_adv=$flr_rc
+    if [ "$_flr_ok" -ne 0 ]; then _flr_res=weak
+    elif [ "$_flr_adv" -ne 0 ]; then _flr_res=red
+    else _flr_res=ok; fi
+  }
+  _flr_cell --boundary-advisory
+  case "$_flr_res" in
+    ok) echo "PASS: floor-rc-is-the-floor [advisory] the floor met exits 0 under --boundary-advisory even with an undeclared OFF sandbox (bfail does not reach the rc)" ;;
+    weak) if [ -n "$_st_ci" ]; then echo "FAIL: floor-rc-is-the-floor [advisory] not observable here and CI is set (a weak result is a failure)"; fail=1; else echo "PASS: (weak) floor-rc-is-the-floor [advisory] this environment exits non-zero with the floor met and a clean boundary, so the differential is not observable here"; fi ;;
+    *) echo "FAIL: floor-rc-is-the-floor [advisory] --boundary-advisory let bfail move the exit"; fail=1 ;;
+  esac
+  _flr v24.0.0 "" "$_fl_fx/off.json"; _flr_un=$flr_rc
+  _flr v24.0.0 --boundary-advisory "$_fl_fx/on.json"; _flr_ok=$flr_rc
+  _flr v20.20.2 --boundary-advisory "$_fl_fx/on.json"; _flr_bad=$flr_rc
+  if [ "$_flr_ok" -ne 0 ] && [ -n "$_st_ci" ]; then
+    echo "FAIL: floor-rc-is-the-floor [differential] the floor-met run exits $_flr_ok and CI is set (a weak result is a failure)"; fail=1
+  elif [ "$_flr_ok" -ne 0 ]; then
+    echo "PASS: (weak) floor-rc-is-the-floor [differential] the floor-met run exits $_flr_ok in this environment, so a non-zero below-floor rc proves nothing here"
+  else
+    if [ "$_flr_bad" -ne 0 ]; then echo "PASS: floor-rc-is-the-floor [below-floor] the below-floor run exits non-zero where the floor-met run exits 0 (the rc is the floor)"; else echo "FAIL: floor-rc-is-the-floor [below-floor] the below-floor run exited 0"; fail=1; fi
+    if [ "$_flr_un" -ne 0 ]; then echo "PASS: floor-rc-is-the-floor [bfail-fires] without the flag the pinned undeclared OFF sandbox exits non-zero (the pin is not vacuous)"; else echo "FAIL: floor-rc-is-the-floor [bfail-fires] the pinned undeclared OFF sandbox did not move the exit without the flag"; fail=1; fi
+  fi
+  # mutant e2e-drops-advisory: one harness call WITHOUT the flag, on the run where bfail fires, must turn the cell red.
+  _flr_cell ""
+  case "$_flr_res" in
+    red) echo "PASS: mutant e2e-drops-advisory is killed (a harness call without --boundary-advisory turns floor-rc-is-the-floor red)" ;;
+    weak) if [ -n "$_st_ci" ]; then echo "FAIL: mutant e2e-drops-advisory is not observable here and CI is set (a weak result is a failure)"; fail=1; else echo "PASS: (weak) mutant e2e-drops-advisory is not observable here (this environment exits non-zero with a clean boundary)"; fi ;;
+    *) echo "FAIL: mutant e2e-drops-advisory survived (the cell stayed green with the flag dropped)"; fail=1 ;;
+  esac
+  rm -rf "$_fl_fx"
+
   # PER-STACK end-to-end: a non-Node stack run below the Node floor is unaffected by it.
   rf_go=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --stack go 2>&1) || true
+    sh "$0" --selftest-e2e --boundary-advisory --stack go 2>&1) || true
   case "$rf_go" in *"Node"*"floor"*) echo "FAIL: a go run was judged against the Node floor: $rf_go"; fail=1;; *) echo "PASS: a non-Node stack run is unaffected end-to-end";; esac
 
   # NO AMBIENT SPOOF (flag-not-env) — load-bearing HERE in a way it is not for the advisory git floor:
@@ -1403,8 +2246,8 @@ if [ "$SELFTEST" -eq 1 ]; then
   _nd=$(mktemp -d); _nmarker="$_nd/ran"
   printf '#!/bin/sh\ntouch "%s"\necho v24.18.0\n' "$_nmarker" > "$_nd/fakenode"
   chmod +x "$_nd/fakenode"
-  PREFLIGHT_NODE_VERSION_CMD="$_nd/fakenode" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --stack typescript-node >/dev/null 2>&1 || true
+  env CI=1 PREFLIGHT_NODE_VERSION_CMD="$_nd/fakenode" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --stack typescript-node >/dev/null 2>&1 </dev/null || true   # R7: CI=1 and no TTY (S25), so no origin read
   if [ -e "$_nmarker" ]; then
     echo "FAIL: an AMBIENT PREFLIGHT_NODE_VERSION_CMD was honored in a real run (env, not flag) — a blocking check the environment can redirect"; fail=1
   else
@@ -2936,8 +3779,8 @@ EOF
   esac
   fi
 
-  # — the agent's OS sandbox profile (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN). The availability cases run under
-  # STRICT (the default shipped file has the sandbox off, so nothing would be checked): available -> no warn;
+  # — the agent's OS sandbox profile (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN). The availability cases run with the sandbox
+  # ON (with it off nothing would be checked): available -> no warn;
   # each missing reason -> a warn NAMING it; `miss` is untouched in every case (advisory only).
   _sbx=$(mktemp -d)
   printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/on.json"
@@ -2970,12 +3813,12 @@ EOF
   sbx_case linux-no-socat "socat" Linux "bwrap" 1
   sbx_case linux-userns-blocked "user namespaces" Linux "bwrap socat" 0
   sbx_case other-os "no supported sandbox" Plan9 "" 1
-  # The profile line: off by default (and no cannot-start warn, even where no sandbox could start), strict via the
-  # shipped file or via the local file (scalars: local over project), the local file turning a strict project off,
+  # The profile line: off when turned off in a scope (and no cannot-start warn, even where no sandbox could start), on via the
+  # shipped file or via the local file (scalars: local over project), the local file turning an on project off,
   # and a project file with no sandbox block (off). The old "restore the shipped block" warn is gone.
   printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/local-on.json"
   printf '{"sandbox":{"enabled":false}}\n' > "$_sbx/local-off.json"
-  sbx_prof() {  # <label> <off|strict> <settings> [local] <os> <tools> <bwrap_ok> [user] [managed] [expected-warn reason]
+  sbx_prof() {  # <label> <off|on> <settings> [local] <os> <tools> <bwrap_ok> [user] [managed] [expected-warn reason]
     sbx_case "$1" "${10:-}" "$5" "$6" "$7" "$3" "${4:-}" "${8:-}" "${9:-}"
     case "$out" in
       *"agent OS sandbox: $2 ("*) echo "PASS: sandbox profile [$1] -> $2" ;;
@@ -2988,37 +3831,1409 @@ EOF
       case "$out" in
         *warn*|*"can start here"*) echo "FAIL: sandbox profile [$1] ran the availability check with the sandbox off ($out)"; fail=1 ;;
       esac
+      case "$out" in
+        *"the shipped default is on; here it is turned off in a settings scope"*) echo "PASS: sandbox profile [$1] -> the off line says the shipped default is on" ;;
+        *) echo "FAIL: sandbox profile [$1] did not print the off line's turned-off-in-a-scope clause ($out)"; fail=1 ;;
+      esac
     fi
   }
   sbx_prof profile-off-default off "$_sbx/off.json" "" Plan9 "" 1
   sbx_prof profile-off-no-block off "$_sbx/noblock.json" "" Plan9 "" 1
-  sbx_prof profile-strict-shipped strict "$_sbx/on.json" "" Darwin "sandbox-exec" 1
-  sbx_prof profile-strict-via-local strict "$_sbx/off.json" "$_sbx/local-on.json" Darwin "sandbox-exec" 1
+  sbx_prof profile-strict-shipped on "$_sbx/on.json" "" Darwin "sandbox-exec" 1
+  sbx_prof profile-strict-via-local on "$_sbx/off.json" "$_sbx/local-on.json" Darwin "sandbox-exec" 1
   sbx_prof profile-local-turns-off off "$_sbx/on.json" "$_sbx/local-off.json" Plan9 "" 1
-  # No sandbox key anywhere in the shipped file (the real default) is off. A user-level file (~/.claude) turning it
-  # on is strict when the project file says nothing; precedence is managed > local > project > user.
+  # A project file with no sandbox block is off. A user-level file (~/.claude) turning it
+  # on is on when the project file says nothing; precedence is managed > local > project > user.
   sbx_prof profile-off-absent-key off "$_sbx/noblock.json" "" Plan9 "" 1
-  sbx_prof profile-strict-via-user strict "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "$_sbx/on.json"
+  sbx_prof profile-strict-via-user on "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "$_sbx/on.json"
   sbx_prof profile-project-false-beats-user off "$_sbx/off.json" "" Plan9 "" 1 "$_sbx/on.json"
-  sbx_prof profile-strict-via-managed strict "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
-  sbx_prof profile-managed-beats-local strict "$_sbx/noblock.json" "$_sbx/local-off.json" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
+  sbx_prof profile-strict-via-managed on "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
+  sbx_prof profile-managed-beats-local on "$_sbx/noblock.json" "$_sbx/local-off.json" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
   sbx_prof profile-managed-off-beats-local off "$_sbx/noblock.json" "$_sbx/local-on.json" Plan9 "" 1 "" "$_sbx/off.json"
-  # Strict but unable to start: the profile line AND the warn naming the reason.
-  sbx_prof profile-strict-unavailable strict "$_sbx/off.json" "$_sbx/local-on.json" Linux "socat" 1 "" "" "bubblewrap"
+  # On but unable to start: the profile line AND the warn naming the reason.
+  sbx_prof profile-strict-unavailable on "$_sbx/off.json" "$_sbx/local-on.json" Linux "socat" 1 "" "" "bubblewrap"
   case "$out" in
     *warn*"bubblewrap"*) echo "PASS: sandbox profile [profile-strict-unavailable] -> warn naming bubblewrap" ;;
     *) echo "FAIL: sandbox profile [profile-strict-unavailable] did not warn naming bubblewrap ($out)"; fail=1 ;;
   esac
-  # WIRED: a real run (seams live) under strict surfaces the warning, and does not change the exit code (advisory).
-  sbx_e2e=$(PREFLIGHT_SANDBOX_SETTINGS="$_sbx/on.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || true
+  # WIRED: a real run (seams live) with the sandbox on surfaces the warning, and does not change the exit code (advisory).
+  sbx_e2e=$(PREFLIGHT_SANDBOX_SETTINGS="$_sbx/on.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_BOUNDARY_OPTOUT=@absent PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e --boundary-advisory 2>&1) || true
   rm -rf "$_sbx"
   case "$sbx_e2e" in
-    *"agent OS sandbox cannot start"*) echo "PASS: a real preflight run surfaces the sandbox warning under the strict profile" ;;
-    *) echo "FAIL: a real preflight run did not surface the sandbox warning under the strict profile"; fail=1 ;;
+    *"agent OS sandbox cannot start"*) echo "PASS: a real preflight run surfaces the sandbox warning with the sandbox on" ;;
+    *) echo "FAIL: a real preflight run did not surface the sandbox warning with the sandbox on"; fail=1 ;;
   esac
   miss=0
 
+  # — SWAS-354 (352b): the boundary lines. Keys only (a planted token never appears); the user scope, read-denied to an agent's shell, reads
+  # UNVERIFIED and never ON; strictAllowlist counts only at user or managed scope; the exit code does not move for a declared or unverified state;
+  # under CI only the committed project block is read and the line says so ([declared], never [static]). SWAS-355 cells follow the 354 ones.
+  # Every cell clears CI, GITHUB_ACTIONS and SANDBOX_RUNTIME first (a CI runner or an agent session would otherwise leak into the cell).
+  _bnd=$(mktemp -d)
+  printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}},"permissions":{"deny":["WebFetch"]}}\n' > "$_bnd/full.json"
+  printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude"]}}}\n' > "$_bnd/shortwrite.json"
+  printf '{"sandbox":{"enabled":true,"filesystem":{"denyWrite":["./.claude","~/.claude/settings.json"]}}}\n' > "$_bnd/noread.json"
+  printf '{"sandbox":{"enabled":false}}\n' > "$_bnd/off.json"
+  printf '{"permissions":{}}\n' > "$_bnd/noblock.json"
+  printf '{"sandbox":{"enabled":true,"network":{"strictAllowlist":true},"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}}}\n' > "$_bnd/strictproj.json"
+  printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"},"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_bnd/user-strict.json"
+  printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"}}\n' > "$_bnd/user-plain.json"
+  bnd_case() {  # <project> <local> <user> <managed> [runtime|ci] [os] [declaration seam: @absent (default) | @nonregular | a file]: runs check_boundary with the seams; output in $out
+    out=$( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME
+      PREFLIGHT_SANDBOX_SETTINGS="$1"; PREFLIGHT_SANDBOX_LOCAL="${2:-/nonexistent-local}"; PREFLIGHT_SANDBOX_USER="${3:-/nonexistent-user}"; PREFLIGHT_SANDBOX_MANAGED="${4:-/nonexistent-managed}"
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED
+      PREFLIGHT_BOUNDARY_OPTOUT="${7:-@absent}"; export PREFLIGHT_BOUNDARY_OPTOUT   # no real origin read: the declaration is a fixture file or a state word
+      PREFLIGHT_SANDBOX_OS="${6:-Darwin}"; PREFLIGHT_SANDBOX_TOOLS="sandbox-exec"; PREFLIGHT_SANDBOX_BWRAP_OK=1   # the sandbox CAN start unless a cell says Plan9
+      export PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      if [ "${5:-}" = runtime ]; then SANDBOX_RUNTIME=1; export SANDBOX_RUNTIME; fi
+      if [ "${5:-}" = ci ]; then CI=true; GITHUB_ACTIONS=true; export CI GITHUB_ACTIONS; fi
+      check_boundary 2>&1 )
+  }
+  bnd_has() {  # <label> <substring>
+    case "$out" in *"$2"*) echo "PASS: boundary [$1] prints '$2'" ;; *) echo "FAIL: boundary [$1] did not print '$2' ($out)"; fail=1 ;; esac
+  }
+  bnd_no() {  # <label> <substring>
+    case "$out" in *"$2"*) echo "FAIL: boundary [$1] printed '$2' ($out)"; fail=1 ;; *) echo "PASS: boundary [$1] does not print '$2'" ;; esac
+  }
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json"
+  bnd_has on-user-strict 'ok   boundary: ON [static] — read-deny: ON, write-protect: ON'
+  bnd_has on-user-strict 'egress: ENFORCED'
+  bnd_no on-user-strict 'NOT ENFORCED'
+  bnd_has on-user-strict 'web: WebFetch denied; read pages with sh scripts/fetch-text.sh'
+  bnd_no on-user-strict 'PLANTEDSECRET'
+  _bnd_plain="$out"
+  # INVERTED by SWAS-355 (r1, L2): the CI run no longer prints what the cleared run prints. It reads the committed project block only and says so.
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" ci
+  if [ "$out" != "$_bnd_plain" ]; then echo "PASS: boundary the CI=true run differs from the cleared run (the line keys on CI: the declared tier)"; else echo "FAIL: boundary CI=true printed exactly what the cleared run prints"; fail=1; fi
+  bnd_has ci-declared-tier 'ok   boundary: ON [declared] (CI set: local and user scopes not read)'
+  bnd_no ci-declared-tier '[static]'
+  bnd_has ci-declared-tier 'egress: N/A [declared]'
+  bnd_no ci-declared-tier 'egress: ENFORCED'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"
+  bnd_has user-without-strict 'FAIL egress: NOT ENFORCED and UNDECLARED [static] — strictAllowlist is not set at user or managed scope'
+  bnd_no user-without-strict 'PLANTEDSECRET'
+  bnd_case "$_bnd/full.json"
+  bnd_has user-absent 'FAIL egress: NOT ENFORCED'
+  bnd_case "$_bnd/strictproj.json"
+  bnd_has strict-only-in-the-repo-file 'FAIL egress: NOT ENFORCED'
+  bnd_has strict-only-in-the-repo-file 'ignored by Claude Code'
+  bnd_case "$_bnd/full.json" "" "" "$_bnd/user-strict.json"
+  bnd_has strict-at-managed-scope 'egress: ENFORCED'
+  bnd_case "$_bnd/full.json" "$_bnd/off.json"
+  bnd_has local-off-beats-project-on 'FAIL boundary: OFF'
+  bnd_no local-off-beats-project-on 'egress:'
+  bnd_case "$_bnd/off.json"
+  bnd_has project-off 'FAIL boundary: OFF'
+  bnd_case "$_bnd/noblock.json"
+  bnd_has no-sandbox-block 'FAIL boundary: OFF'
+  bnd_case "$_bnd/noread.json"
+  bnd_has on-without-read-deny 'FAIL boundary: PARTIAL'
+  bnd_has on-without-read-deny 'read-deny: OFF'
+  bnd_case "$_bnd/shortwrite.json"
+  bnd_has on-with-project-write-only 'FAIL boundary: PARTIAL'
+  bnd_has on-with-project-write-only 'write-protect: PARTIAL'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" runtime
+  bnd_has in-session-user-scope 'warn egress: UNVERIFIED'
+  bnd_no in-session-user-scope 'egress: ENFORCED'
+  bnd_no in-session-user-scope 'PLANTEDSECRET'
+  bnd_has in-session-user-scope 'is unreadable here'
+  bnd_case "/nonexistent-project" "" "$_bnd/user-plain.json" "" runtime
+  bnd_has in-session-nothing-else-decides 'warn boundary: UNVERIFIED'
+  bnd_no in-session-nothing-else-decides 'PLANTEDSECRET'
+  # The settings enable the sandbox but it cannot start here (Claude Code then runs without it): never ON.
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" "" Plan9
+  bnd_has sandbox-cannot-start 'FAIL boundary: OFF (cannot start:'
+  bnd_no sandbox-cannot-start 'boundary: ON'
+  # A local file is part of the merge: an allowRead that names more than the two templates shadows the read-deny; allowUnsandboxedCommands opts commands out.
+  printf '{"sandbox":{"filesystem":{"allowRead":["**/.env"]}}}\n' > "$_bnd/local-shadow.json"
+  printf '{"sandbox":{"allowUnsandboxedCommands":true}}\n' > "$_bnd/local-unsandboxed.json"
+  printf '{"sandbox":{"filesystem":{"allowRead":["**/.env.example","**/.env.sample"]}}}\n' > "$_bnd/local-templates.json"
+  bnd_case "$_bnd/full.json" "$_bnd/local-shadow.json" "$_bnd/user-strict.json"
+  bnd_has local-allowread-shadows 'FAIL boundary: PARTIAL'
+  bnd_has local-allowread-shadows 'read-deny: SHADOWED'
+  bnd_case "$_bnd/full.json" "$_bnd/local-unsandboxed.json" "$_bnd/user-strict.json"
+  bnd_has local-unsandboxed-commands 'FAIL boundary: PARTIAL'
+  bnd_has local-unsandboxed-commands 'allowUnsandboxedCommands is true'
+  # A file jq reads but JSON.parse refuses (a BOM, a NaN literal) is UNVERIFIED in its scope, never ON.
+  printf '\357\273\277{"sandbox":{"enabled":true}}\n' > "$_bnd/bom.json"
+  printf '{"sandbox":{"enabled":true,"zz":nan}}\n' > "$_bnd/nan.json"
+  bnd_case "$_bnd/bom.json"
+  bnd_has bom-project-file 'warn boundary: UNVERIFIED'
+  bnd_no bom-project-file 'boundary: ON'
+  bnd_case "$_bnd/nan.json"
+  bnd_has nan-project-file 'warn boundary: UNVERIFIED'
+  # A byte below 0x20 (a NUL) is UNVERIFIED, never ON: BSD awk would truncate at it and jq reads past it. A present allowRead that is not a list is SHADOWED.
+  printf '{"sandbox":{"enabled":true}}\n\000' > "$_bnd/nul-trailing.json"
+  printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"],"allowRead":"**/.env"}}}\n' > "$_bnd/allowread-string.json"
+  bnd_case "$_bnd/nul-trailing.json"
+  bnd_has nul-project-file 'warn boundary: UNVERIFIED'
+  bnd_no nul-project-file 'boundary: ON'
+  bnd_case "$_bnd/allowread-string.json"
+  bnd_has allowread-not-a-list 'read-deny: SHADOWED'
+  # A value Claude Code might coerce to true ("true", 1) counts as set: only false or absent is safe.
+  printf '{"sandbox":{"allowUnsandboxedCommands":"true"}}\n' > "$_bnd/local-unsandboxed-str.json"
+  bnd_case "$_bnd/full.json" "$_bnd/local-unsandboxed-str.json" "$_bnd/user-strict.json"
+  bnd_has local-unsandboxed-string 'allowUnsandboxedCommands is true'
+  bnd_case "$_bnd/full.json" "$_bnd/local-templates.json" "$_bnd/user-strict.json"
+  bnd_has local-allowread-templates-only 'ok   boundary: ON [static]'
+  # An unreadable user file (mode 000) reads UNVERIFIED too. Skipped where the file stays readable (root).
+  printf '{"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_bnd/user-locked.json"; chmod 000 "$_bnd/user-locked.json"
+  if cat "$_bnd/user-locked.json" >/dev/null 2>&1; then
+    echo "PASS: boundary [mode-000 user file] skipped (the file is readable here, as root)"
+  else
+    bnd_case "$_bnd/full.json" "" "$_bnd/user-locked.json"
+    bnd_has mode-000-user-file 'warn egress: UNVERIFIED'
+    bnd_no mode-000-user-file 'egress: ENFORCED'
+  fi
+  chmod 600 "$_bnd/user-locked.json"
+  # The line is information only: it never sets `miss` or `rec`, so the exit code does not move.
+  miss=0; rec=0
+  PREFLIGHT_SANDBOX_SETTINGS="$_bnd/off.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed check_boundary >/dev/null 2>&1
+  PREFLIGHT_SANDBOX_SETTINGS="$_bnd/full.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed check_boundary >/dev/null 2>&1
+  unset PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED
+  if [ "$miss" -eq 0 ] && [ "$rec" -eq 0 ]; then echo "PASS: boundary lines (OFF and NOT ENFORCED) leave miss and rec untouched"; else echo "FAIL: a boundary line set miss or rec (the check must stay information only)"; fail=1; fi
+  miss=0; rec=0
+  # WIRED: a real run (seams live, CI and the session marker cleared) prints the line, so a defined-but-uncalled check cannot pass.
+  _bnd_e2e() {  # <project> <user> [env-assignment] [script]: the real body past the boundary call; prints its output
+    # shellcheck disable=SC2086  # deliberate word-split: ${3:-...} is one NAME=value word
+    env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME ${3:-KIT_UNUSED=1} PREFLIGHT_SANDBOX_SETTINGS="$1" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER="$2" PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS="${5:-Darwin}" PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_BOUNDARY_OPTOUT=@absent PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "${4:-$0}" --selftest-e2e --boundary-advisory 2>&1 || true
+  }
+  out=$(_bnd_e2e "$_bnd/full.json" "$_bnd/user-plain.json")
+  bnd_has wired-into-the-real-run 'boundary: ON [static]'
+  bnd_has wired-into-the-real-run 'egress: NOT ENFORCED'
+  # Load-bearing mutants: a sed mutation of a TEMP COPY; the copy must stop printing what the original prints, and the mutation MUST apply.
+  _bnd_mut() {  # <name> <sed expr> <project> <user> <runtime-env or ""> <substring the ORIGINAL prints>
+    _bm=$(mktemp -d)
+    sed "$2" "$0" > "$_bm/preflight.sh"
+    if cmp -s "$0" "$_bm/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bm"; return 0; fi
+    _bm_o=$(_bnd_e2e "$3" "$4" "$5" "$_bm/preflight.sh" "${7:-Darwin}")
+    case "$_bm_o" in *"Recommended (GitHub-based flows"*) : ;; *) echo "FAIL: mutant $1 never ran the real body past the boundary call (vacuous)"; fail=1 ;; esac
+    case "$_bm_o" in *"$6"*) echo "FAIL: mutant $1 survived (it still prints '$6')"; fail=1 ;; *) echo "PASS: mutant $1 is killed" ;; esac
+    rm -rf "$_bm"
+  }
+  _bnd_mut boundary-uncalled 's/^check_boundary$/:/' "$_bnd/full.json" "$_bnd/user-plain.json" "" 'boundary: ON [static]'
+  _bnd_mut strict-from-repo-file '/MUT-STRICT-SCOPE/s/managed|user) _bst=1 ;; \*) _bstrepo=1 ;;/managed|user|project|local) _bst=1 ;; *) _bstrepo=1 ;;/' "$_bnd/strictproj.json" "/nonexistent-user" "" 'egress: NOT ENFORCED'
+  _bnd_mut in-session-marker-removed '/MUT-INSESSION/s/if \[ "\$_bn" = user \] && \[ -n "[^"]*" \]; then/if false; then/' "$_bnd/full.json" "$_bnd/user-strict.json" "SANDBOX_RUNTIME=1" 'egress: UNVERIFIED'
+  _bnd_mut web-line-dropped '/MUT-WEBLINE/s/echo "  ok   web:[^"]*"/:/' "$_bnd/full.json" "$_bnd/user-plain.json" "" 'web: WebFetch denied'
+  _bnd_mut strict-json-check-neutered 's/END { exit bad }/END { exit 0 }/' "$_bnd/nan.json" "$_bnd/user-plain.json" "" 'boundary: UNVERIFIED'
+  # (the awk token test is neutered too: gawk keeps a NUL in the record and would still refuse the file, BSD awk truncates at it)
+  # The NUL check is load-bearing only where jq itself accepts the fixture (macOS jq does; a Linux jq may refuse a trailing NUL, and then the file reads
+  # UNVERIFIED with the check neutered too, so the mutant cannot show anything). Labelled, not hidden.
+  if jq -e . "$_bnd/nul-trailing.json" >/dev/null 2>&1; then
+    _bnd_mut nul-check-neutered '/LC_ALL=C tr -d/s/= 0 \] || { echo unreadable; return 0; }/= 0 ] || :/;s/END { exit bad }/END { exit 0 }/' "$_bnd/nul-trailing.json" "$_bnd/user-plain.json" "" 'boundary: UNVERIFIED'
+  else
+    echo "PASS: mutant nul-check-neutered not applicable on this jq (it refuses a trailing NUL itself, so the file reads UNVERIFIED without the check); the replacement is the jq-partial-output cells below, which run on every platform"
+  fi
+  # A jq that prints a partial object and then exits non-zero (what a Linux jq 1.7 does on a trailing NUL) must read as ONE line, unreadable, never as a pass and never as
+  # two lines (the old `|| echo unreadable` streamed both, and the caller's second jq aborted the run under set -eu). A PATH-stub jq makes this testable on every platform.
+  _bnd_stub=$(mktemp -d); _bnd_realjq=$(command -v jq)
+  { printf '#!/bin/sh\n'; printf 'case "$*" in *strictAllowlist*) echo "{\\"e\\":\\"true\\"}"; exit 2 ;; esac\n'; printf 'exec %s "$@"\n' "$_bnd_realjq"; } > "$_bnd_stub/jq"
+  chmod +x "$_bnd_stub/jq"
+  out=$( PATH="$_bnd_stub:$PATH"; export PATH; boundary_read_scope "$_bnd/full.json" )
+  if [ "$out" = unreadable ]; then echo "PASS: boundary [jq-partial-output-scope] a jq that prints a partial object then fails reads as exactly one line: unreadable"; else echo "FAIL: boundary [jq-partial-output-scope] expected exactly 'unreadable' ($out)"; fail=1; fi
+  out=$( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME
+    PATH="$_bnd_stub:$PATH"; export PATH
+    PREFLIGHT_SANDBOX_SETTINGS="$_bnd/full.json"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_USER=/nonexistent-user; PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed
+    export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED
+    PREFLIGHT_SANDBOX_OS=Darwin; PREFLIGHT_SANDBOX_TOOLS=sandbox-exec; PREFLIGHT_SANDBOX_BWRAP_OK=1; export PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+    check_boundary 2>&1 )
+  bnd_has jq-partial-output-line 'boundary: UNVERIFIED'
+  bnd_no jq-partial-output-line 'boundary: ON'
+  if [ "$(printf '%s\n' "$out" | grep -c 'boundary:')" -eq 1 ]; then echo "PASS: boundary [jq-partial-output-line] exactly one boundary line"; else echo "FAIL: boundary [jq-partial-output-line] expected exactly one boundary line ($out)"; fail=1; fi
+  out=$( PATH="$_bnd_stub:$PATH"; export PATH; _bnd_e2e "$_bnd/full.json" "$_bnd/user-plain.json" )   # PATH exported, never word-split into env (a PATH entry may hold a space)
+  bnd_has jq-partial-output-real-run 'Recommended (GitHub-based flows'
+  bnd_has jq-partial-output-real-run 'boundary: UNVERIFIED'
+  # The same two-line crash was reachable on EVERY platform, with the REAL jq (no stub): a file with trailing garbage passes the tr and awk pre-checks, and
+  # jq prints the object and then exits non-zero on the stray bracket. It must read as one unreadable line, never ON.
+  printf '{"a":1} ]\n' > "$_bnd/trailing-garbage.json"
+  out=$( boundary_read_scope "$_bnd/trailing-garbage.json" )
+  if [ "$out" = unreadable ]; then echo "PASS: boundary [trailing-garbage-real-jq-scope] a file with trailing garbage reads as exactly one line: unreadable (real jq)"; else echo "FAIL: boundary [trailing-garbage-real-jq-scope] expected exactly 'unreadable' ($out)"; fail=1; fi
+  bnd_case "$_bnd/trailing-garbage.json"
+  bnd_has trailing-garbage-real-jq 'boundary: UNVERIFIED'
+  bnd_no trailing-garbage-real-jq 'boundary: ON'
+  if [ "$(printf '%s\n' "$out" | grep -c 'boundary:')" -eq 1 ]; then echo "PASS: boundary [trailing-garbage-real-jq] exactly one boundary line"; else echo "FAIL: boundary [trailing-garbage-real-jq] expected exactly one boundary line ($out)"; fail=1; fi
+  # The mutant restores the old streaming (`|| echo unreadable` inside the capture): the run must lose the body (it aborts), which is how the real crash showed.
+  _bm=$(mktemp -d)
+  sed 's/}'"'"' "\$1" 2>\/dev\/null) || { echo unreadable; return 0; }/}'"'"' "$1" 2>\/dev\/null || echo unreadable)/;/in   # MUT-ONEDOC$/,/^  esac$/d' "$0" > "$_bm/preflight.sh"   # the one-document check would also catch the streamed pair, so the mutant removes it too
+  if cmp -s "$0" "$_bm/preflight.sh"; then echo "FAIL: mutant jq-streams-partial-output did not apply (the sed expression matched nothing)"; fail=1
+  elif ! sh -n "$_bm/preflight.sh" 2>/dev/null; then echo "FAIL: mutant jq-streams-partial-output does not parse (a mutant that cannot run would read as killed)"; fail=1
+  else
+    _bm_o=$( PATH="$_bnd_stub:$PATH"; export PATH; _bnd_e2e "$_bnd/full.json" "$_bnd/user-plain.json" "" "$_bm/preflight.sh" )
+    case "$_bm_o" in *"Recommended (GitHub-based flows"*) echo "FAIL: mutant jq-streams-partial-output survived (the run still reaches the body)"; fail=1 ;; *) echo "PASS: mutant jq-streams-partial-output is killed (the restored streaming aborts the run)" ;; esac
+  fi
+  rm -rf "$_bm" "$_bnd_stub"
+  # A CI=true run with HOME at an empty directory (no ~/.claude) and the user scope at a nonexistent seam must reach the body past the boundary call.
+  _bnd_home=$(mktemp -d)
+  out=$(env -u GITHUB_ACTIONS -u SANDBOX_RUNTIME CI=true HOME="$_bnd_home" PREFLIGHT_SANDBOX_SETTINGS="$_bnd/full.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Darwin PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$0" --selftest-e2e --boundary-advisory 2>&1 || true)
+  rm -rf "$_bnd_home"
+  bnd_has ci-true-empty-home-reaches-the-body 'Recommended (GitHub-based flows'
+  bnd_has ci-true-empty-home-reaches-the-body 'boundary: ON [declared]'
+  bnd_no ci-true-empty-home-reaches-the-body 'boundary: ON [static]'
+  _bnd_mut cannot-start-ignored '/MUT-CANTSTART/s/if \[ "\$_bci" -eq 0 \] \&\& ! _bwhy=\$(sandbox_unavailable_reason); then/if false; then/' "$_bnd/full.json" "$_bnd/user-plain.json" "" 'boundary: OFF (cannot start:' Plan9
+  # ==== SWAS-355 (355a): the opt-out declaration, bfail, --boundary-advisory, the legs, DC20 ================================================================
+  # Fixtures only: the origin read is the PREFLIGHT_BOUNDARY_OPTOUT seam (a fixture file, @absent, @nonregular or @unreadable) except in the cells that drive the
+  # REAL reader against a local bare repository. No network, no real home. Every cell clears CI, GITHUB_ACTIONS and SANDBOX_RUNTIME (bnd_case, _bnd_run).
+  _dl='an agent can read .env and ~/.ssh through an interpreter and send them to any host'
+  printf '%s\n' "part=all reason=maintainers pull control-plane changes several times a day lost=$_dl since=2026-10-23" > "$_bnd/d-all.conf"
+  printf '%s\n' "part=egress reason=ok lost=an unlisted host is a prompt since=2026-10-23" > "$_bnd/d-egress.conf"
+  printf '%s\n' "part=read-deny reason=ok lost=env files are readable since=2026-10-23" > "$_bnd/d-rd.conf"
+  printf '%s\n' "part=write-protect reason=ok lost=home files are writable since=2026-10-23" > "$_bnd/d-wp.conf"
+  printf '%s\n' "part=read-deny reason=r lost=l since=2026-10-23" "part=write-protect reason=r lost=l since=2026-10-23" "part=egress reason=r lost=l since=2026-10-23" > "$_bnd/d-three.conf"
+  printf '# the declaration\n\npart=all reason=r lost=l since=2026-10-23\n' > "$_bnd/d-comment.conf"
+  # 1 / 2: an OFF sandbox. Declared: loud, with the date and the Lost text. Undeclared: the one state that FAILS.
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/d-all.conf"
+  bnd_has declared-off 'WARN boundary: OFF [static] (opted out 2026-10-23, declared in .kit/boundary-optout.conf). Lost: an agent can read .env'
+  bnd_no declared-off 'UNDECLARED'
+  bnd_no declared-off 'FAIL boundary: OFF [static] (opted out'
+  bnd_no declared-off '(kit: an agent can read .env'   # the repo's lost= sentence equals the kit's own: printed once, no duplicate "(kit: ...)"
+  bnd_case "$_bnd/off.json"
+  bnd_has undeclared-off 'FAIL boundary: OFF and UNDECLARED [static]'
+  bnd_has undeclared-off 'Fix: declare it in .kit/boundary-optout.conf (part=all), or remove the override that turns it off'
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/d-egress.conf"
+  bnd_has off-needs-every-part 'OFF and UNDECLARED'
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/d-three.conf"
+  bnd_has off-declared-by-three-parts 'WARN boundary: OFF [static] (opted out 2026-10-23'
+  # 3: PARTIAL needs its own part.
+  bnd_case "$_bnd/shortwrite.json" "" "$_bnd/user-strict.json"
+  bnd_has partial-undeclared 'FAIL boundary: PARTIAL and UNDECLARED [static]'
+  bnd_has partial-undeclared '(part=write-protect)'
+  bnd_case "$_bnd/shortwrite.json" "" "$_bnd/user-strict.json" "" "" "" "$_bnd/d-wp.conf"
+  bnd_has partial-declared 'WARN boundary: PARTIAL [static] (opted out 2026-10-23, declared in .kit/boundary-optout.conf)'
+  bnd_case "$_bnd/shortwrite.json" "" "$_bnd/user-strict.json" "" "" "" "$_bnd/d-rd.conf"
+  bnd_has partial-wrong-part-declared 'PARTIAL and UNDECLARED'
+  bnd_case "$_bnd/noread.json" "" "$_bnd/user-strict.json" "" "" "" "$_bnd/d-rd.conf"
+  bnd_has partial-read-deny-declared 'WARN boundary: PARTIAL [static] (opted out'
+  bnd_case "$_bnd/full.json" "$_bnd/local-unsandboxed.json" "$_bnd/user-strict.json" "" "" "" "$_bnd/d-rd.conf"
+  bnd_has unsandboxed-commands-need-part-all 'PARTIAL and UNDECLARED'
+  bnd_case "$_bnd/full.json" "$_bnd/local-unsandboxed.json" "$_bnd/user-strict.json" "" "" "" "$_bnd/d-all.conf"
+  bnd_has unsandboxed-commands-declared-by-all 'WARN boundary: PARTIAL [static] (opted out'
+  # 4: the sandbox cannot start (DC10): every part is off, only part=all (or all three parts) declares it.
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" "" Plan9
+  bnd_has cannot-start-undeclared 'FAIL boundary: OFF (cannot start:'
+  bnd_has cannot-start-undeclared ') and UNDECLARED [static]'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" "" Plan9 "$_bnd/d-rd.conf"
+  bnd_has cannot-start-one-part-is-not-enough 'and UNDECLARED'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict.json" "" "" Plan9 "$_bnd/d-all.conf"
+  bnd_has cannot-start-declared-by-all '[static] (opted out 2026-10-23, declared in'
+  bnd_no cannot-start-declared-by-all 'UNDECLARED'
+  # 5: egress. Undeclared names the user-level act FIRST and the declaration second (L3); declared is loud; in a session it is UNVERIFIED with no judgement.
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"
+  bnd_has egress-undeclared 'FAIL egress: NOT ENFORCED and UNDECLARED [static]'
+  case "$out" in
+    *"Fix: (1) merge the user-level block into ~/.claude/settings.json"*"(2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf"*) echo "PASS: boundary [egress-fix-order] the fix names the user-level act first and the declaration second" ;;
+    *) echo "FAIL: boundary [egress-fix-order] the egress fix text is not (1) the user-level act, (2) the declaration ($out)"; fail=1 ;;
+  esac
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json" "" "" "" "$_bnd/d-egress.conf"
+  bnd_has egress-declared 'WARN egress: NOT ENFORCED [static] (opted out 2026-10-23, declared in .kit/boundary-optout.conf). Lost: an unlisted host is a prompt (kit: '   # a lost= sentence that differs from the kit's keeps the "(kit: ...)" suffix
+  bnd_no egress-declared 'UNDECLARED'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json" "" "" "" "$_bnd/d-rd.conf"
+  bnd_has egress-not-declared-by-another-part 'egress: NOT ENFORCED and UNDECLARED'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json" "" runtime
+  bnd_has egress-in-session 'warn egress: UNVERIFIED [static, agent-reported]'
+  bnd_no egress-in-session 'UNDECLARED'
+  bnd_no egress-in-session 'FAIL egress'
+  # 7 / 8: a malformed declaration is fail closed: the line number and the rule, never the text, and NO part counts as declared (a good first line declares nothing).
+  _mk() {  # <name> <printf format> [args]: writes a malformed fixture
+    _mkn=$1; shift; printf "$@" > "$_bnd/m-$_mkn.conf"
+  }
+  _mk eq 'part=all reason=leakword=x lost=l since=2026-10-23\n'
+  _mk order 'part=all lost=l reason=leakword since=2026-10-23\n'
+  _mk unknown 'part=bogus reason=leakword lost=l since=2026-10-23\n'
+  _mk dup 'part=egress reason=r lost=l since=2026-10-23\npart=egress reason=leakword lost=l since=2026-10-23\n'
+  _mk allplus 'part=all reason=r lost=l since=2026-10-23\npart=egress reason=leakword lost=l since=2026-10-23\n'
+  _mk future 'part=all reason=leakword lost=l since=2999-01-01\n'
+  _mk cr 'part=all reason=leakword lost=l since=2026-10-23\r\n'
+  _mk long 'part=all reason=leakword%0600d lost=l since=2026-10-23\n' 0
+  _mk baddate 'part=all reason=leakword lost=l since=2026-02-30\n'
+  _mk partial 'part=all reason=r lost=l since=2026-10-23\npart=bogus reason=leakword lost=l since=2026-10-23\n'
+  for _mm in 'eq|line 1: a value contains' 'order|line 1: the fields must be' 'unknown|line 1: an unknown part' 'dup|line 2: part appears twice' 'allplus|part=all appears with another part' 'future|line 1: since is not a real date' 'cr|a control byte, a CR' 'long|line 1: a line is over 512 bytes' 'baddate|line 1: since is not a real date' 'partial|line 2: an unknown part'; do
+    bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-${_mm%%|*}.conf"
+    bnd_has "malformed-${_mm%%|*}" "FAIL boundary: declaration MALFORMED (.kit/boundary-optout.conf"
+    bnd_has "malformed-${_mm%%|*}" "${_mm#*|}"
+    bnd_has "malformed-${_mm%%|*}" 'OFF and UNDECLARED'
+    bnd_no "malformed-${_mm%%|*}" 'leakword'
+  done
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/d-comment.conf"
+  bnd_has comment-and-blank-lines-accepted '(opted out 2026-10-23, declared in .kit/boundary-optout.conf)'
+  bnd_no comment-and-blank-lines-accepted 'MALFORMED'
+  # 10: an unreadable declaration (no origin, offline, an SSH remote in a session, an unfetched tip) is never a pass and is not UNDECLARED.
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "@unreadable"
+  bnd_has declaration-unreadable 'FAIL boundary: OFF, declaration UNVERIFIED [static] (could not read .kit/boundary-optout.conf on origin'
+  bnd_no declaration-unreadable 'UNDECLARED'
+  # 34: an origin entry that is not a regular file (a symlink, a gitlink, a directory) is MALFORMED, never absent.
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "@nonregular"
+  bnd_has declaration-not-a-regular-file 'declaration MALFORMED (.kit/boundary-optout.conf: the entry on origin'"'"'s default branch is not a regular file)'
+  bnd_has declaration-not-a-regular-file 'OFF and UNDECLARED'
+  # 35: the read is bounded: more than 4 records, or over 4 KiB.
+  printf '%s\n' "part=read-deny reason=r lost=l since=2026-10-23" "part=write-protect reason=r lost=l since=2026-10-23" "part=egress reason=r lost=l since=2026-10-23" "part=all reason=r lost=l since=2026-10-23" "part=egress reason=r lost=l since=2026-10-23" > "$_bnd/m-five.conf"
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-five.conf"
+  bnd_has record-cap 'line 5: more than 4 records'
+  { printf '# '; head -c 4100 /dev/zero | tr '\0' 'x'; printf '\npart=all reason=r lost=l since=2026-10-23\n'; } > "$_bnd/m-big.conf"
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-big.conf"
+  bnd_has size-cap 'the file is over 4 KiB'
+  # 9: (the working-tree cell that stood here was vacuous: it ran under a seam that never reads a working tree. The real cell is `working-tree-ignored` below.)
+  # 11: the CI declared tier: only the committed project block is read; a local or managed file that turns the sandbox off is not read; the declaration is not read.
+  bnd_case "$_bnd/full.json" "$_bnd/off.json" "$_bnd/user-plain.json" "$_bnd/off.json" ci
+  bnd_has ci-reads-only-the-project-block 'ok   boundary: ON [declared] (CI set: local and user scopes not read)'
+  bnd_case "$_bnd/off.json" "" "" "" ci "" "$_bnd/d-all.conf"
+  bnd_has ci-off-is-not-judged-against-a-declaration 'FAIL boundary: OFF [declared] (CI set: local and user scopes not read; the declaration is not read in CI)'
+  bnd_no ci-off-is-not-judged-against-a-declaration 'opted out'
+  bnd_no ci-off-is-not-judged-against-a-declaration 'UNDECLARED'
+  # 13 / 14: DC7 (no non-boundary value is emitted) and DC20 (saved WebFetch allows are listed; a host only after the grammar; a token-shaped entry is counted, never printed).
+  printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"},"permissions":{"allow":["WebFetch(domain:example.org)"]}}\n' > "$_bnd/local-wf1.json"
+  printf '{"permissions":{"allow":["WebFetch(domain:example.org)","WebFetch(domain:UPPER.COM)","WebFetch(domain:1.2.3.4)","WebFetch(domain:kit-PLANTEDSECRET-placeholder-token)","Bash(ls)"]}}\n' > "$_bnd/local-wf4.json"
+  bnd_case "$_bnd/full.json" "$_bnd/local-wf1.json" "$_bnd/user-plain.json"
+  bnd_has dc20-listed-while-not-enforced 'warn egress: 1 saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt: example.org'
+  bnd_no dc20-listed-while-not-enforced 'PLANTEDSECRET'
+  bnd_case "$_bnd/full.json" "$_bnd/local-wf1.json" "$_bnd/user-strict.json"
+  bnd_has dc20-overridden-under-strict 'ok   egress: 1 saved WebFetch(domain:) allow(s) are overridden by user-scope strictAllowlist (C35, measured)'
+  bnd_case "$_bnd/full.json" "$_bnd/local-wf1.json" "$_bnd/user-strict.json" "" runtime
+  bnd_has dc20-in-session 'admit these hosts with no prompt if strictAllowlist is not set at user scope: example.org'
+  bnd_case "$_bnd/full.json" "$_bnd/local-wf4.json" "$_bnd/user-plain.json"
+  bnd_has dc20-counts-every-entry 'warn egress: 4 saved WebFetch(domain:) allow(s)'
+  bnd_has dc20-prints-only-grammar-hosts 'admit these hosts with no prompt: example.org (and 3 more entries not printed)'
+  bnd_no dc20-prints-only-grammar-hosts 'UPPER'
+  bnd_no dc20-prints-only-grammar-hosts '1.2.3.4'
+  bnd_no dc20-prints-only-grammar-hosts 'PLANTEDSECRET'
+  bnd_no dc20-prints-only-grammar-hosts 'Bash(ls)'
+  bnd_case "$_bnd/full.json" "$_bnd/local-wf1.json" "$_bnd/user-plain.json" "" ci
+  bnd_no dc20-not-read-in-ci 'saved WebFetch'
+  # the user-host COUNT (owner Q3: count only, from a terminal, only under ENFORCED; no host is ever printed)
+  printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"},"sandbox":{"network":{"strictAllowlist":true,"allowedDomains":["secret-host.example.net","api.example.org"]}}}\n' > "$_bnd/user-strict-hosts.json"
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict-hosts.json"
+  bnd_has user-host-count 'info egress: the user-level allowedDomains holds 2 host(s); under strictAllowlist this is the whole list'
+  bnd_has user-host-count '(SWAS-407)'
+  bnd_no user-host-count 'secret-host'
+  bnd_no user-host-count 'PLANTEDSECRET'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-strict-hosts.json" "" runtime
+  bnd_no user-host-count-not-in-session 'allowedDomains holds'
+  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"
+  bnd_no user-host-count-not-before-enforced 'allowedDomains holds'
+
+  # ---- the real body: does an UNDECLARED opt-out move the EXIT (and only it)? Differential: plain rc versus the same run under --boundary-advisory, so an ambient
+  # failure (a missing tool) cannot fake or hide the effect. Globals _g_* describe the scenario; CI, GITHUB_ACTIONS and SANDBOX_RUNTIME are cleared first.
+  _self=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0"); _sd=$(dirname -- "$_self")
+  _g_proj=""; _g_user=""; _g_local=""; _g_mgd=""; _g_decl=""; _g_os=""; _g_env=""; _g_dir=""; _g_path=""; _g_home=""; _g_ci=""; _g_tty=""
+  _bnd_run() {  # <script> <flags> -> _br_out, _br_rc
+    _br_rc=0
+    # shellcheck disable=SC2086  # ${_g_env:-...} is one NAME=value word and $2 is a short flag list
+    _br_out=$( if [ -n "$_g_path" ]; then PATH="$_g_path:$PATH"; export PATH; fi
+      if [ -n "$_g_home" ]; then HOME="$_g_home"; else mkdir -p "$_bnd/emptyhome"; HOME="$_bnd/emptyhome"; fi   # N2: never the developer's real ~/.gitconfig
+      export HOME; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM
+      cd "${_g_dir:-.}" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_EXEC_PATH ${_g_env:-KIT_UNUSED=1} ${_g_ci:+CI=true} ${_g_tty:+PREFLIGHT_TTY_SEAM=$_g_tty} PREFLIGHT_SANDBOX_SETTINGS="$_g_proj" PREFLIGHT_SANDBOX_LOCAL="${_g_local:-/nonexistent-local}" PREFLIGHT_SANDBOX_USER="${_g_user:-/nonexistent-user}" PREFLIGHT_SANDBOX_MANAGED="${_g_mgd:-/nonexistent-managed}" PREFLIGHT_SANDBOX_OS="${_g_os:-Darwin}" PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_BOUNDARY_OPTOUT="${_g_decl:-@absent}" PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$1" --selftest-e2e $2 2>&1 ) || _br_rc=$?
+  }
+  _bnd_moves() {  # <script> -> _mv = yes iff bfail moves the exit in the current scenario (the plain rc differs from the advisory rc)
+    _bnd_run "$1" ""; _mv_plain=$_br_rc
+    _bnd_run "$1" "--boundary-advisory"; _mv_adv=$_br_rc
+    if [ "$_mv_plain" -ne "$_mv_adv" ]; then _mv=yes; else _mv=no; fi
+  }
+  _bnd_exit() {  # <label> <yes|no>: asserts that bfail does (yes) or does not (no) move the exit; weak PASS where the environment fails for another reason
+    _bnd_moves "$_self"
+    if [ "$2" = yes ] && [ "$_mv" = yes ] && [ "$_mv_plain" -eq 1 ]; then echo "PASS: boundary exit [$1] an UNDECLARED opt-out moves the exit to 1 (advisory exits $_mv_adv)"
+    elif [ "$2" = yes ] && [ "$_mv_adv" -ne 0 ] && [ "$_mv" = no ] && [ -n "$_st_ci" ]; then echo "FAIL: boundary exit [$1] is not observable here (exit $_mv_adv under --boundary-advisory) and CI is set, so a weak result is a failure"; fail=1
+    elif [ "$2" = yes ] && [ "$_mv_adv" -ne 0 ] && [ "$_mv" = no ]; then echo "PASS: (weak) boundary exit [$1] this environment exits $_mv_adv under --boundary-advisory, so bfail's effect is not observable here"
+    elif [ "$2" = no ] && [ "$_mv" = no ]; then echo "PASS: boundary exit [$1] the exit does not move (plain $_mv_plain, advisory $_mv_adv)"
+    else echo "FAIL: boundary exit [$1] expected moves=$2, got moves=$_mv (plain $_mv_plain, advisory $_mv_adv)"; fail=1; fi
+  }
+  _g_proj="$_bnd/off.json"; _g_decl=@absent;                      _bnd_exit undeclared-off yes
+  _bnd_run "$_self" "--boundary-advisory"
+  case "$_br_out" in
+    *"OFF and UNDECLARED"*) echo "PASS: boundary exit [advisory-keeps-the-line] --boundary-advisory still prints the FAIL line" ;;
+    *) echo "FAIL: boundary exit [advisory-keeps-the-line] the advisory run lost the UNDECLARED line ($_br_out)"; fail=1 ;;
+  esac
+  _g_decl="$_bnd/d-all.conf";                                     _bnd_exit declared-off no
+  _g_decl=@unreadable;                                            _bnd_exit declaration-unreadable-gates-when-a-part-is-off yes
+  _g_decl="$_bnd/m-eq.conf";                                      _bnd_exit malformed-declaration yes
+  _g_decl=@nonregular;                                            _bnd_exit nonregular-declaration yes
+  _g_proj="$_bnd/shortwrite.json"; _g_user="$_bnd/user-strict.json"; _g_decl=@absent; _bnd_exit partial-undeclared yes
+  _g_decl="$_bnd/d-wp.conf";                                      _bnd_exit partial-declared no
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-plain.json"; _g_decl=@absent; _bnd_exit egress-undeclared yes
+  _g_decl="$_bnd/d-egress.conf";                                  _bnd_exit egress-declared no
+  _g_user="$_bnd/user-strict.json"; _g_decl=@absent;              _bnd_exit all-on no
+  _g_user="$_bnd/user-plain.json"; _g_env=SANDBOX_RUNTIME=1;      _bnd_exit egress-unverified-in-session no
+  _g_proj="$_bnd/off.json"; _g_user=""; _g_env=CI=true;           _bnd_exit ci-declared-tier no
+  _g_env=""; _g_proj="$_bnd/full.json"; _g_os=Plan9; _g_user="$_bnd/user-strict.json"; _g_decl=@absent; _bnd_exit cannot-start-undeclared yes
+  _g_os=""
+  # `--boundary-only` is the doctor leg: it prints only the boundary block and exits 0 / 1 / 2 (UNVERIFIED), and it judges STALE.
+  _bo() {  # <label> <want rc> <substring or ""> <substring that must be absent or "">: the --boundary-only run in the current scenario
+    _bnd_run "$_self" "--boundary-only"
+    if [ "$_br_rc" -eq "$2" ]; then echo "PASS: boundary-only [$1] exits $2"; else echo "FAIL: boundary-only [$1] exited $_br_rc, expected $2 ($_br_out)"; fail=1; fi
+    if [ -n "$3" ]; then
+      case "$_br_out" in
+        *"$3"*) echo "PASS: boundary-only [$1] prints '$3'" ;;
+        *) echo "FAIL: boundary-only [$1] did not print '$3' ($_br_out)"; fail=1 ;;
+      esac
+    fi
+    if [ -n "$4" ]; then
+      case "$_br_out" in
+        *"$4"*) echo "FAIL: boundary-only [$1] printed '$4' ($_br_out)"; fail=1 ;;
+        *) echo "PASS: boundary-only [$1] does not print '$4'" ;;
+      esac
+    fi
+  }
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"; _g_env=""
+  _g_decl=@absent;                  _bo all-on-no-declaration 0 'ok   boundary: ON [static]' 'STALE'
+  _g_decl="$_bnd/d-egress.conf";    _bo stale-egress 0 'warn boundary: declaration for part=egress is STALE (the part is ON in this checkout)' 'Universal prerequisites'
+  _g_decl="$_bnd/d-all.conf";       _bo stale-all 0 'declaration for part=all is STALE' ''
+  _g_decl="$_bnd/d-rd.conf";        _bo stale-read-deny 0 'declaration for part=read-deny is STALE' ''
+  _g_decl=@unreadable;              _bo on-unreadable-no-stale 0 'info boundary: declaration not read (no origin read under the selftest); STALE not judged' 'STALE (the part'
+  _g_proj="$_bnd/off.json"; _g_user=""
+  _g_decl=@unreadable;              _bo off-unreadable 1 'FAIL boundary: declaration UNVERIFIED (no origin read under the selftest) while a part is OFF' 'UNDECLARED'
+  _g_decl=@absent;                  _bo off-undeclared 1 'OFF and UNDECLARED' ''
+  _g_decl="$_bnd/d-all.conf";       _bo off-declared 0 'opted out 2026-10-23' 'STALE'
+  _g_decl="$_bnd/m-eq.conf";        _bo off-malformed 1 'declaration MALFORMED' 'leakword'
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-plain.json"; _g_decl="$_bnd/d-egress.conf"; _bo egress-declared-still-not-stale 0 'WARN egress: NOT ENFORCED [static] (opted out' 'STALE'
+  _g_env=SANDBOX_RUNTIME=1; _g_decl=@absent;                  _bo in-session-unverified 2 'warn egress: UNVERIFIED [static, agent-reported]' 'UNDECLARED'
+  _g_env=CI=true; _g_proj="$_bnd/off.json";                   _bo ci-declared-off-is-unverified 2 'FAIL boundary: OFF [declared]' 'opted out'
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  if [ "$_br_rc" -eq 0 ]; then echo "PASS: boundary-only [advisory] --boundary-advisory keeps the exit at 0"; else echo "FAIL: boundary-only [advisory] exited $_br_rc"; fail=1; fi
+  _g_env=""; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent
+  # the mutants of the new controls: a sed mutation of a COPY must turn the scenario red (the ORIGINAL prints it, the mutant does not), and must apply and parse.
+  _bnd_kill() {  # <name> <sed expr> <flags> <has|moves> <substring | the original's moves value>
+    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"
+    if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
+    if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -rf "$_bk"; return 0; fi
+    if [ "$4" = moves ]; then
+      _bnd_moves "$_self"; _bk_a=$_mv; _bk_adv=$_mv_adv; _bnd_moves "$_bk/preflight.sh"; _bk_b=$_mv
+      if [ "$_bk_a" != "$5" ] && [ "$_bk_adv" -ne 0 ]; then
+        if [ -n "$_st_ci" ]; then echo "FAIL: mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory) and CI is set, so a weak result is a failure"; fail=1
+        else echo "PASS: (weak) mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory)"; fi
+      elif [ "$_bk_a" != "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original's bfail moves=$_bk_a, expected $5)"; fail=1
+      elif [ "$_bk_b" = "$5" ]; then echo "FAIL: mutant $1 survived (bfail still moves=$_bk_b)"; fail=1
+      else echo "PASS: mutant $1 is killed"; fi
+    elif [ "$4" = rc ]; then   # the original exits $5; the mutant must exit something else
+      _bnd_run "$_self" "$3"; _bk_ra=$_br_rc
+      _bnd_run "$_bk/preflight.sh" "$3"; _bk_rb=$_br_rc
+      if [ "$_bk_ra" -ne "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original exits $_bk_ra, expected $5)"; fail=1
+      elif [ "$_bk_rb" -eq "$5" ]; then echo "FAIL: mutant $1 survived (it still exits $5)"; fail=1
+      else echo "PASS: mutant $1 is killed (exit $_bk_rb, the original $_bk_ra)"; fi
+    else
+      _bnd_run "$_self" "$3"
+      case "$_br_out" in
+        *"$5"*) _bk_ok=1 ;;
+        *) _bk_ok=0 ;;
+      esac
+      _bnd_run "$_bk/preflight.sh" "$3"
+      case "$_br_out" in
+        *boundary*|*egress*) _bk_ran=1 ;;
+        *) _bk_ran=0 ;;
+      esac
+      case "$_br_out" in
+        *"$5"*) _bk_still=1 ;;
+        *) _bk_still=0 ;;
+      esac
+      if [ "$_bk_ok" -eq 0 ]; then echo "FAIL: mutant $1 scenario is vacuous (the original does not print '$5')"; fail=1
+      elif [ "$_bk_ran" -eq 0 ]; then echo "FAIL: mutant $1 never ran the boundary block (vacuous)"; fail=1
+      elif [ "$_bk_still" -eq 1 ]; then echo "FAIL: mutant $1 survived (it still prints '$5')"; fail=1
+      else echo "PASS: mutant $1 is killed"; fi
+    fi
+    rm -rf "$_bk"
+  }
+  # Owner ruling (amends D-241023-2 4(c)): the declared opt-out line is WARN, and the kit's consequence sentence is not repeated when the repo's lost= equals it.
+  _g_proj="$_bnd/off.json"; _g_user=""; _g_decl="$_bnd/d-all.conf"; _g_env=""
+  _bnd_kill declared-line-prefix-reverted-to-fail '/MUT-DECLWARN/s/"  WARN /"  FAIL /' "--boundary-only --boundary-advisory" has 'WARN boundary: OFF [static] (opted out'
+  _g_decl=@absent
+  # D-241026-2: an UNTRUSTED declaration fails from a terminal (--boundary-only exits 1), never under --boundary-advisory or CI (neither moves the exit), and prints its remedy.
+  _ut() {  # <label> <reason substring> <remedy substring>: the current scenario must read UNTRUSTED with that reason and remedy
+    _g_ci=""; _bnd_run "$_self" "--boundary-only"; _ut_rc=$_br_rc; _ut_out=$_br_out
+    case "$_ut_out" in
+      *"declaration UNTRUSTED ("*"$2"*"). Remedy: "*"$3"*) if [ "$_ut_rc" -eq 1 ]; then echo "PASS: untrusted [$1] reads UNTRUSTED with its remedy and exits 1 from a terminal"; else echo "FAIL: untrusted [$1] exited $_ut_rc, expected 1 ($_ut_out)"; fail=1; fi ;;
+      *) echo "FAIL: untrusted [$1] did not print the UNTRUSTED line with '$2' and the remedy '$3' ($_ut_out)"; fail=1 ;;
+    esac
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"declaration UNTRUSTED ("*) if [ "$_br_rc" -eq 0 ]; then echo "PASS: untrusted [$1] --boundary-advisory keeps the line and exits 0"; else echo "FAIL: untrusted [$1] exited $_br_rc under --boundary-advisory"; fail=1; fi ;;
+      *) echo "FAIL: untrusted [$1] the advisory run lost the UNTRUSTED line ($_br_out)"; fail=1 ;;
+    esac
+    _g_ci=1; _bnd_run "$_self" "--boundary-only"; _g_ci=""
+    case "$_br_out" in
+      *"declaration UNTRUSTED"*) echo "FAIL: untrusted [$1] CI read the declaration ($_br_out)"; fail=1 ;;
+      *) if [ "$_br_rc" -ne 1 ]; then echo "PASS: untrusted [$1] under CI the declaration is not read and the exit is not 1 (exit $_br_rc)"; else echo "FAIL: untrusted [$1] CI exited 1 ($_br_out)"; fail=1; fi ;;
+    esac
+  }
+  # the REAL origin reader against local bare repositories (no network). A declaration is read from origin's default branch, never the working tree.
+  _og=$(mktemp -d); _gx='-c user.name=kit -c user.email=kit@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null'
+  git init -q --bare "$_og/origin.git"; git -C "$_og/origin.git" symbolic-ref HEAD refs/heads/main
+  git init -q "$_og/work"; git -C "$_og/work" symbolic-ref HEAD refs/heads/main; git -C "$_og/work" remote add origin "$_og/origin.git"
+  printf 'x\n' > "$_og/work/f"; git -C "$_og/work" add f
+  # shellcheck disable=SC2086  # $_gx is a fixed flag list
+  git -C "$_og/work" $_gx commit -q -m base; git -C "$_og/work" push -q origin main 2>/dev/null
+  _g_decl=real; _g_dir="$_og/work"
+  mkdir -p "$_og/work/.kit"; cp "$_bnd/d-all.conf" "$_og/work/.kit/boundary-optout.conf"   # present in the WORKING TREE only (untracked)
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"OFF and UNDECLARED"*) echo "PASS: origin reader [working-tree-ignored] an untracked working-tree declaration declares nothing" ;;
+    *) echo "FAIL: origin reader [working-tree-ignored] the working-tree declaration was read ($_br_out)"; fail=1 ;;
+  esac
+  git -C "$_og/work" add .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m decl; git -C "$_og/work" push -q origin main 2>/dev/null
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"(opted out 2026-10-23, declared in .kit/boundary-optout.conf)"*) echo "PASS: origin reader [declared-on-origin] a declaration committed to origin's default branch declares the part" ;;
+    *) echo "FAIL: origin reader [declared-on-origin] the committed declaration was not read ($_br_out)"; fail=1 ;;
+  esac
+  rm -f "$_og/work/.kit/boundary-optout.conf"; ln -s /etc/hostname "$_og/work/.kit/boundary-optout.conf"
+  git -C "$_og/work" add -f .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m symlink; git -C "$_og/work" push -q origin main 2>/dev/null
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration MALFORMED (.kit/boundary-optout.conf: the entry on origin's default branch is not a regular file)"*) echo "PASS: origin reader [symlink-is-malformed] a symlink at the declaration path on origin is MALFORMED, never absent" ;;
+    *) echo "FAIL: origin reader [symlink-is-malformed] a symlinked declaration was not refused ($_br_out)"; fail=1 ;;
+  esac
+  # S4: a blob far over the cap (and over the pipe buffer, so git sees SIGPIPE) is read only to 4097 bytes and is MALFORMED (over 4 KiB), not unreadable
+  git -C "$_og/work" rm -q -f .kit/boundary-optout.conf
+  mkdir -p "$_og/work/.kit"
+  { printf '# '; head -c 300000 /dev/zero | tr '\0' 'x'; printf '\npart=all reason=r lost=l since=2026-10-23\n'; } > "$_og/work/.kit/boundary-optout.conf"
+  git -C "$_og/work" add -f .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m big; git -C "$_og/work" push -q origin main 2>/dev/null
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration MALFORMED"*"the file is over 4 KiB"*) echo "PASS: origin reader [oversize-blob] a 300 KB blob on origin (git is cut off by the 4097-byte read) is MALFORMED (over 4 KiB)" ;;
+    *) echo "FAIL: origin reader [oversize-blob] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill oversize-cap-removed '/MUT-HEADCAP/d' "--boundary-only --boundary-advisory" has 'the file is over 4 KiB'
+  git -C "$_og/work" rm -q -f .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m gone; git -C "$_og/work" push -q origin main 2>/dev/null
+  git clone -q "$_og/origin.git" "$_og/late" 2>/dev/null
+  # the moved-tip clones (owner ruling "Let's go with your recommendation on three"): taken BEFORE origin moves on, so origin's tip is not fetched in any of them
+  git clone -q "$_og/origin.git" "$_og/late2" 2>/dev/null; git clone -q "$_og/origin.git" "$_og/late3" 2>/dev/null; git clone -q "$_og/origin.git" "$_og/late4" 2>/dev/null
+  git clone -q "$_og/origin.git" "$_og/late5" 2>/dev/null; git clone -q "$_og/origin.git" "$_og/late6" 2>/dev/null; git clone -q "$_og/origin.git" "$_og/late7" 2>/dev/null
+  printf 'y\n' > "$_og/work/g"; git -C "$_og/work" add g
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m ahead; git -C "$_og/work" push -q origin main 2>/dev/null
+  _g_dir="$_og/late"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"OFF and UNDECLARED"*"last fetched "*"; origin has moved]"*"origin has moved: git fetch origin, then re-run"*) echo "PASS: origin reader [tip-moved-undeclared] a moved tip is judged from the remote-tracking ref (an OFF part, no declaration there): FAIL, labelled 'origin has moved'" ;;
+    *) echo "FAIL: origin reader [tip-moved-undeclared] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_exit moved-tip-undeclared-gates yes   # judged from the last fetch, it gates exactly as usual
+  # PASS case: the tracking ref of late2 holds a declaration (a locally written ref is trusted until the next fetch: the stated residual)
+  git -C "$_og/late2" checkout -q -b tmpd 2>/dev/null; mkdir -p "$_og/late2/.kit"; cp "$_bnd/d-all.conf" "$_og/late2/.kit/boundary-optout.conf"
+  git -C "$_og/late2" add -f .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/late2" $_gx commit -q -m decl; git -C "$_og/late2" update-ref refs/remotes/origin/main HEAD
+  _g_dir="$_og/late2"
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"(opted out 2026-10-23, declared in .kit/boundary-optout.conf)"*"origin has moved"*|*"origin has moved"*"opted out 2026-10-23"*) if [ "$_br_rc" -eq 0 ]; then echo "PASS: origin reader [tip-moved-declared] a moved tip is judged from the tracking ref: the declared part passes (exit 0), labelled 'origin has moved'"; else echo "FAIL: origin reader [tip-moved-declared] exit $_br_rc ($_br_out)"; fail=1; fi ;;
+    *) echo "FAIL: origin reader [tip-moved-declared] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill tip-fallback-call-dropped '/MUT-TIPCALL/s/boundary_tip_unfetched.*return \$?/:/' "--boundary-only" has 'origin has moved]'
+  _bnd_kill tracking-ref-fallback-removed '/MUT-TRACKING/s/_bo_tip=\$_bt_loc/return 3/' "--boundary-only" has 'origin has moved]'
+  # no tracking ref at all: UNVERIFIED with the fetch remedy (gates, "B revised")
+  git -C "$_og/late3" update-ref -d refs/remotes/origin/main; _g_dir="$_og/late3"
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"FAIL boundary: declaration UNVERIFIED ("*"no remote-tracking ref"*") while a part is OFF. Remedy: git fetch origin, then re-run"*) if [ "$_br_rc" -eq 1 ]; then echo "PASS: origin reader [no-tracking-ref] no tracking ref reads UNVERIFIED with the fetch remedy and no --boundary-offline advice (exit 1)"; else echo "FAIL: origin reader [no-tracking-ref] exit $_br_rc"; fail=1; fi ;;
+    *) echo "FAIL: origin reader [no-tracking-ref] ($_br_out)"; fail=1 ;;
+  esac
+  case "$_br_out" in
+    *"--boundary-offline"*) echo "FAIL: origin reader [no-tracking-ref] the fetch remedy also advised --boundary-offline ($_br_out)"; fail=1 ;;
+    *) echo "PASS: origin reader [no-tracking-ref] the tip's remedy does not advise --boundary-offline" ;;
+  esac
+  _bnd_kill no-tracking-ref-treated-as-pass '/MUT-NOREF/s/return 3 ;;/return 0 ;;/' "--boundary-only" has 'Remedy: git fetch origin, then re-run'
+  _bnd_kill remedy-text-tip-dropped 's/tip) printf .%s. "git fetch origin, then re-run" ;;/tip) printf "%s" "retry when online, or type --boundary-offline" ;;/' "--boundary-only" has 'Remedy: git fetch origin, then re-run'
+  # an excluding / foreign fetch refspec: UNTRUSTED
+  git -C "$_og/late4" config --add remote.origin.fetch '^refs/heads/main'; _g_dir="$_og/late4"
+  _ut excluding-refspec "remote.origin.fetch does not fetch origin's default branch" "restore the default fetch refspec: git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+  _bnd_kill refspec-check-dropped '/MUT-REFSPEC/s/if \[ "\$_bt_ok" -eq 0 \] || \[ "\$_bt_neg" -eq 1 \]; then/if false; then/' "--boundary-only" has 'declaration UNTRUSTED'
+  # S31: a negative refspec counts only when it matches the default branch; an unrelated one leaves the tracking-ref read in place
+  git -C "$_og/late5" config --add remote.origin.fetch '^refs/heads/wip'; _g_dir="$_og/late5"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*) echo "FAIL: s31 [unrelated-negative-refspec] an unrelated ^refs/heads/wip read UNTRUSTED ($_br_out)"; fail=1 ;;
+    *"origin has moved]"*) echo "PASS: s31 [unrelated-negative-refspec] an unrelated ^refs/heads/wip passes (judged from the tracking ref)" ;;
+    *) echo "FAIL: s31 [unrelated-negative-refspec] ($_br_out)"; fail=1 ;;
+  esac
+  git -C "$_og/late5" config --add remote.origin.fetch '^refs/heads/ma*'; _g_dir="$_og/late5"
+  _ut covering-glob-refspec "remote.origin.fetch does not fetch origin's default branch" "restore the default fetch refspec"
+  # S29: a local branch (and the tracking ref) names origin's tip while the tip's loose object is deleted: the absence is local damage, UNTRUSTED, never the fallback
+  _s29t=$(git -C "$_og/work" rev-parse main)
+  git -C "$_og/late6" fetch -q origin 2>/dev/null; git -C "$_og/late6" branch tipb origin/main 2>/dev/null
+  rm -f "$_og/late6/.git/objects/${_s29t%"${_s29t#??}"}/${_s29t#??}"; _g_dir="$_og/late6"
+  _ut tip-object-missing "a local ref names origin's tip but its object is missing" "a local ref names origin's tip but its object is missing; run git fetch origin"
+  _bnd_kill tip-object-missing-check-dropped '/MUT-TIPMISSING/s/^ *\*.*)/    __never__)/' "--boundary-only --boundary-advisory" has 'declaration UNTRUSTED'
+  # S38: an extra positive refspec that maps a non-default source onto the default branch's tracking ref is UNTRUSTED (the default refspec is still present)
+  git -C "$_og/late7" config --add remote.origin.fetch '+refs/heads/evil:refs/remotes/origin/main'; _g_dir="$_og/late7"
+  _ut foreign-source-refspec "remote.origin.fetch does not fetch origin's default branch" "restore the default fetch refspec"
+  _bnd_kill foreign-source-refspec-check-dropped '/S38: an extra refspec/d' "--boundary-only --boundary-advisory" has 'declaration UNTRUSTED'
+  # S32: stderr counts as a terminal (the real test, not the seam)
+  if grep -qF '[ -t 0 ] || [ -t 1 ] || [ -t 2 ]' "$_self" && grep -qF '[ -t 0 ] || [ -t 1 ] || [ -t 2 ]' "$_sd/doctor-boundary.sh"; then echo "PASS: s32 [tty-counts-stderr] boundary_has_tty and _db_tty test stdin, stdout and stderr"; else echo "FAIL: s32 [tty-counts-stderr] a TTY test does not cover stderr"; fail=1; fi
+  # a not-own-root directory and a redirected git environment get their own remedies (S27)
+  mkdir -p "$_og/work/nest"; _g_dir="$_og/work/nest"
+  _bnd_run "$_self" "--boundary-only --allow-nested"
+  case "$_br_out" in
+    *"declaration UNVERIFIED ("*"not the root of its own git repository"*"Remedy: run preflight from the repository root"*) echo "PASS: s27 [not-own-root --allow-nested] a nested directory reads UNVERIFIED with the run-from-the-root remedy" ;;
+    *) echo "FAIL: s27 [not-own-root --allow-nested] ($_br_out)"; fail=1 ;;
+  esac
+  # SWAS-358: a repository root entered through a case-variant spelling of its path (macOS is case-insensitive) is still its own root: owns_itself asks git
+  # (`--show-prefix`), it does not compare path strings. The cell needs a case-insensitive filesystem, detected here; it is skipped, with the reason, on a case-sensitive one.
+  _cv=$(printf '%s' "$_og/work" | tr 'a-z' 'A-Z')
+  if [ "$_cv" != "$_og/work" ] && [ -d "$_cv" ]; then
+    if ( CDPATH='' cd "$_cv" && owns_itself "$PWD" ); then echo "PASS: owns_itself [case-variant-cd] a repository root entered through a case-variant path is its own root"; else echo "FAIL: owns_itself [case-variant-cd] a case-variant path to the repository root was refused"; fail=1; fi
+    _g_dir="$_cv"; _g_decl=real
+    _bnd_kill owns-itself-string-compare '/MUT-OWNSROOT/s/\[ -z "\$_pfx" \]/[ "\$_own" = "\$_phys" ]/' "--boundary-only --boundary-advisory" has 'OFF and UNDECLARED'   # by here origin's default branch holds no declaration (the "gone" commit), so a part that is OFF reads UNDECLARED in the original and UNVERIFIED (not the root) in the mutant
+  else
+    echo "SKIP: owns_itself [case-variant-cd] this filesystem is case-sensitive (the upper-case spelling of the temp path does not resolve), so a case-variant path cannot reach the repository"
+  fi
+  git init -q "$_og/noorigin"; _g_dir="$_og/noorigin"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"no origin remote"*) echo "PASS: origin reader [no-origin] no origin remote reads UNTRUSTED (Architect ruling), never a pass" ;;
+    *) echo "FAIL: origin reader [no-origin] ($_br_out)"; fail=1 ;;
+  esac
+  _ut no-origin "no origin remote" "add your forge as origin: git remote add origin '<your forge URL>'"
+  _bnd_kill no-origin-mapped-to-unverified '/MUT-CLASS/s/|no-origin|fetch-refspec|tip-object-missing) echo UNTRUSTED/|fetch-refspec|tip-object-missing) echo UNTRUSTED/' "--boundary-only --boundary-advisory" has 'declaration UNTRUSTED'
+  _g_dir="$_og/work"; _g_env="GIT_DIR=$_og/work/.git"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNVERIFIED"*"git environment is redirected"*"Remedy: unset GIT_DIR and GIT_WORK_TREE"*) echo "PASS: origin reader [redirected-git-env] a GIT_DIR redirect never reads a foreign origin, and the remedy is to unset GIT_DIR and GIT_WORK_TREE" ;;
+    *) echo "FAIL: origin reader [redirected-git-env] ($_br_out)"; fail=1 ;;
+  esac
+  _g_env=""
+  # S1: an effective origin URL that is not the one this repository stores (url.*.insteadOf from a GLOBAL config, here a fixture HOME and never the real user config)
+  # is another repository's origin: the reader refuses it, and the evil repository below holds a declaration that would otherwise read as DECLARED.
+  _ev_r="$_og/evil.git"
+  git -C "$_og/work" checkout -q -b evilb 2>/dev/null; mkdir -p "$_og/work/.kit"; cp "$_bnd/d-all.conf" "$_og/work/.kit/boundary-optout.conf"
+  git -C "$_og/work" add -f .kit/boundary-optout.conf
+  # shellcheck disable=SC2086
+  git -C "$_og/work" $_gx commit -q -m evil
+  git init -q --bare "$_ev_r"; git -C "$_ev_r" symbolic-ref HEAD refs/heads/main; git -C "$_og/work" push -q "$_ev_r" evilb:main 2>/dev/null
+  git -C "$_og/work" checkout -q -f main; git -C "$_og/work" branch -q -D evilb
+  mkdir -p "$_og/home"; printf '[url "%s"]\n\tinsteadOf = %s\n' "$_ev_r" "$_og/origin.git" > "$_og/home/.gitconfig"
+  _g_home="$_og/home"; _g_dir="$_og/work"; _g_decl=real
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"effective origin URL differs"*) echo "PASS: origin reader [global-insteadof] a global url.*.insteadOf that rewrites origin reads UNTRUSTED, never the rewritten repository's declaration" ;;
+    *) echo "FAIL: origin reader [global-insteadof] ($_br_out)"; fail=1 ;;
+  esac
+  _ut url-rewrite "effective origin URL differs" "remove that rule"
+  _bnd_exit url-rewrite-untrusted yes
+  case "$_br_out" in
+    *"declared in .kit/boundary-optout.conf"*) echo "FAIL: origin reader [global-insteadof] the rewritten repository's declaration was read"; fail=1 ;;
+    *) echo "PASS: origin reader [global-insteadof] no declaration was taken from the rewritten repository" ;;
+  esac
+  _bnd_kill origin-url-check-deleted '/MUT-URLDIFF/d' "--boundary-only --boundary-advisory" has 'effective origin URL differs'
+  _g_home=""
+  for _ev_w in GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=0 "GIT_CONFIG_PARAMETERS='a.b'='c'" "GIT_COMMON_DIR=$_og/work/.git" "GIT_OBJECT_DIRECTORY=$_og/work/.git/objects" "GIT_EXEC_PATH=$(git --exec-path)"; do
+    _g_env=$_ev_w
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"declaration UNTRUSTED"*"${_ev_w%%=*} is set"*) echo "PASS: origin reader [env-${_ev_w%%=*}] a set ${_ev_w%%=*} reads UNTRUSTED" ;;
+      *) echo "FAIL: origin reader [env-${_ev_w%%=*}] ($_br_out)"; fail=1 ;;
+    esac
+    case "$_br_out" in
+      *"$_og"*) echo "FAIL: origin reader [env-${_ev_w%%=*}] the variable's VALUE was printed ($_br_out)"; fail=1 ;;
+      *) echo "PASS: origin reader [env-${_ev_w%%=*}] only the variable name is printed, never its value" ;;
+    esac
+    _ut "env-${_ev_w%%=*}" "${_ev_w%%=*} is set" "unset ${_ev_w%%=*} "
+  done
+  _g_env=GIT_CONFIG_GLOBAL=/dev/null
+  _bnd_kill origin-env-check-deleted '/MUT-ENVSET/d' "--boundary-only --boundary-advisory" has 'GIT_CONFIG_GLOBAL is set'
+  _g_env=""
+  # S8: the harness unsets the seven variables, so a CI face that exports them (selftest-hermetic) cannot turn every real-reader cell UNVERIFIED (I1)
+  _g_env=""; _g_dir="$_og/work"; _g_decl=real
+  _i1=$( GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=0; export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"; printf '%s' "$_br_out" )
+  case "$_i1" in
+    *"declaration UNVERIFIED"*|*"declaration UNTRUSTED"*) echo "FAIL: origin reader [harness-unsets-env] ambient GIT_CONFIG_* variables leaked into the run ($_i1)"; fail=1 ;;
+    *"OFF and UNDECLARED"*) echo "PASS: origin reader [harness-unsets-env] the harness unsets the ambient GIT_CONFIG_* variables, so a real-reader cell still reads origin" ;;
+    *) echo "FAIL: origin reader [harness-unsets-env] ($_i1)"; fail=1 ;;
+  esac
+  # S8: a local-path or file:// effective origin, and a set remote.origin.uploadpack or .vcs in ANY scope, read UNVERIFIED (fixtures live in temp repos and a temp HOME only).
+  _g_env=PREFLIGHT_BOUNDARY_REFUSE_LOCAL=1
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"local path or a file:// URL"*) echo "PASS: origin reader [local-path-origin] a local-path origin reads UNTRUSTED" ;;
+    *) echo "FAIL: origin reader [local-path-origin] ($_br_out)"; fail=1 ;;
+  esac
+  _ut local-path "local path or a file:// URL" "origin must be a network forge URL (https or ssh); this check can't verify a local or unrecognised origin"
+  # the Architect's bypass: `git remote set-url origin <local bare>` makes stored equal effective, and the local form must still FAIL
+  git -C "$_og/work" remote set-url origin "$_og/origin.git"
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"local path or a file:// URL"*) if [ "$_br_rc" -eq 1 ]; then echo "PASS: origin reader [set-url-local-bare-fails] set-url origin to a local bare repository FAILs (exit 1)"; else echo "FAIL: origin reader [set-url-local-bare-fails] exit $_br_rc"; fail=1; fi ;;
+    *) echo "FAIL: origin reader [set-url-local-bare-fails] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill local-path-check-deleted '/MUT-LOCALPATH/d' "--boundary-only --boundary-advisory" has 'local path or a file:// URL'
+  git -C "$_og/work" remote set-url origin "file://$_og/origin.git"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"local path or a file:// URL"*) echo "PASS: origin reader [file-url-origin] a file:// origin reads UNTRUSTED" ;;
+    *) echo "FAIL: origin reader [file-url-origin] ($_br_out)"; fail=1 ;;
+  esac
+  _ut file-url "local path or a file:// URL" "origin must be a network forge URL (https or ssh); this check can't verify a local or unrecognised origin"
+  git -C "$_og/work" remote set-url origin "ssh://git@127.0.0.1:1/x.git"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"local path or a file:// URL"*) echo "FAIL: origin reader [remote-url-not-local] an ssh:// origin was refused as a local path ($_br_out)"; fail=1 ;;
+    *"declaration UNVERIFIED"*) echo "PASS: origin reader [remote-url-not-local] an ssh:// origin is not refused as local (it is unreadable here)" ;;
+    *) echo "FAIL: origin reader [remote-url-not-local] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_exit network-failure-gates-when-a-part-is-off yes   # S20 ("355a: B revised"): a network failure is UNVERIFIED, not UNTRUSTED, but with a part OFF it gates from a terminal
+  # N4: scp-like and https remotes are not refused as local or as a remote helper either
+  for _ou in 'git@127.0.0.1:x.git' 'https://127.0.0.1:1/x.git'; do
+    git -C "$_og/work" remote set-url origin "$_ou"
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"local path or a file:// URL"*|*"remote-helper or unrecognised URL form"*) echo "FAIL: origin reader [remote-url-not-local] $_ou was refused as local or as a helper ($_br_out)"; fail=1 ;;
+      *"declaration UNVERIFIED"*) echo "PASS: origin reader [remote-url-not-local] $_ou is classed as a remote (it is unreadable here)" ;;
+      *) echo "FAIL: origin reader [remote-url-not-local] $_ou ($_br_out)"; fail=1 ;;
+    esac
+  done
+  # S13 / N3: default-deny: a remote-helper (::) or unrecognised form reads UNVERIFIED with its own reason, and no ls-remote runs it
+  for _ou in 'ext::git-upload-pack /x' 'foo::bar' 'foo://x/y'; do
+    git -C "$_og/work" remote set-url origin "$_ou"
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"declaration UNTRUSTED"*"remote-helper or unrecognised URL form"*) echo "PASS: origin reader [remote-helper-origin] '$_ou' reads UNTRUSTED as a remote-helper or unrecognised form" ;;
+      *) echo "FAIL: origin reader [remote-helper-origin] '$_ou' ($_br_out)"; fail=1 ;;
+    esac
+    _ut "remote-helper $_ou" "remote-helper or unrecognised URL form" "origin must be a network forge URL (https or ssh); this check can't verify a local or unrecognised origin"
+  done
+  git -C "$_og/work" remote set-url origin 'ext::git-upload-pack /x'
+  _bnd_kill remote-helper-check-deleted '/MUT-HELPER/d' "--boundary-only --boundary-advisory" has 'remote-helper or unrecognised URL form'
+  git -C "$_og/work" remote set-url origin "$_og/origin.git"
+  _g_env=""
+  git -C "$_og/work" config remote.origin.uploadpack /bin/true
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"remote.origin.uploadpack or remote.origin.vcs is set"*) echo "PASS: origin reader [uploadpack-set] a set remote.origin.uploadpack reads UNTRUSTED" ;;
+    *) echo "FAIL: origin reader [uploadpack-set] ($_br_out)"; fail=1 ;;
+  esac
+  _ut uploadpack "remote.origin.uploadpack or remote.origin.vcs is set" "git config --unset remote.origin.uploadpack"
+  _bnd_kill uploadpack-check-deleted '/MUT-UPLOADPACK/d' "--boundary-only --boundary-advisory" has 'remote.origin.uploadpack or remote.origin.vcs is set'
+  git -C "$_og/work" config --unset remote.origin.uploadpack
+  git -C "$_og/work" config remote.origin.vcs nothing
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"remote.origin.uploadpack or remote.origin.vcs is set"*) echo "PASS: origin reader [vcs-set] a set remote.origin.vcs reads UNTRUSTED" ;;
+    *) echo "FAIL: origin reader [vcs-set] ($_br_out)"; fail=1 ;;
+  esac
+  _ut vcs "remote.origin.uploadpack or remote.origin.vcs is set" "git config --unset remote.origin.vcs"
+  git -C "$_og/work" config --unset remote.origin.vcs
+  mkdir -p "$_og/home2"; printf '[remote "origin"]\n\tuploadpack = /bin/true\n' > "$_og/home2/.gitconfig"
+  _g_home="$_og/home2"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*"remote.origin.uploadpack or remote.origin.vcs is set"*) echo "PASS: origin reader [uploadpack-global] a remote.origin.uploadpack in the global scope reads UNTRUSTED" ;;
+    *) echo "FAIL: origin reader [uploadpack-global] ($_br_out)"; fail=1 ;;
+  esac
+  _g_home=""
+  # S10 (D-241026-2 amended): a REAL linked worktree is trusted (git's back-links agree) and reads the common dir's origin; a symlinked .git or a forged pointer is UNTRUSTED.
+  _gd_rem="run it from the repository's own main worktree or a real 'git worktree add' checkout"
+  git -C "$_og/work" worktree add -q -b wtb "$_og/wt" 2>/dev/null
+  _g_dir="$_og/wt"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *UNTRUSTED*) echo "FAIL: origin reader [worktree-trusted] a real linked worktree was refused ($_br_out)"; fail=1 ;;
+    *"OFF and UNDECLARED"*) echo "PASS: origin reader [worktree-trusted] a real 'git worktree add' checkout is trusted and reads origin from the common dir" ;;
+    *) echo "FAIL: origin reader [worktree-trusted] ($_br_out)"; fail=1 ;;
+  esac
+  mkdir -p "$_og/forged"; printf 'gitdir: %s\n' "$_og/work/.git/worktrees/wt" > "$_og/forged/.git"   # a pointer at a real worktree entry whose gitdir file names another directory
+  _g_dir="$_og/forged"
+  _ut forged-worktree-pointer "git directory is outside this tree" "$_gd_rem"
+  _bnd_kill worktree-backlink-broken '/MUT-BACKLINK/s/\[ "\$_gt_bp" = "\$_gt_me" \]/:/;/real admin entry is always listed/s/\[ "\$_gt_hit" = y \]/:/' "--boundary-only --boundary-advisory" has 'git directory is outside this tree'
+  _bnd_kill git-dir-outside-check-deleted '/MUT-GITDIR/d' "--boundary-only --boundary-advisory" has 'git directory is outside this tree'
+  mkdir -p "$_og/work/.git/worktrees/fake" "$_og/forgedwt"; printf '%s\n' "$_og/forgedwt/.git" > "$_og/work/.git/worktrees/fake/gitdir"; printf 'gitdir: %s\n' "$_og/work/.git/worktrees/fake" > "$_og/forgedwt/.git"   # a hand-made admin entry whose back-link agrees but that git itself does not accept as a worktree
+  _g_dir="$_og/forgedwt"; _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNVERIFIED"*|*"declaration UNTRUSTED"*) echo "PASS: origin reader [forged-admin-entry] a hand-made worktree entry reads no declaration (a complete forgery is the drift-control residual)" ;;
+    *"declared in .kit/boundary-optout.conf"*) echo "FAIL: origin reader [forged-admin-entry] a hand-made worktree entry was read ($_br_out)"; fail=1 ;;
+    *) echo "FAIL: origin reader [forged-admin-entry] ($_br_out)"; fail=1 ;;
+  esac
+  mkdir -p "$_og/forged2"; printf 'gitdir: %s\n' "$_og/work/.git" > "$_og/forged2/.git"   # a pointer at a main git dir, no worktrees entry at all
+  _g_dir="$_og/forged2"
+  _ut forged-pointer-no-backlink "git directory is outside this tree" "$_gd_rem"
+  mkdir -p "$_og/forged3"; ln -s "$_og/work/.git" "$_og/forged3/.git"   # a symlinked .git
+  _g_dir="$_og/forged3"
+  _ut symlinked-dot-git "git directory is outside this tree" "$_gd_rem"
+  git -C "$_og/work" worktree remove --force "$_og/wt" 2>/dev/null
+  # I2: a BARE common dir plus a linked worktree (`git clone --bare` + `git worktree add`, and the `.bare` layout) is trusted; a common dir that is neither <root>/.git nor bare is not.
+  git clone -q --bare "$_og/origin.git" "$_og/bare.git" 2>/dev/null
+  git -C "$_og/bare.git" worktree add -q "$_og/bwt" main 2>/dev/null
+  mkdir -p "$_og/bl"; git clone -q --bare "$_og/origin.git" "$_og/bl/.bare" 2>/dev/null; printf 'gitdir: ./.bare\n' > "$_og/bl/.git"
+  git -C "$_og/bl" worktree add -q "$_og/bl/main" main 2>/dev/null
+  for _bw in "$_og/bwt" "$_og/bl/main"; do
+    _g_dir="$_bw"; _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *UNTRUSTED*) echo "FAIL: origin reader [bare-worktree-trusted] ${_bw#"$_og"/} was refused ($_br_out)"; fail=1 ;;
+      *"OFF and UNDECLARED"*) echo "PASS: origin reader [bare-worktree-trusted] ${_bw#"$_og"/} (a bare common dir plus a linked worktree) is trusted and reads origin from the common dir" ;;
+      *) echo "FAIL: origin reader [bare-worktree-trusted] ${_bw#"$_og"/} ($_br_out)"; fail=1 ;;
+    esac
+  done
+  _bnd_gain() {  # <name> <sed expr> <flags> <substring>: the ORIGINAL must not print it and the mutant must (a mutant that breaks a trust path gains an UNTRUSTED line)
+    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"
+    if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
+    if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse"; fail=1; rm -rf "$_bk"; return 0; fi
+    _bnd_run "$_self" "$3"
+    case "$_br_out" in
+      *"$4"*) _bg_o=1 ;;
+      *) _bg_o=0 ;;
+    esac
+    _bnd_run "$_bk/preflight.sh" "$3"
+    case "$_br_out" in
+      *"$4"*) _bg_m=1 ;;
+      *) _bg_m=0 ;;
+    esac
+    if [ "$_bg_o" -eq 1 ]; then echo "FAIL: mutant $1 scenario is vacuous (the original already prints '$4')"; fail=1
+    elif [ "$_bg_m" -eq 0 ]; then echo "FAIL: mutant $1 survived (it does not print '$4')"; fail=1
+    else echo "PASS: mutant $1 is killed"; fi
+    rm -rf "$_bk"
+  }
+  _bnd_gain bare-trust-dropped '/MUT-BARE/s/\[ .* \] || return 1 ;;/return 1 ;;/' "--boundary-only --boundary-advisory" 'declaration UNTRUSTED'
+  git init -q "$_og/sepwork"; git -C "$_og/sepwork" symbolic-ref HEAD refs/heads/main   # a non-bare repository whose git dir is NOT named .git: its worktrees must not be trusted
+  printf 'x\n' > "$_og/sepwork/f"; git -C "$_og/sepwork" add f
+  # shellcheck disable=SC2086
+  git -C "$_og/sepwork" $_gx commit -q -m base; mv "$_og/sepwork/.git" "$_og/sep.d"; printf 'gitdir: %s\n' "$_og/sep.d" > "$_og/sepwork/.git"
+  git -C "$_og/sepwork" config core.worktree "$_og/sepwork"; git -C "$_og/sepwork" remote add origin "$_og/origin.git"
+  git -C "$_og/sepwork" worktree add -q -b sepb "$_og/sepwt" 2>/dev/null
+  _g_dir="$_og/sepwt"
+  _ut non-bare-oddly-named-common-dir "git directory is outside this tree" "$_gd_rem"
+  _bnd_kill bare-check-dropped '/MUT-BARE/s/\[ .* \] || return 1 ;;/: ;;/' "--boundary-only --boundary-advisory" has 'git directory is outside this tree'
+  # a REAL submodule (a local bare source is allowed under the seam) is trusted; a pointer at its module dir from another directory is not
+  git init -q "$_og/super"; git -C "$_og/super" symbolic-ref HEAD refs/heads/main
+  printf 'x\n' > "$_og/super/f"; git -C "$_og/super" add f
+  # shellcheck disable=SC2086
+  git -C "$_og/super" $_gx commit -q -m base
+  # shellcheck disable=SC2086
+  git -C "$_og/super" $_gx -c protocol.file.allow=always submodule add -q "$_og/origin.git" sub 2>/dev/null
+  _g_dir="$_og/super/sub"
+  _ut submodule-untrusted "a submodule checkout" "run preflight from the superproject"   # a submodule's gitdir and .gitmodules entry are files an agent can write, so it binds to nothing unforgeable
+  mkdir -p "$_og/forgedsub"; printf 'gitdir: %s\n' "$_og/super/.git/modules/sub" > "$_og/forgedsub/.git"
+  _g_dir="$_og/forgedsub"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"   # git itself resolves such a pointer to the superproject's tree, so owns_itself refuses it first (UNVERIFIED, nothing read)
+  case "$_br_out" in
+    *"declaration UNVERIFIED"*"not the root of its own git repository"*) echo "PASS: origin reader [forged-submodule-pointer] a forged submodule pointer reads no declaration (owns_itself refuses it)" ;;
+    *"declared in .kit/boundary-optout.conf"*) echo "FAIL: origin reader [forged-submodule-pointer] a forged submodule pointer was read ($_br_out)"; fail=1 ;;
+    *) echo "FAIL: origin reader [forged-submodule-pointer] ($_br_out)"; fail=1 ;;
+  esac
+  # SWAS-358 (security M1): a repository whose core.worktree points at a SIBLING directory is not its own root from its own directory: git prints an empty
+  # --show-prefix there too, so owns_itself also requires --is-inside-work-tree to print true. A mutant that drops that condition must read the directory as owned.
+  git init -q "$_og/cw"; mkdir -p "$_og/cwelse"; git -C "$_og/cw" config core.worktree "$_og/cwelse"
+  if ( CDPATH='' cd "$_og/cw" && owns_itself "$PWD" ); then echo "FAIL: owns_itself [core-worktree-elsewhere] a repository whose core.worktree names another directory was read as its own root"; fail=1; else echo "PASS: owns_itself [core-worktree-elsewhere] a cwd outside the work tree is refused"; fi
+  _g_dir="$_og/cw"; _g_decl=real
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"declaration UNVERIFIED"*"not the root of its own git repository"*) echo "PASS: origin reader [core-worktree-elsewhere] a directory outside its work tree reads no declaration (owns_itself refuses it)" ;;
+    *) echo "FAIL: origin reader [core-worktree-elsewhere] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill owns-itself-inside-worktree-dropped '/MUT-OWNSINSIDE/s| && \[ "\$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true \]||' "--boundary-only --boundary-advisory" has 'not the root of its own git repository'
+  _g_dir="$_og/work"
+  # D-241026-2, the realistic-config battery (fixture HOME and temp repos only; a dead local port stands in for the forge, so nothing leaves the machine).
+  # 1. a global https -> ssh insteadOf rewrite (the commonest real trigger): a one-time FAIL that prints the set-url fix, then a pass after the fix.
+  git init -q "$_og/rw"; git -C "$_og/rw" remote add origin 'https://127.0.0.1:1/x.git'
+  mkdir -p "$_og/home3"; printf '[url "ssh://git@127.0.0.1:1/"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home3/.gitconfig"
+  _g_home="$_og/home3"; _g_dir="$_og/rw"; _g_proj="$_bnd/off.json"; _g_decl=real; _g_env=""
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  _rw_want="  FAIL boundary: declaration UNTRUSTED (the effective origin URL differs from this repository's own remote.origin.url (url.*.insteadOf or an include), so origin is not this project's). Remedy: origin is rewritten by a url.<...>.insteadOf rule (git config --show-origin --get-regexp '^url\\.' shows where; matched: url.ssh://git@127.0.0.1:1/.insteadof in file:$_og/home3/.gitconfig); remove that rule, or if the rewrite is your own SSH preference, confirm the effective URL is your forge and then run: git remote set-url origin 'ssh://git@127.0.0.1:1/x.git'"
+  case "$_br_out" in
+    *"$_rw_want"*) echo "PASS: realistic config [ssh-insteadof] the exact message and one-line fix are printed" ;;
+    *) echo "FAIL: realistic config [ssh-insteadof] the exact message was not printed ($_br_out)"; fail=1 ;;
+  esac
+  _ut ssh-insteadof "effective origin URL differs" "git remote set-url origin 'ssh://git@127.0.0.1:1/x.git'"
+  # --boundary-offline NEVER relaxes UNTRUSTED
+  _bnd_run "$_self" "--boundary-only --boundary-offline"
+  case "$_br_out" in
+    *"FAIL boundary: declaration UNTRUSTED ("*) if [ "$_br_rc" -eq 1 ]; then echo "PASS: s20 [offline-untrusted] --boundary-offline leaves UNTRUSTED a FAIL (exit 1)"; else echo "FAIL: s20 [offline-untrusted] exited $_br_rc"; fail=1; fi ;;
+    *) echo "FAIL: s20 [offline-untrusted] --boundary-offline relaxed UNTRUSTED ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill offline-relaxes-untrusted '/MUT-GATES/s/if boundary_decl_gates; then/if boundary_decl_gates \&\& [ "$BOUNDARY_OFFLINE" -eq 0 ]; then/' "--boundary-only --boundary-offline" has 'FAIL boundary: declaration UNTRUSTED ('
+  _bnd_kill untrusted-mapped-to-unverified '/MUT-CLASS/s/echo UNTRUSTED/echo UNVERIFIED/' "--boundary-only --boundary-advisory" has 'declaration UNTRUSTED'
+  _bnd_kill remedy-line-dropped '/MUT-REMEDY/s/ Remedy: \$BD_REMEDY//' "--boundary-only --boundary-advisory" has '). Remedy: origin is rewritten by a url.'
+  # I1: UNTRUSTED sets bfail only when some part is OFF and needs the declaration; a fully ON user is told ("info"), exits 0, under --boundary-only and a plain run (a plain
+  # all-ON run reads no declaration at all, so the plain face is asserted by the differential: the exit does not move).
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"
+  _bo fully-on-untrusted-is-info 0 'info boundary: declaration UNTRUSTED (the effective origin URL differs' 'FAIL boundary: declaration UNTRUSTED'
+  _bnd_exit fully-on-untrusted no
+  _bnd_run "$_self" ""
+  case "$_br_out" in
+    *"FAIL boundary: declaration UNTRUSTED"*) echo "FAIL: fully-on plain run printed an UNTRUSTED FAIL ($_br_out)"; fail=1 ;;
+    *) echo "PASS: boundary exit [fully-on-untrusted-plain] a plain run of a fully ON user prints no UNTRUSTED FAIL" ;;
+  esac
+  _g_ci=1; _bnd_run "$_self" "--boundary-only"; _g_ci=""   # the CI=true face: CI reads no declaration and never exits 1
+  case "$_br_out" in
+    *"declaration UNTRUSTED"*) echo "FAIL: fully-on-untrusted under CI read the declaration ($_br_out)"; fail=1 ;;
+    *) if [ "$_br_rc" -ne 1 ]; then echo "PASS: boundary-only [fully-on-untrusted-ci] under CI=true the exit is not 1 (exit $_br_rc)"; else echo "FAIL: fully-on-untrusted under CI exited 1 ($_br_out)"; fail=1; fi ;;
+  esac
+  _bnd_kill gate-condition-dropped '/MUT-GATES/s/if boundary_decl_gates; then/if true; then/' "--boundary-only" has 'info boundary: declaration UNTRUSTED'
+  _g_proj="$_bnd/off.json"; _g_user=""
+  git -C "$_og/rw" remote set-url origin 'ssh://git@127.0.0.1:1/x.git'
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *UNTRUSTED*) echo "FAIL: realistic config [ssh-insteadof-after-fix] still UNTRUSTED after set-url ($_br_out)"; fail=1 ;;
+    *"declaration UNVERIFIED"*) echo "PASS: realistic config [ssh-insteadof-after-fix] after the one-line fix the run passes the integrity check (the dead port reads UNVERIFIED)" ;;
+    *) echo "FAIL: realistic config [ssh-insteadof-after-fix] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_exit ssh-insteadof-after-fix-exit yes   # the dead port is UNVERIFIED and a part is OFF (S20)
+  # 2. a plain https origin and a plain ssh origin (no rewrite): not an integrity refusal, never gates.
+  _g_home=""
+  for _ou in 'https://127.0.0.1:1/x.git' 'git@127.0.0.1:x.git'; do
+    git -C "$_og/rw" remote set-url origin "$_ou"
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *UNTRUSTED*) echo "FAIL: realistic config [plain-origin] $_ou read UNTRUSTED ($_br_out)"; fail=1 ;;
+      *"declaration UNVERIFIED"*) echo "PASS: realistic config [plain-origin] $_ou is not an integrity refusal" ;;
+      *) echo "FAIL: realistic config [plain-origin] $_ou ($_br_out)"; fail=1 ;;
+    esac
+    _bnd_exit "plain-origin $_ou" yes   # UNVERIFIED with a part OFF gates (S20); it is still not an integrity refusal (no UNTRUSTED above)
+  done
+  # S20 (owner ruling "355a: B revised"): the origin is unreachable (a dead port). A part is OFF, so from a terminal the run FAILs; --boundary-offline (typed) turns it into
+  # a loud WARN and exit 0; an environment variable of that name changes nothing; a fully ON user, --boundary-advisory and CI are unchanged; one blip is absorbed by the retry.
+  _g_home=""; _g_dir="$_og/rw"; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=real; _g_env=""
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/x.git'
+  _bo s20-unreachable-part-off-fails 1 'FAIL boundary: declaration UNVERIFIED (origin'"'"'s default branch could not be read (offline, or no access)) while a part is OFF. Remedy: retry when online, or type --boundary-offline' 'UNDECLARED'
+  _bnd_run "$_self" "--boundary-only --boundary-offline"
+  _s20_w='WARN boundary: declaration not verified (--boundary-offline typed on the command line; anyone can pass it: a visible act, not a control; the gate is not judged this run)'
+  case "$_br_out" in
+    *"$_s20_w"*) if [ "$_br_rc" -eq 2 ]; then echo "PASS: s20 [offline-flag] --boundary-offline prints the loud WARN line and --boundary-only reads UNVERIFIED (exit 2, S26)"; else echo "FAIL: s20 [offline-flag] exited $_br_rc ($_br_out)"; fail=1; fi ;;
+    *) echo "FAIL: s20 [offline-flag] the WARN line was not printed ($_br_out)"; fail=1 ;;
+  esac
+  # a plain run (no --boundary-only) with --boundary-offline does not move the exit: the same rc as --boundary-advisory (the owner ruling: a plain preflight still exits 0)
+  _bnd_run "$_self" "--boundary-offline"; _of_a=$_br_rc
+  _bnd_run "$_self" "--boundary-advisory"; _of_b=$_br_rc
+  if [ "$_of_a" -eq "$_of_b" ]; then echo "PASS: s26 [offline-plain] a plain run with --boundary-offline exits as --boundary-advisory does ($_of_a)"; else echo "FAIL: s26 [offline-plain] plain --boundary-offline exited $_of_a, advisory $_of_b"; fail=1; fi
+  _bnd_kill offline-does-not-set-bunv '/MUT-OFFLINEUNV/s/bunv=1/:/' "--boundary-only --boundary-offline" rc 2
+  _g_env=PREFLIGHT_BOUNDARY_OFFLINE=1
+  _bo s20-env-var-is-not-the-flag 1 'FAIL boundary: declaration UNVERIFIED' 'WARN boundary: declaration not verified'
+  _g_env=""
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  if [ "$_br_rc" -eq 0 ]; then echo "PASS: s20 [advisory] --boundary-advisory with an unreachable origin exits 0"; else echo "FAIL: s20 [advisory] exited $_br_rc"; fail=1; fi
+  _g_ci=1; _bnd_run "$_self" "--boundary-only"; _g_ci=""   # the CI=true face: CI reads no declaration, so an unreachable origin cannot fail it
+  case "$_br_out" in
+    *"declaration UNVERIFIED"*) echo "FAIL: s20 [ci] CI read the declaration ($_br_out)"; fail=1 ;;
+    *) if [ "$_br_rc" -ne 1 ]; then echo "PASS: s20 [ci] under CI=true an unreachable origin never exits 1 (exit $_br_rc)"; else echo "FAIL: s20 [ci] CI exited 1 ($_br_out)"; fail=1; fi ;;
+  esac
+  # S25 (Architect ruling): CI or GITHUB_ACTIONS set is CI only with NO TTY. The TTY comes from PREFLIGHT_TTY_SEAM=1|0, live only under the selftest flag. CI + TTY prints one WARN
+  # and is judged as a human terminal; there is no real-run override.
+  _s25w='WARN boundary: CI is set in an interactive terminal; judged as a human terminal'
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"; _g_ci=1; _g_tty=1
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"$_s25w"*"ok   boundary: ON [static]"*) if [ "$_br_rc" -eq 0 ]; then echo "PASS: s25 [ci-tty-fully-on] a fully ON repo with CI set and a TTY passes (exit 0), judged [static], with the WARN"; else echo "FAIL: s25 [ci-tty-fully-on] exited $_br_rc ($_br_out)"; fail=1; fi ;;
+    *) echo "FAIL: s25 [ci-tty-fully-on] ($_br_out)"; fail=1 ;;
+  esac
+  _g_proj="$_bnd/off.json"; _g_user=""
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"$_s25w"*"FAIL boundary: declaration UNVERIFIED ("*) if [ "$_br_rc" -eq 1 ]; then echo "PASS: s25 [ci-tty-opted-out-unreadable] an opted-out repo with CI set, a TTY and an unreadable declaration FAILs (exit 1)"; else echo "FAIL: s25 [ci-tty-opted-out-unreadable] exited $_br_rc ($_br_out)"; fail=1; fi ;;
+    *) echo "FAIL: s25 [ci-tty-opted-out-unreadable] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill ci-tty-skips-the-gate '/MUT-CITTY/s/&& boundary_has_tty/\&\& false/' "--boundary-only" rc 1
+  # I1 (reviewer, 85cfcb8e; Architect option a): a committed-ON repo with CI set, a TTY and NO strict user scope FAILs (egress NOT ENFORCED and UNDECLARED), and the WARN says what to do
+  _s25r='Remedy: on a CI runner that allocates a TTY, run `sh scripts/preflight.sh </dev/null 2>&1 | cat` (CI runners only; this gives CI mode, which reads only the committed project block)'
+  _g_proj="$_bnd/full.json"; _g_user=""; _s25d=$_g_decl; _g_decl=@absent
+  _bnd_run "$_self" "--boundary-only"
+  _g_decl=$_s25d
+  case "$_br_out" in
+    *"$_s25w"*"$_s25r"*"egress: NOT ENFORCED and UNDECLARED"*) if [ "$_br_rc" -eq 1 ]; then echo "PASS: s25 [ci-tty-committed-on-no-user-scope] a committed-ON repo with CI, a TTY and no strict user scope exits 1 and prints the remedy"; else echo "FAIL: s25 [ci-tty-committed-on-no-user-scope] exited $_br_rc"; fail=1; fi ;;
+    *) echo "FAIL: s25 [ci-tty-committed-on-no-user-scope] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill ci-tty-remedy-dropped '/MUT-CIREMEDY/d' "--boundary-only" has "$_s25r"
+  _bnd_kill ci-tty-remedy-drops-stderr-redirect '/MUT-CIREMEDY/s/ 2>&1 | cat/ | cat/' "--boundary-only" has "$_s25r"   # S35: without 2>&1 fd 2 stays on the terminal and the remedy does nothing
+  # S35 (security round 4e + reviewer I1, MEASURED under script(1)): the printed remedy must really give CI mode from a terminal. A fake PTY comes from script(1): the BSD/macOS form first,
+  # then util-linux's. Where neither gives a terminal on fd 2 the cell is weak (FAIL under CI, like every weak result). The same shape WITHOUT `2>&1` is the control: it must read TTY.
+  _s35_pty() {  # <inner sh command> -> _s35_out: the command run with a PTY on fds 0, 1 and 2; rc 1 when no PTY is available
+    _s35_out=$(script -q /dev/null sh -c "$1; echo S35-END" </dev/null 2>&1) || _s35_out=""
+    case "$_s35_out" in
+      *S35-END*) return 0 ;;
+    esac
+    _s35_out=$(script -qec "$1; echo S35-END" /dev/null </dev/null 2>&1) || _s35_out=""
+    case "$_s35_out" in
+      *S35-END*) return 0 ;;
+    esac
+    return 1
+  }
+  _s35_d=$(mktemp -d); mkdir "$_s35_d/.claude"; cp "$_bnd/full.json" "$_s35_d/.claude/settings.json"; mkdir "$_s35_d/home"
+  _s35_run="cd '$_s35_d' && env -u GITHUB_ACTIONS -u SANDBOX_RUNTIME CI=true HOME='$_s35_d/home' GIT_CONFIG_NOSYSTEM=1 sh '$_self' --boundary-only </dev/null"
+  _s35_ok=0
+  if command -v script >/dev/null 2>&1 && _s35_pty 'test -t 2 && echo S35-TTY2'; then
+    case "$_s35_out" in
+      *S35-TTY2*) _s35_ok=1 ;;
+    esac
+  fi
+  if [ "$_s35_ok" -eq 1 ]; then
+    _s35_pty "$_s35_run 2>&1 | cat"; _s35_fix=$_s35_out
+    _s35_pty "$_s35_run | cat"; _s35_ctl=$_s35_out
+    case "$_s35_fix" in
+      *"jq absent"*) if [ -n "$_st_ci" ]; then echo "FAIL: s35 [remedy-gives-ci-mode] jq is absent and CI is set (a weak result is a failure)"; fail=1; else echo "PASS: (weak) s35 [remedy-gives-ci-mode] jq is absent here, so the boundary block is not observable"; fi ;;
+      *"$_s25w"*) echo "FAIL: s35 [remedy-gives-ci-mode] the printed remedy still read a terminal on fd 2 ($_s35_fix)"; fail=1 ;;
+      *"[declared]"*) echo "PASS: s35 [remedy-gives-ci-mode] under a PTY on fd 2 the remedy shape (</dev/null 2>&1 | cat) gives CI mode ([declared], no WARN)" ;;
+      *) echo "FAIL: s35 [remedy-gives-ci-mode] the remedy run printed neither [declared] nor the WARN ($_s35_fix)"; fail=1 ;;
+    esac
+    case "$_s35_ctl" in
+      *"$_s25w"*) echo "PASS: s35 [remedy-control-reads-tty] the same shape WITHOUT 2>&1 reads the terminal on fd 2 (the control is not vacuous)" ;;
+      *"jq absent"*) if [ -n "$_st_ci" ]; then echo "FAIL: s35 [remedy-control-reads-tty] jq is absent and CI is set (a weak result is a failure)"; fail=1; else echo "PASS: (weak) s35 [remedy-control-reads-tty] jq is absent here"; fi ;;
+      *) echo "FAIL: s35 [remedy-control-reads-tty] the shape without 2>&1 did not read a terminal ($_s35_ctl)"; fail=1 ;;
+    esac
+  elif [ -n "$_st_ci" ]; then echo "FAIL: s35 [remedy-gives-ci-mode] script(1) gives no PTY here and CI is set (a weak result is a failure)"; fail=1
+  else echo "PASS: (weak) s35 [remedy-gives-ci-mode] script(1) gives no PTY on fd 2 here, so the remedy shape is not observable (the cell string and its mutants still ran)"; fi
+  rm -rf "$_s35_d"
+  _g_proj="$_bnd/off.json"
+  _g_tty=0
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"$_s25w"*|*"declaration UNVERIFIED"*) echo "FAIL: s25 [ci-no-tty] CI with no TTY did not keep the CI behaviour ($_br_out)"; fail=1 ;;
+    *) if [ "$_br_rc" -ne 1 ]; then echo "PASS: s25 [ci-no-tty] CI set with no TTY keeps the CI behaviour (no WARN, no declaration read, exit $_br_rc)"; else echo "FAIL: s25 [ci-no-tty] exited 1"; fail=1; fi ;;
+  esac
+  _g_ci=""; _g_tty=""
+  # m2: the redaction keeps a rule NAME readable and still redacts userinfo
+  _rd=$(boundary_url_show 'url.git@github.com:')
+  if [ "$_rd" = 'url.git@github.com:' ]; then echo "PASS: m2 [redact-rule-name] url.git@github.com: stays readable"; else echo "FAIL: m2 [redact-rule-name] gave '$_rd'"; fail=1; fi
+  _rd=$(boundary_url_show 'url.tok3n@github.com:')
+  if [ "$_rd" = 'url.***@github.com:' ]; then echo "PASS: m2 [redact-secret-userinfo] url.<secret>@host: keeps 'url.' and redacts the userinfo"; else echo "FAIL: m2 [redact-secret-userinfo] gave '$_rd'"; fail=1; fi
+  _rd=$(boundary_url_show 'url.https://user:pw@host/.insteadof')
+  case "$_rd" in
+    'url.https://***@host/.insteadof') echo "PASS: m2 [redact-https-userinfo] url.https://user:pw@host/ keeps 'url.' and redacts the userinfo" ;;
+    *) echo "FAIL: m2 [redact-https-userinfo] gave '$_rd'"; fail=1 ;;
+  esac
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"
+  _bo s20-fully-on-unreachable-is-info 0 'info boundary: declaration not read' 'FAIL boundary'
+  _g_proj="$_bnd/off.json"; _g_user=""
+  _bnd_exit s20-unreachable-moves-the-exit yes
+  _bnd_kill unverified-never-gates '/MUT-UNVGATE/s/bfail=1/:/' "" moves yes
+  _bnd_kill offline-line-dropped '/MUT-OFFLINELINE/d' "--boundary-only --boundary-offline" has "$_s20_w"
+  # the retry: a seam that fails the FIRST attempt only. The real origin is reachable (a local bare repository under the seam); with the retry the read passes and is judged.
+  _g_dir="$_og/work"; _g_env=PREFLIGHT_BOUNDARY_BLIP=1
+  _bo s20-one-blip-is-absorbed 1 'OFF and UNDECLARED' 'declaration UNVERIFIED'
+  _bnd_kill retry-removed '/MUT-RETRY/s/\[ "\$_bf_rc" -eq 3 \] && \[ "\$_bo_retry" -eq 1 \]/false/' "--boundary-only --boundary-advisory" has 'OFF and UNDECLARED'
+  _g_env=""; _g_dir="$_og/rw"
+  # 3. a rewrite to ANOTHER HOST is never offered as a set-url command (adopting it would launder a forged origin); a rewrite whose URL fails the safe charset gets no command.
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/x.git'
+  mkdir -p "$_og/home4"; printf '[url "https://evil.invalid/"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home4/.gitconfig"
+  _g_home="$_og/home4"; _g_dir="$_og/rw"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"set-url"*) echo "FAIL: realistic config [rewrite-other-host] a set-url command was offered for a rewrite to another host ($_br_out)"; fail=1 ;;
+    *"the rewrite changes the HOST: do NOT adopt it unless you know it"*"matched: url.https://evil.invalid/.insteadof in file:$_og/home4/.gitconfig"*|*"matched: url.https://evil.invalid/.insteadof in file:$_og/home4/.gitconfig"*"the rewrite changes the HOST: do NOT adopt it unless you know it"*) echo "PASS: realistic config [rewrite-other-host] the remedy names the rule and its file, warns the HOST changes, and prints no set-url command" ;;
+    *) echo "FAIL: realistic config [rewrite-other-host] ($_br_out)"; fail=1 ;;
+  esac
+  for _ij in ';rm -rf ~/' '$(id)/' '`id`/' "'x'/"; do
+    # a pure transport swap (same host, same path) whose path holds shell syntax: S21 lets it through to the charset check, which must refuse to print a command
+    printf '[url "ssh://git@127.0.0.1:1/"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home4/.gitconfig"
+    git -C "$_og/rw" remote set-url origin "https://127.0.0.1:1/${_ij}x.git"
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"set-url origin '"*) echo "FAIL: realistic config [remedy-injection] '$_ij' reached a set-url command ($_br_out)"; fail=1 ;;
+      *"no safe set-url command is offered for this URL"*) echo "PASS: realistic config [remedy-injection] '$_ij' never appears in a command (no set-url is offered)" ;;
+      *) echo "FAIL: realistic config [remedy-injection] '$_ij' ($_br_out)"; fail=1 ;;
+    esac
+  done
+  # S21: a same-host rewrite to ANOTHER OWNER's repository changes the REPOSITORY: no set-url command, and the warning says so
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/owner/x.git'
+  printf '[url "https://127.0.0.1:1/attacker/"]\n\tinsteadOf = https://127.0.0.1:1/owner/\n' > "$_og/home4/.gitconfig"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"set-url"*) echo "FAIL: realistic config [rewrite-other-owner] a set-url command was offered ($_br_out)"; fail=1 ;;
+    *"the rewrite changes the REPOSITORY: do NOT adopt it"*) echo "PASS: realistic config [rewrite-other-owner] a same-host other-owner rewrite prints the REPOSITORY warning and no command" ;;
+    *) echo "FAIL: realistic config [rewrite-other-owner] ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill repository-check-dropped '/MUT-REPO/s/if .*; then/if false; then/' "--boundary-only --boundary-advisory" has 'the rewrite changes the REPOSITORY'
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/x.git'
+  # S23: the authority ends at the first / ? or #; an IPv6 host is always a host change
+  for _hu in 'https://evil.example#@good.example/x|evil.example' 'https://evil.example?@good.example/x|evil.example' 'https://u:p@Good.example:8443/x|good.example' 'git@github.com:o/x.git|github.com'; do
+    if [ "$(boundary_url_host "${_hu%%|*}")" = "${_hu#*|}" ]; then echo "PASS: remedy host [authority] ${_hu#*|}"; else echo "FAIL: remedy host [authority] '${_hu%%|*}' gave '$(boundary_url_host "${_hu%%|*}")'"; fail=1; fi
+  done
+  case "$(boundary_rewrite_remedy 'https://good.example/x.git' 'https://evil.example#@good.example/x.git')" in
+    *"changes the HOST"*) echo "PASS: remedy host [fragment-trick] https://evil.example#@good.example/ is a host change" ;;
+    *) echo "FAIL: remedy host [fragment-trick] was not read as a host change"; fail=1 ;;
+  esac
+  case "$(boundary_rewrite_remedy 'https://[::1]/x.git' 'https://[::1]/x.git')" in
+    *"changes the HOST"*) echo "PASS: remedy host [ipv6] a [ host counts as a host change" ;;
+    *) echo "FAIL: remedy host [ipv6] a [ host was not a host change"; fail=1 ;;
+  esac
+  printf '[url "ssh://git@127.0.0.1:1/"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home4/.gitconfig"
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/;rm -rf ~/x.git'
+  _bnd_kill url-charset-check-dropped '/MUT-URLSAFE/s/if .*; then/if true; then/' "--boundary-only --boundary-advisory" has 'no safe set-url command is offered for this URL'
+  git -C "$_og/rw" remote set-url origin 'https://127.0.0.1:1/x.git'
+  # 4. a credential in a URL (obviously fake tokens) never appears in any printed line; userinfo prints as ***; no command carries it
+  printf '[url "git@127.0.0.1:"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home4/.gitconfig"   # the one exempt userinfo: a bare `git` stays pasteable
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"git remote set-url origin 'git@127.0.0.1:x.git'"*) echo "PASS: realistic config [git-userinfo-verbatim] git@host:path is shown verbatim in the set-url command" ;;
+    *) echo "FAIL: realistic config [git-userinfo-verbatim] ($_br_out)"; fail=1 ;;
+  esac
+  for _cr in 'u:s3cr3tFAKE-NOT-A-TOKEN' 'FAKE-NOT-A-TOKEN0000' 'git:s3cr3tpw'; do
+    printf '[url "https://%s@127.0.0.1:1/"]\n\tinsteadOf = https://127.0.0.1:1/\n' "$_cr" > "$_og/home4/.gitconfig"
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+    case "$_br_out" in
+      *"FAKE-NOT-A-TOKEN"*|*"s3cr3t"*) echo "FAIL: realistic config [credential-redacted] '$_cr' appears in the output ($_br_out)"; fail=1 ;;
+      *"***"*"set-url origin '<your forge URL>'"*) echo "PASS: realistic config [credential-redacted] '$_cr' prints as *** and the command carries the placeholder" ;;
+      *) echo "FAIL: realistic config [credential-redacted] '$_cr' ($_br_out)"; fail=1 ;;
+    esac
+  done
+  _bnd_kill redaction-bypassed '/MUT-REDACT/s/ | sed .*   # MUT-REDACT/   # MUT-REDACT/' "--boundary-only --boundary-advisory" has '***'
+  _g_home=""
+  # a credential inside a remote URL is never echoed in the remedy
+  for _us in 'https://tok:sec@h.example/x.git|https://***@h.example/x.git' 'https://ghp_FAKE0000@h.example/x.git|https://***@h.example/x.git' 'ssh://git:sec@h.example/x.git|ssh://***@h.example/x.git' 'ssh://git@h.example/o/x.git|ssh://git@h.example/o/x.git' 'ssh://git@h.example|ssh://git@h.example' 'ssh://git@h@evil.example/x|ssh://***@evil.example/x' 'git:secret@h.example:x.git|***@h.example:x.git' 'git@h.example:x.git|git@h.example:x.git' 'u:FAKE-NOT-A-TOKEN@h.example:x.git|***@h.example:x.git' 'ghp_FAKE@h.example:x.git|***@h.example:x.git'; do
+    if [ "$(boundary_url_show "${_us%%|*}")" = "${_us#*|}" ]; then echo "PASS: remedy url [credential-stripped] ${_us#*|}"; else echo "FAIL: remedy url [credential-stripped] '${_us%%|*}' printed '$(boundary_url_show "${_us%%|*}")'"; fail=1; fi
+  done
+  # R4: since is judged against the LOCAL date. A stub date prints 2026-10-24 for -u and 2026-10-25 otherwise; since=2026-10-25 is real only on the local reading.
+  _ds=$(mktemp -d); _rd=$(command -v date)
+  printf '%s\n' '#!/bin/sh' 'case "$1" in -u) echo 2026-10-24 ;; +%Y-%m-%d) echo 2026-10-25 ;; *) exec '"$_rd"' "$@" ;; esac' > "$_ds/date"; chmod +x "$_ds/date"
+  printf '%s\n' "part=all reason=r lost=l since=2026-10-25" > "$_bnd/d-localday.conf"
+  _g_path="$_ds"; _g_dir=""; _g_decl="$_bnd/d-localday.conf"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"(opted out 2026-10-25, declared in .kit/boundary-optout.conf)"*) echo "PASS: since-local-date a since equal to the LOCAL date is accepted when UTC is a day behind" ;;
+    *) echo "FAIL: since-local-date ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill since-uses-utc '/the LOCAL date (R4)/s/date +%Y-%m-%d/date -u +%Y-%m-%d/' "--boundary-only --boundary-advisory" has '(opted out 2026-10-25, declared in .kit/boundary-optout.conf)'
+  _g_path=""; rm -rf "$_ds"
+  # S7: declaration text is printed with printf '%s', so a backslash sequence is shown literally
+  printf '%s\n' 'part=all reason=r lost=a\nb\c\x41 since=2026-10-23' > "$_bnd/d-bs.conf"
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/d-bs.conf"
+  bnd_has declaration-text-printed-literally 'Lost: a\nb\c\x41 (kit:'
+  _g_dir="$_og/work"; _g_decl=real
+  # 37 / 38: an all-ON session makes NO ls-remote call for the declaration; the reader's ssh is BatchMode (a stub git records its arguments and GIT_SSH_COMMAND).
+  _gs=$(mktemp -d); _gl="$_gs/log"; : > "$_gl"; _rg=$(command -v git)
+  { printf '#!/bin/sh\n'; printf 'printf "%%s|%%s\\n" "$*" "${GIT_SSH_COMMAND:-}" >> "%s"\n' "$_gl"; printf 'exec %s "$@"\n' "$_rg"; } > "$_gs/git"; chmod +x "$_gs/git"
+  _g_path="$_gs"; _g_dir="$_og/work"; _g_decl=real; _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"
+  git -C "$_og/work" checkout -q -f main 2>/dev/null
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  _bn_on=$(grep -c 'ls-remote' "$_gl" || true)
+  : > "$_gl"; _g_proj="$_bnd/off.json"; _g_user=""
+  _bnd_run "$_self" "--boundary-advisory"
+  _bn_off=$(grep -c 'ls-remote' "$_gl" || true)
+  _bn_ssh=$(grep -c 'ls-remote.*|ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes$' "$_gl" || true)
+  _bn_low=$(grep -c '^-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 .*ls-remote' "$_gl" || true)   # S4: the http stall bound
+  _bn_ext=$(grep -c '^-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 -c protocol.ext.allow=never .*ls-remote' "$_gl" || true)   # S13
+  if [ "$_bn_on" -ge 1 ]; then echo "PASS: no-read-when-on [boundary-only] --boundary-only always reads the declaration ($_bn_on ls-remote calls)"; else echo "FAIL: no-read-when-on [boundary-only] --boundary-only never called ls-remote"; fail=1; fi
+  : > "$_gl"; _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"
+  _bnd_run "$_self" "--boundary-advisory"
+  _bn_none=$(grep -c 'ls-remote' "$_gl" || true)
+  if [ "$_bn_none" -eq 0 ]; then echo "PASS: no-read-when-on [plain run] an all-ON session made no ls-remote call for the declaration"; else echo "FAIL: no-read-when-on [plain run] an all-ON session called ls-remote $_bn_none times"; fail=1; fi
+  if [ "$_bn_off" -ge 1 ]; then echo "PASS: no-read-when-on [non-vacuous] an OFF sandbox does read it ($_bn_off ls-remote calls)"; else echo "FAIL: no-read-when-on [non-vacuous] an OFF sandbox made no ls-remote call, so the zero above proves nothing"; fail=1; fi
+  if [ "$_bn_ssh" -ge 1 ] && [ "$_bn_ssh" -eq "$_bn_off" ]; then echo "PASS: ssh-batchmode every ls-remote ran with GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes'"; else echo "FAIL: ssh-batchmode $_bn_ssh of $_bn_off ls-remote calls carried BatchMode"; fail=1; fi
+  if [ "$_bn_low" -ge 1 ] && [ "$_bn_low" -eq "$_bn_off" ]; then echo "PASS: stall-bound every ls-remote carried http.lowSpeedLimit and http.lowSpeedTime"; else echo "FAIL: stall-bound $_bn_low of $_bn_off ls-remote calls carried the http stall bound"; fail=1; fi
+  # S8 / S13: each option is load-bearing, shown red: a copy without it records ls-remote calls that lack it. N1: the mutant must apply (cmp), parse (sh -n) and reach ls-remote.
+  _bn_mutrun() {  # <name> <sed expr> <grep pattern the original carries>: sets _bn_mutl (ls-remote calls the mutant made) and _bn_muth (of them carrying the pattern); _bn_mutl=-1 if it did not apply or parse
+    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"; _bn_mutl=-1; _bn_muth=0
+    if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
+    if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse"; fail=1; rm -rf "$_bk"; return 0; fi
+    : > "$_gl"; _g_proj="$_bnd/off.json"; _g_user=""; _g_path="$_gs"; _g_dir="$_og/work"; _g_decl=real
+    _bnd_run "$_bk/preflight.sh" "--boundary-advisory"
+    _bn_mutl=$(grep -c 'ls-remote' "$_gl" || true); _bn_muth=$(grep -c "$3" "$_gl" || true); rm -rf "$_bk"
+  }
+  _bn_mutrun strict-host-key-dropped '/MUT-STRICTHOST/s/ -o StrictHostKeyChecking=yes//' 'StrictHostKeyChecking=yes'
+  if [ "$_bn_off" -ge 1 ] && [ "$_bn_mutl" -ge 1 ] && [ "$_bn_muth" -eq 0 ]; then echo "PASS: mutant strict-host-key-dropped is killed (the original carries it on $_bn_off ls-remote calls, the mutant ran $_bn_mutl and none carries it)"; else echo "FAIL: mutant strict-host-key-dropped survived or never reached ls-remote ($_bn_mutl calls, $_bn_muth carrying it)"; fail=1; fi
+  # S13 belt: every ls-remote carries protocol.ext.allow=never (the file belt applies only outside the seam, so it is not asserted here)
+  if [ "$_bn_off" -ge 1 ] && [ "$_bn_ext" -eq "$_bn_off" ]; then echo "PASS: ext-belt every ls-remote carried -c protocol.ext.allow=never"; else echo "FAIL: ext-belt $_bn_ext of $_bn_off ls-remote calls carried protocol.ext.allow=never"; fail=1; fi
+  _bn_mutrun ext-belt-dropped "/MUT-BELT/s/_bo_belt='-c protocol.ext.allow=never'/_bo_belt=''/" 'protocol.ext.allow=never'
+  if [ "$_bn_mutl" -ge 1 ] && [ "$_bn_muth" -eq 0 ]; then echo "PASS: mutant ext-belt-dropped is killed (the mutant ran $_bn_mutl ls-remote calls, none with the belt)"; else echo "FAIL: mutant ext-belt-dropped survived or never reached ls-remote ($_bn_mutl calls, $_bn_muth with the belt)"; fail=1; fi
+  _g_path=""; _g_dir=""; _g_decl=""; _g_proj="$_bnd/off.json"; _g_user=""
+
+  # 12: a jq that prints a PARTIAL result and then fails (Linux jq 1.7) on the two NEW jq reads (DC20 and the user-host count) reads as exactly one
+  # UNVERIFIED line each, never a listing, never a count, and the run still reaches the end of the block (no abort under set -eu).
+  _js=$(mktemp -d); _rj=$(command -v jq)
+  printf '%s\n' '#!/bin/sh' 'case "$*" in' "  *'WebFetch(domain:'*) echo \"3 example.org\"; exit 2 ;;" '  *allowedDomains*) echo 2; exit 2 ;;' 'esac' "exec $_rj \"\$@\"" > "$_js/jq"; chmod +x "$_js/jq"
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict-hosts.json"; _g_local="$_bnd/local-wf1.json"; _g_decl=@absent; _g_path="$_js"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  _jq_n=$(printf '%s\n' "$_br_out" | grep -c 'could not be read for saved WebFetch(domain:) allows (UNVERIFIED)' || true)
+  _jq_h=$(printf '%s\n' "$_br_out" | grep -c 'allowedDomains could not be counted (UNVERIFIED)' || true)
+  if [ "$_jq_n" -eq 1 ] && [ "$_jq_h" -eq 1 ]; then echo "PASS: jq-partial [new reads] a partial-then-fail jq reads as exactly one UNVERIFIED line on the DC20 read and on the host count"; else echo "FAIL: jq-partial [new reads] expected one UNVERIFIED line each (dc20 $_jq_n, hosts $_jq_h): $_br_out"; fail=1; fi
+  case "$_br_out" in
+    *"saved WebFetch(domain:) allow(s) in"*|*"holds 2 host"*|*"example.org"*) echo "FAIL: jq-partial [new reads] a partial result leaked into the output ($_br_out)"; fail=1 ;;
+    *"web: WebFetch denied"*) echo "PASS: jq-partial [new reads] no partial listing or count, and the run reached the end of the block" ;;
+    *) echo "FAIL: jq-partial [new reads] the run did not reach the web line (an abort?) ($_br_out)"; fail=1 ;;
+  esac
+
+  # (_bnd_kill is defined above, before the real-origin cells that use it)
+  _sc() {  # <project> <user> <local> <managed> <declaration seam> <env word>: the scenario for _bnd_kill
+    _g_proj=$1; _g_user=$2; _g_local=$3; _g_mgd=$4; _g_decl=$5; _g_env=$6; _g_dir=""; _g_path=""; _g_os=""; _g_home=""
+  }
+  _sc "$_bnd/full.json" "$_bnd/user-strict-hosts.json" "$_bnd/local-wf1.json" "" @absent ""; _g_path="$_js"
+  _bnd_kill jq-streams-partial '/MUT-DC20JQ/s/2>\/dev\/null) || _bw=unreadable/2>\/dev\/null || echo unreadable)/;/in   # MUT-DC20NL$/,/^  esac$/d' "--boundary-only --boundary-advisory" has 'could not be read for saved WebFetch(domain:) allows (UNVERIFIED)'
+  _g_path=""; _g_local=""; rm -rf "$_js"
+  _sc "$_bnd/off.json" "" "" "" @absent ""
+  _bnd_kill undeclared-not-failing '/MUT-BFAIL/s/bfail=1/:/' "" moves yes
+  _bnd_kill advisory-sets-exit '/MUT-ADVISORY/s/ \&\& \[ "\$BOUNDARY_ADVISORY" -eq 0 \]//' "" moves yes
+  _sc "$_bnd/off.json" "" "" "" "$_bnd/d-all.conf" ""
+  _bnd_kill declared-sets-bfail '/MUT-DECLARED/s/:   #/bfail=1   #/' "" moves no
+  _sc "$_bnd/off.json" "" "" "" "$_bnd/m-eq.conf" ""
+  _bnd_kill eq-in-value-accepted '/MUT-EQ/s/= 4 \]/-ge 0 ]/' "--boundary-only --boundary-advisory" has 'declaration MALFORMED'
+  _sc "$_bnd/off.json" "" "" "" "$_bnd/m-partial.conf" ""
+  _bnd_kill malformed-partial-accept '/MUT-MALFORMED/s/then BD_WHY="line \$_bp_n: \$BD_WHY"; return 0; fi/then BD_RECS=$_bp_acc; BD_STATE=ok; return 0; fi/' "--boundary-only --boundary-advisory" has 'declaration MALFORMED'
+  _sc "$_bnd/off.json" "" "" "" "$_bnd/m-five.conf" ""
+  _bnd_kill record-cap-removed '/MUT-CAP/s/-le 4 \]/-le 99 ]/' "--boundary-only --boundary-advisory" has 'line 5: more than 4 records'
+  _sc "$_bnd/off.json" "" "" "" @nonregular ""
+  _bnd_kill nonregular-blob-absent '/MUT-NONREG/s/BD_STATE=malformed; BD_WHY="[^"]*"/BD_STATE=absent/' "--boundary-only --boundary-advisory" has 'declaration MALFORMED'
+  _sc "$_bnd/full.json" "$_bnd/user-strict.json" "" "" "$_bnd/d-egress.conf" ""
+  _bnd_kill stale-silent '/MUT-STALE/s/\[ "\$_bs_st" != ON \] || printf/: printf/' "--boundary-only" has 'is STALE'
+  _sc "$_bnd/full.json" "$_bnd/user-strict.json" "" "" @absent SANDBOX_RUNTIME=1
+  _bnd_kill label-drops-agent-reported '/MUT-AGENTMARK/s/.*/  :/' "--boundary-only --boundary-advisory" has 'agent-reported'
+  _sc "$_bnd/full.json" "" "$_bnd/off.json" "" @absent CI=true
+  _bnd_kill ci-reads-local '/MUT-CILOCAL/s/continue/:/' "--boundary-only --boundary-advisory" has 'ok   boundary: ON [declared]'
+  _sc "$_bnd/full.json" "" "" "$_bnd/off.json" @absent CI=true
+  _bnd_kill ci-tier-reads-local '/MUT-CIUSER/s/continue/:/' "--boundary-only --boundary-advisory" has 'ok   boundary: ON [declared]'
+  _sc "$_bnd/full.json" "$_bnd/user-plain.json" "$_bnd/local-wf4.json" "" @absent ""
+  _bnd_kill dc20-host-unvalidated 's/select(test("^\[a-z0-9\]/select(true or test("^[a-z0-9]/' "--boundary-only --boundary-advisory" has '(and 3 more entries not printed)'
+  # working-tree-read: the REAL reader, a clone whose origin has no declaration and whose working tree does
+  git clone -q "$_og/origin.git" "$_og/wt2" 2>/dev/null; mkdir -p "$_og/wt2/.kit"; cp "$_bnd/d-all.conf" "$_og/wt2/.kit/boundary-optout.conf"
+  _sc "$_bnd/off.json" "" "" "" real ""; _g_dir="$_og/wt2"
+  _bnd_kill working-tree-read '/MUT-WTREAD/s/boundary_rel_blob "\$_bo_tip" \.kit\/boundary-optout\.conf/cat .kit\/boundary-optout.conf/' "--boundary-only --boundary-advisory" has 'OFF and UNDECLARED'
+  _g_dir=""
+  rm -rf "$_og" "$_gs"
+
+  # 28: the third copy of the origin-branch reader stays in step with the other two (a fixed set of load-bearing lines in all three).
+  for _cf in "$_self" "$_sd/doctor.sh" "$_sd/promotion-verify.sh"; do
+    _cfm=""
+    for _cs in 'ls-remote --symref origin HEAD' 'refs/heads/?*)' '*[!A-Za-z0-9._/-]*)' 'GIT_NO_REPLACE_OBJECTS=1' '100644|100755)'; do
+      grep -qF -- "$_cs" "$_cf" 2>/dev/null || _cfm="$_cfm [$_cs]"
+    done
+    if [ -z "$_cfm" ]; then echo "PASS: origin-reader-coupling $(basename -- "$_cf") keeps the five load-bearing lines"; else echo "FAIL: origin-reader-coupling $(basename -- "$_cf") lost:$_cfm"; fail=1; fi
+  done
+  # the 354 cell, narrowed: a DECLARED opt-out, a NOT ENFORCED egress and every UNVERIFIED line leave miss, rec and bfail untouched; an UNDECLARED one sets bfail only.
+  _bcell() {  # <project> <user> <declaration seam> -> "miss rec bfail" after one check_boundary call (CI and the marker cleared)
+    ( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME
+      miss=0; rec=0; bfail=0; bunv=0
+      PREFLIGHT_SANDBOX_SETTINGS="$1"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_USER="$2"; PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed; PREFLIGHT_BOUNDARY_OPTOUT="$3"
+      PREFLIGHT_SANDBOX_OS=Darwin; PREFLIGHT_SANDBOX_TOOLS=sandbox-exec; PREFLIGHT_SANDBOX_BWRAP_OK=1
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED PREFLIGHT_BOUNDARY_OPTOUT PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      check_boundary >/dev/null 2>&1
+      printf '%s %s %s' "$miss" "$rec" "$bfail" )
+  }
+  for _bc in "off-declared|$_bnd/off.json|/nonexistent-user|$_bnd/d-all.conf|0 0 0" "off-unreadable|$_bnd/off.json|/nonexistent-user|@unreadable|0 0 1" "egress-declared|$_bnd/full.json|/nonexistent-user|$_bnd/d-egress.conf|0 0 0" "partial-declared|$_bnd/shortwrite.json|$_bnd/user-strict.json|$_bnd/d-wp.conf|0 0 0" "off-undeclared|$_bnd/off.json|/nonexistent-user|@absent|0 0 1" "egress-undeclared|$_bnd/full.json|/nonexistent-user|@absent|0 0 1"; do
+    _bcl=$(printf '%s' "$_bc" | cut -d'|' -f1); _bcw=$(printf '%s' "$_bc" | cut -d'|' -f5)
+    _bcg=$(_bcell "$(printf '%s' "$_bc" | cut -d'|' -f2)" "$(printf '%s' "$_bc" | cut -d'|' -f3)" "$(printf '%s' "$_bc" | cut -d'|' -f4)")
+    if [ "$_bcg" = "$_bcw" ]; then echo "PASS: boundary accumulators [$_bcl] miss/rec/bfail = $_bcg"; else echo "FAIL: boundary accumulators [$_bcl] expected '$_bcw', got '$_bcg'"; fail=1; fi
+  done
+  # CI=true with an EMPTY HOME: the new code (the labels, the declared tier, --boundary-only) reaches its end and never reads the home or the network.
+  _eh=$(mktemp -d)
+  _sc "$_bnd/full.json" "" "" "" @unreadable CI=true; _g_home="$_eh"
+  _bnd_run "$_self" "--boundary-only"
+  case "$_br_out" in
+    *"ok   boundary: ON [declared] (CI set: local and user scopes not read)"*"egress: N/A [declared]"*"web: WebFetch denied"*) echo "PASS: ci-empty-home [boundary-only] CI=true with an empty HOME reaches the end of the block on the declared tier (exit $_br_rc)" ;;
+    *) echo "FAIL: ci-empty-home [boundary-only] ($_br_out)"; fail=1 ;;
+  esac
+  _g_home=""; rm -rf "$_eh"
+  # 31: every rc consumer asks for --boundary-advisory. incept (both preflight sites) is driven against a stub preflight that EXITS 1 unless it sees the flag
+  # (what a bfail run does), so a dropped flag aborts incept as "missing prerequisites" or leaves the flag off the recorded call. repo-ownership holds its own cells.
+  if [ -f "$_sd/incept.sh" ]; then
+    _ic=$(mktemp -d); mkdir -p "$_ic/scripts" "$_ic/profiles/typescript-node" "$_ic/adapters/generic"
+    printf '{}\n' > "$_ic/adapters/generic/adapter.json"
+    printf 'Engineering Principles & Definition of Done\n' > "$_ic/CLAUDE.md"
+    printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> calls' 'case " $* " in' '  *" --boundary-advisory "*) ;;' '  *) exit 1 ;;' 'esac' 'case " $* " in' '  *" --stack "*) exit 1 ;;' 'esac' 'exit 0' > "$_ic/scripts/preflight.sh"
+    _ic_run() {  # <incept copy> -> _ic_out; leaves the stub's recorded calls in $_ic/calls
+      rm -f "$_ic/calls"; cp "$1" "$_ic/scripts/incept.sh"
+      _ic_out=$( cd "$_ic" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME sh scripts/incept.sh --name T --intent-owner O --stack typescript-node --harness generic < /dev/null 2>&1 ) || true
+    }
+    _ic_run "$_sd/incept.sh"
+    _ic_n=$(grep -c -e '--boundary-advisory' "$_ic/calls" 2>/dev/null || true); _ic_n=${_ic_n:-0}
+    case "$_ic_out" in
+      *"missing prerequisites"*) echo "FAIL: incept-not-blocked-by-bfail a boundary exit aborted incept at the prerequisites gate ($_ic_out)"; fail=1 ;;
+      *"does not meet its declared floor"*) if [ "$_ic_n" -eq 2 ]; then echo "PASS: incept-not-blocked-by-bfail both preflight calls (:416 and the --stack floor call) pass --boundary-advisory and incept got past the prerequisites gate"; else echo "FAIL: incept-not-blocked-by-bfail $_ic_n of 2 preflight calls passed --boundary-advisory"; fail=1; fi ;;
+      *) echo "FAIL: incept-not-blocked-by-bfail incept did not reach the stack floor call ($_ic_out)"; fail=1 ;;
+    esac
+    sed 's/preflight\.sh --boundary-advisory \$_pf_nested/preflight.sh $_pf_nested/' "$_sd/incept.sh" > "$_ic/m1.sh"
+    if cmp -s "$_sd/incept.sh" "$_ic/m1.sh"; then echo "FAIL: mutant incept-drops-advisory (:416) did not apply"; fail=1; else
+      _ic_run "$_ic/m1.sh"
+      case "$_ic_out" in
+        *"missing prerequisites"*) echo "PASS: mutant incept-drops-advisory (:416) is killed (a boundary exit aborts incept as missing prerequisites)" ;;
+        *) echo "FAIL: mutant incept-drops-advisory (:416) survived ($_ic_out)"; fail=1 ;;
+      esac
+    fi
+    sed 's/preflight\.sh --boundary-advisory --stack/preflight.sh --stack/' "$_sd/incept.sh" > "$_ic/m2.sh"
+    if cmp -s "$_sd/incept.sh" "$_ic/m2.sh"; then echo "FAIL: mutant incept-drops-advisory (--stack) did not apply"; fail=1; else
+      _ic_run "$_ic/m2.sh"
+      _ic_n=$(grep -c -e '--boundary-advisory' "$_ic/calls" 2>/dev/null || true); _ic_n=${_ic_n:-0}
+      if [ "$_ic_n" -lt 2 ]; then echo "PASS: mutant incept-drops-advisory (--stack) is killed (the floor call records no flag)"; else echo "FAIL: mutant incept-drops-advisory (--stack) survived"; fail=1; fi
+    fi
+    rm -rf "$_ic"
+  else
+    echo "PASS: (skip) incept cells: no scripts/incept.sh beside this script"
+  fi
+
+  # ---- security triage at d0a955ac: exactly one document, a regular file, and a banner on seam runs.
+  # A two-document file (`jq -c` prints one line per document, rc 0) and an empty or whitespace-only file are unreadable, never the first document / "no keys".
+  { cat "$_bnd/full.json"; printf '{}\n'; } > "$_bnd/twodoc.json"
+  : > "$_bnd/empty.json"; printf '  \n\n' > "$_bnd/blank.json"
+  for _td in twodoc empty blank; do
+    out=$( boundary_read_scope "$_bnd/$_td.json" )
+    if [ "$out" = unreadable ]; then echo "PASS: boundary [one-document-$_td-scope] reads as exactly one line: unreadable"; else echo "FAIL: boundary [one-document-$_td-scope] expected 'unreadable' ($out)"; fail=1; fi
+    bnd_case "$_bnd/$_td.json"
+    bnd_has "one-document-$_td" 'warn boundary: UNVERIFIED'
+    bnd_no "one-document-$_td" 'boundary: ON'
+  done
+  _sc "$_bnd/twodoc.json" "" "" "" @absent ""
+  _bnd_kill one-document-check-deleted '/in   # MUT-ONEDOC$/,/^  esac$/d' "--boundary-only --boundary-advisory" has 'warn boundary: UNVERIFIED'
+  # DC20 follows the same rule: a jq that prints two lines for the WebFetch read (rc 0) reads as unreadable, never a listing (a two-document local file is already
+  # refused by the scope read, so the guard is proved with a PATH-stub jq).
+  _j2=$(mktemp -d)
+  printf '%s\n' '#!/bin/sh' 'case "$*" in' "  *'WebFetch(domain:'*) echo \"1 example.org\"; echo \"1 example.net\"; exit 0 ;;" 'esac' "exec $(command -v jq) \"\$@\"" > "$_j2/jq"; chmod +x "$_j2/jq"
+  _sc "$_bnd/full.json" "$_bnd/user-plain.json" "$_bnd/local-wf1.json" "" @absent ""; _g_path="$_j2"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    *"could not be read for saved WebFetch"*) echo "PASS: one-document [dc20] a two-line jq result reads as one UNVERIFIED line" ;;
+    *) echo "FAIL: one-document [dc20] a two-line jq result was listed ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill dc20-multiline-accepted '/in   # MUT-DC20NL$/,/^  esac$/d' "--boundary-only --boundary-advisory" has 'could not be read for saved WebFetch'
+  _g_path=""; rm -rf "$_j2"
+  # A non-regular scope (a FIFO with no writer) must read UNVERIFIED promptly. Opening a FIFO that nothing writes blocks in open() and spins nothing, so the fixture needs no
+  # kill (S3): a run that has not finished by the deadline is RELEASED (a read-write open of the FIFO wakes a reader blocked in open(), which then reads EOF), and the
+  # missed deadline is the failure. A bounded tree-kill, children first (R1: dash refuses `set -m` with no tty, so a process-group kill is not portable), is the belt only,
+  # and the job carries a CPU cap (ulimit -t) so a runaway cannot spin past it.
+  # S11: best-effort belt only: with no pgrep just the parent is signalled, and the signal is TERM, so a child that ignores it can outlive the run.
+  _bnd_killtree() {  # <pid>: children first, then the parent
+    for _kt_c in $(pgrep -P "$1" 2>/dev/null); do _bnd_killtree "$_kt_c"; done
+    kill -TERM "$1" 2>/dev/null || true
+  }
+  _bnd_timed() {  # <script> <project settings> <seconds> -> _bt_out, _bt_hung (1 = it had not finished by the deadline)
+    _bt_f=$(mktemp); rm -f "$_bt_f.done"; _bt_hung=0
+    # shellcheck disable=SC3045  # selftest-only best-effort CPU cap; a shell without ulimit -t falls through via || true
+    { ulimit -t 30 2>/dev/null || true
+      env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME PREFLIGHT_SANDBOX_SETTINGS="$2" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Darwin PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_BOUNDARY_OPTOUT=@absent sh "$1" --selftest-e2e --boundary-only --boundary-advisory; : > "$_bt_f.done"; } > "$_bt_f" 2>&1 &
+    _bt_p=$!
+    _bt_n=0
+    while [ ! -e "$_bt_f.done" ] && [ "$_bt_n" -lt "$3" ]; do sleep 1; _bt_n=$((_bt_n + 1)); done
+    if [ ! -e "$_bt_f.done" ]; then
+      _bt_hung=1
+      _bt_r=0
+      while [ ! -e "$_bt_f.done" ] && [ "$_bt_r" -lt 12 ]; do ( exec 3<> "$2"; exec 3>&- ) 2>/dev/null; sleep 1; _bt_r=$((_bt_r + 1)); done   # release, no kill
+      if [ ! -e "$_bt_f.done" ]; then _bnd_killtree "$_bt_p"; fi   # the belt
+    fi
+    wait "$_bt_p" 2>/dev/null || true
+    _bt_out=$(cat "$_bt_f"); rm -f "$_bt_f" "$_bt_f.done"
+  }
+  mkfifo "$_bnd/zero.json"
+  _bnd_timed "$_self" "$_bnd/zero.json" 15
+  case "$_bt_out" in
+    *"warn boundary: UNVERIFIED"*) if [ "$_bt_hung" -eq 0 ]; then echo "PASS: non-regular-scope a FIFO scope reads UNVERIFIED promptly"; else echo "FAIL: non-regular-scope the run had to be released"; fail=1; fi ;;
+    *) echo "FAIL: non-regular-scope no UNVERIFIED line (hung=$_bt_hung): $_bt_out"; fail=1 ;;
+  esac
+  _bm=$(mktemp -d); sed '/return 0; }   # MUT-ISFILE$/d' "$_self" > "$_bm/preflight.sh"
+  if cmp -s "$_self" "$_bm/preflight.sh"; then echo "FAIL: mutant regular-file-check-deleted did not apply"; fail=1
+  elif ! sh -n "$_bm/preflight.sh" 2>/dev/null; then echo "FAIL: mutant regular-file-check-deleted does not parse"; fail=1
+  else
+    _bnd_timed "$_bm/preflight.sh" "$_bnd/zero.json" 4
+    if [ "$_bt_hung" -eq 1 ]; then echo "PASS: mutant regular-file-check-deleted is killed (the run blocks opening the FIFO and misses the deadline)"; else echo "FAIL: mutant regular-file-check-deleted survived (it did not hang)"; fail=1; fi
+  fi
+  rm -rf "$_bm"
+  # The seam banner: a run with the test seams live says so on its first line; a plain --selftest run does not print it into cells' captured output.
+  _sc "$_bnd/full.json" "$_bnd/user-strict.json" "" "" @absent ""
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  case "$_br_out" in
+    "NOTE: test seams live — not a report on this machine"*) echo "PASS: seam-banner a seam run opens with the NOTE line" ;;
+    *) echo "FAIL: seam-banner the first line is not the NOTE ($_br_out)"; fail=1 ;;
+  esac
+  _bnd_kill seam-banner-dropped '/MUT-BANNER/s/echo "NOTE[^"]*"/:/' "--boundary-only --boundary-advisory" has 'NOTE: test seams live'
+
+  rm -rf "$_bnd"
+
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
+fi
+
+if [ "$BOUNDARY_ONLY" -eq 1 ]; then
+  check_boundary
+  if [ "$BOUNDARY_ADVISORY" -eq 1 ]; then exit 0; fi
+  if [ "$bfail" -ne 0 ]; then exit 1; fi
+  if [ "$bunv" -ne 0 ]; then exit 2; fi
+  exit 0
 fi
 
 echo "Sparkwright — preflight"
@@ -3028,6 +5243,8 @@ need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
 check_git_capability
 check_sandbox
+check_boundary
+check_guard_killswitch
 
 echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
@@ -3443,6 +5660,13 @@ fi
 
 if [ "$miss" -ne 0 ]; then
   echo "Missing prerequisites above — install them, then re-run."
+  exit 1
+fi
+
+# SWAS-355: an opt-out from the agent boundary with no matching entry in .kit/boundary-optout.conf (or a malformed declaration) fails the run.
+# --boundary-advisory keeps the line and drops the exit, for a caller whose rc means something else.
+if [ "$bfail" -ne 0 ] && [ "$BOUNDARY_ADVISORY" -eq 0 ]; then   # MUT-ADVISORY
+  echo "Agent boundary: an UNDECLARED opt-out (or a malformed or UNTRUSTED declaration, or an unreadable declaration while a part is OFF) is listed above — declare it in .kit/boundary-optout.conf or remove the override (UNTRUSTED or UNVERIFIED: follow its Remedy)."
   exit 1
 fi
 

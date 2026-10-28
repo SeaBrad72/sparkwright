@@ -22,7 +22,8 @@
 #   exit 1  — a GATING dimension FAILs, or UNVERIFIED when --require/CI
 #   exit 0  — PASS or WARN (git advisory warnings do not cause exit 1)
 #
-# Usage: sh scripts/doctor.sh [--require] [--full] [--quick] | --as agent | --selftest
+# Usage: sh scripts/doctor.sh [--require] [--full] [--quick] | --as agent | --boundary | --selftest
+#   --boundary: the agent-boundary STATIC leg (SWAS-355): hands over to scripts/doctor-boundary.sh, which reads settings only and writes nothing.
 #   --quick     skip conformance and claims (both read UNVERIFIED, never a pass; Overall is WARN, or FAIL under --require/CI); refused with --full and --as agent.
 #   Progress: stderr only ("doctor [k/N] ...", "row i/T ...", an upfront estimate); stdout is unchanged. See docs/operations/doctor.md.
 #   --as agent  the forge-identity check ONLY (SWAS-124): exit 1 when the login gh resolves holds admin or maintain on origin's
@@ -40,7 +41,8 @@
 # Merge relationship and branch protection (SWAS-207b): two more INFO-only reads. The default run reads `.kit/dials.conf` and `CLAUDE.md`
 # from origin's default branch with git (`ls-remote` against origin, no forge call and no credential beyond git's own) to print the
 # `merge relationship:` lines, and makes two more `gh api` reads (the default branch, then its protection) for the `branch protection:`
-# line. None of the three lines warns, fails or changes the exit code.
+# line. The two merge-relationship lines never warn, fail or change the exit code. The protection line reads the SAME protection body (no new
+# call) and WARNs, naming the setting, when `dismiss_stale_reviews` is not true (SWAS-361, 352g F11): a push after approval then keeps the approval.
 # Guardrails: exit 1 when a GATING dimension FAILs or is UNVERIFIED under --require/CI; the git dimension is advisory (WARN-only, never hard-fails alone).
 set -eu
 cd "$(dirname "$0")/.."
@@ -51,6 +53,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # exits 1 (FAIL). Both are POSIX built-ins, so the selftest is fast and
   # deterministic regardless of repo state.
   sfail=0
+  # Hermetic: an exported kill-switch in the developer's shell must not move any cell (the cells that need it set it themselves).
+  unset KIT_GUARD_SELFEDIT
 
   # — render contract (6 required sections/labels) ——————————————————————————
   out=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$0" --selftest-e2e 2>&1) || true
@@ -339,6 +343,50 @@ if [ "${1:-}" = "--selftest" ]; then
   _acc_warn "defaultMode bypass"     '{"permissions":{"defaultMode":"bypassPermissions","allow":[]}}'
   _acc_warn "hooks.PreToolUse"       '{"hooks":{"PreToolUse":[{"matcher":"Bash"}]},"permissions":{"allow":[]}}'
   _acc_warn "hooks.PostToolUse"      '{"hooks":{"PostToolUse":[]},"permissions":{"allow":[]}}'
+  # SWAS-361 (352g F10): the kill-switch exported in doctor's OWN shell WARNs on the same line, even with a clean settings file and
+  # even with no settings file at all; value 0 (the guard's own "off") stays quiet; and the truthiness is the guard's (coupling cell).
+  printf '%s\n' '{"permissions":{"allow":[]}}' > "$accd/f.json"
+  _o=$(KIT_GUARD_SELFEDIT=1 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+       DOCTOR_ACCRETION_LOCAL="$accd/f.json" DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       DOCTOR_ACCRETION_JQ="jq" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+    || { echo "doctor --selftest: FAIL (shell-export KIT_GUARD_SELFEDIT=1 did NOT fire a permissions WARN)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'shell export KIT_GUARD_SELFEDIT=1' \
+    || { echo "doctor --selftest: FAIL (shell-export WARN does not name the exported variable)"; sfail=1; }
+  _o=$(KIT_GUARD_SELFEDIT=1 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/none-l" \
+       DOCTOR_ACCRETION_USER="$accd/none-u" DOCTOR_ACCRETION_TSV="$acctsv" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+    || { echo "doctor --selftest: FAIL (shell-export with no settings file did NOT fire a permissions WARN)"; sfail=1; }
+  _o=$(KIT_GUARD_SELFEDIT=0 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+       DOCTOR_ACCRETION_LOCAL="$accd/f.json" DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       DOCTOR_ACCRETION_JQ="jq" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+    && { echo "doctor --selftest: FAIL (KIT_GUARD_SELFEDIT=0 fired a permissions WARN - wolf crying)"; sfail=1; } || true
+  # On a kit tree (the kit's guard.sh is present) a missing guard-core.sh is a FAIL, never a quiet pass; elsewhere there is nothing to couple to.
+  if [ -f .claude/hooks/guard.sh ] && [ ! -f .claude/hooks/guard-core.sh ]; then
+    echo "doctor --selftest: FAIL (coupling: the kit's guard.sh is present but guard-core.sh is missing, so the selfedit truthiness cannot be checked)"; sfail=1
+  fi
+  [ ! -f .claude/hooks/guard-core.sh ] || grep -qF 'selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }' .claude/hooks/guard-core.sh \
+    || { echo "doctor --selftest: FAIL (coupling: the guard's selfedit truthiness moved; doctor and preflight mirror it - update both)"; sfail=1; }
+  # SWAS-361 load-bearing mutants: apply a sed mutation to a TEMP COPY of this script, assert
+  # the copy no longer does the job (the cell would be red), and FAIL if the mutation did not apply (a vacuous mutant proves nothing).
+  _mut_make() {  # <name> <sed expr> : a mutated copy at $_mut_dir/scripts/doctor.sh ; rc 1 (and a FAIL) when the mutation changed nothing
+    _mut_dir=$(mktemp -d); mkdir -p "$_mut_dir/scripts"
+    sed "$2" "$0" > "$_mut_dir/scripts/doctor.sh"
+    if cmp -s "$0" "$_mut_dir/scripts/doctor.sh"; then
+      echo "doctor --selftest: FAIL (mutant $1 did not apply: the sed expression matched nothing)"; sfail=1; rm -rf "$_mut_dir" 2>/dev/null || true; return 1
+    fi
+  }
+  if _mut_make shellexport-off 's/^if \[ "${KIT_GUARD_SELFEDIT:-0}" = "1" \]; then$/if false; then/'; then
+    _o=$(KIT_GUARD_SELFEDIT=1 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+         DOCTOR_ACCRETION_LOCAL="$accd/f.json" DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+         DOCTOR_ACCRETION_JQ="jq" sh "$_mut_dir/scripts/doctor.sh" --selftest-e2e 2>&1) || true
+    printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+OK' \
+      || { echo "doctor --selftest: FAIL (mutant shellexport-off: the mutated copy never rendered the permissions line - vacuous)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+      && { echo "doctor --selftest: FAIL (mutant shellexport-off survived: the shell-export cell would stay green)"; sfail=1; } || true
+  fi
+  rm -rf "$_mut_dir" 2>/dev/null || true
 
   # 6. FAIL-SAFE (design §3 F4) — absent / malformed / jq-absent → N/A-with-reason, NEVER a false OK.
   _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/none-l" \
@@ -604,7 +652,9 @@ case "$1 $2" in
           upgrade) echo "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)" >&2; exit 1 ;;
           notfound) echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
           plain403) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
-          *) echo '{"url":"fixture"}'; exit 0 ;;
+          norule) echo '{"url":"fixture"}'; exit 0 ;;
+          staleoff) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":false}}'; exit 0 ;;
+          *) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":true}}'; exit 0 ;;
         esac ;;
     esac
     case "$*" in
@@ -765,6 +815,37 @@ FSTUB
   printf '%s\n' "$_o" | grep -qxF 'branch protection: enforced on main' \
     || { echo "doctor --selftest: FAIL (prot-200: a 200 did not render 'enforced on main')"; sfail=1; }
   [ "$_frc" = "$_push_rc" ] || { echo "doctor --selftest: FAIL (prot-200: the protection line changed the exit to $_frc)"; sfail=1; }
+  # SWAS-361 (352g F11): the same read names dismiss_stale_reviews. Off -> WARN naming the setting, counted; on -> the exact line, no WARN.
+  _fg_pr=staleoff; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'branch protection: enforced on main — WARN: dismiss_stale_reviews not on' \
+    || { echo "doctor --selftest: FAIL (prot-staleoff: dismissal off did not WARN naming dismiss_stale_reviews)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 1' \
+    || { echo "doctor --selftest: FAIL (prot-staleoff: the stale-dismissal WARN was not counted)"; sfail=1; }
+  [ "$_frc" = "$_push_rc" ] || { echo "doctor --selftest: FAIL (prot-staleoff: the WARN changed the exit to $_frc)"; sfail=1; }
+  _fg_pr=norule; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'WARN: no PR-review rule' \
+    || { echo "doctor --selftest: FAIL (prot-norule: a body with no PR-review block did not say 'no PR-review rule')"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 1' \
+    || { echo "doctor --selftest: FAIL (prot-norule: the no-PR-review-rule WARN was not counted)"; sfail=1; }
+  _fg_pr=200; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'dismiss_stale_reviews' \
+    && { echo "doctor --selftest: FAIL (prot-staleon: dismissal on still named dismiss_stale_reviews - wolf crying)"; sfail=1; } || true
+  # SWAS-361 load-bearing mutant stale-test-off: the temp copy never reads dismissal as off, so the staleoff cell would be red.
+  if _mut_make stale-test-off 's/\[ "$_fp_stale" = off \]/[ "$_fp_stale" = never ]/'; then
+    : > "$_fgd/flog"; printf '%s' push > "$_fgd/fmode"; printf '%s' staleoff > "$_fgd/fprot"
+    _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="$_gh_o" DOCTOR_FORGE_TODAY=2026-10-12 \
+      DOCTOR_FORGE_PUSHURL='' DOCTOR_FORGE_HELPER='' DOCTOR_FORGE_SEATCONF="$_fgd/seat.conf" \
+      DOCTOR_FORGE_DIALS='' DOCTOR_FORGE_GOV='' \
+      GH_TOKEN='' GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' \
+      sh "$_mut_dir/scripts/doctor.sh" --selftest-e2e 2>&1) || true
+    printf '%s\n' "$_o" | grep -qxF 'branch protection: enforced on main' \
+      || { echo "doctor --selftest: FAIL (mutant stale-test-off: the mutated copy never rendered the protection line - vacuous)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'WARN: dismiss_stale_reviews not on' \
+      && { echo "doctor --selftest: FAIL (mutant stale-test-off survived: the prot-staleoff cell would stay green)"; sfail=1; } || true
+    rm -rf "$_mut_dir" 2>/dev/null || true
+    _fg_pr=200
+  fi
   _fg_pr=upgrade; _fg_run push "$_gh_o"
   printf '%s\n' "$_o" | grep -qxF 'branch protection: unprotected: convention tier — this plan cannot enforce protection on a private repository (a public repository or a paid plan can)' \
     || { echo "doctor --selftest: FAIL (prot-upgrade: the upgrade-text 403 did not render unprotected: convention tier)"; sfail=1; }
@@ -851,6 +932,15 @@ FSTUB
     [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: 'doctor $_fa' exited $_frc, expected 2 usage)"; sfail=1; }
     printf '%s\n' "$_o" | grep -qF 'usage: sparkwright doctor' \
       || { echo "doctor --selftest: FAIL (forge: 'doctor $_fa' did not print the usage line)"; sfail=1; }
+  done
+  # SWAS-355 usage cells (--boundary refusals; m4: --boundary-offline means nothing without --boundary). CI-hermetic: each runs under env -u CI -u GITHUB_ACTIONS.
+  for _fa in '--boundary --full' '--boundary --quick' '--boundary --as agent' '--boundary-offline' '--require --boundary-offline'; do
+    _frc=0
+    # shellcheck disable=SC2086  # deliberate word-split of the flags
+    _o=$(env -u CI -u GITHUB_ACTIONS sh "$0" --selftest-e2e $_fa 2>&1) || _frc=$?
+    [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (boundary usage: 'doctor $_fa' exited $_frc, expected 2 usage)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'usage: sparkwright doctor' \
+      || { echo "doctor --selftest: FAIL (boundary usage: 'doctor $_fa' did not print the usage line)"; sfail=1; }
   done
   # the token-expiry warning: only when the header is readable AND <= 30 days away; silence otherwise, and never a gate
   printf '2026-10-30 10:00:00 UTC' > "$_fgd/fexp"
@@ -1102,6 +1192,7 @@ POSTURE
 forge identity: N/A — no origin remote
 merge relationship: N/A — no origin remote
 branch protection: N/A — no origin remote
+secrets-in-tree: OK - no secret-named file in the working tree
 
 Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)
 
@@ -1111,8 +1202,10 @@ scope, or overclaim) — that remains an agent/human judgment check.
 GOLD
 )
   _pq_run "$_pq_a"
-  # trailing blanks are stripped on both sides: the header's `latest-tag:` line ends in a space an editor may drop from the golden
-  [ "$(printf '%s\n' "$_pq_out" | sed 's/[[:space:]]*$//')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
+  # trailing blanks are stripped on both sides: the header's `latest-tag:` line ends in a space an editor may drop from the golden.
+  # The secrets-in-env line and its indented names are dropped from the comparison: they list THIS session's ambient variable names,
+  # which no fixture controls (their own cells are the SWAS-357 ones above).
+  [ "$(printf '%s\n' "$_pq_out" | sed 's/[[:space:]]*$//' | awk '/^secrets-in-env:/ { drop = 1; next } drop && /^      / { next } { drop = 0; print }')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
     || _pq_fail "C6: the stdout of a default run changed (progress must be stderr only)"
 
   # C7: a seam run stays silent
@@ -1147,18 +1240,146 @@ GOLD
   _pq_ign=0
   rm -rf "$_pq_a" "$_pq_b" "$_pq_u" "$_pq_tk" "$_pq_z" "$_pq_ik" 2>/dev/null || true
 
+  # — SWAS-357 secrets-in-tree / secrets-in-env cells. Fixtures live in a temp dir (never the real tree) and hold
+  #   innocuous marker text, never a real secret. DOCTOR_SECRETS_ROOT / DOCTOR_SECRETS_ENV are honored only under
+  #   --selftest-e2e (a real run always walks the working tree and reads the session's variable names).
+  #   CI is unset for these cells: under CI (GitHub sets CI=true) a child doctor takes REQUIRE=1, which turns the tree line's
+  #   WARN into FAIL; the cells that assert WARN must not depend on the runner. The --require cells pass the flag explicitly,
+  #   and the stripped-env cell below sets CI itself on purpose.
+  unset CI GITHUB_ACTIONS
+  _st=$(mktemp -d); _stt="$_st/tree"; _stm="$_st/mut"
+  mkdir -p "$_stt/apps/x" "$_stt/secrets" "$_stt/node_modules/p" "$_stt/.git" "$_stt/link"
+  _st_esc=$(printf '\033')
+  for _stf in .env apps/x/.env id_rsa x.pem secrets/a .env.example .env.sample node_modules/p/.env .git/.env README.md "esc${_st_esc}[31m.pem"; do
+    printf 'FIXTURE-CONTENT-MARKER-8841\n' > "$_stt/$_stf"
+  done
+  ln -s ../README.md "$_stt/link/.env"   # a secret-named SYMLINK to a benign target: listed by its own name, never followed
+  _st_run() {  # <script> <extra doctor args…>: doctor over the fixture tree (stdout only)
+    _st_s=$1; shift
+    DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh "$_st_s" --selftest-e2e "$@" 2>/dev/null || true
+  }
+  _st_ok() {  # <output>: the tree cell's whole contract
+    printf '%s\n' "$1" | grep -qE '^secrets-in-tree: WARN - 7 ' \
+      && printf '%s\n' "$1" | grep -qE '^      \.env$' && printf '%s\n' "$1" | grep -qE '^      apps/x/\.env$' \
+      && printf '%s\n' "$1" | grep -qE '^      id_rsa$' && printf '%s\n' "$1" | grep -qE '^      x\.pem$' \
+      && printf '%s\n' "$1" | grep -qE '^      secrets/a$' && printf '%s\n' "$1" | grep -qE '^      link/\.env$' \
+      && printf '%s\n' "$1" | grep -qE '^      esc\[31m\.pem$' && ! printf '%s\n' "$1" | grep -q "$_st_esc" \
+      && ! printf '%s\n' "$1" | grep -qE '\.env\.(example|sample)' \
+      && ! printf '%s\n' "$1" | grep -q 'node_modules' && ! printf '%s\n' "$1" | grep -qE '\.git/' \
+      && ! printf '%s\n' "$1" | grep -q 'FIXTURE-CONTENT-MARKER-8841'
+  }
+  _st_out=$(_st_run "$0")
+  _st_ok "$_st_out" || { echo "doctor --selftest: FAIL (secrets-in-tree: a planted .env / apps/x/.env / id_rsa / x.pem / secrets/a was not WARNed by name, or a template / node_modules / .git file was listed, or content leaked)"; sfail=1; }
+  # stripped environment (selftest-hermetic face (a), plus env -i): no HOME, no LANG, no git identity or config, only PATH.
+  # The line must read the same (WARN, 7 names) and, with CI=1 set by the runner, must turn to FAIL (REQUIRE) and not before.
+  _st_so=$(env -i PATH="$PATH" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh "$0" --selftest-e2e 2>/dev/null) || true
+  _st_ok "$_st_so" || { echo "doctor --selftest: FAIL (secrets-in-tree: the line changed under a stripped environment (env -i, PATH only))"; sfail=1; }
+  _st_so=$(env -i PATH="$PATH" CI=true GITHUB_ACTIONS=true DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh "$0" --selftest-e2e 2>/dev/null) || true
+  printf '%s\n' "$_st_so" | grep -qE '^secrets-in-tree: FAIL - 7 ' \
+    || { echo "doctor --selftest: FAIL (secrets-in-tree: under CI=true the line did not become FAIL - 7)"; sfail=1; }
+  _st_rq=0; _st_qo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh "$0" --selftest-e2e --require 2>/dev/null) || _st_rq=$?
+  { printf '%s\n' "$_st_qo" | grep -qE '^secrets-in-tree: FAIL - ' && [ "$_st_rq" = 1 ]; } \
+    || { echo "doctor --selftest: FAIL (secrets-in-tree under --require did not FAIL with exit 1; exit $_st_rq)"; sfail=1; }
+  mkdir -p "$_st/clean"; : > "$_st/clean/.env.example"
+  _st_co=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/clean" sh "$0" --selftest-e2e --require 2>/dev/null) || true
+  printf '%s\n' "$_st_co" | grep -qE '^secrets-in-tree: OK' || { echo "doctor --selftest: FAIL (secrets-in-tree: a tree with only .env.example did not read OK)"; sfail=1; }
+  mkdir -p "$_st/big/secrets"; _st_i=0
+  while [ "$_st_i" -lt 25 ]; do : > "$_st/big/secrets/f$_st_i"; _st_i=$((_st_i+1)); done
+  _st_bo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/big" sh "$0" --selftest-e2e 2>/dev/null) || true
+  { printf '%s\n' "$_st_bo" | grep -q '\.\.\. and 5 more (25 in all; first 20 shown)' \
+    && [ "$(printf '%s\n' "$_st_bo" | grep -c '^      secrets/f')" = 20 ]; } \
+    || { echo "doctor --selftest: FAIL (secrets-in-tree: 25 findings were not capped at 20 with a count line)"; sfail=1; }
+  # env: a planted FOO_TOKEN is listed by NAME; its value, and an innocent variable, never appear
+  _st_eo=$(FOO_TOKEN=ENV-VALUE-MARKER-5527 INNOCENT_VAR=ENV-VALUE-MARKER-5527 KIT_TRACKER_X=ENV-VALUE-MARKER-5527 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ENV=1 sh "$0" --selftest-e2e 2>/dev/null) || true
+  { printf '%s\n' "$_st_eo" | grep -qE '^secrets-in-env: WARN - ' && printf '%s\n' "$_st_eo" | grep -qE '^      FOO_TOKEN$' \
+    && printf '%s\n' "$_st_eo" | grep -qE '^      KIT_TRACKER_X$' && ! printf '%s\n' "$_st_eo" | grep -q 'INNOCENT_VAR' \
+    && ! printf '%s\n' "$_st_eo" | grep -q 'ENV-VALUE-MARKER-5527'; } \
+    || { echo "doctor --selftest: FAIL (secrets-in-env: FOO_TOKEN / KIT_TRACKER_X not listed by name, INNOCENT_VAR listed, or a value leaked)"; sfail=1; }
+  # unreadable subtree: the line says so instead of reading OK (skipped when the selftest runs as a user who can read a mode-000 dir)
+  mkdir -p "$_st/unr/sub"; chmod 000 "$_st/unr/sub"
+  _st_unr_on=1; [ ! -r "$_st/unr/sub" ] || _st_unr_on=0
+  _st_uo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/unr" sh "$0" --selftest-e2e 2>/dev/null) || true
+  [ "$_st_unr_on" = 0 ] || printf '%s\n' "$_st_uo" | grep -qE '^secrets-in-tree: WARN - .*some paths unreadable' \
+    || { echo "doctor --selftest: FAIL (secrets-in-tree: an unreadable subtree read OK or silent, not 'some paths unreadable')"; sfail=1; }
+  # coupling: the mirrored secret-name set is the guard's. Compared: every alternation line of _is_secret_path and the template
+  # list of _is_secret_hit. A missing guard file is a FAIL on the kit tree and a skip (rc 2) elsewhere.
+  _st_alts() { sed -n "/^$2() {/,/^}/p" "$1" | grep -E '^[[:space:]]+\*\.env\|.*\) return 0 ;;$' | sed 's/^[[:space:]]*//'; }
+  _st_tpl() { sed -n "/^$2() {/,/^}/p" "$1" | grep -o '\.env\.example|[^)]*'; }
+  _st_couple() {  # <guard file>: 0 coupled, 1 drift (or guard missing on the kit tree), 2 skipped (no guard, not the kit tree)
+    if [ ! -f "$1" ]; then
+      if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then return 1; fi
+      return 2
+    fi
+    _stc_a=$(_st_alts "$0" _sd_is_secret)
+    { [ -n "$_stc_a" ] && [ "$_stc_a" = "$(_st_alts "$1" _is_secret_path)" ]; } || return 1
+    _stc_t=$(_st_tpl "$0" _sd_is_secret)
+    { [ -n "$_stc_t" ] && [ "$_stc_t" = "$(_st_tpl "$1" _is_secret_hit)" ]; } || return 1
+    return 0
+  }
+  _st_gc=.claude/hooks/guard-core.sh
+  _st_cr=0; _st_couple "$_st_gc" || _st_cr=$?
+  [ "$_st_cr" = 0 ] || [ "$_st_cr" = 2 ] \
+    || { echo "doctor --selftest: FAIL (secrets coupling: doctor's secret-name set drifted from the guard's _is_secret_path / _is_secret_hit, or the guard file is missing on the kit tree)"; sfail=1; }
+  if [ -f "$_st_gc" ]; then
+    sed 's/\*\.pem|/*.pem|*.p12|/' "$_st_gc" > "$_st/guard-drift"
+    _st_cr=0; _st_couple "$_st/guard-drift" || _st_cr=$?
+    [ "$_st_cr" = 1 ] || { echo "doctor --selftest: FAIL (secrets coupling mutant: a guard set with an added name did not red the coupling cell)"; sfail=1; }
+    sed 's/\.env\.dist) return 1/.env.dist|.env.local) return 1/' "$_st_gc" > "$_st/guard-tpl"
+    cmp -s "$_st_gc" "$_st/guard-tpl" && { echo "doctor --selftest: FAIL (secrets coupling mutant: the template-drift mutation did not apply)"; sfail=1; }
+    _st_cr=0; _st_couple "$_st/guard-tpl" || _st_cr=$?
+    [ "$_st_cr" = 1 ] || { echo "doctor --selftest: FAIL (secrets coupling mutant: a drifted template list did not red the coupling cell)"; sfail=1; }
+  fi
+  if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then
+    _st_cr=0; _st_couple "$_st/no-such-guard" || _st_cr=$?
+    [ "$_st_cr" = 1 ] || { echo "doctor --selftest: FAIL (secrets coupling: a missing guard file on the kit tree was skipped, not failed)"; sfail=1; }
+  fi
+  # one load-bearing mutant per control, on a copy of this script (it cds to its own parent, so the copy lives under scripts/)
+  _st_mut() {  # <label> <sed expr> <cell: tree|require|env>: the mutated copy must FAIL the cell it breaks
+    mkdir -p "$_stm/scripts"; sed "$2" "$0" > "$_stm/scripts/doctor.sh"
+    if cmp -s "$0" "$_stm/scripts/doctor.sh"; then echo "doctor --selftest: FAIL (secrets mutant $1: the mutation did not apply)"; sfail=1; return 0; fi
+    case $3 in
+      tree) _st_mo=$(_st_run "$_stm/scripts/doctor.sh"); _st_ok "$_st_mo" && { echo "doctor --selftest: FAIL (secrets mutant $1 survived the tree cell)"; sfail=1; } || true ;;
+      cap) _st_mo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/big" sh "$_stm/scripts/doctor.sh" --selftest-e2e 2>/dev/null) || true
+        printf '%s\n' "$_st_mo" | grep -q 'and 5 more' && { echo "doctor --selftest: FAIL (secrets mutant $1 survived the cap cell)"; sfail=1; } || true ;;
+      require) _st_mr=0; _st_mo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh "$_stm/scripts/doctor.sh" --selftest-e2e --require 2>/dev/null) || _st_mr=$?
+        [ "$_st_mr" = 1 ] && { echo "doctor --selftest: FAIL (secrets mutant $1 survived: --require still exited 1)"; sfail=1; } || true ;;
+      unr) _st_mo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/unr" sh "$_stm/scripts/doctor.sh" --selftest-e2e 2>/dev/null) || true
+        [ "$_st_unr_on" = 0 ] || { ! printf '%s\n' "$_st_mo" | grep -q 'some paths unreadable' || { echo "doctor --selftest: FAIL (secrets mutant $1 survived the unreadable cell)"; sfail=1; }; } ;;
+      env) _st_mo=$(FOO_TOKEN=ENV-VALUE-MARKER-5527 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ENV=1 sh "$_stm/scripts/doctor.sh" --selftest-e2e 2>/dev/null) || true
+        printf '%s\n' "$_st_mo" | grep -q 'ENV-VALUE-MARKER-5527' || { echo "doctor --selftest: FAIL (secrets mutant $1 survived: the value did not leak)"; sfail=1; } ;;
+    esac
+  }
+  _st_mut template-exemption '/\.env\.example|\.env\.sample/d' tree
+  _st_mut prune-dropped 's/-o -name node_modules/-o -name nomatch/' tree
+  _st_mut git-prune-dropped 's/-name \.git -o/-name nomatch -o/' tree
+  _st_mut symlink-skipped 's/ -o -type l//' tree
+  # shellcheck disable=SC2016  # a sed script, literal on purpose
+  _st_mut content-printed 's/|| printf .%s\\n. "\$_sd_p"$/|| printf "%s %s\\n" "$_sd_p" "$(cat "$1\/$_sd_p")"/' tree
+  _st_mut ctrl-not-stripped 's/LC_ALL=C tr -d [^|]*|/cat |/' tree
+  # shellcheck disable=SC2016  # a sed script, literal on purpose
+  _st_mut unreadable-silent 's/ || printf .%s\\n. "\$_sd_mark")/)/' unr
+  _st_mut cap-removed 's/^_sd_cap=20$/_sd_cap=2000/' cap
+  _st_mut require-not-fail 's/_sd_v=FAIL; gate_fail=1;/_sd_v=FAIL;/' require
+  _st_mut value-printed 's/print k }/print k "=" ENVIRON[k] }/' env
+  chmod 755 "$_st/unr/sub" 2>/dev/null || true
+  rm -rf "$_st" 2>/dev/null || true
+
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
 fi
 
 REQUIRE=0
 FULL=0
 QUICK=0
+BOUNDARY=0
 SEAMS=0
+BOUNDARY_OFFLINE=0   # typed flag only (--boundary-offline, with --boundary); there is NO environment equivalent
 [ -n "${CI:-}" ] && REQUIRE=1
+REQUIRE_TYPED=0   # S25: only a typed --require is handed to the boundary leg; CI there is judged by doctor-boundary itself (CI AND no TTY)
 AS_ROLE=""
 AS_SET=0
 _doctor_usage() {
-  echo "usage: sparkwright doctor [--require] [--full] [--quick] | --as agent" >&2
+  echo "usage: sparkwright doctor [--require] [--full] [--quick] | --as agent | --boundary [--boundary-offline]" >&2
+  echo "  --boundary  the agent-boundary static leg (settings only, writes nothing): one verdict from preflight's scope reader, guard-wired's grader and the opt-out declaration; refused with --full, --quick and --as" >&2
   echo "  --quick     skip the conformance battery and the claims registry (UNVERIFIED, never a pass); --quick is refused with --full and with --as agent" >&2
   echo "  --as agent  check ONLY the forge identity: exit 1 if this session's login holds admin or maintain (or cannot be read), 0 on push, 2 if unverifiable" >&2
   exit 2
@@ -1167,9 +1388,11 @@ _doctor_usage() {
 # security check and a typo such as `--as=agnet` or `--agent` must never read as a clean run.
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --require) REQUIRE=1 ;;
+    --require) REQUIRE=1; REQUIRE_TYPED=1 ;;
     --full)    FULL=1    ;;
     --quick)   QUICK=1   ;;
+    --boundary) BOUNDARY=1 ;;
+    --boundary-offline) BOUNDARY_OFFLINE=1 ;;
     # --selftest-e2e: INTERNAL. Turns the DOCTOR_*_CMD injection seams live so `--selftest`'s battery can
     # feed pass/fail fixtures through the REAL body. Deliberately absent from any usage line: the flag IS
     # the authorization. Mirrors preflight.sh's --selftest-e2e / PREFLIGHT_GIT_VERSION_CMD gating.
@@ -1182,6 +1405,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+[ "$BOUNDARY_OFFLINE" -eq 0 ] || [ "$BOUNDARY" -eq 1 ] || _doctor_usage   # --boundary-offline means nothing without --boundary
 if [ "$AS_SET" -eq 1 ]; then
   [ "$AS_ROLE" = agent ] || _doctor_usage
   # the identity check is the whole run: refuse flags that imply the full posture rather than ignore them silently
@@ -1191,6 +1415,16 @@ if [ "$AS_SET" -eq 1 ]; then
 fi
 # --quick skips the two slowest GATING steps; --full adds the slowest metric (non-vacuity). The two cannot be combined.
 [ "$QUICK" -eq 0 ] || [ "$FULL" -eq 0 ] || _doctor_usage
+# SWAS-355: `--boundary` is the agent-boundary static leg, its own script (scripts/doctor-boundary.sh); it runs INSTEAD of the posture report.
+if [ "$BOUNDARY" -eq 1 ]; then
+  { [ "$FULL" -eq 0 ] && [ "$QUICK" -eq 0 ] && [ "$AS_SET" -eq 0 ]; } || _doctor_usage
+  _db_args=""
+  [ "$REQUIRE_TYPED" -eq 0 ] || _db_args="--require"   # MUT-DOCREQ
+  [ "$BOUNDARY_OFFLINE" -eq 0 ] || _db_args="$_db_args --boundary-offline"
+  [ "$SEAMS" -eq 0 ] || _db_args="$_db_args --selftest-e2e"
+  # shellcheck disable=SC2086  # deliberate word-split: at most two fixed flags
+  exec sh scripts/doctor-boundary.sh $_db_args
+fi
 
 # Variable-indirected gating + metrics commands — override in tests/selftest to inject pass/fail without
 # touching the real scripts. FLAG-NOT-ENV: the seams are honored ONLY when the internal --selftest-e2e
@@ -1490,8 +1724,8 @@ _fg_expiry() {
     printf 'token expiry: %s (%s days) — WARN: renew the machine user'"'"'s token before it lapses (docs/operations/forge-identity-switch.md step 1)\n' "$_fx_date" "$_fx_n"
   fi
 }
-# — SWAS-207b (D-241014-1): the merge relationship, the declaration agreement and the branch-protection line. INFO ONLY: none of
-# these ever warns, fails or changes doctor's exit code. They report what `promotion-verify.sh actuate` and `land` will read, so they
+# — SWAS-207b (D-241014-1): the merge relationship, the declaration agreement and the branch-protection line. The merge lines are
+# INFO only; the protection line WARNs on stale-review dismissal (SWAS-361); none fails or changes the exit code. They report what `promotion-verify.sh actuate` and `land` will read, so they
 # read the same place the verbs do: .kit/dials.conf and CLAUDE.md on ORIGIN'S DEFAULT BRANCH (git, no forge call). Under the seam
 # (DOCTOR_FORGE_DIALS / DOCTOR_FORGE_GOV) a fixture file stands in for each. The grammar is the verbs' (pv_merge_relationship,
 # pv_rel_governance in scripts/promotion-verify.sh) and conformance/branch-protection.sh read_governance; KEEP THEM IN STEP.
@@ -1577,7 +1811,18 @@ _fg_rel_lines() {
 # _fg_prot_line: `branch protection: enforced on <branch>` or `unprotected: convention tier — <reason>`. The reason is matched on GitHub's
 # own RESPONSE TEXT, never on the rc alone (the K8 rule, scripts/branch-protection-apply.sh): a 403 that is not the plan-upgrade
 # answer must never read as "unprotected". If GitHub rewords the message this degrades to "not readable", never to a false claim.
+# _fg_prot_stale <body-file>: `on` when the protection body carries dismiss_stale_reviews: true; `norule` when a non-empty body has no
+# required_pull_request_reviews block; `off` when that block is present but dismissal is not true; `unknown` for an empty body.
+# CEILINGS, stated so the line is not read as more than it is: (1) it reads CLASSIC branch protection only, so a dismissal enforced by a
+# repository RULESET (not shown in this body) reads as a false WARN; (2) an empty body reads quiet (never a claim from nothing).
+_fg_prot_stale() {
+  [ -s "$1" ] || { echo unknown; return 0; }
+  _ps_flat=$(tr -d ' \t\r\n' < "$1")
+  case "$_ps_flat" in *'"dismiss_stale_reviews":true'*) echo on; return 0 ;; esac
+  case "$_ps_flat" in *'"required_pull_request_reviews"'*) echo off ;; *) echo norule ;; esac
+}
 _fg_prot_line() {
+  FG_PROT_WARN=0
   case "$FG_STATE" in
     noorigin) printf 'branch protection: N/A — no origin remote\n'; return 0 ;;
     nohost) printf 'branch protection: N/A — no forge adapter for %s\n' "$FG_HOST"; return 0 ;;
@@ -1592,9 +1837,18 @@ _fg_prot_line() {
     ''|*[!A-Za-z0-9._/-]*)
       rm -rf "$_fp_d"; printf 'branch protection: not readable — the default branch could not be read\n'; return 0 ;;
   esac
-  _fp_rc=0; _fg_gh api "repos/$FG_OWNER/$FG_REPO/branches/$_fp_b/protection" >/dev/null 2>"$_fp_d/err" || _fp_rc=$?
+  _fp_rc=0; _fg_gh api "repos/$FG_OWNER/$FG_REPO/branches/$_fp_b/protection" >"$_fp_d/body" 2>"$_fp_d/err" || _fp_rc=$?
   if [ "$_fp_rc" -eq 0 ]; then
-    printf 'branch protection: enforced on %s\n' "$_fp_b"
+    _fp_stale=$(_fg_prot_stale "$_fp_d/body")
+    if [ "$_fp_stale" = norule ]; then
+      FG_PROT_WARN=1
+      printf 'branch protection: enforced on %s — WARN: no PR-review rule, so dismiss_stale_reviews not on (a push after approval keeps the approval); a ruleset-enforced dismissal is not read here\n' "$_fp_b"
+    elif [ "$_fp_stale" = off ]; then
+      FG_PROT_WARN=1
+      printf 'branch protection: enforced on %s — WARN: dismiss_stale_reviews not on, so a push after approval keeps the approval (turn on "Dismiss stale pull request approvals when new commits are pushed"); a ruleset-enforced dismissal is not read here\n' "$_fp_b"
+    else
+      printf 'branch protection: enforced on %s\n' "$_fp_b"
+    fi
   elif grep -q 'Upgrade to GitHub Pro' "$_fp_d/err" 2>/dev/null; then
     printf 'branch protection: unprotected: convention tier — this plan cannot enforce protection on a private repository (a public repository or a paid plan can)\n'
   elif grep -q 'Branch not protected' "$_fp_d/err" 2>/dev/null; then
@@ -1695,6 +1949,7 @@ _pg_count() {  # N: git, kit-update and permissions always run; conformance and 
   ! _pg_tracker_enabled || PG_N=$((PG_N + 1))
   ! _fg_enabled || PG_N=$((PG_N + 1))
   [ "$FULL" -eq 0 ] || PG_N=$((PG_N + 4))
+  PG_N=$((PG_N + 2))  # secrets-in-tree and secrets-in-env always run in a real run (SWAS-357)
 }
 _pg_announce() {  # the upfront estimate: a dated sentence, never computed (doctor writes nothing, so it cannot remember a run)
   _pg_count
@@ -2206,6 +2461,14 @@ esac
 # (the codebase already probes `command -v jq`); accretion is a slow hygiene concern whose natural cadence
 # is the on-demand doctor run, which carries zero per-push tax. Recorded here per Q5, not dropped.
 _pg_begin "permissions (local permission surfaces)"
+# SWAS-361 (352g F10): the SAME kill-switch exported in doctor's OWN shell environment joins the settings-env canary on this line.
+# Truthiness is the guard's (selfedit_allowed, .claude/hooks/guard-core.sh): exactly "1"; a conformance cell keeps them coupled.
+# It is judged even when the settings surfaces are N/A, because an exported switch needs no settings file.
+if [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; then
+  ACC_TAMPER="${ACC_TAMPER}shell export KIT_GUARD_SELFEDIT=1 (the guard kill-switch is exported in this shell: every guard refusal is off for this session and nothing reaches the deny log)
+"
+  ACC_STATUS=ok
+fi
 if [ "$ACC_STATUS" = "na" ]; then
   printf '  %-14s N/A   [%s]\n' "permissions" "$ACC_NA_REASON"
 elif [ -n "$ACC_LOUD" ] || [ -n "$ACC_TAMPER" ]; then
@@ -2374,8 +2637,86 @@ if _fg_enabled; then
       admin|maintain) ! _fg_seat_declared || _fg_w=1 ;;
     esac
   fi
+  _fg_w=$((_fg_w+FG_PROT_WARN))
   warns=$((warns+_fg_w))
   [ "$SEAMS" -eq 0 ] || echo "SELFTEST forge warn counted: $_fg_w"
+  _pg_end
+fi
+
+# 8. secrets-in-tree / secrets-in-env [ADVISORY by default; secrets-in-tree FAILs under --require] (SWAS-357, design
+# 2026-10-23-agent-boundary-on-by-default §3 item 3). NAMES ONLY: never a file's content, never an environment variable's value.
+# The secret-name set is a MIRROR of the guard's _is_secret_path (.claude/hooks/guard-core.sh); the `secrets coupling` selftest
+# cell reds when the two alternations drift. Ceiling (stated, design §8): a name check misses a secret under an innocent name, and
+# secrets-in-env lists without removing, so the read stays OPEN. Guidance: docs/operations/secrets-for-ai.md.
+_sd_is_secret() {  # <relative path> <the same path, ASCII-lowercased>: 0 when the guard's secret-name set matches it and it is not a template name
+  case "${1##*/}" in .env.example|.env.sample|.env.template|.env.dist) return 1 ;; esac
+  # shellcheck disable=SC2221,SC2222  # the alternation is the guard's, byte for byte (the coupling cell pins it)
+  case "$1" in
+    *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*) return 0 ;;
+  esac
+  # shellcheck disable=SC2221,SC2222  # same alternation as above, on the case-folded name
+  case "$2" in
+    *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*) return 0 ;;
+  esac
+  return 1
+}
+_sd_mark=$(printf '\001unreadable')  # a line the walk emits when find or cd hit an error (e.g. a permission error)
+# _sd_tree <root>: print the secret-named files under <root> (regular files AND symlinks, a link by its own name and never followed),
+# relative, sorted; .git and node_modules are not walked. One awk pass lowercases the whole stream (no fork per file).
+_sd_tree() {
+  (cd "$1" 2>/dev/null || { printf '%s\n' "$_sd_mark"; exit 0; }
+   find . \( -name .git -o -name node_modules \) -prune -o \( -type f -o -type l \) -print 2>/dev/null || printf '%s\n' "$_sd_mark") \
+    | sed 's|^\./||' | LC_ALL=C awk '{ print; print tolower($0) }' | {
+      while IFS= read -r _sd_p && IFS= read -r _sd_lo; do
+        if [ "$_sd_p" = "$_sd_mark" ]; then printf '%s\n' "$_sd_p"; continue; fi
+        ! _sd_is_secret "$_sd_p" "$_sd_lo" || printf '%s\n' "$_sd_p"
+      done
+    } | LC_ALL=C sort
+}
+_sd_env_names() {  # the secret-looking environment variable NAMES. awk reads ENVIRON for the key only: no value is expanded, printed or compared.
+  awk 'BEGIN { for (k in ENVIRON) { u = toupper(k)
+      if (u ~ /TOKEN|SECRET|PASSWORD|API_KEY|CREDENTIAL/ || u ~ /_KEY$/ || u ~ /^KIT_TRACKER_/ || u ~ /^KIT_FORGE_/) print k } }' | LC_ALL=C sort
+}
+_sd_cap=20
+_sd_show() {  # <names>: the first $_sd_cap names, indented, then a count line when capped
+  printf '%s\n' "$1" | sed -n "1,${_sd_cap}p" | LC_ALL=C tr -d '\001-\011\013-\037\177' | sed 's/^/      /'
+  [ "$_sd_total" -le "$_sd_cap" ] || echo "      ... and $((_sd_total-_sd_cap)) more ($_sd_total in all; first $_sd_cap shown)"
+}
+_sd_tree_on=0; _sd_env_on=0
+if [ "$SEAMS" -eq 0 ]; then _sd_root="."; _sd_tree_on=1; _sd_env_on=1
+else _sd_root="${DOCTOR_SECRETS_ROOT:-}"; [ -z "$_sd_root" ] || _sd_tree_on=1; [ "${DOCTOR_SECRETS_ENV:-0}" = "0" ] || _sd_env_on=1; fi
+if [ "$_sd_tree_on" -eq 1 ]; then
+  _pg_begin "secrets-in-tree (file names only)"
+  _sd_out=$(_sd_tree "$_sd_root")
+  _sd_unr=""
+  case "$_sd_out" in
+    *"$_sd_mark"*) _sd_unr=" (some paths unreadable: a permission error stopped part of the walk)"
+      _sd_out=$(printf '%s\n' "$_sd_out" | grep -vF "$_sd_mark" || true) ;;
+  esac
+  _sd_total=$(printf '%s\n' "$_sd_out" | grep -c . || true)
+  if [ "$_sd_total" -eq 0 ] && [ -z "$_sd_unr" ]; then
+    echo "secrets-in-tree: OK - no secret-named file in the working tree"
+  elif [ "$_sd_total" -eq 0 ]; then
+    warns=$((warns+1))
+    echo "secrets-in-tree: WARN - no secret-named file found, but some paths unreadable (a permission error stopped part of the walk), so the tree is not cleared"
+  else
+    if [ "$REQUIRE" -eq 1 ]; then _sd_v=FAIL; gate_fail=1; else _sd_v=WARN; warns=$((warns+1)); fi
+    echo "secrets-in-tree: $_sd_v - $_sd_total secret-named file(s) in the working tree$_sd_unr (names only; never read). Inject runtime secrets (op run, doppler run, aws-vault exec, CI secrets) instead: docs/operations/secrets-for-ai.md"
+    _sd_show "$_sd_out"
+  fi
+  _pg_end
+fi
+if [ "$_sd_env_on" -eq 1 ]; then
+  _pg_begin "secrets-in-env (variable names only)"
+  _sd_out=$(_sd_env_names)
+  _sd_total=$(printf '%s\n' "$_sd_out" | grep -c . || true)
+  if [ "$_sd_total" -eq 0 ]; then
+    echo "secrets-in-env: OK - no secret-looking variable name in this session's environment"
+  else
+    warns=$((warns+1))
+    echo "secrets-in-env: WARN - $_sd_total secret-looking variable name(s) in this session's environment (names only; values never read). Listing does not remove them, so the agent's read of them stays OPEN: docs/operations/secrets-for-ai.md"
+    _sd_show "$_sd_out"
+  fi
   _pg_end
 fi
 
