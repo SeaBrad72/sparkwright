@@ -575,7 +575,7 @@ _pg_docs_lock() {
     echo "FAIL: $1 has no job keyed exactly '$CI_IF_PUSH_GRADED_JOIN' — the docs join is the name the aggregator and the push-graded induction bind to; a renamed key leaves them pointed at nothing"; _pd_bad=1; }
   _pd_jif=$(_job_if_canon "$1" "$CI_IF_PUSH_GRADED_JOIN")
   [ "$_pd_jif" = "$CI_IF_PUSH_GRADED_JOIN_CANONICAL" ] || {
-    echo "FAIL: $1's $CI_IF_PUSH_GRADED_JOIN job-level \`if:\` is '$_pd_jif', not exactly \`if: \${{ !cancelled() && needs.changes.outputs.push_graded != 'true' }}\`. The join must run when a leg failed or was cancelled (a plain needs: join is SKIPPED then, and its explicit per-leg result check never runs), and it carries the same one clause as the legs: no docs-only clause, and no other"; _pd_bad=1; }
+    echo "FAIL: $1's $CI_IF_PUSH_GRADED_JOIN job-level \`if:\` is '$_pd_jif', not exactly \`if: \${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.push_graded != 'true' }}\`. The join must run when a leg failed or was cancelled (a plain needs: join is SKIPPED then, and its explicit per-leg result check never runs), and it carries the same one clause as the legs: no docs-only clause, and no other"; _pd_bad=1; }
   return "$_pd_bad"
 }
 
@@ -610,7 +610,9 @@ CI_IF_CANONICAL="if:github.event_name=='pull_request'"
 CI_IF_PUSH_GRADED_ONLY="conformance-docs"   # the LEG job keys are <this>-<n>; the join keeps this name (CI_IF_PUSH_GRADED_JOIN)
 CI_IF_PUSH_GRADED_CANONICAL="if:needs.changes.outputs.push_graded!='true'"
 CI_IF_PUSH_GRADED_JOIN="conformance-docs"
-CI_IF_PUSH_GRADED_JOIN_CANONICAL="if:\${{!cancelled()&&needs.changes.outputs.push_graded!='true'}}"
+# SWAS-382 S3: the join also carries needs.changes.result == 'success'. When the runtime gate skips `changes` (a draft's cheap run, a gate error) every leg skips with it, and a join that runs
+# under !cancelled() would run anyway and red on skipped legs; the clause makes the join skip with `changes`. A `changes` that FAILED still reds the aggregator (no skip is authorised then).
+CI_IF_PUSH_GRADED_JOIN_CANONICAL="if:\${{!cancelled()&&needs.changes.result=='success'&&needs.changes.outputs.push_graded!='true'}}"
 
 _posts_nothing() {
   # `[[:space:]]+`, NOT `*`: a YAML permissions entry is always `checks: write`, and the zero-space
@@ -1284,7 +1286,8 @@ selftest() {
   }
   _pg_pgc="needs.changes.outputs.push_graded != ${_pg_q}true${_pg_q}"
   _pg_doc="needs.changes.outputs.docs_only != ${_pg_q}true${_pg_q} && $_pg_pgc"
-  _pg_jif="\${{ !cancelled() && $_pg_pgc }}"
+  _pg_jif="\${{ !cancelled() && needs.changes.result == ${_pg_q}success${_pg_q} && $_pg_pgc }}"
+  _pg_jold="\${{ !cancelled() && $_pg_pgc }}"   # the shape that stood before S3: PGL-7 requires it to red
   _pg_try() {  # <name> <want: ok|a job name> <file> -> the lock's verdict on a fixture
     if _pg_o=$(_pg_docs_lock "$3" 2>&1); then _pg_rc=0; else _pg_rc=1; fi
     if [ "$2" = ok ]; then
@@ -1311,6 +1314,13 @@ selftest() {
   # PGL-5: no `conformance-docs-<n>` leg at all (the legs renamed or deleted).
   { printf 'jobs:\n'; _pg_leg conformance-docs-v2 "$_pg_pgc"; _pg_join "$_pg_jif"; } > "$_mx/pgl-5.yml"
   _pg_try PGL-5 "no job keyed conformance-docs-<n>" "$_mx/pgl-5.yml"
+  # PGL-6/PGL-7 (SWAS-382 S3, SWAS-536): the join also needs `needs.changes.result == 'success'`. When the gate skips `changes` (a draft, a gate error) every leg
+  # skips with it, and a join that runs under `!cancelled()` would otherwise run and red on skipped legs. PGL-6 is the sound join with the clause (green);
+  # PGL-7 is the join WITHOUT it (the shape that stood before S3), which must now red, naming the clause.
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_pgc"; _pg_join "$_pg_jif"; } > "$_mx/pgl-6.yml"
+  _pg_try PGL-6 ok "$_mx/pgl-6.yml"
+  { printf 'jobs:\n'; _pg_leg conformance-docs-1 "$_pg_pgc"; _pg_leg conformance-docs-2 "$_pg_pgc"; _pg_join "$_pg_jold"; } > "$_mx/pgl-7.yml"
+  _pg_try PGL-7 "needs.changes.result" "$_mx/pgl-7.yml"
 
   # ── mutants for the RENDERING anchors (RATIFICATION-WAITING-IS-GREEN, 2026-08-28; rebuilt after
   # review round 1, finding 3 — see the note above the helpers). The CLEAN fixture is the obedient

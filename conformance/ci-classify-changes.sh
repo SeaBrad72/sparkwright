@@ -121,6 +121,77 @@ _pg_jq()  { printf '%s' "$1" | jq -r "$2" 2>/dev/null; }
 # the shared conclusion if every instance agrees, `mixed` if not (success/skipped then need EVERY leg).
 _pg_conc() { printf '%s\n' "$_pgmap" | awk -F'\t' -v n="$1" '$1 == n || index($1, n " (") == 1 { c[$2] = 1; k++; v = $2 } END { if (k) print (length(c) == 1 ? v : "mixed") }'; }
 
+# head_evidence — the EXACT-HEAD predicate (SWAS-537), extracted from push_graded's steps 3-4 so the push lane
+# and the merge verbs (promotion-verify.sh land/actuate/trace) cannot drift. The question: did a COMPLETED,
+# successful run of the CI workflow on EXACTLY <head-sha> grade the light-or-full set? A cheap run (the
+# `changes` job skipped, e.g. a draft PR) never satisfies it. Inputs are FILES and STRINGS, nothing fetched:
+#   $1 runs.json   {"workflow_runs":[…]} or an array; $2 jobs.json {"jobs":[…]} or an array
+#   $3 head-sha    the 40-hex commit; $4 head-branch (never empty); $5 repo owner/name (head repo must equal it)
+#   $6 workflow    the workflow FILE path (default .github/workflows/ci.yml)
+# Prints `evidence=ok reason=all-shards|docs-only-induction run=<id>` or `evidence=no reason=<token>` (the
+# token carries ` run=<id>` once a run was selected). Always rc 0: the VERDICT is the output.
+_he_no() { echo "evidence=no reason=$1${2:+ run=$2}"; }
+head_evidence() {
+  _hru=${1:-}; _hjo=${2:-}; _hhs=${3:-}; _hhb=${4:-}; _hrepo=${5:-}; _hwf=${6:-.github/workflows/ci.yml}
+  command -v jq >/dev/null 2>&1 || { _he_no no-jq; return 0; }
+  for _hf in "$_hru" "$_hjo"; do
+    { [ -n "$_hf" ] && [ -r "$_hf" ] && [ -s "$_hf" ]; } || { _he_no unreadable-input; return 0; }
+  done
+  _pg_hex "$_hhs" || { _he_no bad-head-sha; return 0; }
+
+  # 3. WHICH RUN, AND DID IT COMPLETE GREEN. Latest run_number/run_attempt among the runs of THIS
+  #    workflow file, triggered by pull_request, from THIS PR's own branch and repository. The run's
+  #    `pull_requests` list is EMPTY once the PR merged (measured live), so it cannot be the bind; the
+  #    PR's own head ref and repo are. Another branch's run, or a fork's, is never graded.
+  _hr=$(jq -c --arg p "$_hwf" --arg b "$_hhb" --arg r "$_hrepo" 'if type == "array" then . else (.workflow_runs // []) end
+              | [.[] | select(.path == $p and .event == "pull_request" and $b != ""
+                              and .head_branch == $b and .head_repository.full_name == $r)] | sort_by(.run_number, .run_attempt) | last' "$_hru" 2>/dev/null) \
+    || { _he_no unreadable-input; return 0; }
+  { [ -n "$_hr" ] && [ "$_hr" != null ]; } || { _he_no no-graded-run; return 0; }
+  _hid=$(_pg_jq "$_hr" '.id')
+  [ "$(_pg_jq "$_hr" '.head_sha')" = "$_hhs" ]     || { _he_no run-head-mismatch "$_hid"; return 0; }
+  [ "$(_pg_jq "$_hr" '.status')" = completed ]     || { _he_no run-not-completed "$_hid"; return 0; }
+  [ "$(_pg_jq "$_hr" '.conclusion')" = success ]   || { _he_no run-not-success "$_hid"; return 0; }
+
+  # 4. WHAT THAT RUN ACTUALLY GRADED. A run-level `success` is NOT enough: a run whose heavy shards
+  #    all skipped is `success` too — that is precisely the docs-only case, and it earns the weaker
+  #    (induction) authorisation, never the strong one.
+  _pgmap=$(jq -r 'if type == "array" then . else (.jobs // []) end
+                  | .[] | [.name, (.conclusion // "")] | @tsv' "$_hjo" 2>/dev/null) \
+    || { _he_no unreadable-input "$_hid"; return 0; }
+  [ -n "$_pgmap" ] || { _he_no no-jobs "$_hid"; return 0; }
+  _nv=$(printf '%s\n' "$_pgmap" | awk -F'\t' '$1 ~ /^non-vacuity/ { print $2 }')
+
+  _r1=1; [ -n "$_nv" ] || _r1=0
+  for _j in $PG_NEEDED; do [ "$(_pg_conc "$_j")" = success ] || _r1=0; done
+  for _c in $_nv;        do [ "$_c" = success ] || _r1=0; done
+  if [ "$_r1" = 1 ]; then
+    echo "evidence=ok reason=all-shards run=$_hid"
+    return 0
+  fi
+
+  _sk=1; [ -n "$_nv" ] || _sk=0
+  for _j in $PG_HEAVY; do [ "$(_pg_conc "$_j")" = skipped ] || _sk=0; done
+  for _c in $_nv;       do [ "$_c" = skipped ] || _sk=0; done
+  if [ "$_sk" = 1 ] && [ "$(_pg_conc changes)" = success ]; then
+    _d=$(_pg_conc conformance-docs)
+    [ -n "$_d" ]         || { _he_no docs-induction-no-docs-job "$_hid"; return 0; }
+    [ "$_d" = success ]  || { _he_no docs-induction-docs-job-not-success "$_hid"; return 0; }
+    { [ "$(_pg_conc docs-links)" = success ] && [ "$(_pg_conc conformance)" = success ]; } \
+      || { _he_no docs-induction-support-not-success "$_hid"; return 0; }
+    echo "evidence=ok reason=docs-only-induction run=$_hid"
+    return 0
+  fi
+  for _j in $PG_NEEDED; do   # name the FIRST failing entry, in the constant's order
+    _c=$(_pg_conc "$_j")
+    [ -n "$_c" ] || { _he_no "needed-job-missing:$_j" "$_hid"; return 0; }
+    [ "$_c" = success ] || { _he_no "needed-job-not-success:$_j" "$_hid"; return 0; }
+  done
+  [ -n "$_nv" ] || { _he_no needed-job-missing:non-vacuity "$_hid"; return 0; }
+  _he_no needed-job-not-success:non-vacuity "$_hid"
+  return 0
+}
+
 push_graded() {
   _pu=${1:-}; _ru=${2:-}; _jo=${3:-}; _pt=${4:-}; _ht=${5:-}; _sha=${6:-}; _repo=${7:-}
   _wf=${8:-.github/workflows/ci.yml}   # the workflow FILE the graded run must come from (D3)
@@ -161,57 +232,19 @@ push_graded() {
   _pr=$(_pg_jq "$_e" '.number')
   case "$_pr" in ''|*[!0-9]*) _pg_no bad-pr-number; return 0 ;; esac
 
-  # 3. WHICH RUN, AND DID IT COMPLETE GREEN. Latest run_number/run_attempt among the runs of THIS
-  #    workflow file, triggered by pull_request, from THIS PR's own branch and repository. The run's
-  #    `pull_requests` list is EMPTY once the PR merged (measured live), so it cannot be the bind; the
-  #    merged PR's own head ref and repo are. Another branch's run, or a fork's, is never graded.
+  # 3-4. WHICH RUN, AND WHAT IT GRADED: the shared exact-head predicate (head_evidence, above), so the push
+  #    lane and the merge verbs (SWAS-537) read ONE grammar. Its verdict is translated back into this
+  #    predicate's own key=value shape, byte-for-byte.
   _hb=$(_pg_jq "$_e" '.head.ref')
-  _r=$(jq -c --arg p "$_wf" --arg b "$_hb" --arg r "$_repo" 'if type == "array" then . else (.workflow_runs // []) end
-              | [.[] | select(.path == $p and .event == "pull_request" and $b != ""
-                              and .head_branch == $b and .head_repository.full_name == $r)] | sort_by(.run_number, .run_attempt) | last' "$_ru" 2>/dev/null) \
-    || { _pg_no unreadable-input; return 0; }
-  { [ -n "$_r" ] && [ "$_r" != null ]; } || { _pg_no no-graded-run; return 0; }
-  [ "$(_pg_jq "$_r" '.head_sha')" = "$_hs" ]     || { _pg_no run-head-mismatch; return 0; }
-  [ "$(_pg_jq "$_r" '.status')" = completed ]    || { _pg_no run-not-completed; return 0; }
-  [ "$(_pg_jq "$_r" '.conclusion')" = success ]  || { _pg_no run-not-success; return 0; }
-  _rid=$(_pg_jq "$_r" '.id')
-
-  # 4. WHAT THAT RUN ACTUALLY GRADED. A run-level `success` is NOT enough: a run whose heavy shards
-  #    all skipped is `success` too — that is precisely the docs-only case, and it earns the weaker
-  #    (induction) authorisation, never the strong one.
-  _pgmap=$(jq -r 'if type == "array" then . else (.jobs // []) end
-                  | .[] | [.name, (.conclusion // "")] | @tsv' "$_jo" 2>/dev/null) \
-    || { _pg_no unreadable-input; return 0; }
-  [ -n "$_pgmap" ] || { _pg_no no-jobs; return 0; }
-  _nv=$(printf '%s\n' "$_pgmap" | awk -F'\t' '$1 ~ /^non-vacuity/ { print $2 }')
-
-  _r1=1; [ -n "$_nv" ] || _r1=0
-  for _j in $PG_NEEDED; do [ "$(_pg_conc "$_j")" = success ] || _r1=0; done
-  for _c in $_nv;        do [ "$_c" = success ] || _r1=0; done
-  if [ "$_r1" = 1 ]; then
-    echo "push_graded=true graded_pr=$_pr graded_head=$_hs graded_run=$_rid reason=all-shards"
-    return 0
-  fi
-
-  _sk=1; [ -n "$_nv" ] || _sk=0
-  for _j in $PG_HEAVY; do [ "$(_pg_conc "$_j")" = skipped ] || _sk=0; done
-  for _c in $_nv;       do [ "$_c" = skipped ] || _sk=0; done
-  if [ "$_sk" = 1 ] && [ "$(_pg_conc changes)" = success ]; then
-    _d=$(_pg_conc conformance-docs)
-    [ -n "$_d" ]         || { _pg_no docs-induction-no-docs-job; return 0; }
-    [ "$_d" = success ]  || { _pg_no docs-induction-docs-job-not-success; return 0; }
-    { [ "$(_pg_conc docs-links)" = success ] && [ "$(_pg_conc conformance)" = success ]; } \
-      || { _pg_no docs-induction-support-not-success; return 0; }
-    echo "push_graded=true graded_pr=$_pr graded_head=$_hs graded_run=$_rid reason=docs-only-induction"
-    return 0
-  fi
-  for _j in $PG_NEEDED; do   # name the FIRST failing entry, in the constant's order
-    _c=$(_pg_conc "$_j")
-    [ -n "$_c" ] || { _pg_no "needed-job-missing:$_j"; return 0; }
-    [ "$_c" = success ] || { _pg_no "needed-job-not-success:$_j"; return 0; }
-  done
-  [ -n "$_nv" ] || { _pg_no needed-job-missing:non-vacuity; return 0; }
-  _pg_no needed-job-not-success:non-vacuity
+  _ev=$(head_evidence "$_ru" "$_jo" "$_hs" "$_hb" "$_repo" "$_wf")
+  case "$_ev" in
+    "evidence=ok reason="*" run="*)
+      _evr=${_ev#evidence=ok reason=}
+      echo "push_graded=true graded_pr=$_pr graded_head=$_hs graded_run=${_evr##* run=} reason=${_evr%% run=*}" ;;
+    "evidence=no reason="*)
+      _evr=${_ev#evidence=no reason=}; _pg_no "${_evr%% run=*}" ;;
+    *) _pg_no unreadable-input ;;
+  esac
   return 0
 }
 
@@ -345,6 +378,7 @@ selftest() {
 
   rm -rf "$d"
   selftest_pg || st=1
+  selftest_he || st=1
   selftest_eio || st=1
   [ "$st" = 0 ] && echo "ci-classify-changes --selftest: OK" || { echo "ci-classify-changes --selftest: FAIL" >&2; return 1; }
   return "$st"
@@ -521,6 +555,63 @@ selftest_pg() {
   return "$pst"
 }
 
+# ── selftest_he : the --head-evidence predicate's teeth (SWAS-537, cells HE1-HE10). The question a merge
+#    asks: did a COMPLETED run of the CI workflow on EXACTLY this head grade at least the light set? A wrong
+#    `ok` merges a head nothing graded (the S3-SEC-2 window), so every negative asserts its EXACT line.
+selftest_he() {
+  hst=0; h=$(mktemp -d)
+  H=2222222222222222222222222222222222222222; R=acme/kit
+  PRS='"head_branch":"feat/x","head_repository":{"full_name":"acme/kit"},"event":"pull_request","pull_requests":[]'
+  _hrun() { # _hrun <id> <run_number> <status> <conclusion> <head_sha> [path] [extra-fields]
+    printf '{"id":%s,"path":"%s","run_number":%s,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s",%s}' \
+      "$1" "${6:-.github/workflows/ci.yml}" "$2" "$3" "$4" "$5" "${7:-$PRS}"
+  }
+  _hjobs() { # _hjobs <file> <name=conclusion ...>   (`~` in a name stands for a space)
+    _ho=''; _hd=$1; shift
+    for _hp in "$@"; do _ho="$_ho${_ho:+,}{\"name\":\"$(printf '%s' "${_hp%%=*}" | tr '~' ' ')\",\"conclusion\":\"${_hp#*=}\"}"; done
+    printf '{"jobs":[%s]}\n' "$_ho" > "$_hd"
+  }
+  HJ_LIGHT='changes=success conformance-core=success conformance-selftests=success cf-doctor=success cf-export=success cf-export-claims=success cf-verify-enforced=success cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=success'
+  HJ_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=skipped'
+  HJ_CHEAP='changes=skipped conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped conformance-docs=skipped docs-links=skipped conformance=success non-vacuity~(1)=skipped'
+  _hcase() { # _hcase <name> <runs-json-body> <jobs-listing> <expected-line> [head] [branch] [repo]
+    printf '{"workflow_runs":[%s]}\n' "$2" > "$h/runs"
+    # shellcheck disable=SC2086   # the HJ_* listings are deliberately word-split into name=conclusion args
+    _hjobs "$h/jobs" $3
+    _hg=$(head_evidence "$h/runs" "$h/jobs" "${5:-$H}" "${6:-feat/x}" "${7:-$R}")
+    if [ "$_hg" = "$4" ]; then printf 'PASS: %-38s -> %s\n' "$1" "$_hg"
+    else printf 'FAIL: %-38s -> %s\n           (want %s)\n' "$1" "$_hg" "$4"; hst=1; fi
+  }
+  OKR="$(_hrun 900 1 completed success "$H")"
+  _hcase HE1-light-run-all-shards-ok        "$OKR" "$HJ_LIGHT" "evidence=ok reason=all-shards run=900"
+  _hcase HE2-cheap-run-never-satisfies      "$OKR" "$HJ_CHEAP" "evidence=no reason=needed-job-not-success:changes run=900"
+  _hcase HE3-queued-run-over-cheap-run      "$OKR,$(_hrun 901 2 queued '' "$H")" "$HJ_CHEAP" "evidence=no reason=run-not-completed run=901"
+  _hcase HE4a-run-on-another-sha            "$(_hrun 900 1 completed success 4444444444444444444444444444444444444444)" "$HJ_LIGHT" "evidence=no reason=run-head-mismatch run=900"
+  _hcase HE4b-run-on-another-branch         "$(_hrun 900 1 completed success "$H" '.github/workflows/ci.yml' '"head_branch":"feat/other","head_repository":{"full_name":"acme/kit"},"event":"pull_request","pull_requests":[]')" "$HJ_LIGHT" "evidence=no reason=no-graded-run"
+  _hcase HE5-decoy-workflow-path            "$(_hrun 950 9 completed success "$H" .github/workflows/other.yml)" "$HJ_LIGHT" "evidence=no reason=no-graded-run"
+  _hcase HE6-docs-only-induction-ok         "$OKR" "$HJ_DOCS" "evidence=ok reason=docs-only-induction run=900"
+  _hcase HE7-needed-shard-skipped           "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed 's/cf-doctor=success/cf-doctor=skipped/')" "evidence=no reason=needed-job-not-success:cf-doctor run=900"
+  _hcase HE8-fork-head                      "$(_hrun 900 1 completed success "$H" '.github/workflows/ci.yml' '"head_branch":"feat/x","head_repository":{"full_name":"forker/kit"},"event":"pull_request","pull_requests":[]')" "$HJ_LIGHT" "evidence=no reason=no-graded-run"
+  _hcase HE10a-matrix-leg-name-accepted     "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed 's/conformance=success/conformance~(light)=success/')" "evidence=ok reason=all-shards run=900"
+  _hcase HE10b-cheap-matrix-leg-refused     "$OKR" "$(printf '%s' "$HJ_CHEAP" | sed 's/conformance=success/conformance~(cheap)=success/')" "evidence=no reason=needed-job-not-success:changes run=900"
+  # HE9: push_graded and head_evidence cannot diverge. The same run/jobs graded through both predicates must
+  # carry the same reason (the existing push-graded fixtures above stay byte-identical on their own).
+  T=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; S=1111111111111111111111111111111111111111
+  printf '[{"number":7,"merged_at":"2026-09-03T00:00:00Z","merge_commit_sha":"%s","base":{"ref":"main","repo":{"full_name":"%s"}},"head":{"ref":"feat/x","sha":"%s","repo":{"full_name":"%s"}}}]\n' "$S" "$R" "$H" "$R" > "$h/pulls"
+  for _hv in "$HJ_LIGHT" "$HJ_DOCS" "$HJ_CHEAP"; do
+    printf '{"workflow_runs":[%s]}\n' "$OKR" > "$h/runs"
+    # shellcheck disable=SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+    _hjobs "$h/jobs" $_hv
+    _hpg=$(push_graded "$h/pulls" "$h/runs" "$h/jobs" "$T" "$T" "$S" "$R" | sed 's/^push_graded=true graded_pr=7 graded_head=[0-9a-f]* graded_run=900 //; s/^push_graded=false //')
+    _hhe=$(head_evidence "$h/runs" "$h/jobs" "$H" feat/x "$R" | sed 's/^evidence=[a-z]* //; s/ run=900$//')
+    if [ -n "$_hpg" ] && [ "$_hpg" = "$_hhe" ]; then printf 'PASS: %-38s -> %s\n' HE9-no-divergence "$_hpg"
+    else printf 'FAIL: %-38s -> push_graded [%s] vs head_evidence [%s]\n' HE9-no-divergence "$_hpg" "$_hhe"; hst=1; fi
+  done
+  rm -rf "$h"
+  [ "$hst" = 0 ] && echo "ci-classify-changes --head-evidence selftest: OK" || echo "ci-classify-changes --head-evidence selftest: FAIL" >&2
+  return "$hst"
+}
+
 # ── selftest_eio : export_ignored_only()'s teeth. A wrong `false` costs artifact-gate minutes;
 #    a wrong `true` SKIPS THE GATE on a change that CAN reach the artifact. Hermetic: this builds
 #    its own temp git repo with a representative .gitattributes so it is independent of the
@@ -598,6 +689,7 @@ case "${1:-}" in
   --selftest)            selftest; exit $? ;;
   --push-graded)         shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"; exit 0 ;;
   --export-ignored-only) shift; export_ignored_only "${1:-}"; exit 0 ;;
-  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> [workflow-path] | --selftest" >&2; exit 2 ;;
+  --head-evidence)       shift; head_evidence "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"; exit 0 ;;
+  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --head-evidence <runs.json> <jobs.json> <head-sha> <head-branch> <repo> [workflow-path] | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> [workflow-path] | --selftest" >&2; exit 2 ;;
   *)                     classify "$1"; exit 0 ;;
 esac

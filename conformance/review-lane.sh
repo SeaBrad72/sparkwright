@@ -129,7 +129,7 @@ Agentic practice
 CI
 DevOps and operations
 Security, privacy and guardrails
-Cost and size
+Cost and efficiency
 Product
 Design
 Architecture
@@ -428,7 +428,15 @@ rl_lens_leg() {   # $1 = head, $2 = scratch dir -> 0 | 2
     LC_ALL=C awk -v re="$RL_LENS_HEAD" 'BEGIN{i=0;d=0} /^## /{ if (d==0 && $0 ~ re) { i=1; d=1 } else { i=0 }; next } i==1 && /^\|/ { n=split($0, f, "|"); for (k=2; k<n; k++) { c=f[k]; gsub(/^[ \t]+/, "", c); gsub(/[ \t]+$/, "", c); if (length(c) > 4 && substr(c,1,2) == "**" && substr(c,length(c)-1) == "**") c=substr(c,3,length(c)-4); print c } }' "$2/design.md" > "$2/cells.txt"
     # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
     while IFS= read -r _ll_n; do
-      grep -qFx "$_ll_n" "$2/cells.txt" || { echo "RL-DESIGN-LENS-MISSING: $_ll_p has a Lens review section but no row for '$_ll_n' — add the row; N/A with a reason is an answer"; _ll_rc=2; }
+      # LEGACY ALIAS (SWAS-288): lens 8 was named 'Cost and size' until 2026-10; a cell with the old name still satisfies it, so no
+      # in-flight or adopter design doc goes red on the rename. A second copy of a name (the single-copy rule bends here): the alias
+      # retires with its own follow-up card, SWAS-531, named in the CHANGELOG entry for SWAS-288.
+      _ll_alias=''
+      if [ "$_ll_n" = 'Cost and efficiency' ]; then _ll_alias='Cost and size'; fi
+      _ll_hit=no
+      if grep -qFx "$_ll_n" "$2/cells.txt"; then _ll_hit=yes; fi
+      if [ -n "$_ll_alias" ] && grep -qFx "$_ll_alias" "$2/cells.txt"; then _ll_hit=yes; fi
+      if [ "$_ll_hit" = no ]; then echo "RL-DESIGN-LENS-MISSING: $_ll_p has a Lens review section but no row for '$_ll_n' — add the row; N/A with a reason is an answer"; _ll_rc=2; fi
     done <<EOF
 \
 $RL_LENSES
@@ -1525,7 +1533,13 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
       *)    { printf '# fixture design\n\n'
             awk '/^## /{ i = ($0 ~ /^## Lens review/) } i' "$DIR/skills/design/SKILL.md"
             } > "$_fd"
-            [ "$2" != eleven ] || { grep -v '| Cost and size |' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd"; } ;;
+            # SWAS-288: `eleven` drops the lens 8 row under EITHER name; `rename8=<name>` spells lens 8 literally, not as the skill has it.
+            case "$2" in
+              eleven)
+                grep -v -e '| Cost and size |' -e '| Cost and efficiency |' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd" ;;
+              rename8=*)
+                sed -e "s/^| 8 | [^|]* |/| 8 | ${2#rename8=} |/" "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd" ;;
+            esac ;;
     esac
     [ -z "${3:-}" ] || { awk -v h="$3" '/^## Lens review/ && !d { print h; d=1; next } 1' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd"; }
     git -C "$1" add -A >/dev/null
@@ -1535,11 +1549,11 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   printf '# old design\namended, still no table\n' > "$r/docs/architecture/2026-01-01-old-design.md"
   fx_design "$r" full; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "added design doc carries the lens table -> pass" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
-  # leg 2 (−): eleven rows, no 'Cost and size' -> named. LOAD-BEARING: the call site in rl_run.
+  # leg 2 (−): eleven rows, no lens 8 row (either name) -> named. LOAD-BEARING: the call site in rl_run.
   r=$(fx_full lensmiss)
   fx_design "$r" eleven; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "M/CP design doc without a full lens table is named" 2 "$(fx_run "$r" prepush)" RL-DESIGN-LENS-MISSING
-  grep -qF "Cost and size" "$_fx/last.log" || { echo "selftest FAIL: the refusal must NAME the missing lens 'Cost and size'"; st=1; }
+  grep -qF "Cost and efficiency" "$_fx/last.log" || { echo "selftest FAIL: the refusal must NAME the missing lens 'Cost and efficiency'"; st=1; }
   # SWAS-239 heading grammar: a section prefix (9a. / §9) is accepted; a different word or an extra word is not.
   # LOAD-BEARING: the positives and the agreement leg red (rc 2) on the pre-change `^## ([0-9]+[.] )?Lens review`.
   _sec=$(printf '\302\247')
@@ -1560,9 +1574,101 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   fx_design "$r" eleven "## ${_sec}9 Lens review"; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "section-sign heading with eleven rows names only the missing lens" 2 "$(fx_run "$r" prepush)" RL-DESIGN-LENS-MISSING
   [ "$(grep -c RL-DESIGN-LENS-MISSING "$_fx/last.log")" = 1 ] || { echo "selftest FAIL: the section-sign heading must name exactly one missing lens"; st=1; }
-  grep -qF "'Cost and size'" "$_fx/last.log" || { echo "selftest FAIL: the section-sign refusal must NAME 'Cost and size'"; st=1; }
+  grep -qF "'Cost and efficiency'" "$_fx/last.log" || { echo "selftest FAIL: the section-sign refusal must NAME 'Cost and efficiency'"; st=1; }
   ! grep -qF "'Project principles'" "$_fx/last.log" || { echo "selftest FAIL: the awk cell pass missed the section the grep accepted"; st=1; }
   ! grep -q RL-DESIGN-NO-LENS-TABLE "$_fx/last.log" || { echo "selftest FAIL: the section-sign heading was refused as no lens table"; st=1; }
+  # ── SWAS-288 — lens 8 is "Cost and efficiency"; "Cost and size" stays a LEGACY ALIAS (design 2026-10-16-lens-8-cost-and-efficiency).
+  # The cells spell lens 8 LITERALLY (rename8=), so they hold whatever the shipped skill says.
+  # (+) the new name, in --pr mode against the fixture's main: the case of a design added by a branch cut after the rename.
+  r=$(fx_full l8new)
+  fx_design "$r" "rename8=Cost and efficiency"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "L8-NEW an added design doc with the lens 8 row 'Cost and efficiency' passes (--pr)" 0 "$(fx_run "$r" pr main)" "the approval is branch protection's"
+  # (−) an unknown lens 8 name is still refused, and the refusal names the new name. Guards the alias against widening.
+  r=$(fx_full l8unk)
+  fx_design "$r" "rename8=Cost and speed"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "L8-UNKNOWN an unknown lens 8 name is named" 2 "$(fx_run "$r" pr main)" "no row for 'Cost and efficiency'"
+  # l8_frozen_table: a FROZEN copy of the Lens review section of a real landed design (SWAS-487, 2026-10-29), lens 8 under its old
+  # name. It is fixture text, not a file read from the tree, so no later edit to that design can change what this cell grades.
+  l8_frozen_table() {
+    cat <<'LFROZENTABLE'
+## Lens review
+
+| # | Lens | Answer |
+|---|---|---|
+| 1 | Project principles | Honest by default: every narrowed assert is named, with where its coverage lives (§4). `D-240815-3`: the one loss was incidental coverage, and it is put to the owner (§9). |
+| 2 | Friction | It removes ~4 min from every macOS lane selftest, for the maintainer. Nobody pays at run time. The cost is one hidden preflight flag to maintain. |
+| 3 | Software practice | The standard move: test the unit, not the suite, five times. Concurrency (b) and caching (c) were considered and rejected in §2-3. |
+| 4 | Agentic practice | The builder reads two files and follows the §3 placement rules. The cell wall is measured and printed by the lane, so an agent can check it rather than trust it. |
+| 5 | CI | ±0 CI minutes for the lane cell (N/A on Linux). preflight's selftest gains about 3-5 s [E]. No new flake surface, because nothing runs concurrently. CI gains a graded proof that cell mode runs the cell. |
+| 6 | DevOps and operations | No deploy surface. Rollback is a revert of two files. The signal is the lane's `took N s` line and the cell verdicts. |
+| 7 | Security, privacy and guardrails | No new agent capability. The selector is flag-only (FLAG-NOT-ENV), live only under `--selftest`, and hidden from `--help`. The one-cell trailer has no `OK: preflight selftest` substring, so it cannot satisfy `adopter-preflight-wired.sh:30`'s unanchored grep; a substring cell and M-cvtrailer prove it. No data is touched. No DoR flags. |
+| 8 | Cost and size | S; about 80-100 lines [E]. It saves 245-265 s [E] per macOS lane selftest. Upkeep: one selector with one cell name. |
+| 9 | Product | Need: lane-touching slices pay 281 s [M] locally (owner 10-28: runs per merge are the cost). Metric: the cell's wall ≤ 60 s [M] on the first build run; §3 says what happens if it is over. |
+| 10 | Design | The smaller shape, deleting the mutant arms, breaks the "mutants still go red" rule. A cache is not simpler once its key is complete. |
+| 11 | Architecture | It keeps preflight's FLAG-NOT-ENV rule, the hermetic entry (`_hm_ok`), the captured-CI rule (`_stci_ok`) and the selftest-trailer contract. The lane's grammar and buckets are untouched. |
+| 12 | UX and accessibility | The developer sees the same SKIP, NOTE and verdict lines, and a shorter run. The cell-mode trailer says it is not the full selftest. No user-facing UI. |
+LFROZENTABLE
+  }
+  # l8_doc <repo> <old|c14|landed>: stage an added design doc whose lens 8 row carries the OLD name. c14 is the
+  # Milestone C shape (`## 14. Lens review`); landed is the frozen copy of a real landed design's table (l8_frozen_table).
+  l8_doc() {
+    case "$2" in
+      old)    fx_design "$1" "rename8=Cost and size" ;;
+      c14)    fx_design "$1" "rename8=Cost and size" "## 14. Lens review" ;;
+      landed) mkdir -p "$1/docs/architecture"
+              { printf '# fixture design\n\n'; l8_frozen_table; } > "$1/docs/architecture/2026-10-08-fixture-design.md"
+              git -C "$1" add -A >/dev/null ;;
+    esac
+  }
+  # l8_copy <out> <repo> [<sed-script>]: write a throwaway copy of THIS script that grades <repo> and reads the real tree as its DIR
+  # (only the lines that set DIR and RL_REPO are rewritten; nothing is read from the environment), optionally mutated by <sed-script>.
+  # The two paths are escaped for the sed replacement (backslash, ampersand and the delimiter), which protects the sed splice only; the
+  # copy is a script that is later run, so a path with a double quote, dollar sign, backtick, backslash or newline is refused (fail closed).
+  l8_copy() {
+    for _l8p in "$1" "$2" "$DIR"; do
+      case "$_l8p" in
+        *'"'*|*'$'*|*'`'*|*'\'*|*'
+'*) echo "selftest FAIL: l8_copy path has a shell-special character"; st=1; return 1 ;;
+      esac
+    done
+    _l8d=$(printf '%s' "$DIR" | sed -e 's/[\\&|]/\\&/g'); _l8r=$(printf '%s' "$2" | sed -e 's/[\\&|]/\\&/g')
+    if [ -n "${3:-}" ]; then
+      sed -e "s|^DIR=.*|DIR=\"$_l8d\"|" -e "s|^RL_REPO=\"\\\$DIR\"|RL_REPO=\"$_l8r\"|" -e "$3" "$0" > "$1"
+    else
+      sed -e "s|^DIR=.*|DIR=\"$_l8d\"|" -e "s|^RL_REPO=\"\\\$DIR\"|RL_REPO=\"$_l8r\"|" "$0" > "$1"
+    fi
+  }
+  # l8_run <script>: run a copy in --pre-push mode; its output replaces last.log for ck.
+  l8_run() { _o=0; sh "$1" --pre-push > "$_fx/last.log" 2>&1 || _o=$?; printf '%s' "$_o"; }
+  # (+) the OLD name passes through the alias; (+) an UNMUTATED copy, run by the same route, agrees (liveness of the route);
+  # (−) LOAD-BEARING: the copy with the alias dropped refuses the same doc and names the new lens. A sed that changes nothing is a FAIL.
+  # l8_vacuous <plain> <mutant>: true when the mutant changed nothing (the vacuity guard). ONE function, used by L8-GUARD and the loop below.
+  l8_vacuous() { cmp -s "$1" "$2"; }
+  # GUARD LIVENESS: l8_vacuous must FIRE on a sed that matches nothing and stay QUIET on a sed that applies.
+  # (The patterns' brackets keep them from matching their own text in this file; an unanchored token would rewrite this very line.)
+  l8_copy "$_fx/l8g1.sh" "$_fx"; l8_copy "$_fx/l8g2.sh" "$_fx" "s/^ZZ[Q]NOMATCH/x/"
+  l8_copy "$_fx/l8g3.sh" "$_fx" "s/^  l8_ru[n]() /  l8_rux() /"
+  if l8_vacuous "$_fx/l8g1.sh" "$_fx/l8g2.sh"; then
+    echo "OK: L8-GUARD-FIRES l8_vacuous is true for a copy whose sed matched nothing"
+  else
+    echo "selftest FAIL: L8-GUARD-FIRES l8_vacuous did not fire on a no-op mutation, so the vacuity guard cannot be trusted"; st=1
+  fi
+  if l8_vacuous "$_fx/l8g1.sh" "$_fx/l8g3.sh"; then
+    echo "selftest FAIL: L8-GUARD-QUIET l8_vacuous fired on a mutation that applied, so it would flag every real mutant"; st=1
+  else
+    echo "OK: L8-GUARD-QUIET l8_vacuous is false for a copy whose sed applied"
+  fi
+  for _l8k in old c14 landed; do
+    r=$(fx_full "l8$_l8k"); l8_doc "$r" "$_l8k"; git -C "$r" commit -q --amend --no-edit >/dev/null
+    ck "L8-OLD-$_l8k a design doc with the legacy row 'Cost and size' passes through the alias" 0 "$(fx_run "$r" pr main)" "the approval is branch protection's"
+    l8_copy "$_fx/l8plain.sh" "$r"
+    # Anchored to the shipped alias line (an indented `if … then _ll_alias=`), so it cannot match the selftest line that quotes it.
+    # The mutant token has no leading dash, so grep reads it as the pattern, not an option.
+    l8_copy "$_fx/l8mut.sh" "$r" "s/^\\( *if .*then _ll_alias=\\)'Cost and size'/\\1'DROPPED'/"
+    if l8_vacuous "$_fx/l8plain.sh" "$_fx/l8mut.sh"; then echo "selftest FAIL: the lens 8 alias mutant changed nothing — L8-MUT-$_l8k would be vacuous"; st=1; fi
+    ck "L8-CTRL-$_l8k the unmutated copy passes the same doc" 0 "$(l8_run "$_fx/l8plain.sh")" "structural pass"
+    ck "L8-MUT-$_l8k the copy with the alias dropped refuses the same doc" 2 "$(l8_run "$_fx/l8mut.sh")" "no row for 'Cost and efficiency'"
+  done
   # leg 3 (+): XS ordinary adding a design doc with no table is exempt (the ceiling cut runs first)
   r=$(fx_ord xslens XS XS 1 XSROW src/app.js)
   fx_design "$r" none; git -C "$r" commit -q --amend --no-edit >/dev/null

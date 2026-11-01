@@ -265,7 +265,7 @@ jobs:
         # code outside src/. Never trade whole-app coverage for a single-dir scope. Keep `--config
         # p/default` (a pinned ruleset); never `--config auto` (auto resolves a different registry
         # ruleset per environment = a flaky required gate).
-        run: pipx run semgrep --config p/default --error .
+        run: pipx run semgrep==1.182.1 --config p/default --error .
 
       - name: License policy (over the SBOM)
         id: gate-license

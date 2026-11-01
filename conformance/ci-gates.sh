@@ -7,6 +7,7 @@
 # Usage: sh conformance/ci-gates.sh <workflow-file> [--expect-seams]
 #        sh conformance/ci-gates.sh --own-tree [<root>]     (B7: judge THIS tree's OWN pipeline(s))
 #        sh conformance/ci-gates.sh --line-breaks [<root>]  (SWAS-447: the read-only line-break ban over the kit's judged files)
+#        sh conformance/ci-gates.sh --shellcheck-pin [<root>]  (SWAS-499: every linting CI job runs the pinned shellcheck installer first)
 #        sh conformance/ci-gates.sh --selftest
 # Exit:  0 = all gates present and every kit-owned invocation resolves · 1 = missing gate(s),
 #        a kit-owned invocation whose subcommand does not resolve, or bad usage.
@@ -613,9 +614,13 @@ check_guard_delta_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, vac
 # flag, visible on the run line, until slice 352b removes it).
 # SWAS-363: five steps (found by name prefix, the self-test's name carries a changing mutant count) must each carry the exact gate line as their next key
 # line; the live step's `run: |` body is pinned as an exact ordered sequence that ends at the dedent out of the block, so any other line in it reds.
+# SWAS-460: the fifth step (the full self-test) carries that same `!cancelled()` form (a red live-cells step must not skip the mutant grade), and the job's
+# timeout-minutes VALUE is pinned at 90 (the full mutant grade measured 51.8 min of the old 60); the owner's ruling of 2026-10-30 raised the pin to 180 (SWAS-534; the full grade projects to about 160 min, SWAS-560 will cut it).
 # SWAS-404: six steps now carry a name prefix (the sixth is the CANDIDATE leg, whose `if:` is `${{ !cancelled() && steps.gate.outputs.live == 'yes' }}`),
 # and the run lines are counted apart: a `sh conformance/boundary-redteam.sh ... --measure ...` line is the candidate leg (exactly once, its seven-line body
 # pinned below), every other non-selftest run line is the default leg (exactly once, report-only).
+# SWAS-471: a seventh prefix (Boundary red-team — temp-root git cells) carries the same `if:` as the candidate leg; its run line names `--measure C42...` (counted apart, by
+# check_c42_step, which also pins its 15-line body), and the candidate-leg counter reads `--measure C36...` only.
 check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent, ungated, vacuous or masked
   # the candidate step's body, one pinned line each (compared inside awk after the 10-space indent)
   _brc1='mkdir -p "$RUNNER_TEMP/cand/.claude"'
@@ -632,17 +637,18 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
       # SWAS-363: one source for the exit-3 warning shape (the counter and the body pin both read it) and for the exact gate line.
       warnre = "^ +if \\[ \"\\$rc\" -eq 3 \\]; then echo \"::warning::[^\"]*NO CELL RAN[^\"]*\"; echo \"[^\"]*\" >> \"\\$GITHUB_STEP_SUMMARY\"; exit 0; fi[ \t]*$"
       ifline = "        if: steps.gate.outputs.live == \047yes\047"
-      np = 6
+      np = 7
       pfx[1] = "Install Node 24"
       pfx[2] = "Install the sandbox\047s Linux prerequisites"
       pfx[3] = "Allow unprivileged user namespaces for the sandbox"
       pfx[4] = "Boundary red-team — live cells"
       pfx[5] = "Boundary red-team harness full self-test"
       pfx[6] = "Boundary red-team — candidate leg"
+      pfx[7] = "Boundary red-team — temp-root git cells"
     }
     /^  boundary-redteam:[ \t]*$/ { inb = 1; jobs++; next }
     inb && /^  [a-z]/ { inb = 0 }
-    inb && /^    timeout-minutes: [0-9]+[ \t]*$/ { tmo++ }
+    inb && /^    timeout-minutes: 45[ \t]*$/ { tmo++ }
     inb && /^    if: needs\.changes\.outputs\.docs_only != .true. && needs\.changes\.outputs\.push_graded != .true./ { lane++ }
     inb && /^          fetch-depth: 2[ \t]/ { fd2++ }
     inb && /fetch-depth:/ && !/fetch-depth: 2[ \t]/ { fdother++ }
@@ -680,7 +686,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
       cur = 0; want = 0; gcur = (index($0, "      - name: Boundary red-team — the runtime cells") == 1)
       for (i = 1; i <= np; i++) if (index($0, "      - name: " pfx[i]) == 1) { pcount[i]++; cur = i; want = 1 }
     }
-    inb && want && !/^      - / && !/^[ \t]*$/ && !/^[ \t]*#/ { if ($0 != (cur == 6 ? candif : ifline)) pbad[cur] = 1; want = 0 }
+    inb && want && !/^      - / && !/^[ \t]*$/ && !/^[ \t]*#/ { if ($0 != (cur >= 5 ? candif : ifline)) pbad[cur] = 1; want = 0 }
     # nothing may change how the pinned steps run or what they inherit: no shell:/env:/working-directory:/continue-on-error: key on them, no defaults:, no GITHUB_ENV or BASH_ENV in the job
     /^defaults:/ { if (xdiag == "") xdiag = "the workflow carries a top-level defaults: key" }
     inb && /^    defaults:/ { if (xdiag == "") xdiag = "the boundary-redteam job carries a defaults: key" }
@@ -694,8 +700,8 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
     # SWAS-404: the candidate step (the sixth prefix) has one `run: |` block of exactly six lines, each equal to its pinned text after the 10-space indent
     inb && cur == 6 && /^        run:/ { runs6++; if ($0 ~ /^        run: \|$/) { inrun6 = 1; cidx = 0 } else if (!cbad) { cbad = 1; cdiag = "run: is not a literal block" } }
     # the default leg is a run line with no --measure; the candidate leg is a run line that names --measure (counted apart, each exactly once)
-    inb && /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && !/ --measure / { runs++; if ($0 ~ /--report-only/) ro++ }
-    inb && /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && / --measure / { cruns++ }
+    inb && /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && !/ --measure / && !/ --leg-verdict / { runs++; if ($0 ~ /--report-only/) ro++ }
+    inb && /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && / --measure C36/ { cruns++ }
     inb && /^ +run: sh conformance\/boundary-redteam\.sh --selftest([ \t]+#.*)?$/ { st++ }
     inb && /continue-on-error/ { coe++ }
     inb && /^ +sh conformance\/boundary-redteam\.sh --report-only \|\| rc=\$\?[ \t]*$/ { rcgood++ }
@@ -733,7 +739,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
     echo "FAIL: $1 the workflow must carry exactly one 'boundary-redteam' job (the runtime red-team cells); found $2" >&2; return 1
   fi
   if [ "$3" != 1 ]; then
-    echo "FAIL: $1 the boundary-redteam job must carry a timeout-minutes bound; found $3" >&2; return 1
+    echo "FAIL: $1 the boundary-redteam job must carry a timeout-minutes bound of 45 (the owner's ruling on the SWAS-560 design, Q1: the self-test runs every mutant, targeted to the segments it declares, about 8-16 min [E]; the interim 180 of 2026-10-30 is retired); found $3 lines at 45" >&2; return 1
   fi
   if [ "$4" != 1 ]; then
     echo "FAIL: $1 the boundary-redteam job must carry guard-battery's lane condition (docs_only and push_graded); found $4" >&2; return 1
@@ -751,7 +757,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
     echo "FAIL: $1 the boundary-redteam job must print an explicit 'SKIP: boundary red-team ... did not run' line when no boundary file changed, never a silent green; found ${11}" >&2; return 1
   fi
   if [ "${12}" != 0 ]; then
-    echo "FAIL: $1 the boundary-redteam job's six gated steps (Install Node 24, the sandbox prerequisites, the userns allowance, the live cells, the full self-test, the SWAS-404 candidate leg) must be gated on steps.gate.outputs.live == 'yes': each one's next key line must be exactly '        if: steps.gate.outputs.live == 'yes'' (no trailing comment, not commented out), or for the candidate leg exactly '        if: \${{ !cancelled() && steps.gate.outputs.live == 'yes' }}', or the diff gate gates nothing; first problem: $_br_pd" >&2; return 1
+    echo "FAIL: $1 the boundary-redteam job's seven gated steps (Install Node 24, the sandbox prerequisites, the userns allowance, the live cells, the full self-test, the SWAS-404 candidate leg, the SWAS-471 temp-root git cells) must be gated on steps.gate.outputs.live == 'yes': each one's next key line must be exactly '        if: steps.gate.outputs.live == 'yes'' (no trailing comment, not commented out), or for the full self-test (SWAS-460, so a red live-cells step does not skip the mutant grade), the candidate leg and the temp-root git cells exactly '        if: \${{ !cancelled() && steps.gate.outputs.live == 'yes' }}', or the diff gate gates nothing; first problem: $_br_pd" >&2; return 1
   fi
   if [ -n "$_br_xd" ]; then
     echo "FAIL: $1 the boundary-redteam job must not change how its steps run or what they inherit (no shell:, env:, working-directory: or continue-on-error: key on a pinned step, no defaults: in the job or the workflow, no GITHUB_ENV or BASH_ENV in the job); first problem: $_br_xd" >&2; return 1
@@ -792,6 +798,363 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
   fi
   if [ "${27}" != 1 ]; then
     echo "FAIL: $1 the required 'conformance' aggregator does not name boundary-redteam in its needs: list, so a failing red-team job would not block the merge" >&2; return 1
+  fi
+  check_c42_step "$1" || return 1
+  return 0
+}
+
+# check_c42_step <workflow-file> (SWAS-471, slice 471-0; called by check_boundary_redteam_step): the temp-root git MEASUREMENT step of the boundary-redteam job.
+# Its name prefix and its `if:` line are pinned by check_boundary_redteam_step (the seventh prefix); this pins the rest: exactly one such step, exactly two run lines naming
+# `--measure C42...` (the graded loop and the SWAS-497 report-only literal control), and a `run: |` body that is the 16 lines below, byte for byte (the BR17 / H2 method). The step is a MEASUREMENT: an OPEN cell is its finding, so a leg's
+# exit 1 is not a failure, but the leg's output is graded by the harness's own `--leg-verdict` (an exit above 1, any INCONCLUSIVE C42 line, an INCONCLUSIVE C73k line, or a wrong
+# count of C42 plus C73 lines fails: 21 since SWAS-473 appended the fourteen report-only C73 cells to the same --measure list; the other C73 cells are warnings on Linux), so
+# one OPEN cell cannot hide a VOID one; a `|| true`, an early exit or a removed grade would turn every red into a green, so no other line is accepted. Exactly three
+# `--measure` run lines may exist in the job (this step's two and the SWAS-404 candidate's), so an extra, unpinned measurement line reds too.
+check_c42_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, doubled, or its body or run line deviates
+  _c42_exp=$(mktemp)
+  cat > "$_c42_exp" <<'C42BODY'
+          mkdir -p "$RUNNER_TEMP/c42"
+          jq '.sandbox.filesystem.denyWrite += ["/private/tmp/**/.git", "/private/tmp/**/*.git", "/tmp/**/.git", "/tmp/**/*.git"]' .claude/settings.json > "$RUNNER_TEMP/c42/candidate.json"
+          jq '.sandbox.filesystem.denyWrite += ["/private/tmp/**/.git/**", "/private/tmp/**/*.git/**", "/tmp/**/.git/**", "/tmp/**/*.git/**"]' "$RUNNER_TEMP/c42/candidate.json" > "$RUNNER_TEMP/c42/candidate-desc.json"
+          jq '.sandbox.filesystem.denyWrite += ["/tmp/human-repo/.git/hooks", "/tmp/human-repo/.git/hooks/pre-commit", "/tmp/human-repo/.git/config"]' .claude/settings.json > "$RUNNER_TEMP/c42/candidate-literal.json"
+          sha256sum .claude/settings.json "$RUNNER_TEMP/c42/candidate.json" "$RUNNER_TEMP/c42/candidate-desc.json"
+          bad=0
+          for s in .claude/settings.json "$RUNNER_TEMP/c42/candidate.json" "$RUNNER_TEMP/c42/candidate-desc.json"; do
+            echo "C42 leg: $s"
+            rc=0
+            sh conformance/boundary-redteam.sh --settings "$s" --measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u > "$RUNNER_TEMP/c42/leg.out" 2>&1 || rc=$?
+            cat "$RUNNER_TEMP/c42/leg.out"
+            sh conformance/boundary-redteam.sh --leg-verdict "$rc" "$RUNNER_TEMP/c42/leg.out" 21 || bad=1
+          done
+          echo "SWAS-497 literal-path positive control (report-only, never gates)"
+          sh conformance/boundary-redteam.sh --settings "$RUNNER_TEMP/c42/candidate-literal.json" --measure C42 || :
+          exit "$bad"
+C42BODY
+  _c42_all=$(awk '
+    NR == FNR { want[++nwant] = $0; next }
+    /^  boundary-redteam:[ \t]*$/ { inb = 1; next }
+    inb && /^  [a-z]/ { inb = 0 }
+    !inb { next }
+    inb && inrun && !/^[ \t]*$/ {
+      match($0, /^ */)
+      if (RLENGTH <= 8) inrun = 0
+      else { bi++; if ($0 != want[bi] && bdiag == "") { bdiag = "line " bi " reads [" $0 "]"; sub(/\[ +/, "[", bdiag) } }
+    }
+    /^      - / { ins = (index($0, "      - name: Boundary red-team — temp-root git cells") == 1); if (ins) steps++ }
+    ins && /^        run:/ { nruns++; if ($0 ~ /^        run: \|[ \t]*$/) inrun = 1; else if (bdiag == "") bdiag = "run: is not a literal block" }
+    /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && / --measure C42/ { runs++ }
+    /^ +sh conformance\/boundary-redteam\.sh/ && !/--selftest/ && / --measure / { allm++ }
+    END {
+      bbad = (nruns != 1 || bi != nwant || bdiag != "") ? 1 : 0
+      if (bbad && bdiag == "") bdiag = "the body holds " bi + 0 " line(s) under " nruns + 0 " literal run block(s), want " nwant
+      print steps + 0, runs + 0, bbad, allm + 0
+      print bdiag
+    }' "$_c42_exp" "$1")
+  rm -f "$_c42_exp"
+  _c42_c=$(printf '%s\n' "$_c42_all" | sed -n 1p); _c42_d=$(printf '%s\n' "$_c42_all" | sed -n 2p)
+  set -- "$1" $_c42_c
+  # $2 temp-root steps $3 run lines naming --measure C42 $4 body deviation (want 0) $5 ALL --measure run lines in the job (want 3: the SWAS-404 candidate and this step's two)
+  if [ "$2" != 1 ]; then
+    echo "FAIL: $1 the boundary-redteam job must carry exactly one 'Boundary red-team — temp-root git cells' step (SWAS-471); found $2" >&2; return 1
+  fi
+  if [ "$3" != 2 ]; then
+    echo "FAIL: $1 the boundary-redteam job must run the temp-root leg (the graded loop line and the SWAS-497 report-only line, 'sh conformance/boundary-redteam.sh ... --measure C42...', SWAS-471) exactly twice; found $3" >&2; return 1
+  fi
+  if [ "$4" != 0 ]; then
+    echo "FAIL: $1 the temp-root step's body must be exactly the 16 pinned lines of SWAS-471 (three jq candidate builds, the sha256sum line, a loop over the three settings that keeps each leg's output and grades it with the harness's --leg-verdict, and exit \"\$bad\"); any other line (a comment, a '|| true', an early exit 0, a removed grade) is refused, because an OPEN cell is the finding but a VOID, an INCONCLUSIVE or an unstarted runtime must red the step; first deviation: $_c42_d" >&2; return 1
+  fi
+  if [ "$5" != 3 ]; then
+    echo "FAIL: $1 the boundary-redteam job must carry exactly three '--measure' run lines (the SWAS-404 candidate leg and the SWAS-471 temp-root step's two); found $5: an extra measurement line is unpinned and its exit code would be unread" >&2; return 1
+  fi
+  return 0
+}
+
+# check_boundary_macos_leg <ci.yml> <boundary-redteam-macos.yml> (SWAS-552, MACOS-BOUNDARY-LEG, rev 1.3; own-tree, kit trees only): the ON-DEMAND macOS reading of the boundary cells lives in its own workflow
+# file, so a PR or push never runs it. Pins on that file (whole-line comments dropped): the trigger is exactly workflow_dispatch with the profile choice input; the literal runs-on from
+# KIT_MACOS_RUNNER (never -latest, never the KIT_CI_RUNNER expression); timeout-minutes 20; job-level continue-on-error; contents: read at both levels and no other scope; persist-credentials: false
+# inside the checkout step's own with:; every action pinned by a 40-hex SHA, checkout and setup-node the SAME pins as the Linux boundary-redteam job (flow-style and quoted keys are refused outside
+# run: bodies, and the pin scan counts every spelling of uses:); no shell:/working-directory:/defaults: key, no GITHUB_ENV or BASH_ENV, GITHUB_PATH only as the one rg line, and the ONE env: key
+# is the profile resolver's PROFILE (pinned exactly: the input reaches the shell only there, and only as the subject of a case); every step pinned as an exact line sequence (the resolver's arms by
+# shape: a literal cell list per profile, an unknown profile exits 1); the report-only extras end `|| :` on the macOS-only allowlist and that step's run body is an exact line sequence (the only line a slice may add is a candidate line matching the positive allowlist: ten spaces, 'sh conformance/boundary-redteam.sh', plain args with at least one '--<id>-candidate' and no '--measure' ('--settings' only to a "$RUNNER_TEMP/....json"), optionally ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' with a name that is not leg-* or c42r.out in any case, then ' || :'). PARITY: the `full` arm's cell set equals the Linux temp-root
+# step's graded set (the allowlist id C42R excluded) and every other arm is a subset of `full`. HONEST CEILING: line-based, not a YAML parser; it proves the TEXT, not what GitHub resolves, and a green
+# here says nothing about what a macOS run reads.
+check_boundary_macos_leg() {  # <ci.yml> <macos workflow> -> 0 ok; 1 the file is absent, or a pin or a parity rule is broken
+  _bm_ci="$1"; _bm_f="$2"
+  if [ ! -f "$_bm_f" ]; then
+    echo "FAIL: $_bm_f is absent: a kit tree owes the on-demand macOS boundary workflow (SWAS-552)" >&2; return 1
+  fi
+  _bm_m=$(awk '!/^[ \t]*#/' "$_bm_f")   # whole-line comments dropped
+  _bm_l=$(extract_job_block "$_bm_ci" boundary-redteam | awk '!/^[ \t]*#/')
+  _bm_cnt() { printf '%s\n' "$1" | awk -v re="$2" '$0 ~ re { n++ } END { print n + 0 }'; }   # <text> <awk regex, no backslashes> -> the number of matching lines
+  _bm_eq() { printf '%s\n' "$1" | awk -v s="$2" '$0 == s { n++ } END { print n + 0 }'; }   # <text> <exact line> -> the number of equal lines
+  _bm_step() { printf '%s\n' "$_bm_m" | awk -v pfx="$1" 'index($0, "      - ") == 1 { cur = (index($0, pfx) == 1) } cur { print }'; }   # <step-start prefix> -> that step's lines
+  _bm_chk() {  # <label> <actual text>, the expected lines on stdin -> 0 equal; 1 (named) otherwise
+    _bk_e=$(cat)
+    if [ "$2" != "$_bk_e" ]; then
+      echo "FAIL: $_bm_f the $1 must be exactly the pinned lines (the BR17 method: any other line, a comment aside, is refused)" >&2; return 1
+    fi
+  }
+  # 1. what the file may SPELL: no flow-style or quoted key outside run: bodies, every spelling of uses: pinned, nothing that changes how steps run or what they inherit
+  _bm_sc=$(printf '%s\n' "$_bm_m" | awk -v okp='            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"' '
+    { match($0, /^ */); li = RLENGTH }
+    /GITHUB_ENV|BASH_ENV/ { be++ }
+    /GITHUB_PATH/ && $0 != okp { gp++ }
+    inrun { if ($0 ~ /^[ \t]*$/ || li > ri) next; inrun = 0 }
+    /^ +(- )?run:[ \t]*[|>]/ { inrun = 1; ri = li; next }
+    /^ *(- )?["\047][^"\047]*["\047][ \t]*:/ { q++ }
+    /:[ \t]*[{[]/ || /^ *(- )?[{[]/ { fl++ }
+    /(^|[^A-Za-z_-])["\047]?uses["\047]?[ \t]*:/ { ua++ }
+    /^ +(- )?uses: actions\/[a-z-]+@[0-9a-f]+/ { h = $0; sub(/^[^@]*@/, "", h); sub(/[ \t].*$/, "", h); if (length(h) == 40 && h ~ /^[0-9a-f]+$/) uo++ }
+    /^ *(- )?["\047]?(shell|env|working-directory|defaults)["\047]?[ \t]*:/ { ih++ }
+    END { print q + 0, fl + 0, ua + 0, uo + 0, ih + 0, be + 0, gp + 0 }')  # BRMA
+  set -- $_bm_sc
+  # fail closed: an awk that died (the one-true-awk on macOS rejects some regex literals) leaves the capture empty, and an unset $1 must not abort or pass the locks below
+  if [ "$#" != 7 ]; then  # BRMS
+    echo "FAIL: $_bm_f the macOS workflow's spelling scan could not be read (the key-count awk returned $# fields, want 7)" >&2; return 1
+  fi
+  if [ "$1" != 0 ] || [ "$2" != 0 ]; then
+    echo "FAIL: $_bm_f the macOS workflow carries a flow-style or quoted key outside a run: body (the line-based locks cannot see it) (quoted=$1, flow=$2)" >&2; return 1
+  fi
+  if [ "$3" -lt 3 ] || [ "$3" != "$4" ]; then
+    echo "FAIL: $_bm_f every uses: of the macOS workflow, in any spelling, must be 'actions/<name>@<40-hex SHA>' (uses keys=$3, plain pinned=$4)" >&2; return 1
+  fi
+  if [ "$5" != 1 ] || [ "$6" != 0 ] || [ "$7" != 0 ]; then
+    echo "FAIL: $_bm_f the macOS workflow must not change how its steps run or what they inherit (no shell:, working-directory: or defaults: key, no GITHUB_ENV or BASH_ENV, GITHUB_PATH only as the one exact rg line, and exactly one env: key, the profile resolver's; env-like keys=$5, ENV writes=$6, other PATH writes=$7)" >&2; return 1
+  fi
+  # read on the RAW file: a comment line inside a run: body is still shell text to GitHub (it expands the expression, and a value with a newline escapes the comment), so comments are NOT dropped here;
+  # whole-line comments outside run bodies (the header and TODO blocks) are skipped
+  _bm_rw=$(awk '{ match($0, /^ */); li = RLENGTH }
+    inrun { if ($0 ~ /^[ \t]*$/ || li > ri) { if ($0 ~ /[$][{][{]/) rb++; if ($0 ~ /inputs[.]/) ic++; next } inrun = 0 }
+    /^[ \t]*#/ { next }
+    /^ +(- )?run:[ \t]*[|>]/ { inrun = 1; ri = li }
+    /inputs[.]/ { ic++ }
+    END { print rb + 0, ic + 0 }' "$_bm_f")
+  if [ "${_bm_rw%% *}" != 0 ]; then
+    echo "FAIL: $_bm_f a run: body of the macOS workflow carries a GitHub expression (a dollar-brace-brace form on ${_bm_rw%% *} line(s), a comment line inside the body included): no expression may be expanded into shell text, so the profile input and every other context value reach a run line only through an env: key (script injection)" >&2; return 1
+  fi
+  if [ "${_bm_rw##* }" != 1 ]; then
+    echo "FAIL: $_bm_f the profile input (inputs.profile) must appear exactly once, in the resolver's PROFILE env: it must never reach a run line or any other key directly" >&2; return 1
+  fi
+  # 2. the trigger and the job's settings
+  _bm_on=$(printf '%s\n' "$_bm_m" | awk '/^on:[ \t]*$/ { s = 1; print; next } s && /^[^ \t]/ { exit } s { print }')
+  _bm_chk "on: block (dispatch only: no pull_request, push, schedule or workflow_run trigger, one choice input profile)" "$_bm_on" <<'ONBODY' || return 1
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Which slice profile to run (full is the union of every landed slice)'
+        required: true
+        type: choice
+        default: full
+        options:
+          - '534'
+          - '533'
+          - '544'
+          - '551'
+          - '543'
+          - full
+ONBODY
+  if [ "$(_bm_cnt "$_bm_m" '^    runs-on:')" != 1 ] || [ "$(_bm_eq "$_bm_m" "    runs-on: $KIT_MACOS_RUNNER")" != 1 ]; then
+    echo "FAIL: $_bm_f the macOS job must run on the LITERAL 'runs-on: $KIT_MACOS_RUNNER' (exactly one runs-on line; never -latest, never the KIT_CI_RUNNER expression: a variable flip would move the reading to a Linux box)" >&2; return 1
+  fi
+  if [ "$(_bm_eq "$_bm_m" '    timeout-minutes: 20')" != 1 ] || [ "$(_bm_cnt "$_bm_m" 'timeout-minutes')" != 1 ]; then
+    echo "FAIL: $_bm_f the macOS job must carry exactly one 'timeout-minutes: 20'" >&2; return 1
+  fi
+  if [ "$(_bm_eq "$_bm_m" '    continue-on-error: true')" != 1 ] || [ "$(_bm_cnt "$_bm_m" 'continue-on-error')" != 1 ]; then
+    echo "FAIL: $_bm_f the macOS job must carry job-level 'continue-on-error: true' exactly once and no other continue-on-error (it is report-only; a step-level one would mask a grade)" >&2; return 1
+  fi
+  _bm_pm=$(printf '%s\n' "$_bm_m" | awk '/^ +[a-z-]+:[ ]+(read|write|none)[ ]*$/ { print }')
+  _bm_px=$(printf '%s\n%s' '  contents: read' '      contents: read')
+  if [ "$_bm_pm" != "$_bm_px" ] || [ "$(_bm_cnt "$_bm_m" 'permissions:')" != 2 ]; then
+    echo "FAIL: $_bm_f the macOS workflow must carry 'permissions:' with exactly 'contents: read' at the workflow level and at the job level (no token scope beyond it)" >&2; return 1
+  fi
+  _bm_jh=$(printf '%s\n' "$_bm_m" | awk '/^jobs:[ \t]*$/ { s = 1 } s { print } s && /^    steps:[ \t]*$/ { exit }')
+  _bm_jx=$(printf '%s\n' 'jobs:' '  boundary-redteam-macos:' "    runs-on: $KIT_MACOS_RUNNER" '    timeout-minutes: 20' '    continue-on-error: true' '    permissions:' '      contents: read' '    steps:')
+  if [ "$_bm_jh" != "$_bm_jx" ]; then
+    echo "FAIL: $_bm_f the macOS workflow must carry exactly one job 'boundary-redteam-macos' whose header is the pinned runner, timeout, continue-on-error and permissions lines, then steps" >&2; return 1
+  fi
+  _bm_ns=$(printf '%s\n' "$_bm_m" | awk 'index($0, "      - ") == 1 { n++ } END { print n + 0 }')
+  if [ "$_bm_ns" != 7 ]; then
+    echo "FAIL: $_bm_f the macOS workflow must carry exactly seven steps (checkout, setup-node, tools, profile resolver, graded legs, extras, upload); found $_bm_ns" >&2; return 1
+  fi
+  # 3. the steps: the checkout (persist-credentials tied to its own with:), the pins equal to the Linux job's, then each step as an exact line sequence
+  _bm_un=0
+  for _bm_u in $(printf '%s\n' "$_bm_m" | awk '/^ +(- )?uses: actions\/(checkout|setup-node)@/ { l = $0; sub(/[ \t]+#.*$/, "", l); sub(/^ +(- )?uses:[ \t]*/, "", l); print l }'); do
+    _bm_un=$((_bm_un + 1))
+    if ! printf '%s\n' "$_bm_l" | awk -v u="$_bm_u" 'index($0, "uses: " u) { ok = 1 } END { exit !ok }'; then
+      echo "FAIL: $_bm_f the macOS workflow uses '$_bm_u', which is not the same pinned SHA as the Linux boundary-redteam job's" >&2; return 1
+    fi
+  done
+  # fail closed: a loop that never ran (the awk died, or neither action is used) must not read as "every pin matches"
+  if [ "$_bm_un" != 2 ]; then  # BRMU
+    echo "FAIL: $_bm_f the checkout/setup-node scan matched $_bm_un uses: line(s), want exactly 2 (the same-SHA-as-the-Linux-job check ran over nothing, or over a partial set)" >&2; return 1
+  fi
+  _bm_s1=$(_bm_step '      - uses: actions/checkout@')
+  _bm_chk "checkout step (persist-credentials: false inside the step's own with:)" "$_bm_s1" <<'S1BODY' || return 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+S1BODY
+  _bm_chk "setup-node step" "$(_bm_step '      - name: Install Node 24')" <<'S2BODY' || return 1
+      - name: Install Node 24 (the pinned sandbox runtime is fetched with npx)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24'
+S2BODY
+  _bm_chk "tools step (fail closed, the ripgrep archive checked against its hardcoded sha256)" "$(_bm_step '      - name: Tools')" <<'S3BODY' || return 1
+      - name: Tools — rg, jq and shasum verified (ripgrep from the image, else the pinned release archive with its sha256 checked)
+        run: |
+          command -v jq >/dev/null || { echo "::error::jq missing"; exit 1; }
+          command -v shasum >/dev/null || { echo "::error::shasum missing"; exit 1; }
+          if ! command -v rg >/dev/null 2>&1; then
+            rgv=15.2.0
+            rga="ripgrep-$rgv-aarch64-apple-darwin.tar.gz"
+            mkdir -p "$RUNNER_TEMP/rg" "$RUNNER_TEMP/bin"
+            curl -fsSL -o "$RUNNER_TEMP/rg/$rga" "https://github.com/BurntSushi/ripgrep/releases/download/$rgv/$rga"
+            echo "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4  $rga" > "$RUNNER_TEMP/rg/$rga.sha256"
+            ( cd "$RUNNER_TEMP/rg" && shasum -a 256 -c "$rga.sha256" )
+            tar -xzf "$RUNNER_TEMP/rg/$rga" -C "$RUNNER_TEMP/rg"
+            cp "$RUNNER_TEMP/rg/ripgrep-$rgv-aarch64-apple-darwin/rg" "$RUNNER_TEMP/bin/rg"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            PATH="$RUNNER_TEMP/bin:$PATH"
+          fi
+          command -v rg >/dev/null || { echo "::error::rg missing"; exit 1; }
+          rg --version | head -n 1
+          jq --version
+          echo "shasum -a 256 available"
+          uname -srm
+S3BODY
+  # the resolver: its arms are compared by shape (each is a literal cell list), everything else exactly; the one env: key is pinned here
+  _bm_s4=$(_bm_step '      - name: Resolve the profile')
+  _bm_s4n=$(printf '%s\n' "$_bm_s4" | awk '/^            (534|533|544|551|543|full)\) cells=[A-Za-z0-9,]+ ;;$/ { split($0, a, ")"); id = a[1]; sub(/^ +/, "", id); print "ARM " id; next } { print }')
+  _bm_chk "profile resolver step (the one env: key PROFILE reaching the shell only as the case subject; one literal arm per profile; an unknown profile exits 1)" "$_bm_s4n" <<'S4BODY' || return 1
+      - name: Resolve the profile (a literal cell list per profile; an unknown profile fails)
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          case "$PROFILE" in
+ARM 534
+ARM 533
+ARM 544
+ARM 551
+ARM 543
+ARM full
+            *) echo "::error::unknown profile"; exit 1 ;;
+          esac
+          echo "$cells" > "$RUNNER_TEMP/cells.txt"
+S4BODY
+  _bm_chk "graded legs step (the exact body: a stray exit, a no-op leg or an ungraded verdict reds)" "$(_bm_step '      - name: macOS boundary red-team — graded')" <<'S5BODY' || return 1
+      - name: macOS boundary red-team — graded temp-root git legs (SWAS-552; mirrors the Linux temp-root step; graded by --leg-verdict)
+        if: ${{ !cancelled() }}
+        run: |
+          cells=$(cat "$RUNNER_TEMP/cells.txt")
+          ncells=$(printf '%s' "$cells" | awk -F, '{ print NF }')
+          mkdir -p "$RUNNER_TEMP/c42" "$RUNNER_TEMP/macos-out"
+          jq '.sandbox.filesystem.denyWrite += ["/private/tmp/**/.git", "/private/tmp/**/*.git", "/tmp/**/.git", "/tmp/**/*.git"]' .claude/settings.json > "$RUNNER_TEMP/c42/candidate.json"
+          jq '.sandbox.filesystem.denyWrite += ["/private/tmp/**/.git/**", "/private/tmp/**/*.git/**", "/tmp/**/.git/**", "/tmp/**/*.git/**"]' "$RUNNER_TEMP/c42/candidate.json" > "$RUNNER_TEMP/c42/candidate-desc.json"
+          jq '.sandbox.filesystem.denyWrite += ["/tmp/human-repo/.git/hooks", "/tmp/human-repo/.git/hooks/pre-commit", "/tmp/human-repo/.git/config"]' .claude/settings.json > "$RUNNER_TEMP/c42/candidate-literal.json"
+          shasum -a 256 .claude/settings.json "$RUNNER_TEMP/c42/candidate.json" "$RUNNER_TEMP/c42/candidate-desc.json"
+          { echo "### macOS 15 (Darwin 24, arm64) on a GitHub-hosted runner, not the owner's machine: boundary legs"; uname -srm; } >> "$GITHUB_STEP_SUMMARY"
+          bad=0
+          n=0
+          for s in .claude/settings.json "$RUNNER_TEMP/c42/candidate.json" "$RUNNER_TEMP/c42/candidate-desc.json"; do
+            n=$((n + 1))
+            echo "leg $n: $s"
+            rc=0
+            sh conformance/boundary-redteam.sh --settings "$s" --measure "$cells" > "$RUNNER_TEMP/c42/leg.out" 2>&1 || rc=$?
+            cat "$RUNNER_TEMP/c42/leg.out"
+            cp "$RUNNER_TEMP/c42/leg.out" "$RUNNER_TEMP/macos-out/leg-$n.out"
+            sh conformance/boundary-redteam.sh --leg-verdict "$rc" "$RUNNER_TEMP/c42/leg.out" "$ncells" > "$RUNNER_TEMP/c42/verdict.out" 2>&1 || bad=1
+            cat "$RUNNER_TEMP/c42/verdict.out"
+            { echo "- leg $n ($s): harness exit $rc"; sed 's/^/    /' "$RUNNER_TEMP/c42/verdict.out"; } >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$bad"
+S5BODY
+  # the extras: the step's name and if: are exact; every harness line in the step ends '|| :' and is on the macOS-only allowlist (C42 literal control, C42R alone, a --*-candidate line), AND the
+  # step's whole run body is pinned below as an exact line sequence: the 'run: |' line and its seven fixed lines (mkdir, the C42R echo header, the C42R harness line, the cat, the summary line, the
+  # literal-control echo header, the literal-control harness line) verbatim, plus only candidate lines (dropped before the compare ONLY when the whole line matches the positive allowlist stated at the filter below:
+  # a '--<id>-candidate' harness line with plain args, at most one fresh macos-out redirect, ending '|| :'). Any other line (bash or sh ./ spellings, curl, a second control, a chained command, a process substitution,
+  # a heredoc, a foreign redirect, --measure) is refused. The compare is the whole step text, not a scan for known-bad spellings.
+  _bm_s6=$(_bm_step '      - name: macOS boundary red-team — report-only extras')
+  _bm_chk "report-only extras step's name and if: lines" "$(printf '%s\n' "$_bm_s6" | sed -n 1,2p)" <<'S6HEAD' || return 1
+      - name: macOS boundary red-team — report-only extras (C42R alone, the SWAS-497 literal control; never gates)
+        if: ${{ !cancelled() }}
+S6HEAD
+  # the bad-line scan ends with a sentinel line, so an awk that died (empty capture) cannot read as "no bad line"
+  _bm_xb=$(printf '%s\n' "$_bm_s6" | awk '/^ +sh conformance\/boundary-redteam[.]sh/ { ok = ($0 ~ /[ ][|][|] :[ ]*$/) && ($0 ~ /--measure C42R? / || $0 ~ /-candidate/); if (!ok) print } END { print "ok" }')  # BRMD
+  _bm_xn=$(printf '%s\n' "$_bm_s6" | awk '/^ +sh conformance\/boundary-redteam[.]sh/ { n++ } END { print n + 0 }')  # BRMC
+  if ! [ "$_bm_xn" -ge 0 ] 2>/dev/null; then  # BRMN
+    echo "FAIL: $_bm_f the report-only extras count could not be read (the counting awk returned [$_bm_xn], want a non-negative integer)" >&2; return 1
+  fi
+  if [ "$_bm_xb" != ok ] || [ "$_bm_xn" -lt 2 ]; then  # BRMX
+    echo "FAIL: $_bm_f every report-only extra of the macOS workflow must end '|| :' and be on the macOS-only allowlist (--measure C42, --measure C42R, or a --*-candidate line), and the C42R line and the literal control must be present; first problem: $(printf '%s\n' "$_bm_xb" | sed '$d' | sed -n 1p | sed 's/^ *//') (extras=$_bm_xn)" >&2; return 1
+  fi
+  # the run body, exact: candidate lines (the one shape a slice may add) are dropped, then the remaining lines must equal the run: line and the seven fixed lines, in order. An awk that died leaves the text empty, which is not equal.
+  # A candidate line is a POSITIVE allowlist, anchored on the whole line (a line that is not exactly this shape stays in the body and BRMR refuses it): ten spaces, 'sh conformance/boundary-redteam.sh', then single-space-separated
+  # args, each '--word' (a flag; '--measure' is refused, '--settings' takes only a "$RUNNER_TEMP/....json" value), a bare token [A-Za-z0-9_.,/-]+, or a quoted "$RUNNER_TEMP/..." path, with at least one '--<id>-candidate' flag; then optionally
+  # ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' (case-insensitively NOT leg-*, which the graded step writes, and NOT c42r.out, which the C42R line writes); then ' || :' and the end of the line.
+  _bm_s6f=$(printf '%s\n' "$_bm_s6" | sed -n '3,$p' | awk '
+    { keep = 1 }
+    /^          sh conformance\/boundary-redteam[.]sh / && /[ ][|][|] :$/ {
+      b = $0; sub(/ [|][|] :$/, "", b); ok = 1; nc = 0; prev = ""
+      pre = " > \"$RUNNER_TEMP/macos-out/"
+      pos = index(b, pre)
+      if (pos > 0) {
+        tl = substr(b, pos + length(pre))
+        if (tl !~ /^[A-Za-z0-9_.-]+[.]out" 2>&1$/) ok = 0
+        else {
+          lo = tolower(tl); sub(/" 2>&1$/, "", lo)
+          if (lo ~ /^leg-/ || lo == "c42r.out") ok = 0  # BRMG
+        }
+        b = substr(b, 1, pos - 1)
+      }
+      b = substr(b, length("          sh conformance/boundary-redteam.sh") + 1)
+      if (substr(b, 1, 1) != " ") ok = 0
+      rest = substr(b, 2)
+      while (ok && rest != "") {
+        i = index(rest, " ")
+        if (i == 0) { tok = rest; rest = "" } else { tok = substr(rest, 1, i - 1); rest = substr(rest, i + 1); if (rest == "") ok = 0 }
+        if (tok == "") { ok = 0 }
+        else if (prev == "--settings") { if (tok !~ /^"[$]RUNNER_TEMP\/[A-Za-z0-9_.\/-]+[.]json"$/) ok = 0; prev = "" }  # BRMT
+        else if (tok ~ /^--[A-Za-z0-9]+(-[A-Za-z0-9]+)*-candidate$/) { nc++ }
+        else if (tok == "--measure") { ok = 0 }  # BRMM
+        else if (tok == "--settings") { prev = tok }
+        else if (tok ~ /^--[A-Za-z0-9-]+$/ || tok ~ /^[A-Za-z0-9_.,\/-]+$/ || tok ~ /^"[$]RUNNER_TEMP\/[A-Za-z0-9_.\/-]+"$/) { prev = "" }
+        else { ok = 0 }  # BRMT
+      }
+      if (prev == "--settings" || nc < 1) ok = 0
+      if (ok) keep = 0
+    }
+    keep { print }')
+  _bm_chk "report-only extras step's run body (its seven fixed lines; only a '--<id>-candidate ... || :' harness line may be added; no bash, sh ./, curl or other line)" "$_bm_s6f" <<'S6BODY' || return 1  # BRMR
+        run: |
+          mkdir -p "$RUNNER_TEMP/c42" "$RUNNER_TEMP/macos-out"
+          echo "C42R real-path cell, alone (report-only)"
+          sh conformance/boundary-redteam.sh --settings .claude/settings.json --measure C42R > "$RUNNER_TEMP/macos-out/c42r.out" 2>&1 || :
+          cat "$RUNNER_TEMP/macos-out/c42r.out"
+          { echo "- C42R real-path cell (report-only):"; sed 's/^/    /' "$RUNNER_TEMP/macos-out/c42r.out"; } >> "$GITHUB_STEP_SUMMARY"
+          echo "SWAS-497 literal-path positive control (report-only, never gates)"
+          sh conformance/boundary-redteam.sh --settings "$RUNNER_TEMP/c42/candidate-literal.json" --measure C42 || :
+S6BODY
+  _bm_chk "artifact upload step (pinned by SHA, retention-days: 7)" "$(_bm_step '      - name: Upload the macOS readings')" <<'S7BODY' || return 1
+      - name: Upload the macOS readings (7 days)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: boundary-redteam-macos-readings
+          path: ${{ runner.temp }}/macos-out
+          retention-days: 7
+          if-no-files-found: warn
+S7BODY
+  # 4. PARITY: the full arm's cell set equals the Linux temp-root step's graded set (C42R excluded); every other arm is a subset of full
+  _bm_gl=$(printf '%s\n' "$_bm_l" | awk '/--measure / && /leg[.]out" 2>&1/ { l = $0; sub(/^.*--measure /, "", l); sub(/[ \t].*$/, "", l); n = split(l, a, ","); for (i = 1; i <= n; i++) if (a[i] != "C42R") print a[i] }' | sort)
+  _bm_gf=$(printf '%s\n' "$_bm_s4" | awk '/^            full\) cells=/ { l = $0; sub(/^.*cells=/, "", l); sub(/ ;;.*$/, "", l); n = split(l, a, ","); for (i = 1; i <= n; i++) if (a[i] != "C42R") print a[i] }' | sort)
+  if [ -z "$_bm_gf" ] || [ "$_bm_gf" != "$_bm_gl" ]; then
+    echo "FAIL: $_bm_f the full profile's cell set differs from the Linux temp-root step's graded set (parity; full [$(printf '%s' "$_bm_gf" | tr '\n' ' ')] vs Linux [$(printf '%s' "$_bm_gl" | tr '\n' ' ')]): a slice that extends the Linux list extends the full arm in the same edit" >&2; return 1
+  fi
+  _bm_sub=$(printf '%s\n' "$_bm_s4" | awk -v full="$(printf '%s' "$_bm_gf" | tr '\n' ' ')" 'BEGIN { n = split(full, f, " "); for (i = 1; i <= n; i++) ok[f[i]] = 1 } /^            [0-9a-z]+\) cells=/ { l = $0; sub(/^.*cells=/, "", l); sub(/ ;;.*$/, "", l); m = split(l, a, ","); for (i = 1; i <= m; i++) if (!(a[i] in ok)) print a[i] } END { print "." }')  # BRME
+  if [ "$_bm_sub" != . ]; then  # BRMB
+    echo "FAIL: $_bm_f a profile arm carries a cell that the full profile does not (subset rule; an empty subset scan reads as a failure, not a pass): $(printf '%s\n' "$_bm_sub" | sed '$d' | tr '\n' ' ')" >&2; return 1
   fi
   return 0
 }
@@ -905,6 +1268,62 @@ H2BODY
   return 0
 }
 
+# check_core_face_graders <root> (SWAS-460, CG): each CORE_FACE_TARGETS entry needs a diff-gated CI job named for it that runs its full --selftest; fail-closed, kit trees only.
+check_core_face_graders() {  # <root> -> 0 ok; 1 FAIL
+  _cg_hs="$1/conformance/selftest-hermetic.sh"; _cg_wf="$1/.github/workflows/ci.yml"
+  if [ ! -f "$_cg_hs" ]; then
+    echo "FAIL: core-face graders: $_cg_hs is absent, so CORE_FACE_TARGETS cannot be read (fail-closed on a kit tree)" >&2; return 1
+  fi
+  # outside selftest(), the token may sit on exactly three non-comment lines (any other mention, export/eval/indented append, is a bypass): the literal assignment,
+  # its readonly line DIRECTLY after it, and the one list loop. Prints: <mentions> <literals> <readonly> <loops> <readonly-adjacent>
+  _cg_r=$(awk '/^selftest\(\) \{$/ { insf = 1 }
+    { ln = $0; sub(/#.*/, "", ln) }
+    !insf && ln ~ /CORE_FACE_TARGET[S]/ { n++ }
+    !insf && ln ~ /^CORE_FACE_TARGET[S]=\047[^\047]*\047$/ { lit = NR; litn++ }
+    !insf && ln ~ /^readonly CORE_FACE_TARGET[S]$/ { ro++; if (lit && NR == lit + 1) adj++ }
+    !insf && ln ~ /^  for _e in \$CORE_FACE_TARGET[S]; do$/ { lp++ }
+    insf && /^}$/ { insf = 0 }
+    END { print n + 0, litn + 0, ro + 0, lp + 0, adj + 0 }' "$_cg_hs")
+  if [ "$(printf '%s' "$_cg_r" | cut -d' ' -f2)" != 1 ]; then
+    echo "FAIL: core-face graders: $_cg_hs must carry exactly one CORE_FACE_TARGETS= line; counts (mentions literals readonly loops adjacent) $_cg_r" >&2; return 1
+  fi
+  if [ "$(printf '%s' "$_cg_r" | cut -d' ' -f3,5)" != "1 1" ]; then
+    echo "FAIL: core-face graders: $_cg_hs must hold one 'readonly CORE_FACE_TARGETS' line directly after the literal assignment; counts (mentions literals readonly loops adjacent) $_cg_r" >&2; return 1
+  fi
+  if [ "$(printf '%s' "$_cg_r" | cut -d' ' -f1,4)" != "3 1" ]; then
+    echo "FAIL: core-face graders: $_cg_hs names CORE_FACE_TARGETS on a line other than the assignment, its readonly line and the one list loop (any indentation counts); counts (mentions literals readonly loops adjacent) $_cg_r" >&2; return 1
+  fi
+  _cg_list=$(sed -n "s/^CORE_FACE_TARGETS='\\(.*\\)'\$/\\1/p" "$_cg_hs")
+  if [ -z "$(printf '%s' "$_cg_list" | tr -d ' ')" ]; then
+    echo "FAIL: core-face graders: CORE_FACE_TARGETS is empty (or not a single-quoted literal) in $_cg_hs; an empty enumeration grades nothing and is never a pass" >&2; return 1
+  fi
+  case $_cg_list in
+    *'*'* | *'?'* | *'['*)
+      echo "FAIL: core-face graders: a CORE_FACE_TARGETS entry carries a glob character (* ? [) in $_cg_hs; entries are literal paths" >&2; return 1 ;;
+  esac
+  _cg_rc=0; set -f
+  for _cg_e in $_cg_list; do
+    _cg_job=$(basename "$_cg_e" .sh)
+    _cg_r=$(awk -v job="$_cg_job" -v e="$_cg_e" '
+      $0 ~ ("^  " job ":[ \t]*$") { inj = 1; found = 1; next }
+      inj && /^  [a-z]/ { inj = 0 }
+      inj && index($0, "git diff --quiet \"$base\" HEAD -- ") { ps = $0; sub(/^.*HEAD -- /, "", ps); sub(/;.*$/, "", ps); if (index(" " ps " ", " " e " ")) gate++ }
+      inj && /^ +run: sh / { l = $0; sub(/^ +run: sh /, "", l); sub(/[ \t]+#.*$/, "", l); if (l == e " --selftest") full++ }
+      END { print found + 0, gate + 0, full + 0 }' "$_cg_wf")
+    _cg_f=${_cg_r%% *}; _cg_r=${_cg_r#* }; _cg_g=${_cg_r%% *}; _cg_u=${_cg_r#* }
+    if [ "$_cg_f" != 1 ]; then
+      echo "FAIL: core-face graders: CORE_FACE_TARGETS entry '$_cg_e' has no CI job named '$_cg_job' in $_cg_wf (found $_cg_f); the full --selftest it skips under the faces is graded nowhere" >&2; _cg_rc=1; break
+    fi
+    if [ "$_cg_g" != 1 ]; then
+      echo "FAIL: core-face graders: the '$_cg_job' job's diff gate does not name '$_cg_e' in its 'git diff --quiet \"\$base\" HEAD -- ...' pathspec (found $_cg_g); a PR touching it would skip the only full grade" >&2; _cg_rc=1; break
+    fi
+    if [ "$_cg_u" != 1 ]; then
+      echo "FAIL: core-face graders: the '$_cg_job' job does not run the full 'sh $_cg_e --selftest' exactly once (found $_cg_u); the faces run only its --selftest-core" >&2; _cg_rc=1; break
+    fi
+  done
+  set +f; return $_cg_rc
+}
+
 own_tree_run() {  # [<root>]  (default .)
   _ot_root=${1:-.}
   if [ ! -d "$_ot_root" ]; then
@@ -969,9 +1388,15 @@ own_tree_run() {  # [<root>]  (default .)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_sast_parse_spans "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-278: the SAST-parse spans line (SP)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_guard_delta_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-301: the guard delta step (GD)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_redteam_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-359: the boundary red-team job (BR)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_macos_leg "$_ot_root/.github/workflows/ci.yml" "$_ot_root/.github/workflows/$KIT_MACOS_WORKFLOW" || _ot_rc=1  # SWAS-552: the on-demand macOS boundary workflow (BR0m, BR53-BR116)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_defer_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-376: the H2 step's battery defer (H2D)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_core_face_graders "$_ot_root" || _ot_rc=1  # SWAS-460: every core-only hermetic target has a diff-gated full grader (CG)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-docs || _ot_rc=1  # SWAS-409: the docs shard (C30, C31) is graded live in every docs leg
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-selftests || _ot_rc=1  # SWAS-409: the selftests shard (C31, C32)
+    check_runner_switch_tree "$_ot_root" || _ot_rc=1  # SWAS-280: the runner-switch lock (RS, R1-R7); kit trees only
+    check_shellcheck_pin_tree "$_ot_root" || _ot_rc=1  # SWAS-499: every linting job runs the pinned shellcheck installer first (SCP); kit trees only
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_cheap_set "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-382 S1: the cheap set waits on nothing and carries no lane condition (CS)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_gate_shape "$_ot_root/.github/workflows/ci.yml" - || _ot_rc=1  # SWAS-382 S3: the runtime gate's shape (GT); the decider's list is compared by the selftest, not here
   fi
   if [ "$_ot_seen" = 0 ]; then
     # The zero-found three-state (verify-enforced-wired.sh:845-849, copied).
@@ -989,6 +1414,139 @@ own_tree_run() {  # [<root>]  (default .)
     echo "    DECLARATION; execution is not attested — pair with the pipeline actually running)."
   fi
   return "$_ot_rc"
+}
+
+# ══ SWAS-499 (SCP) — THE SHELLCHECK PIN LOCK ═══════════════════════════════════════════════════════════════════
+# The runner image's shellcheck is 0.9.0, and on it conformance/agent-autonomy.sh peaked near 7 GB and OOM-killed the 7.9 GB runner three times;
+# conformance/shellcheck.sh takes its memory-saving branch only on shellcheck >=0.10. So every CI job that LINTS the tree must run the pinned
+# installer first. A LINE lints when it runs `conformance/shellcheck.sh` (not --selftest), ANY `conformance/verify.sh` form except
+# `--selftest --from-output` (it grades a record) and `--merge` (it joins shard records and runs no row); the aggregate and its plain --selftest,
+# which nests a full aggregate, lint. Also `conformance/green-on-clone.sh --leg-rows` or
+# `conformance/selftest-hermetic.sh --touched` (which can nest that aggregate); a job lints when one of its steps has such a line. THE RULE,
+# per job of EVERY .github/workflows/*.yml|*.yaml (found by search, dot-named files too, so a new workflow cannot escape): BEFORE the first such
+# step the job has a one-line `run:` step running `scripts/install-shellcheck.sh "<dir>"` that writes GITHUB_PATH and a one-line `run:` step
+# running `scripts/install-shellcheck.sh --check`. A step counts as the installer or the check ONLY when its `run:` line, from `run:` to the end of the
+# line (trailing whitespace allowed, nothing else), is the EXACT literal text of the two installer lines in .github/workflows/ci.yml and drift-watch.yml
+# (lit_inst, lit_chk below); an `echo` before it, a `; true`, `|| exit 0` or `|| echo x` after it, or any other drift is not the installer. A step-level
+# if: or continue-on-error: on those steps also voids them.
+# FAIL CLOSED: per workflow file the lock counts the lint lines in the whole file and the lint lines it attributed to a step (a 6-space `- ` step
+# under a 2-space job); any difference reds NAMING THE FILE. Inside `jobs:` (a) any non-blank, non-comment line indented under 4 spaces that is not
+# the exact job-header form (`  name:` and nothing after the colon) reds naming file and line, and (b) so does the first such line after `jobs:` if it
+# is not that header; so a quoted key, an anchored header or an indentless job cannot inherit the previous job's installer. What the rules prove: a job
+# header the lock cannot read is a red, not a skipped job; they do NOT prove the YAML is well formed or that a header the lock reads is really a job.
+# Also: the gate-lint step captures the wrapper's output WITHOUT a pipe (a pipe would hand the step tee's exit code) and requires the OFF line,
+# and the two data-flow lists in conformance/shellcheck.sh equal the literals below, so adding a file to either is a two-file edit a reviewer sees.
+# NO EXEMPTION: conformance-selftests-4 runs only `--selftest` forms, none of which is a trigger, so a lint added there reds like any other unpinned lint.
+# HONEST CEILING: line-based awk, not a YAML parser. NOT seen: a lint reached through a COMPOSITE ACTION (`uses: ./.github/actions/...`), through a
+# `${{ matrix.cmd }}` (or any expression that builds the command), through a script this lock does not name, or by a one-line `run:` split over
+# lines (the installer step must be the one-line form). The shard-join legs (conformance-selftests-n, conformance-docs-n) may not write
+# GITHUB_PATH at all (_sj_locks), so the rest of them stay on the image only because they lint nothing. Also NOT seen:
+#   N2: the carve-outs apply per line, so a `--merge` or a `--selftest --from-output` on the same line as a real lint hides that lint.
+#   N5: YAML anchors and aliases (`&`, `*`, `<<:`) are not resolved.
+#   N6: `working-directory:`, `cd conformance && sh ./verify.sh`, `conformance/./verify.sh`, or a step `env: PATH:` override.
+#   N7: an inline ` #` inside a quoted string is stripped as a comment.
+SCP_NOFLOW="conformance/agent-autonomy.sh scripts/tracker-read.sh scripts/preflight.sh"
+SCP_NOFOLLOW="conformance/agent-autonomy.sh"
+_scp_scan() {  # <workflow-file> -> `L <job>` per linting job, `F <job> <why>` per lint step before its pinned installer, `U <line>` per unreadable job-header line, `G ok|bad` per gate-lint step, `C <all> <seen>` lint-line counts
+  sed -e 's/^#.*//' -e 's/[[:space:]]#.*//' "$1" | LC_ALL=C awk '
+    BEGIN {
+      lit_inst = "sh scripts/install-shellcheck.sh \"$RUNNER_TEMP/sc\" && echo \"$RUNNER_TEMP/sc\" >> \"$GITHUB_PATH\""
+      lit_chk = "sh scripts/install-shellcheck.sh --check"
+    }
+    function islint(l) {
+      if (index(l, "conformance/shellcheck.sh") && !index(l, "--selftest")) return 1
+      if (index(l, "conformance/verify.sh") && !index(l, "conformance/verify.sh --merge") && !(index(l, "--selftest") && index(l, "--from-output"))) return 1
+      if (index(l, "conformance/green-on-clone.sh --leg-rows")) return 1
+      if (index(l, "conformance/selftest-hermetic.sh") && index(l, "--touched")) return 1
+      return 0
+    }
+    function endstep() {
+      if (!instep) return
+      instep = 0
+      if (s_id) print "G " ((s_cap && s_off && !s_pipe) ? "ok" : "bad")
+      if (s_lint) {
+        lintjob = 1
+        if (!(inst && chk)) print "F " job " step " nstep " lints before the pinned installer and its --check have run"
+      } else {
+        if (s_inst && !s_cond) inst = 1
+        if (s_chk && !s_cond) chk = 1
+      }
+    }
+    function endjob() { if (lintjob) print "L " job; lintjob = 0 }
+    { if (islint($0)) allint++ }
+    /^jobs:[ \t]*$/ { injobs = 1; first = 1; next }
+    /^[^ \t]/ { endstep(); endjob(); injobs = 0; next }
+    !injobs { next }
+    /^[ \t]*$/ { next }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ { first = 0; endstep(); endjob(); job = $1; sub(/:$/, "", job); nstep = 0; inst = 0; chk = 0; next }
+    {
+      ura = 0
+      if ((match($0, /^ */) ? RLENGTH : 0) < 4) { print "U " NR; ura = 1 }  # rule (a): under 4 spaces and not the exact header form
+      if (first && !ura) print "U " NR                                      # rule (b): the first line after jobs: is not a header
+      first = 0
+    }
+    /^      - / { endstep(); instep = 1; nstep++; s_id = 0; s_cap = 0; s_off = 0; s_pipe = 0; s_lint = 0; s_inst = 0; s_chk = 0; s_cond = 0 }
+    instep {
+      if ($0 ~ /^        id:[ \t]*gate-lint[ \t]*$/) s_id = 1
+      if (islint($0)) { s_lint = 1; seenlint++ }
+      if (index($0, "conformance/shellcheck.sh") && index($0, "|")) s_pipe = 1
+      if (index($0, "if sh conformance/shellcheck.sh > \"$RUNNER_TEMP/sc.out\" 2>&1; then rc=0; else rc=$?; fi")) s_cap = 1
+      if (index($0, "grep -q \047^shellcheck: dataflow analysis OFF for 3 files\047 \"$RUNNER_TEMP/sc.out\"")) s_off = 1
+      if (match($0, /^(      - |        )run:[ \t]+/)) {  # the installer and its --check count only as a ONE-LINE run: key holding the EXACT literal, never text in a name:, an echo or an env value
+        rest = substr($0, RLENGTH + 1); sub(/[ \t]+$/, "", rest)
+        if (rest == lit_chk) s_chk = 1
+        else if (rest == lit_inst) s_inst = 1
+      }
+      if ($0 ~ /^(      - |        )(if|continue-on-error)[ \t]*:/) s_cond = 1
+    }
+    END { endstep(); endjob(); print "C " (allint + 0) " " (seenlint + 0) }'
+}
+check_shellcheck_pin_tree() {  # <root> -> 0 ok; 1 a linting job without its pinned installer first, a gate-lint without the OFF line, a drifted list, or no workflow read
+  _sp_rc=0; _sp_files=0; _sp_jobs=0
+  for _sp_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml; do  # the dot globs: a plain * skips dot-named files
+    [ -f "$_sp_f" ] || continue
+    _sp_files=$((_sp_files + 1))
+    _sp_o=$(_scp_scan "$_sp_f")
+    _sp_jobs=$((_sp_jobs + $(printf '%s\n' "$_sp_o" | grep -c '^L ' || :)))
+    _sp_c=$(printf '%s\n' "$_sp_o" | sed -n 's/^C //p')
+    _sp_all=${_sp_c%% *}; _sp_seen=${_sp_c#* }
+    if [ -z "$_sp_c" ] || [ "$_sp_all" != "$_sp_seen" ]; then  # fail closed: a lint line the scan did not attribute to a step is a workflow it did not judge
+      echo "FAIL: shellcheck-pin — $_sp_f holds ${_sp_all:-?} lint line(s) but only ${_sp_seen:-?} sit inside a step the lock reads (a 6-space '- ' step under a 2-space job): lint line(s) outside a step: another indentation or a job-level key (SWAS-499)" >&2
+      _sp_rc=1
+    fi
+    _sp_u=$(printf '%s\n' "$_sp_o" | sed -n 's/^U //p')  # rules (a) and (b): a line under jobs: the lock cannot read as a job header
+    if [ -n "$_sp_u" ]; then
+      printf '%s\n' "$_sp_u" | while IFS= read -r _sp_l; do echo "FAIL: shellcheck-pin — $_sp_f line $_sp_l is not a job header the lock reads (a 2-space plain 'name:' line); a quoted key, an anchored header or an indentless job would inherit the previous job's installer (SWAS-499)" >&2; done
+      _sp_rc=1
+    fi
+    _sp_bad=$(printf '%s\n' "$_sp_o" | sed -n 's/^F //p')
+    if [ -n "$_sp_bad" ]; then
+      printf '%s\n' "$_sp_bad" | while IFS= read -r _sp_l; do echo "FAIL: shellcheck-pin — $_sp_f job $_sp_l (SWAS-499: the image's shellcheck 0.9.0 can OOM-kill the runner; add the install and --check steps first)" >&2; done
+      _sp_rc=1
+    fi
+    if printf '%s\n' "$_sp_o" | grep -q '^G bad$'; then
+      echo "FAIL: shellcheck-pin — $_sp_f: the gate-lint step must capture the wrapper without a pipe and require the 'dataflow analysis OFF for 3 files' line (SWAS-499)" >&2
+      _sp_rc=1
+    fi
+  done
+  if [ "$_sp_files" = 0 ]; then
+    echo "FAIL: shellcheck-pin — liveness: read no workflow file under $1/.github/workflows (a glob that matched nothing must not pass)" >&2
+    _sp_rc=1
+  fi
+  if [ -f "$1/conformance/shellcheck.sh" ]; then
+    _sp_nf=$(sed -n 's/^SC_NOFLOW_FILES="\(.*\)"$/\1/p' "$1/conformance/shellcheck.sh")
+    _sp_nw=$(sed -n 's/^SC_NOFOLLOW_FILES="\(.*\)"$/\1/p' "$1/conformance/shellcheck.sh")
+    if [ "$_sp_nf" != "$SCP_NOFLOW" ]; then
+      echo "FAIL: shellcheck-pin — SC_NOFLOW_FILES in conformance/shellcheck.sh is '$_sp_nf', this lock holds '$SCP_NOFLOW' (move both in one reviewed edit)" >&2
+      _sp_rc=1
+    fi
+    if [ "$_sp_nw" != "$SCP_NOFOLLOW" ]; then
+      echo "FAIL: shellcheck-pin — SC_NOFOLLOW_FILES in conformance/shellcheck.sh is '$_sp_nw', this lock holds '$SCP_NOFOLLOW' (move both in one reviewed edit)" >&2
+      _sp_rc=1
+    fi
+  fi
+  [ "$_sp_rc" != 0 ] || echo "OK: shellcheck-pin — $_sp_jobs linting job(s) in $_sp_files workflow file(s) run the pinned installer first; the data-flow lists match"
+  return "$_sp_rc"
 }
 
 # ══ TIER0-LOCKS-OWED (b) — THE AGGREGATOR needs: / CLASSIFIER DRIFT-LOCK ═══════════════════════
@@ -1018,7 +1576,9 @@ own_tree_run() {  # [<root>]  (default .)
 # recorded rather than silently bumped — the step carries NO step-level `if:` and is governed by
 # conformance-core's job-level one (docs-only / push-graded skip), which is CORRECT for it: a
 # docs-only change-set cannot have touched ci.yml, so there is no new mention for the census to grade.
-_AGG_CC_STEP_PIN=29
+# 29 -> 32 on 2026-10-29 (SWAS-499): the pinned-shellcheck install, its --check and the GNU time probe. THE LOOK THE PIN FORCES: none of the three carries a
+# step-level `if:`; conformance-core's job-level lane condition governs them, which is right (a docs-only change-set runs no lint, so it needs no pinned binary).
+_AGG_CC_STEP_PIN=32
 _agg_marker='not a required check -> a job-level skip is safe'
 
 # _agg_job_step_count <yml> <job> -> the count of top-level (6-space `- `) step entries under
@@ -1057,13 +1617,20 @@ aggregator_needs_lock() {
   _al_pg_raw=$(grep -E "^PG_NEEDED='" "$_al_cls" | sed "s/^PG_NEEDED='//; s/'\$//")
   [ -n "$_al_pg_raw" ] || { echo "FAIL: aggregator-needs-lock — could not read PG_NEEDED from $_al_cls"; return 1; }
   _al_pg_set=$(printf '%s\n' $_al_pg_raw | grep -v '^conformance$')
-  _al_pg_set=$(printf '%s\nconformance-docs\n' "$_al_pg_set" | grep -v '^$' | sort -u)
+  # SWAS-382 S3: plus `gate` and the six cheap jobs (CS_JOBS), which the aggregator grades in every mode (ci-gate-state.sh --aggregate) but PG_NEEDED does not carry:
+  # the push-graded predicate keeps grading the shards, and `gate` and the cheap jobs re-run on every main push anyway.
+  _al_pg_set=$(printf '%s\nconformance-docs\ngate\n%s\n' "$_al_pg_set" "$(printf '%s\n' $CS_JOBS)" | grep -v '^$' | sort -u)
 
   _al_bad=0
   if [ "$_al_pg_set" != "$_al_needs_set" ]; then
-    echo "FAIL: aggregator-needs-lock — PG_NEEDED (- conformance, + conformance-docs) != the aggregator's needs::"
+    echo "FAIL: aggregator-needs-lock — PG_NEEDED (- conformance, + conformance-docs, + gate, + the cheap jobs) != the aggregator's needs::"
     echo "  derived from PG_NEEDED: $(printf '%s' "$_al_pg_set" | tr '\n' ' ')"
     echo "  aggregator needs:       $(printf '%s' "$_al_needs_set" | tr '\n' ' ')"
+    _al_miss=''; _al_extra=''
+    for _al_x in $_al_pg_set; do case " $(printf '%s' "$_al_needs_set" | tr '\n' ' ') " in *" $_al_x "*) : ;; *) _al_miss="$_al_miss $_al_x" ;; esac; done
+    for _al_x in $_al_needs_set; do case " $(printf '%s' "$_al_pg_set" | tr '\n' ' ') " in *" $_al_x "*) : ;; *) _al_extra="$_al_extra $_al_x" ;; esac; done
+    echo "  missing from the aggregator's needs:${_al_miss:- none}"
+    echo "  not allowed in the aggregator's needs:${_al_extra:- none}"
     _al_bad=1
   fi
 
@@ -1344,7 +1911,7 @@ _sj_errexit() {  # <label> <leg code lines> -> a FAIL when a leg's run text swit
 _sj_allow() {  # <label> <join|leg> <job block, raw> <wf> <job> -> a FAIL per line whose shape is not on the allow-list (option A: an allow-list, not pattern-chasing)
   # Allowed: a comment or blank; a run block body (deeper than its run: key; also no command may start with trap, shopt, set +e/+o or a bare exit 0); and
   # the bare keys of the measured set: job 4 needs/if/runs-on/steps/env, job env 6 LEG_RESULTS (join), step start 6 name/uses, step 8 env/id/run/uses/with,
-  # 10 GH_TOKEN/fetch-depth/node-version, a needs item 6. A value may not open with { [ ! & * | > (a block header only on run), a quote must close on its line.
+  # 10 GH_TOKEN/fetch-depth/node-version/persist-credentials (SWAS-280: a moved leg's checkout drops the token; the key can only narrow), a needs item 6. A value may not open with { [ ! & * | > (a block header only on run), a quote must close on its line.
   _sja_b=$(grep -n -m 1 -E "^  $5:([[:space:]]|\$)" "$4" | cut -d: -f1)
   _sja_o=$(printf '%s\n' "$3" | awk -v lab="$1" -v kind="$2" -v base="${_sja_b:-1}" '
     function bad(why) { printf "FAIL: shard-join — %s line %d: %s: %s\n", lab, base + NR - 1, why, substr($0, 1, 80); n++ }
@@ -1380,7 +1947,7 @@ _sj_allow() {  # <label> <join|leg> <job block, raw> <wf> <job> -> a FAIL per li
       }
       else if (ind == 6 && ctx == "env" && kind == "join" && key(t, "LEG_RESULTS")) ok = shape(v)
       else if (ind == 8 && key(t, "env id run uses with")) { ok = shape(v); if (ok == 2 && k != "run") ok = 0; if (ok == 2) blk = 1 }
-      else if (ind == 10 && key(t, "GH_TOKEN fetch-depth node-version")) ok = shape(v)
+      else if (ind == 10 && key(t, "GH_TOKEN fetch-depth node-version persist-credentials")) ok = shape(v)
       if (ok == 0) bad("line shape not in the allow-list")
     }
     END { exit 0 }')
@@ -1729,6 +2296,140 @@ ag ceremony-binding persisted
 ag review-lane persisted
 ag loop-state false,false"
 
+# ══ SWAS-280 — THE RUNNER-SWITCH LOCK (RS, R1-R7). KIT TREES ONLY (called from the kit block of own_tree_run; the twin-marker test). ══
+# The repository variable KIT_CI_RUNNER (a human act) points the MOVABLE jobs of ci.yml at RunsOn runners on same-repository pull requests; unset, every
+# job keeps ubuntu-24.04. Design: docs/architecture/2026-10-28-runner-switch-280-design.md (§2.1 the one expression, §2.2 the lists, §6 the rules).
+#   R1  every job's job-level runs-on is the literal KIT_HOSTED_RUNNER or exactly KIT_RUNNER_EXPR; a job carrying the expression is on KIT_RUNNER_MOVABLE
+#   R2  every actions/checkout step of a MOVABLE job carries persist-credentials: false
+#   R3  every job on KIT_RUNNER_HOSTED_FLOOR (the security and governance gates, the joins, the token holders) has the literal runs-on
+#   R4  every job is on exactly one of the two lists, and every listed name is a job of the file (a new job must be placed by a human)
+#   R5  no workflow but ci.yml (dot-named ones included) names KIT_CI_RUNNER (any case) or a RunsOn label fragment on a code line, and every
+#       runs-on value there is on the allow-list (the literal, or the KIT_TRACKER_RUNNER form)             (check_runner_switch_tree)
+#   R6  .github/runs-on.yml does not exist: the RunsOn App can write that one file and the kit uses none (check_runner_switch_tree)
+#   R7  a MOVABLE job names no secret and no job token (secrets.X, secrets[X], toJSON(secrets), secrets: inherit, github.token, any case; a comment counts:
+#       the lock reads the raw line), declares no permission beyond contents: read, and the workflow level (inherited by every job) holds permissions
+#       of exactly contents: read and no token in an env:. Structure: every jobs: line at indent 2 is a bare job header, no anchor, alias or merge key,
+#       one runs-on per job, and persist-credentials: false counts only under the checkout step's own with:.
+# WHAT IT PROVES: the workflow TEXT. It cannot read the variable's value, and it cannot prove what GitHub resolves (the build PR's run, with the variable
+# unset, and the first run with it set, do). Comments are stripped before a structural read (the file's idiom), so a `#` inside a quoted value hides the rest.
+KIT_RUNNER_EXPR="\${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.KIT_CI_RUNNER && format('runs-on={0}-{1}/{2}', github.run_id, strategy.job-index, vars.KIT_CI_RUNNER) || 'ubuntu-24.04' }}"
+KIT_RUNNER_MOVABLE="conformance-docs-1 conformance-selftests-1 conformance-selftests-2 conformance-selftests-3 conformance-selftests-4 cf-verify-enforced-shard cf-goc-rows cf-goc-battery cf-export-claims cf-claims guard-battery-shard guard-delta non-vacuity artifact-gate-gitlab artifact-gate-brownfield"
+KIT_RUNNER_HOSTED_FLOOR="secret-scan sast sbom artifact-gate boundary-redteam gate changes conformance conformance-core conformance-docs conformance-docs-2 conformance-selftests cf-doctor cf-export cf-verify-enforced cf-green-on-clone guard-battery ci-time-report bootstrap repo-ownership docs-links $TT_CI_JOBS"
+# SWAS-552: the on-demand macOS reading of the boundary cells lives in its own workflow file (not ci.yml), whose one job runs on the LITERAL KIT_MACOS_RUNNER and nothing else (never
+# the expression, never another label): a variable flip must not move it to a Linux box. R5 allows that one literal for that one file (KIT_MACOS_WORKFLOW) and for no other file.
+KIT_MACOS_RUNNER=macos-15
+KIT_MACOS_WORKFLOW=boundary-redteam-macos.yml
+
+_rs_facts() {  # <ci.yml> -> one fact per line: JB <job> · RO/RD <job> [runs-on value] · CO <job> <false|persisted> per checkout step · TK <job> <raw line> · PM <job> <scope> · BH/AL <line> <text> · WP/WT <text>
+  # Comments are cut at a `#` that starts the line or follows white space (a `#` glued to a value stays part of it). TK and WT read the RAW line, case-folded.
+  awk '
+    function flush() { if (stepco) print "CO " job " " (steppc ? "false" : "persisted"); stepco = 0; steppc = 0; inwith = 0 }
+    function endjob() { flush(); if (job != "" && !nro) print "RO " job " "; nro = 0; inperm = 0 }
+    function tok(s) {  # a secret or the job token: secrets.X, secrets[X], toJSON(secrets), secrets: inherit, github.token, github[token]
+      s = tolower(s)
+      return (s ~ /(^|[^a-z0-9_])secrets(\.|\[|\))/ || s ~ /(^|[^a-z0-9_])secrets:[ \t]*inherit/ || s ~ /(^|[^a-z0-9_])github(\.token|\[[\047\042]token[\047\042]\])/)
+    }
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    { l = $0; sub(/(^|[ \t])#.*/, "", l) }
+    l ~ /^ *(- )?<<[ \t]*:/ || l ~ /:[ \t]+[&*][A-Za-z0-9_-]+/ || l ~ /^ *- [&*][A-Za-z0-9_-]+/ { print "AL " NR " " $0 }
+    l ~ /^jobs:[ \t]*$/ { injobs = 1; top = ""; next }
+    injobs && l ~ /^[^ \t]/ { endjob(); job = ""; injobs = 0 }
+    !injobs {
+      if (l ~ /^[^ \t]/) {
+        top = l; sub(/:.*$/, "", top); v = l; sub(/^[^:]*:[ \t]*/, "", v); v = trim(v)
+        if (top == "permissions") { wpseen = 1; if (v != "" && v != "{ contents: read }" && v != "{contents: read}") print "WP " v }
+        if (top == "env" && tok($0)) print "WT " $0
+      } else if (l !~ /^[ \t]*$/) {
+        if (top == "permissions" && trim(l) != "contents: read") print "WP " trim(l)
+        if (top == "env" && tok($0)) print "WT " $0
+      }
+      next
+    }
+    l ~ /^  [A-Za-z0-9_-]+:[ \t]*$/ { endjob(); job = l; sub(/^ +/, "", job); sub(/:[ \t]*$/, "", job); print "JB " job; next }
+    l ~ /^ [^ \t]/ || l ~ /^  [^ \t]/ { print "BH " NR " " $0; next }
+    job == "" { next }
+    tok($0) { print "TK " job " " $0 }
+    l ~ /^    runs-on:/ { if (nro++) { print "RD " job; next } v = l; sub(/^    runs-on:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); print "RO " job " " v; next }
+    l ~ /^    permissions:/ {
+      v = l; sub(/^    permissions:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); inperm = 1
+      if (v != "") { if (v != "{ contents: read }" && v != "{contents: read}") print "PM " job " " v; inperm = 0 }
+      next }
+    inperm && l ~ /^[ \t]*$/ { next }
+    inperm && l ~ /^     / { v = l; sub(/^ +/, "", v); sub(/[ \t]+$/, "", v); if (v != "contents: read") print "PM " job " " v; next }
+    { inperm = 0 }
+    l ~ /^      - / { flush() }
+    l ~ /^        [^ \t]/ { inwith = (l ~ /^        with:[ \t]*$/) }
+    l ~ /^ +(- )?uses:[ \t]*[\047\042]?actions\/checkout@/ { stepco = 1 }
+    inwith && l ~ /^          persist-credentials:[ \t]*false[ \t]*$/ { steppc = 1 }
+    END { endjob(); if (!wpseen) print "WP (absent)" }' "$1"
+}
+
+check_runner_switch() {  # <ci.yml> -> 0 ok; 1 any of R1-R4 or R7 broken (every break is named on stderr)
+  _rs_facts "$1" | RS_FILE="$1" RS_EXPR="$KIT_RUNNER_EXPR" RS_HOSTED="$KIT_HOSTED_RUNNER" RS_MOVABLE=" $KIT_RUNNER_MOVABLE " RS_FLOOR=" $KIT_RUNNER_HOSTED_FLOOR " awk '
+    BEGIN { sq = "\047"; file = ENVIRON["RS_FILE"]; expr = ENVIRON["RS_EXPR"]; hosted = ENVIRON["RS_HOSTED"] }
+    function fail(m) { printf "FAIL: %s %s\n", file, m > "/dev/stderr"; bad = 1 }
+    function listed(s, n) { return index(s, " " n " ") > 0 }
+    function why(v,   w) {
+      if (index(v, "${{") == 0) return "a hand-written label"
+      if (index(v, "github.event_name == " sq "pull_request" sq) == 0) w = w " event guard"
+      if (index(v, "github.event.pull_request.head.repo.full_name == github.repository") == 0) w = w " fork clause"
+      if (index(v, "&& vars.KIT_CI_RUNNER &&") == 0) w = w " variable guard"
+      if (index(v, "|| " sq hosted sq " }}") == 0) w = w " " hosted " fallback"
+      return (w == "" ? "an edited expression" : "missing:" w)
+    }
+    $1 == "BH" { fail("jobs: line " $2 " is not a bare job header (a quoted key, a flow mapping or an anchor hides a job from the line-based locks) (R4): " substr($0, length($2) + 5)); next }
+    $1 == "AL" { fail("line " $2 " uses a YAML anchor, alias or merge key, which the line-based locks cannot expand (R4): " substr($0, length($2) + 5)); next }
+    $1 == "WP" { fail("workflow-level permissions are not exactly contents: read, and every moved job inherits them (R7): " substr($0, 4)); next }
+    $1 == "WT" { fail("a workflow-level env names a secret or the job token, and every moved job inherits it (R7): " substr($0, 4)); next }
+    $1 == "RD" { fail("job " sq $2 sq " has more than one runs-on (R1)"); next }
+    $1 == "JB" { order[++nj] = $2; jobs[$2] = 1; next }
+    $1 == "RO" { v = $0; sub(/^RO [^ ]+ ?/, "", v); ro[$2] = v; next }
+    $1 == "CO" { if (listed(ENVIRON["RS_MOVABLE"], $2) && $3 != "false") fail("job " sq $2 sq " has an actions/checkout step without persist-credentials: false (R2)"); nco++; next }
+    $1 == "TK" { if (listed(ENVIRON["RS_MOVABLE"], $2)) { v = $0; sub(/^TK [^ ]+ /, "", v); fail("moved job " sq $2 sq " names a secret or the job token (R7): " v) }; next }
+    $1 == "PM" { if (listed(ENVIRON["RS_MOVABLE"], $2)) { v = $0; sub(/^PM [^ ]+ /, "", v); fail("moved job " sq $2 sq " declares a permission beyond contents: read (R7): " v) }; next }
+    END {
+      if (nj == 0) fail("no job found under jobs: (a lock that reads nothing must not pass)")
+      for (i = 1; i <= nj; i++) {
+        j = order[i]; v = ro[j]; m = listed(ENVIRON["RS_MOVABLE"], j); h = listed(ENVIRON["RS_FLOOR"], j);
+        if (v == hosted) { }
+        else if (v == expr) { if (!m) fail("job " sq j sq " carries the runner expression but is not on KIT_RUNNER_MOVABLE (R1)") }
+        else fail("job " sq j sq " runs-on is neither the literal " hosted " nor exactly KIT_RUNNER_EXPR (R1): " why(v))
+        if (h && v != hosted) fail("hosted-floor job " sq j sq " must run on the literal " hosted " (R3)")
+        if (!m && !h) fail("job " sq j sq " is on neither KIT_RUNNER_MOVABLE nor KIT_RUNNER_HOSTED_FLOOR: place it on one (R4)")
+        if (m && h) fail("job " sq j sq " is on both KIT_RUNNER_MOVABLE and KIT_RUNNER_HOSTED_FLOOR (R4)")
+      }
+      nl = split(ENVIRON["RS_MOVABLE"] ENVIRON["RS_FLOOR"], names, " ")
+      for (i = 1; i <= nl; i++) if (!(names[i] in jobs)) fail("a runner list names " sq names[i] sq ", which is not a job of the workflow (R4)")
+      if (nco == 0) fail("no actions/checkout step found in any job (a lock that reads nothing must not pass)")
+      exit bad
+    }'
+}
+
+check_runner_switch_tree() {  # <root> -> 0 ok; 1 R1-R4/R7 on its ci.yml, R5 on its other workflows, or R6 broken
+  _rst_rc=0
+  [ ! -f "$1/.github/workflows/ci.yml" ] || check_runner_switch "$1/.github/workflows/ci.yml" || _rst_rc=1
+  for _rst_f in "$1/.github/runs-on.yml" "$1/.github/runs-on.yaml"; do
+    if [ -e "$_rst_f" ]; then echo "FAIL: $_rst_f exists: the RunsOn App can write that one file and the kit uses none (R6)" >&2; _rst_rc=1; fi
+  done
+  # R5: every other workflow (dot-named ones too, as SWAS-447 walks them): no variable name (any case) or RunsOn fragment on a code line, and every
+  # runs-on value is on the ALLOW-LIST of the two forms the kit's other workflows use today (this closes the array label form `runs-on: [runs-on, ...]`).
+  for _rst_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml; do
+    [ -f "$_rst_f" ] || continue
+    [ "${_rst_f##*/}" != ci.yml ] || continue
+    _rst_code=$(awk '{ sub(/(^|[ \t])#.*/, ""); print }' "$_rst_f")
+    if printf '%s\n' "$_rst_code" | grep -q -i -e 'KIT_CI_RUNNER' -e 'runs-on=' -e 'runner=' -e 'image=ubuntu'; then
+      echo "FAIL: $_rst_f names KIT_CI_RUNNER or a RunsOn label fragment: only ci.yml may (R5)" >&2; _rst_rc=1
+    fi
+    _rst_mac=""; [ "${_rst_f##*/}" != "$KIT_MACOS_WORKFLOW" ] || _rst_mac="$KIT_MACOS_RUNNER"  # SWAS-552: the one file that may carry the one macOS literal
+    if ! printf '%s\n' "$_rst_code" | awk -v hosted="$KIT_HOSTED_RUNNER" -v mac="$_rst_mac" 'BEGIN { ok2 = "${{ vars.KIT_TRACKER_RUNNER || \047" hosted "\047 }}" }
+        /^[ \t]*runs-on:/ { v = $0; sub(/^[ \t]*runs-on:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); if (v != hosted && v != ok2 && (mac == "" || v != mac)) { print "runs-on value not on the allow-list: " v > "/dev/stderr"; bad = 1 } }
+        END { exit bad }'; then
+      echo "FAIL: $_rst_f has a runs-on value that is neither $KIT_HOSTED_RUNNER nor the KIT_TRACKER_RUNNER form: only ci.yml may carry another label (R5)" >&2; _rst_rc=1
+    fi
+  done
+  return "$_rst_rc"
+}
+
 tt_step_of() {  # <workflow-file> <job> -> the raw text of that job's step that lists this checkout's tags
   # (a comment-only mention above a step belongs to the PREVIOUS step's buffer and is stripped before
   # the match, so prose can never stand in for the step).
@@ -1956,9 +2657,267 @@ _tt_fixture() {  # <dir> <default-branch> -> <dir>/origin.git: trunk commit A, b
   _tt_git -C "$1/seed" push -q "file://$1/origin.git" "$2" pr "$2:release" "$2:develop"
 }
 
+# ══ SWAS-382 S1 (CS) — THE CHEAP-SET LOCK (--cheap-set [<workflow>]; also run by the kit block of --own-tree) ══════════════════════════════════════
+# The review-before-CI flow (design of record section 19.3) runs a CHEAP set on every push of every PR, draft or ready: the security gates and the obligation jobs.
+# A cheap job that waits on another job, or carries a lane condition, would be skipped with it, so a draft's run would grade less than the cheap set. The lock:
+#   CS-a  every job on CS_JOBS exists in the workflow
+#   CS-b  none carries a job-level needs: (a `gate` or `changes` edge is exactly what this lock refuses)
+#   CS-c  none carries a job-level if:, except the three obligation jobs, which may carry exactly the PR-event clause they carry today
+#   CS-d  every semgrep invocation (pipx run, pip install, uvx ... semgrep) is pinned semgrep==<x.y.z>, all to ONE version, and the sast job runs one
+#   CS-e  no cheap job uses a YAML merge key or alias (the line reader cannot expand either: _sj_noalias), none carries a job-level or step-level
+#         continue-on-error: true (or an expression), and none has a set +e, a bare exit 0, a `|| true` / `|| :` or a `; exit 0` in its run text
+# CEILING: line-based awk at the indents the kit's workflows use, like the rest of this file; it is not a YAML parser. NOT SEEN: a step-level if: (a skipped
+# step reads as success; the obligation jobs legitimately carry some), a shell: override on a step or in defaults:, a semgrep run through `docker run` or
+# `python -m semgrep` (the pin scan reads pipx, pip, uvx and uv forms only), a run line continued with a backslash (the masking forms are read per line), a
+# flow-style `{ continue-on-error: true }`, a masking form spelled `|| (exit 0)` or `|| exit 0`, and a pin that appears only in a `name:` or a comment-free
+# string (the pin scan counts any line of the sast block that holds semgrep==<x.y.z>). A needs: written as a YAML anchor is caught only by the alias rule.
+# The PR-event clause only, not the other triggers: `on:` is judged elsewhere (the proportional-gate and aggregator locks).
+CS_JOBS="secret-scan sast sbom threat-obligation uat-obligation a11y-obligation"
+CS_PR_IF_JOBS="threat-obligation uat-obligation a11y-obligation"
+CS_PR_IF="github.event_name == 'pull_request'"
+# SWAS-382 S3: the PR-scoped required jobs run on every push of every PR too (design 19.5 keeps them "on each PR's head, in the cheap set"), so they wait on nothing either.
+# They are held to CS-b ONLY: they cannot join CS_JOBS as is, because CS-e would red backlog-presence's `set +e` and ceremony-binding's `|| true`, which are legal there.
+CS_PR_SCOPED="backlog-presence ceremony-binding review-lane loop-state"
+check_cheap_set() {  # <workflow> -> 0 ok; 1 with a FAIL line per break
+  [ -f "$1" ] || { echo "FAIL: cheap-set — $1 is not a file"; return 1; }
+  _cst_rc=0
+  for _cst_j in $CS_JOBS; do
+    _cst_b=$(_sj_blk "$1" "$_cst_j" | sed 's/[[:space:]]#.*$//')
+    if [ -z "$_cst_b" ]; then echo "FAIL: cheap-set — $_cst_j is missing from $1 (the cheap set runs on every push, drafts included)"; _cst_rc=1; continue; fi
+    if printf '%s\n' "$_cst_b" | grep -Eq '^    ["'"'"']?needs["'"'"']?[[:space:]]*:'; then  # CSM1
+      echo "FAIL: cheap-set — job $_cst_j carries a needs: (a cheap job waits on nothing: a lane that skips or fails its dependency would skip it)"; _cst_rc=1  # CSM1
+    fi  # CSM1
+    _cst_ifs=$(printf '%s\n' "$_cst_b" | awk '/^    ["\047]?if["\047]?[ \t]*:/ { v = $0; sub(/^    ["\047]?if["\047]?[ \t]*:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); print v }')
+    _cst_allow=""
+    case " $CS_PR_IF_JOBS " in
+      *" $_cst_j "*) _cst_allow=$CS_PR_IF ;;
+    esac
+    if [ -n "$_cst_ifs" ] && [ "$_cst_ifs" != "$_cst_allow" ]; then  # CSM2
+      echo "FAIL: cheap-set — job $_cst_j carries a job-level if: '$_cst_ifs' (a cheap job carries no lane condition; only the obligation jobs may carry exactly: $CS_PR_IF)"; _cst_rc=1  # CSM2
+    fi  # CSM2
+    _cst_nc=$(printf '%s\n' "$_cst_b" | _sj_code | _sj_nk)
+    _cst_al=$(_sj_noalias "cheap job $_cst_j" "$_cst_nc" | sed 's/^FAIL: shard-join — /FAIL: cheap-set — /')  # CSM4
+    if [ -n "$_cst_al" ]; then printf '%s\n' "$_cst_al"; _cst_rc=1; fi  # CSM4
+    if printf '%s\n' "$_cst_nc" | grep -E '^(    |        |      - )continue-on-error[[:space:]]*:' | grep -Evq ':[[:space:]]*false[[:space:]]*$'; then  # CSM5
+      echo "FAIL: cheap-set — job $_cst_j carries a continue-on-error that is not false (a job or step that may fail and still report success)"; _cst_rc=1  # CSM5
+    fi  # CSM5
+    if printf '%s\n' "$_cst_nc" | grep -Eq '\|\|[[:space:]]*(true|:)([^A-Za-z0-9_]|$)|;[[:space:]]*exit[[:space:]]+0([^0-9]|$)'; then  # CSM6
+      echo "FAIL: cheap-set — job $_cst_j has '|| true', '|| :' or '; exit 0' in its run text (a failing command would read as success)"; _cst_rc=1  # CSM6
+    fi  # CSM6
+    _cst_ee=$(_sj_errexit "cheap job $_cst_j" "$_cst_nc" | sed 's/^FAIL: shard-join — /FAIL: cheap-set — /')  # CSM7
+    if [ -n "$_cst_ee" ]; then printf '%s\n' "$_cst_ee"; _cst_rc=1; fi  # CSM7
+  done
+  for _cst_j in $CS_PR_SCOPED; do
+    _cst_b=$(_sj_blk "$1" "$_cst_j" | sed 's/[[:space:]]#.*$//')
+    if [ -z "$_cst_b" ]; then echo "FAIL: cheap-set — PR-scoped job $_cst_j is missing from $1 (a required context that runs on every push of every PR)"; _cst_rc=1; continue; fi
+    if printf '%s\n' "$_cst_b" | grep -Eq '^    ["'"'"']?needs["'"'"']?[[:space:]]*:'; then  # CSM8
+      echo "FAIL: cheap-set — PR-scoped job $_cst_j carries a needs: (a PR-scoped required job waits on nothing: a gate or changes edge would skip it on a draft)"; _cst_rc=1  # CSM8
+    fi  # CSM8
+  done
+  _cst_sg=$(sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#.*$//' "$1" | awk '
+    /(pipx run|pipx install|pip install|pip3 install|uvx|uv tool run|uv run)[ \t]/ {
+      for (i = 1; i <= NF; i++) if ($i ~ /^["\047]?semgrep/) {
+        t = $i; gsub(/["\047]/, "", t)
+        if (t ~ /^semgrep==[0-9]+(\.[0-9]+)+$/) print "V " t; else print "U " NR " " t
+      }
+    }')
+  _cst_u=$(printf '%s\n' "$_cst_sg" | sed -n 's/^U //p')  # CSM3
+  if [ -n "$_cst_u" ]; then  # CSM3
+    printf '%s\n' "$_cst_u" | while IFS= read -r _cst_l; do echo "FAIL: cheap-set — unpinned semgrep (workflow line $_cst_l): every semgrep is semgrep==<x.y.z>"; done  # CSM3
+    _cst_rc=1  # CSM3
+  fi  # CSM3
+  _cst_nv=$(printf '%s\n' "$_cst_sg" | sed -n 's/^V //p' | sort -u | grep -c . || :)
+  if [ "$_cst_nv" -gt 1 ]; then echo "FAIL: cheap-set — semgrep pin drift: $_cst_nv different pinned versions in $1 (one version, bumped everywhere at once)"; _cst_rc=1; fi
+  _cst_sp=$(_sj_blk "$1" sast | sed 's/[[:space:]]#.*$//' | grep -cE 'semgrep==[0-9]+(\.[0-9]+)+' || :)
+  if [ "$_cst_sp" -lt 1 ]; then echo "FAIL: cheap-set — the sast job runs no pinned semgrep (semgrep==<x.y.z>)"; _cst_rc=1; fi
+  [ "$_cst_rc" != 0 ] || echo "OK: cheap-set — the $(printf '%s\n' $CS_JOBS | grep -c .) cheap jobs carry no needs: and no lane if:, and every semgrep is pinned to one version; the $(printf '%s\n' $CS_PR_SCOPED | grep -c .) PR-scoped required jobs wait on nothing"
+  return "$_cst_rc"
+}
+
+# ══ SWAS-382 S1 — SBOM PARITY. The `sbom` job COPIES three blocks of artifact-gate's python leg: the setup-uv step, the extract() function (the yaml reader that finds
+# a step by id in the incepted workflow) and the python assertion that the SBOM inventories the app and not the generator. A copy that drifts from its source
+# would grade something other than the artifact gate grades, so the three blocks must be byte-identical between the two jobs. Python comment lines are
+# dropped before the compare (the artifact gate's copy carries explanatory comments inside the python text; they change no behaviour). A block that is
+# not found in a job is a FAIL (a lock that reads nothing must not pass). CEILING: line-based awk at the indents the kit's workflows use; the for-loop
+# that picks the step ids (`for id in ...`) is not compared (the two jobs run different step lists on purpose: the artifact gate also runs gate-type-check).
+_sbp_cut() {  # <workflow> <job> <setup|extract|assert> -> that block of the job, python comment lines dropped
+  extract_job_block "$1" "$2" | awk -v what="$3" '
+    what == "setup" && /^ +uses: astral-sh\/setup-uv@/ { print; exit }
+    what == "extract" && /^          extract\(\) \{$/ { on = 1 }
+    what == "assert" && /^          python3 -c \047$/ { on = 1 }
+    on && /^ *#/ { next }
+    on { print }
+    what == "extract" && on && /^          \}$/ { exit }
+    what == "assert" && on && /^          \047$/ { exit }'
+}
+check_sbom_parity() {  # <workflow> -> 0 when the sbom job's three copied blocks equal artifact-gate's; 1 with a FAIL line per break
+  [ -f "$1" ] || { echo "FAIL: sbom-parity — $1 is not a file"; return 1; }
+  _sbp_rc=0
+  for _sbp_k in setup extract assert; do
+    _sbp_a=$(_sbp_cut "$1" sbom "$_sbp_k")
+    _sbp_b=$(_sbp_cut "$1" artifact-gate "$_sbp_k")
+    if [ -z "$_sbp_a" ] || [ -z "$_sbp_b" ]; then
+      echo "FAIL: sbom-parity — the $_sbp_k block was not found in both the sbom job and the artifact-gate job (a lock that reads nothing must not pass)"; _sbp_rc=1; continue
+    fi
+    if [ "$_sbp_a" != "$_sbp_b" ]; then  # SBM1
+      echo "FAIL: sbom-parity — the sbom job's $_sbp_k block differs from artifact-gate's python SBOM step (the copy has drifted: edit both)"; _sbp_rc=1  # SBM1
+    fi  # SBM1
+  done
+  [ "$_sbp_rc" != 0 ] || echo "OK: sbom-parity — the sbom job's setup-uv step, extract() function and SBOM assertion equal artifact-gate's"
+  return "$_sbp_rc"
+}
+
+# ══ SWAS-382 S3 (GT) — THE RUNTIME-GATE LOCK (--gate-shape [<workflow> [<decider>]]; the kit block of --own-tree runs it without the decider; the selftest runs it with it) ══
+# The review-before-CI flow (design of record 18.5 as revised by 19.3, 19.12, 19.16, 19.18) puts a `gate` job at the root of ci.yml. What this lock holds (the workflow TEXT, line-based like the rest of this file):
+#   L1  on.pull_request.types is exactly opened, synchronize, reopened, ready_for_review (no labeled, no converted_to_draft)
+#   L3  the gate job: the literal hosted runner, no needs:, no job-level if:, no continue-on-error, exactly four read scopes (contents, pull-requests, issues, actions), a checkout with
+#       fetch-depth: 2 and persist-credentials: false, and no workflow expression inside any run: block (inputs reach the shell through env:)
+#   L4  the revisions: BASE_REV is HEAD^1 and HEAD_REV is HEAD^2, once each, passed as --base-rev and --head-rev; THE DECIDER IS THE BASE'S: the PR path runs a copy extracted by
+#       `git show "$BASE_REV:conformance/ci-gate-state.sh"` from $RUNNER_TEMP, never the checked-out head copy (Architect ruling Q4: a head-edited decider that always says cheap decides nothing)
+#   L5  `changes` waits on the gate and runs only in mode light or full
+#   L6  every job that is not the gate, a cheap job, a PR-scoped required job, the aggregator or ci-time-report reaches the gate through its needs: chain
+#   L7  both shard joins (they run under !cancelled()) carry needs.changes.result == 'success', so a draft's skipped `changes` skips them instead of redding on skipped legs
+#   L9  the aggregator is `if: always()`; S3-SEC-1: its grader is the BASE's (a second checkout of base.sha at .kit-base, once, pull_request only; the base copy runs --aggregate on a
+#       pull request, the head copy only on a push), toJSON(needs) is bound through env (once, never in a run: block), its light step is skipped only on the BASE-DECIDED mode
+#       (if: needs.gate.outputs.mode != 'cheap', never a script output), and that step's RESULTS is written out in the workflow, one needs.<job>.result per light job (derived from the needs: list)
+#   L11 the decider's CHEAP_JOBS equals CS_JOBS (skipped when the decider path is `-`)
+#   L12 the gate step binds BASE_REF from github.base_ref and writes mode=full reason=non-main-base for any other base
+#   L13 any job reached through needs: whose if: holds a status function (always, cancelled, failure) also carries needs.changes.result == 'success' (the aggregator and ci-time-report are exempt)
+#   L14 the decider sources no file (no `.` or `source` line): the base copy must be self-contained
+#   L15 the decider's REQUIRED_NA_JOBS equals the REQUIRED-CHECKS.md contexts that are ci.yml jobs reached through needs: (they skip in cheap mode and the aggregator prints each as N/A)
+# CEILING, stated once: a pull_request run uses the HEAD's ci.yml, so a PR that edits ci.yml can bypass any gate in it, this lock included. That edit is a control-plane diff, caught
+# by review, this lock and the owner's GO, not by the gate. NOT SEEN: a step-level if: on a gate step, a shell: override, an env: key that rewrites PATH.
+GT_PR_TYPES="opened synchronize reopened ready_for_review"
+GT_PERMS="actions=read contents=read issues=read pull-requests=read "
+_gsh_fail() { echo "FAIL: gate-shape — $*"; _gsh_rc=1; }
+_gsh_count() { printf '%s\n' "$1" | grep -cF -- "$2" || :; }   # <text> <fixed string> -> the number of lines holding it
+check_gate_shape() {  # <workflow> [<decider>|-] -> 0 ok; 1 with a FAIL line per break
+  [ -f "$1" ] || { echo "FAIL: gate-shape — $1 is not a file"; return 1; }
+  _gsh_rc=0; _gsh_dc=${2:-$(dirname "$0")/ci-gate-state.sh}
+  _gsh_types=$(sed 's/[[:space:]]#.*$//' "$1" | awk '
+    /^on:[ \t]*$/ { on = 1; next }
+    on && /^[^ \t]/ { on = 0 }
+    on && /^  pull_request:[ \t]*$/ { pr = 1; next }
+    on && pr && /^  [A-Za-z_]/ { pr = 0 }
+    on && pr && /^    types:/ { v = $0; sub(/^    types:[ \t]*/, "", v); gsub(/[\[\],]/, " ", v); n = split(v, t, " "); for (i = 1; i <= n; i++) print t[i] }' | sort | tr '\n' ' ')
+  _gsh_want=$(printf '%s\n' $GT_PR_TYPES | sort | tr '\n' ' ')
+  if [ "$_gsh_types" != "$_gsh_want" ]; then  # GTM2
+    _gsh_fail "pull_request types are [${_gsh_types% }], want exactly [${_gsh_want% }] (no labeled, no converted_to_draft: a push after a conversion is a synchronize, which reads the live draft state)"  # GTM2
+  fi  # GTM2
+  _gsh_blk=$(_sj_blk "$1" gate | sed 's/[[:space:]]#.*$//' | _sj_code | _sj_nk)
+  if [ -z "$_gsh_blk" ]; then _gsh_fail "there is no gate job in $1"; return 1; fi
+  printf '%s\n' "$_gsh_blk" | grep -Eq '^    needs[[:space:]]*:' && _gsh_fail "the gate job carries a needs: (it is the root of the graph and waits on nothing)"
+  printf '%s\n' "$_gsh_blk" | grep -Eq '^    if[[:space:]]*:' && _gsh_fail "the gate job carries a job-level if: (it runs on every event; a skipped gate would skip the whole graph)"
+  printf '%s\n' "$_gsh_blk" | grep -E '^(    |        |      - )continue-on-error[[:space:]]*:' | grep -Evq ':[[:space:]]*false[[:space:]]*$' && _gsh_fail "the gate job carries a continue-on-error that is not false (a job or step that may fail and still report success)"
+  printf '%s\n' "$_gsh_blk" | grep -Fxq '    runs-on: ubuntu-24.04' || _gsh_fail "the gate's runs-on is not the literal ubuntu-24.04 (the gate sits on the hosted floor)"
+  printf '%s\n' "$_gsh_blk" | grep -Eq '^    timeout-minutes:[[:space:]]*[0-9]+[[:space:]]*$' || _gsh_fail "the gate job carries no timeout-minutes"
+  _gsh_perm=$(printf '%s\n' "$_gsh_blk" | awk '/^    permissions:[ \t]*$/ { p = 1; next } p && /^      [A-Za-z-]+:[ \t]*[a-z]+[ \t]*$/ { k = $1; sub(/:$/, "", k); print k "=" $2; next } p { p = 0 }' | sort | tr '\n' ' ')
+  [ "$_gsh_perm" = "$GT_PERMS" ] || _gsh_fail "the gate's permissions are not exactly contents, pull-requests, issues and actions: read (found: ${_gsh_perm:-none})"
+  printf '%s\n' "$_gsh_blk" | grep -Eq '^          persist-credentials:[[:space:]]*false[[:space:]]*$' || _gsh_fail "the gate's checkout lacks persist-credentials: false"
+  printf '%s\n' "$_gsh_blk" | grep -Eq '^          fetch-depth:[[:space:]]*2[[:space:]]*$' || _gsh_fail "the gate's checkout lacks fetch-depth: 2 (HEAD^1 and HEAD^2 need both parents of the merge commit)"
+  _gsh_ex=$(printf '%s\n' "$_gsh_blk" | awk '
+    /^        run:/ { v = $0; sub(/^        run:[ \t]*/, "", v); if (v ~ /^[|>]/) { blk = 1; next } if (v ~ /[$][{][{]/) print NR; next }
+    blk { match($0, /^ */); if (RLENGTH >= 10) { if ($0 ~ /[$][{][{]/) print NR; next } blk = 0 }')
+  [ -z "$_gsh_ex" ] || _gsh_fail "the gate has a workflow expression inside a run: block (job line $(printf '%s' "$_gsh_ex" | tr '\n' ' ')): bind it through env: and read the shell variable"
+  [ "$(_gsh_count "$_gsh_blk" 'BASE_REV=$(git rev-parse HEAD^1)')" = 1 ] || _gsh_fail 'BASE_REV=$(git rev-parse HEAD^1) must appear exactly once in the gate (the base parent of the merge commit)'
+  [ "$(_gsh_count "$_gsh_blk" 'HEAD_REV=$(git rev-parse HEAD^2)')" = 1 ] || _gsh_fail 'HEAD_REV=$(git rev-parse HEAD^2) must appear exactly once in the gate (the head parent of the merge commit)'
+  [ "$(_gsh_count "$_gsh_blk" '--base-rev "$BASE_REV"')" = 1 ] || _gsh_fail 'the gate must pass --base-rev "$BASE_REV" to the decider exactly once'
+  [ "$(_gsh_count "$_gsh_blk" '--head-rev "$HEAD_REV"')" = 1 ] || _gsh_fail 'the gate must pass --head-rev "$HEAD_REV" to the decider exactly once'
+  [ "$(_gsh_count "$_gsh_blk" 'git show "$BASE_REV:conformance/ci-gate-state.sh"')" = 1 ] || _gsh_fail "git show of the BASE revision's conformance/ci-gate-state.sh must appear exactly once in the gate: the decider is the base's, never the head's"
+  printf '%s\n' "$_gsh_blk" | grep -Fxq '          BASE_REF: ${{ github.base_ref }}' || _gsh_fail 'the gate must bind BASE_REF: ${{ github.base_ref }} through env: (a base other than main gets mode=full)'  # GTM6
+  { printf '%s\n' "$_gsh_blk" | grep -Fxq '          if [ "$BASE_REF" != main ]; then' && printf '%s\n' "$_gsh_blk" | grep -Fq "reason=non-main-base"; } || _gsh_fail 'the gate must write mode=full reason=non-main-base when BASE_REF is not main (the conf and the decider it trusts are main'"'"'s)'  # GTM6
+  _gsh_nb=$(_gsh_count "$_gsh_blk" 'sh "$RUNNER_TEMP/base-ci-gate-state.sh" --decide')
+  _gsh_nh=$(printf '%s\n' "$_gsh_blk" | grep -F 'sh conformance/ci-gate-state.sh' | grep -cE -- '--(pr|base-rev|events)( |$)' || :)
+  if [ "$_gsh_nb" != 1 ] || [ "$_gsh_nh" != 0 ]; then  # GTM1
+    _gsh_fail 'the gate runs the head copy of the decider on a pull request (or not the extracted base copy): the PR path must run sh "$RUNNER_TEMP/base-ci-gate-state.sh" --decide, and only the push path may run the checked-out conformance/ci-gate-state.sh'  # GTM1
+  fi  # GTM1
+  _gsh_ch=$(_sj_blk "$1" changes | sed 's/[[:space:]]#.*$//' | _sj_code)
+  printf '%s\n' "$_gsh_ch" | grep -Fxq '    needs: gate' || _gsh_fail "the changes job must carry 'needs: gate' (the light set starts behind the gate)"
+  printf '%s\n' "$_gsh_ch" | grep -Fxq "    if: needs.gate.outputs.mode == 'light' || needs.gate.outputs.mode == 'full'" || _gsh_fail "the changes job must carry the gate-mode if: (needs.gate.outputs.mode == 'light' || needs.gate.outputs.mode == 'full')"
+  _gsh_facts=$(sed 's/[[:space:]]#.*$//' "$1" | awk '
+    /^jobs:[ \t]*$/ { injobs = 1; next }
+    /^[^ \t]/ { injobs = 0 }
+    !injobs { next }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ { j = $1; sub(/:$/, "", j); print "J " j; blk = 0; next }
+    j == "" { next }
+    /^    needs:/ { v = $0; sub(/^    needs:[ \t]*/, "", v); if (v != "") { gsub(/[\[\],]/, " ", v); n = split(v, t, " "); for (i = 1; i <= n; i++) print "N " j " " t[i]; blk = 0 } else blk = 1; next }
+    blk && /^      - / { print "N " j " " $2; next }
+    /^    if:/ { print "I " j " " $0 }
+    blk && !/^      / { blk = 0 }')
+  _gsh_reach=$(printf '%s\n' "$_gsh_facts" | awk -v ex=" gate $CS_JOBS $CS_PR_SCOPED conformance ci-time-report " '
+    $1 == "J" { order[++nj] = $2 }
+    $1 == "N" { need[$2, ++nn[$2]] = $3 }
+    END {
+      reach["gate"] = 1
+      do { ch = 0
+        for (i = 1; i <= nj; i++) { j = order[i]; if (reach[j]) continue
+          for (k = 1; k <= nn[j]; k++) if (reach[need[j, k]]) { reach[j] = 1; ch = 1; break } }
+      } while (ch)
+      for (i = 1; i <= nj; i++) { j = order[i]; if (!reach[j] && index(ex, " " j " ") == 0) print "U " j; if (reach[j] && j != "gate") print "R " j } }')
+  _gsh_unreached=$(printf '%s\n' "$_gsh_reach" | sed -n 's/^U //p')
+  _gsh_reached=$(printf '%s\n' "$_gsh_reach" | sed -n 's/^R //p')
+  if [ -n "$_gsh_unreached" ]; then  # GTM3
+    for _gsh_u in $_gsh_unreached; do _gsh_fail "job $_gsh_u does not reach the gate through its needs: chain (give it needs: changes, or list it as a cheap, PR-scoped, aggregator or report job)"; done  # GTM3
+  fi  # GTM3
+  for _gsh_j in conformance-docs conformance-selftests; do
+    _gsh_if=$(_sj_blk "$1" "$_gsh_j" | sed 's/[[:space:]]#.*$//' | grep -E '^    if:' || :)
+    case "$_gsh_if" in *"!cancelled() && needs.changes.result == 'success' &&"*) : ;; *) _gsh_fail "the $_gsh_j join's if: lacks needs.changes.result == 'success' behind !cancelled() (a draft's skipped changes must skip the join, not red it on skipped legs)" ;; esac  # GTM4
+  done
+  for _gsh_j in $_gsh_reached; do  # GTM5
+    if [ "$_gsh_j" = conformance ] || [ "$_gsh_j" = ci-time-report ]; then continue; fi  # GTM5
+    _gsh_if=$(printf '%s\n' "$_gsh_facts" | awk -v jb="$_gsh_j" '$1 == "I" && $2 == jb' || :)  # GTM5
+    case "$_gsh_if" in *"always()"*|*"cancelled()"*|*"failure()"*) _gsh_sf=1 ;; *) _gsh_sf=0 ;; esac  # GTM5
+    if [ "$_gsh_sf" = 1 ] && ! printf '%s\n' "$_gsh_if" | grep -qF "needs.changes.result == 'success'"; then  # GTM5
+      _gsh_fail "job $_gsh_j runs under a status function (always, cancelled or failure) but its if: lacks needs.changes.result == 'success' (a draft's skipped changes must skip it, not red it)"  # GTM5
+    fi  # GTM5
+  done  # GTM5
+  _gsh_ag=$(_sj_blk "$1" conformance | sed 's/[[:space:]]#.*$//' | _sj_code | _sj_nk)
+  printf '%s\n' "$_gsh_ag" | grep -Fxq '    if: always()' || _gsh_fail "the conformance aggregator must carry exactly 'if: always()' (a skipped required context blocks the merge forever)"
+  printf '%s\n' "$_gsh_ag" | grep -Fxq '        id: lane' || _gsh_fail "the aggregator's grading step must carry id: lane"
+  if [ "$(_gsh_count "$_gsh_ag" 'ref: ${{ github.event.pull_request.base.sha }}')" != 1 ] || ! printf '%s\n' "$_gsh_ag" | grep -Fxq '          path: .kit-base' || ! printf '%s\n' "$_gsh_ag" | grep -Fxq "        if: github.event_name == 'pull_request'"; then  # GTM11
+    _gsh_fail "the aggregator must check out the BASE commit once beside the head (ref: the pull request's base.sha, path: .kit-base, only on a pull_request): the grader is the base's, never the head's (S3-SEC-1)"  # GTM11
+  fi  # GTM11
+  _gsh_ab=$(_gsh_count "$_gsh_ag" 'sh .kit-base/conformance/ci-gate-state.sh --aggregate "$RUNNER_TEMP/needs.json" "$EVENT"')
+  _gsh_ah=$(printf '%s\n' "$_gsh_ag" | grep -F 'sh conformance/ci-gate-state.sh' | grep -cF -- '--aggregate' || :)
+  _gsh_ahp=$(printf '%s\n' "$_gsh_ag" | grep -Fxc '            sh conformance/ci-gate-state.sh --aggregate "$RUNNER_TEMP/needs.json" "$EVENT"' || :)
+  if [ "$_gsh_ab" != 1 ] || [ "$_gsh_ah" != 1 ] || [ "$_gsh_ahp" != 1 ]; then  # GTM7
+    _gsh_fail "the aggregator must run the extracted base grader on a pull request (sh .kit-base/conformance/ci-gate-state.sh --aggregate ...) and the checked-out copy only on the push path (inside if [ \"\$EVENT\" != pull_request ]), once each"  # GTM7
+  fi  # GTM7
+  printf '%s\n' "$_gsh_ag" | grep -Fxq '          NEEDS_JSON: ${{ toJSON(needs) }}' || _gsh_fail 'NEEDS_JSON: ${{ toJSON(needs) }} must be bound through env: in the aggregator'
+  [ "$(_gsh_count "$_gsh_ag" 'toJSON(needs)')" = 1 ] || _gsh_fail "toJSON(needs) must appear exactly once in the aggregator, in its env: (never interpolated into a run: block)"
+  printf '%s\n' "$_gsh_ag" | grep -Fxq "        if: needs.gate.outputs.mode != 'cheap'" || _gsh_fail "the light step must carry exactly \"if: needs.gate.outputs.mode != 'cheap'\" (it is skipped only on the base-decided mode, never on a script output; S3-SEC-1)"  # GTM8
+  printf '%s\n' "$_gsh_ag" | grep -F 'steps.lane.outputs' | grep -Evq '^[[:space:]]*$' && _gsh_fail "the aggregator reads a steps.lane output: no script output may decide the light step or its results (S3-SEC-1)"  # GTM8
+  _gsh_want_res=$(printf '%s\n' "$_gsh_facts" | awk -v ex=" gate $CS_JOBS " '$1 == "N" && $2 == "conformance" && index(ex, " " $3 " ") == 0 { printf "%s${{ needs.%s.result }}", (n++ ? " " : ""), $3 }')
+  _gsh_got_res=$(printf '%s\n' "$_gsh_ag" | sed -n 's/^          RESULTS: //p')
+  if [ -z "$_gsh_want_res" ] || [ "$_gsh_got_res" != "$_gsh_want_res" ]; then  # GTM8
+    _gsh_fail "the light step's RESULTS must be written out in the workflow, one needs.<job>.result per light job in the aggregator's needs: order (S3-SEC-1; wanted: $_gsh_want_res; found: ${_gsh_got_res:-none})"  # GTM8
+  fi  # GTM8
+  [ "$(_gsh_count "$_gsh_ag" 'GATE_RESULT: ${{ needs.gate.result }}')" = 2 ] || _gsh_fail "the aggregator must bind GATE_RESULT: \${{ needs.gate.result }} through env: in the grading step and in the light step (the light step's own gate check)"
+  if [ "$_gsh_dc" != - ]; then
+    _gsh_cj=$(sed -n 's/^CHEAP_JOBS="\(.*\)"$/\1/p' "$_gsh_dc" 2>/dev/null | head -n 1)
+    { [ -n "$_gsh_cj" ] && [ "$_gsh_cj" = "$CS_JOBS" ]; } || _gsh_fail "the decider's CHEAP_JOBS ('$_gsh_cj') differs from CS_JOBS ('$CS_JOBS') in $_gsh_dc"
+    _gsh_src=$(sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' "$_gsh_dc" 2>/dev/null | grep -E '(^[[:space:]]*|[;&|][[:space:]]*|(then|do|else)[[:space:]]+)(\.|source)[[:space:]]+[^[:space:]=!]' | head -n 1 || :)
+    [ -z "$_gsh_src" ] || _gsh_fail "the decider sources a file ('$_gsh_src'): the base copy must be self-contained, or a head-side library would decide again (S3-SEC-4)"  # GTM9
+    _gsh_rq="$(dirname "$0")/../REQUIRED-CHECKS.md"
+    if [ -f "$_gsh_rq" ]; then
+      _gsh_rn=$(sed -n 's/^REQUIRED_NA_JOBS="\(.*\)"$/\1/p' "$_gsh_dc" 2>/dev/null | head -n 1)
+      _gsh_rwant=''
+      for _gsh_c in $(awk '/^```/ { f = !f; next } f { print $1 }' "$_gsh_rq"); do
+        if [ "$_gsh_c" = conformance ] || [ "$_gsh_c" = ci-time-report ]; then continue; fi
+        case " $(printf '%s' "$_gsh_reached" | tr '\n' ' ') " in *" $_gsh_c "*) _gsh_rwant="$_gsh_rwant${_gsh_rwant:+ }$_gsh_c" ;; esac
+      done
+      { [ -n "$_gsh_rwant" ] && [ "$_gsh_rn" = "$_gsh_rwant" ]; } || _gsh_fail "the decider's REQUIRED_NA_JOBS ('$_gsh_rn') differs from the required contexts that skip in cheap mode ('$_gsh_rwant'): each must print an N/A line (S3-SEC-3)"  # GTM10
+    fi
+  fi
+  [ "$_gsh_rc" != 0 ] || echo "OK: gate-shape — four-type pull_request trigger; a gate job on the hosted floor that waits on nothing, reads the base parent's decider and the live state; changes behind it; every light job reaches it; both joins skip with changes; the aggregator grades through ci-gate-state.sh"
+  return "$_gsh_rc"
+}
+
 selftest() {
   _st_begin
   sf=0
+  _unv_f=$d/unverified   # SWAS-577: the marker file of grep calls that could not answer (read by _st_end through _unv_end)
+  : > "$_unv_f" || { echo "selftest FAIL: the UNVERIFIED marker file cannot be created ($_unv_f), so an unanswered grep could not be recorded"; sf=1; }
   mkdir -p "$d/scripts"
   # a stand-in kit script whose dispatch supports exactly: new-trace | span | --selftest
   printf '#!/bin/sh\ncase "${1:-}" in\n  --selftest) exit 0 ;;\n  new-trace) exit 0 ;;\n  span) exit 0 ;;\n  *) exit 2 ;;\nesac\n' > "$d/scripts/otel-trace.sh"
@@ -2076,7 +3035,7 @@ selftest() {
       printf '      - id: %s\n' "$g"; done
     printf '      - run: sh scripts/otel-trace.sh --bogus\n'; } > "$d/mainpath.yml"
   if _out=$(sh "$0" "$d/mainpath.yml" 2>&1); then _rc=0; else _rc=$?; fi
-  if [ "$_rc" -ne 0 ] && printf '%s' "$_out" | grep -q "does not resolve"; then
+  if [ "$_rc" -ne 0 ] && _has "$_out" "does not resolve"; then
     echo "selftest PASS: main path acts on the seam failure"
   else
     echo "selftest FAIL: main path did not act on the seam failure (rc=$_rc): $_out"; sf=1
@@ -2092,7 +3051,7 @@ selftest() {
     printf '      - run: sh "scripts/otel-trace.sh" new-trace\n'; } > "$d/invisible.yml"
   if _o1=$(sh "$0" "$d/invisible.yml" 2>&1); then _r1=0; else _r1=$?; fi
   if _o2=$(sh "$0" "$d/invisible.yml" --expect-seams 2>&1); then _r2=0; else _r2=$?; fi
-  if [ "$_r1" -eq 0 ] && [ "$_r2" -ne 0 ] && printf '%s' "$_o2" | grep -q "ZERO kit-owned invocations"; then
+  if [ "$_r1" -eq 0 ] && [ "$_r2" -ne 0 ] && _has "$_o2" "ZERO kit-owned invocations"; then
     echo "selftest PASS: --expect-seams turns an empty match set into a failure"
   else
     echo "selftest FAIL: --expect-seams inert (default rc=$_r1, expect-seams rc=$_r2): $_o2"; sf=1
@@ -2105,7 +3064,7 @@ selftest() {
       printf '      - id: %s\n' "$g"; done
     printf '      - run: sh scripts/otel-trace.sh 2>/dev/null\n'; } > "$d/fdonly.yml"
   if _o3=$(sh "$0" "$d/fdonly.yml" --expect-seams 2>&1); then _r3=0; else _r3=$?; fi
-  if [ "$_r3" -ne 0 ] && printf '%s' "$_o3" | grep -q "ZERO kit-owned invocations"; then
+  if [ "$_r3" -ne 0 ] && _has "$_o3" "ZERO kit-owned invocations"; then
     echo "selftest PASS: a filtered-out token does not count as judged"
   else
     echo "selftest FAIL: filtered token counted as judged (rc=$_r3): $_o3"; sf=1
@@ -2137,7 +3096,7 @@ selftest() {
   _ot_case() { # <name> <root> <want-rc> <want-substr> <desc> — one own-tree run through the REAL entry point
     _oc_n=$1; _oc_r=$2; _oc_rc=$3; _oc_s=$4; _oc_d=$5
     if _oc_out=$(sh "$0" --own-tree "$_oc_r" 2>&1); then _oc_got=0; else _oc_got=$?; fi
-    if [ "$_oc_got" = "$_oc_rc" ] && printf '%s' "$_oc_out" | grep -qF -- "$_oc_s"; then
+    if [ "$_oc_got" = "$_oc_rc" ] && _has "$_oc_out" "$_oc_s"; then
       echo "selftest PASS: $_oc_n — $_oc_d"
     else
       echo "selftest FAIL: $_oc_n — $_oc_d (rc=$_oc_got want $_oc_rc, want text '$_oc_s'): $_oc_out"; sf=1
@@ -2168,7 +3127,7 @@ selftest() {
   _ot_gh "$d/ot2" 1 gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-provenance
   _ot_case OT2 "$d/ot2" 1 "gate-sbom" "emitted pipeline missing gate-sbom -> RED naming it (spine AC)"
   if _o2=$(sh "$0" --own-tree "$d/ot2" 2>&1); then :; fi
-  if printf '%s' "$_o2" | grep -qF "RESTORE the id" && printf '%s' "$_o2" | grep -qF "gate-dispositions.txt"; then
+  if _has "$_o2" "RESTORE the id" && _has "$_o2" "gate-dispositions.txt"; then
     echo "selftest PASS: OT2b — the FAIL names both remedies (restore the id / declare na-with-reason)"
   else
     echo "selftest FAIL: OT2b — the FAIL must name BOTH remedies at the point it fires (finding 1): $_o2"; sf=1
@@ -2206,7 +3165,7 @@ selftest() {
   _ot_gh "$d/ot7" 0
   _ot_case OT7 "$d/ot7" 0 "ADOPTER-OWNED" "foreign unmarked pipeline -> disclosed N/A, not FAIL"
   if _o7=$(sh "$0" --own-tree "$d/ot7" 2>&1); then :; fi
-  if printf '%s' "$_o7" | grep -qF "gate-dispositions.txt"; then
+  if _has "$_o7" "gate-dispositions.txt"; then
     echo "selftest PASS: OT7b — the disclosed N/A still names the disposition remedy"
   else
     echo "selftest FAIL: OT7b — the ADOPTER-OWNED N/A must still name the remedies: $_o7"; sf=1
@@ -2292,10 +3251,12 @@ selftest() {
   _dq_case DQ4 gate-lint "$d/dq4/conformance/gate-dispositions.txt" apply "an INVALID disposition file -> fails safe to apply (loud, never quiet)"
   # DQ4b: the invalid-file case must WARN on stderr — fail-safe toward LOUD, never silent.
   if _dq4err=$(sh "$0" --disposition gate-lint "$d/dq4/conformance/gate-dispositions.txt" 2>&1 >/dev/null); then :; fi
-  if printf '%s' "$_dq4err" | grep -qi "fail-safe"; then
+  _grepx "$_dq4err" -qi "fail-safe" && _dq4=0 || _dq4=$?
+  if [ "$_dq4" -eq 0 ]; then
     echo "selftest PASS: DQ4b — an invalid disposition file WARNS on stderr (not silently loud)"
-  else
+  elif [ "$_dq4" -eq 1 ]; then
     echo "selftest FAIL: DQ4b — an invalid disposition file must warn on stderr: $_dq4err"; sf=1
+  else sf=1   # rc 2: _grepx already printed UNVERIFIED (grep rc=N) and marked the run: neither PASS nor FAIL, and the run is red even if the marker could not be written
   fi
   # DQ5 (mutant-kill anchor for the fail-safe direction): an invalid file must NEVER print na — that
   # would be the fail-quiet direction the design explicitly rejects (§4.1: "defaults to apply — fail-
@@ -2320,7 +3281,7 @@ selftest() {
     printf 'jobs:\n  j:\n    %s\n' "$4" > "$d/rp/$1.yml"
     if _rp_o=$(check_runner_pinned "$d/rp/$1.yml" 2>&1); then
       echo "selftest FAIL: $1 — $3 was NOT caught"; sf=1
-    elif printf '%s\n' "$_rp_o" | grep -qF -- "'$2'" && printf '%s\n' "$_rp_o" | grep -qF -- "$d/rp/$1.yml"; then
+    elif _has "$_rp_o" "'$2'" && _has "$_rp_o" "$d/rp/$1.yml"; then
       echo "selftest PASS: $1 — $3 -> RED, naming '$2' and the file"
     else echo "selftest FAIL: $1 — $3 reds without naming '$2' and the file: $_rp_o"; sf=1; fi
   }
@@ -2408,7 +3369,7 @@ selftest() {
         _pc_id=${_pc_r%%:*}; _pc_desc=${_pc_r#*:}
         if _pc_o=$(check_pr_concurrency "$d/pc/$_pc_f.yml" 2>&1); then
           echo "selftest FAIL: $_pc_id — $_pc_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_pc_o" | grep -qF -- "$_pc_want"; then
+        elif _has "$_pc_o" "$_pc_want"; then
           echo "selftest PASS: $_pc_id — $_pc_desc -> RED, naming '$_pc_want'"
         else echo "selftest FAIL: $_pc_id — $_pc_desc reds without naming '$_pc_want': $_pc_o"; sf=1; fi
       done
@@ -2419,6 +3380,8 @@ selftest() {
       cp "$_pc_real" "$d/pc7/.github/workflows/ci.yml"
       cp "$_kr/.github/workflows/golden-path.yml" "$d/pc7/.github/workflows/golden-path.yml"
       cp "$_kr/conformance/gate-dispositions.txt" "$d/pc7/conformance/gate-dispositions.txt"
+      cp "$_kr/conformance/selftest-hermetic.sh" "$d/pc7/conformance/selftest-hermetic.sh"  # SWAS-460: a kit-marked tree owes the core-face list (CG)
+      cp "$_kr/.github/workflows/$KIT_MACOS_WORKFLOW" "$d/pc7/.github/workflows/$KIT_MACOS_WORKFLOW"  # SWAS-552: a kit-marked tree owes the on-demand macOS workflow
       _ot_case PC7 "$d/pc7" 0 "OK: ci-gates --own-tree" "the real pair on a kit-marked tree -> green"
       cp "$d/pc/m1.yml" "$d/pc7/.github/workflows/ci.yml"
       _ot_case PC8 "$d/pc7" 1 "cancel-in-progress" "--own-tree reds a kit tree whose ci.yml cancels every run"
@@ -2449,7 +3412,7 @@ selftest() {
           echo "selftest FAIL: $_sp_id — the mutant equals the original (nothing to mutate; the spans line is not pinned)"; sf=1
         elif _sp_o=$(check_sast_parse_spans "$d/sp/$_sp_f.yml" 2>&1); then
           echo "selftest FAIL: $_sp_id — $_sp_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_sp_o" | grep -qF -- "$_sp_want"; then
+        elif _has "$_sp_o" "$_sp_want"; then
           echo "selftest PASS: $_sp_id — $_sp_desc -> RED, naming '$_sp_want'"
         else echo "selftest FAIL: $_sp_id — $_sp_desc reds without naming '$_sp_want': $_sp_o"; sf=1; fi
       done
@@ -2490,7 +3453,7 @@ selftest() {
           echo "selftest FAIL: $_gd_id — the mutant equals the original (nothing to mutate; the step is not pinned)"; sf=1
         elif _gd_o=$(check_guard_delta_step "$d/gd/$_gd_f.yml" 2>&1); then
           echo "selftest FAIL: $_gd_id — $_gd_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_gd_o" | grep -qF -- "$_gd_want"; then
+        elif _has "$_gd_o" "$_gd_want"; then
           echo "selftest PASS: $_gd_id — $_gd_desc -> RED, naming '$_gd_want'"
         else echo "selftest FAIL: $_gd_id — $_gd_desc reds without naming '$_gd_want': $_gd_o"; sf=1; fi
       done
@@ -2582,18 +3545,47 @@ selftest() {
       awk '{ print } /^ +sh conformance\/boundary-redteam\.sh --settings .* --measure / { print }' "$_br_real" > "$d/br/m21.yml"
       sed 's/--measure C36,C37,C37c$/--measure C36,C37,C37c || true/' "$_br_real" > "$d/br/m22.yml"
       awk '{ print } /^ +sh conformance\/boundary-redteam\.sh --settings .* --measure / { print "          [ \"$?\" -eq 3 ] && exit 0" }' "$_br_real" > "$d/br/m23.yml"
-      sed 's/!cancelled() [&][&] //' "$_br_real" > "$d/br/m24.yml"
+      # SWAS-460: step 5 (the full self-test) now carries the same `!cancelled()` form, so BR24 strips it from the candidate step ALONE (a bare sed would hit both
+      # steps and the first-problem text would name step 5) and BR32 strips it from step 5 alone; BR33 sets the job timeout back to the old 90 (the pin is 45 since SWAS-560; 180 was the interim bound of the owner's ruling of 2026-10-30).
+      awk '/^      - name: Boundary red-team — candidate leg/ { f = 1 } f && /^        if: / { sub(/!cancelled\(\) [&][&] /, ""); f = 0 } { print }' "$_br_real" > "$d/br/m24.yml"
+      awk '/^      - name: Boundary red-team harness full self-test/ { f = 1 } f && /^        if: / { sub(/!cancelled\(\) [&][&] /, ""); f = 0 } { print }' "$_br_real" > "$d/br/m32.yml"
+      awk '/^  boundary-redteam:/ { inb = 1 } inb && /^    timeout-minutes: / { print "    timeout-minutes: 90"; inb = 0; next } { print }' "$_br_real" > "$d/br/m33.yml"
       sed 's/strictAllowlist = true/strictAllowlist = false/' "$_br_real" > "$d/br/m25.yml"
       sed 's/--measure C36,C37,C37c$/--measure C36/' "$_br_real" > "$d/br/m26.yml"
       sed '/^          if git -C /d' "$_br_real" > "$d/br/m27.yml"
       sed '/^          test -f /d' "$_br_real" > "$d/br/m29.yml"
       sed 's/ conformance\/boundary-redteam\.sh; then/; then  # conformance\/boundary-redteam.sh;/' "$_br_real" > "$d/br/m30.yml"
       sed 's/ -- \.claude\/settings\.json templates/ -- templates/; s/boundary-redteam\.sh; then$/boundary-redteam.sh; then  # .claude\/settings.json/' "$_br_real" > "$d/br/m31.yml"
-      for _br_m in "m20:the step named Boundary red-team — candidate leg:BR20:the candidate step deleted" \
+      # BR42-BR52 (SWAS-471; BR52 is SWAS-497's report-only literal control made gating): the temp-root git measurement step (renumbered from BR32-BR41 at the merge of SWAS-460, which took BR32/BR33). Each mutant is a scratch copy of the real ci.yml and must red AND name its cause.
+      awk '/^      - name: Boundary red-team — temp-root git cells/ { skip = 1; next } skip && /^      - / { skip = 0 } skip && /^  [a-z]/ { skip = 0 } !skip' "$_br_real" > "$d/br/m42.yml"
+      sed 's/leg\.out" 2>&1 || rc=\$?/leg.out" 2>\&1 || true/' "$_br_real" > "$d/br/m43.yml"
+      sed 's/ 21 || bad=1$/ 21/' "$_br_real" > "$d/br/m44.yml"
+      sed 's/--measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u >/--measure C42 >/' "$_br_real" > "$d/br/m45.yml"
+      sed '/--leg-verdict "\$rc"/d' "$_br_real" > "$d/br/m49.yml"
+      sed 's/leg\.out" 21 || bad=1$/leg.out" 20 || bad=1/' "$_br_real" > "$d/br/m50.yml"
+      awk '/^      # The full self-test with all/ { print "      - name: Extra measurement line"; print "        run: |"; print "          sh conformance/boundary-redteam.sh --settings x.json --measure C1" } { print }' "$_br_real" > "$d/br/m51.yml"
+      sed 's/candidate-literal\.json" --measure C42 || :$/candidate-literal.json" --measure C42 || bad=1/' "$_br_real" > "$d/br/m52.yml"
+      sed '/candidate-desc\.json"$/d' "$_br_real" > "$d/br/m46.yml"
+      awk '{ print } /^ +sh conformance\/boundary-redteam\.sh --settings "\$s" --measure C42/ { print }' "$_br_real" > "$d/br/m47.yml"
+      awk '/^      - name: Boundary red-team — temp-root git cells/ { f = 1 } f && /^        if: / { print "        if: false"; f = 0; next } { print }' "$_br_real" > "$d/br/m48.yml"
+      for _br_m in "m42:the step named Boundary red-team — temp-root git cells:BR42:the temp-root step deleted" \
+                   "m43:must be the pinned pair:BR43:|| true on the temp-root run line" \
+                   "m44:the temp-root step's body must be exactly:BR44:the leg-verdict grade unread (|| bad=1 dropped), so a red grade could not red the step" \
+                   "m49:the temp-root step's body must be exactly:BR49:the leg-verdict call deleted, so the INCONCLUSIVE check never runs and one OPEN hides a VOID" \
+                   "m50:the temp-root step's body must be exactly:BR50:the expected cell count changed in the leg-verdict call" \
+                   "m52:the temp-root step's body must be exactly:BR52:the SWAS-497 literal control made gating (|| : became || bad=1)" \
+                   "m51:exactly three '--measure' run lines:BR51:a third, unpinned --measure run line in the job" \
+                   "m45:the temp-root step's body must be exactly:BR45:the temp-root run line's --measure list narrowed" \
+                   "m46:the temp-root step's body must be exactly:BR46:the descendant-row jq line removed from the temp-root step" \
+                   "m47:must run the temp-root leg:BR47:the temp-root run line doubled" \
+                   "m48:must be gated:BR48:the temp-root step's if: set to false" \
+                   "m20:the step named Boundary red-team — candidate leg:BR20:the candidate step deleted" \
                    "m21:must run the candidate leg:BR21:the candidate run line doubled" \
                    "m22:the candidate step's body must be exactly:BR22:|| true added to the candidate run line" \
                    "m23:the candidate step's body must be exactly:BR23:an exit 0 after exit 3 planted after the candidate run line" \
                    "m24:the step named Boundary red-team — candidate leg:BR24:!cancelled() dropped from the candidate step's if:" \
+                   "m32:the step named Boundary red-team harness full self-test:BR32:!cancelled() dropped from the full self-test step's if: (a red live-cells step would skip the mutant grade)" \
+                   "m33:timeout-minutes bound of 45:BR33:the job timeout set back to 90 (the bound before the SWAS-560 ruling)" \
                    "m25:the candidate step's body must be exactly:BR25:the strictAllowlist jq line altered" \
                    "m26:the candidate step's body must be exactly:BR26:the candidate run line's --measure list narrowed" \
                    "m27:the candidate step's body must be exactly:BR27:the patch apply line removed" \
@@ -2645,10 +3637,270 @@ selftest() {
           echo "selftest FAIL: $_br_id — the mutant equals the original (nothing to mutate; the job is not pinned)"; sf=1
         elif _br_o=$(check_boundary_redteam_step "$d/br/$_br_f.yml" 2>&1); then
           echo "selftest FAIL: $_br_id — $_br_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_br_o" | grep -qF -- "$_br_want"; then
+        elif _has "$_br_o" "$_br_want"; then
           echo "selftest PASS: $_br_id — $_br_desc -> RED, naming '$_br_want'"
         else echo "selftest FAIL: $_br_id — $_br_desc reds without naming '$_br_want': $_br_o"; sf=1; fi
       done
+      # BR0m, BR53-BR98 (SWAS-552, rev 1.3; BR94-BR98 and their -M mutants are the fail-closed captures, see below) — the on-demand macOS workflow (boundary-redteam-macos.yml). BR0m is the positive control on the REAL pair; each mutant is a SCRATCH COPY of the macOS workflow (or, for
+      # BR74, of ci.yml) graded by check_boundary_macos_leg directly and must red AND name its cause. Runner: BR53 the KIT_CI_RUNNER-style expression, BR54 macos-latest. Settings: BR55 continue-on-error removed, BR56 the
+      # timeout, BR57 the job permission widened, BR88 the workflow permission widened. Trigger: BR59 adds pull_request, BR60 adds push. Spelling: BR61 an unpinned action, BR62 a quoted uses value, BR63 a flow-style
+      # key, BR64 a quoted key. Checkout: BR58 persist-credentials moved off the checkout step, BR65 another SHA than Linux's. Inheritance: BR66 a shell: key, BR67 a second env: key, BR68 a GITHUB_ENV write, BR69 a
+      # second GITHUB_PATH write, BR70 the profile input on a run line. Resolver: BR71 PROFILE env renamed, BR72 the unknown-profile arm exits 0, BR75 a subset-rule breach. Parity: BR73 a cell dropped from full,
+      # BR74 a cell added on the Linux side only. Graded body: BR76 a leg dropped, BR77 a constant exit code graded, BR78 bad=1 at the start, BR79 exit before the loop, BR80 a stray exit 0, BR81 a changed step if:.
+      # Extras: BR82 the mask dropped, BR83 the step if: changed, BR84 an unlisted harness line. Others: BR85 retention-days removed, BR86 the ripgrep checksum altered, BR87 the jq presence check removed, BR89 a second
+      # job appended, BR90 the file absent. Extras run body (fix round 2): BR99 a bash-spelled line, BR100 an sh ./ line, BR101 a curl line, BR102 a chained command on a candidate-shaped line, BR103 the clean candidate line stays green. Candidate-line allowlist (fix round 4): BR104 a single &, BR105 <(, BR106 >(, BR107 an unclosed heredoc, BR108 a redirect into leg-1.out, BR109 >> the step summary, BR110 --measure, BR111 a backtick, BR112 a dollar-paren, BR113 a pipe, BR114 &&, BR115 a redirect into C42R.out (other case), each with its -M mutant (BRMT/BRMM/BRMG rule tags); BR116 a fresh macos-out redirect stays green.
+      mkdir -p "$d/bm"
+      _bq_mac="$_kr/.github/workflows/$KIT_MACOS_WORKFLOW"
+      _bq_in() { awk "$1" "$_bq_mac"; }   # <awk program>: a rewrite of the real macOS workflow
+      if check_boundary_macos_leg "$_br_real" "$_bq_mac" >/dev/null 2>&1; then
+        echo "selftest PASS: BR0m — the real macOS workflow is dispatch-only, the literal macos-15, report-only, bounded, least-privilege, pinned, exact in its steps and in parity with the Linux job"
+        _bq_in '/^    runs-on:/ { print "    runs-on: ${{ vars.KIT_CI_RUNNER || \047macos-15\047 }}"; next } { print }' > "$d/bm/m53.yml"
+        _bq_in '/^    runs-on:/ { print "    runs-on: macos-latest"; next } { print }' > "$d/bm/m54.yml"
+        _bq_in '/^    continue-on-error:/ { next } { print }' > "$d/bm/m55.yml"
+        _bq_in '/^    timeout-minutes:/ { print "    timeout-minutes: 45"; next } { print }' > "$d/bm/m56.yml"
+        _bq_in '/^      contents: read$/ { print "      contents: write"; next } { print }' > "$d/bm/m57.yml"
+        _bq_in '/^          persist-credentials: false/ { next } { print } /^          node-version: / { print "          persist-credentials: false" }' > "$d/bm/m58.yml"
+        _bq_in '/^on:$/ { print; print "  pull_request:"; next } { print }' > "$d/bm/m59.yml"
+        _bq_in '/^on:$/ { print; print "  push:"; next } { print }' > "$d/bm/m60.yml"
+        _bq_in '/uses: actions\/upload-artifact@/ { sub(/@[0-9a-f]+/, "@v4") } { print }' > "$d/bm/m61.yml"
+        _bq_in '/uses: actions\/upload-artifact@/ { sub(/uses: /, "uses: \"") ; sub(/  # v4/, "\"  # v4") } { print }' > "$d/bm/m62.yml"
+        _bq_in '/^    permissions:$/ { print "    permissions: { contents: read }"; getline; next } { print }' > "$d/bm/m63.yml"
+        _bq_in '/^    runs-on:/ { print "    \"runs-on\": macos-15"; next } { print }' > "$d/bm/m64.yml"
+        _bq_in '/uses: actions\/checkout@/ { sub(/@[0-9a-f]+/, "@0000000000000000000000000000000000000000") } { print }' > "$d/bm/m65.yml"
+        _bq_in '/name: Install Node 24/ { print; print "        shell: sh"; next } { print }' > "$d/bm/m66.yml"
+        _bq_in '/name: Tools / { print; print "        env:"; next } { print }' > "$d/bm/m67.yml"
+        _bq_in '/^          bad=0$/ { print; print "          echo y >> \"$GITHUB_ENV\""; next } { print }' > "$d/bm/m68.yml"
+        _bq_in '/^          echo "C42R real-path cell, alone/ { print "          echo /x >> \"$GITHUB_PATH\"" } { print }' > "$d/bm/m69.yml"
+        _bq_in '/^          cells=[$]\(cat / { print "          cells=${{ inputs.profile }}"; next } { print }' > "$d/bm/m70.yml"
+        _bq_in '/^          PROFILE: / { sub(/PROFILE: /, "PROFILEX: ") } { print }' > "$d/bm/m71.yml"
+        _bq_in '/^            [*]\) echo "::error::unknown profile"; exit 1 ;;$/ { print "            *) echo \"::error::unknown profile\"; exit 0 ;;"; next } { print }' > "$d/bm/m72.yml"
+        _bq_in '/^            full\) cells=/ { sub(/,C42s/, "") } { print }' > "$d/bm/m73.yml"
+        awk '/--measure / && /leg[.]out" 2>&1/ { sub(/,C73u >/, ",C73u,C42z >") } { print }' "$_br_real" > "$d/bm/c74.yml"
+        _bq_in '/^            534\) cells=/ { sub(/ ;;/, ",C99 ;;") } { print }' > "$d/bm/m75.yml"
+        _bq_in '/for s in / { sub(/ "[$]RUNNER_TEMP\/c42\/candidate-desc[.]json"; do/, "; do") } { print }' > "$d/bm/m76.yml"
+        _bq_in '/--leg-verdict/ && /^ +sh / { sub(/--leg-verdict "[$]rc"/, "--leg-verdict 0") } { print }' > "$d/bm/m77.yml"
+        _bq_in '/^          bad=0$/ { print "          bad=1"; next } { print }' > "$d/bm/m78.yml"
+        _bq_in '/^          exit "[$]bad"$/ { next } /^          for s in / { print "          exit \"$bad\"" } { print }' > "$d/bm/m79.yml"
+        _bq_in '/^          done$/ { print "          exit 0" } { print }' > "$d/bm/m80.yml"
+        _bq_in '/name: macOS boundary red-team — graded/ { g = 1 } g && /^        if: / { print "        if: always()"; g = 0; next } { print }' > "$d/bm/m81.yml"
+        _bq_in '/--measure C42R / { sub(/ [|][|] :$/, "") } { print }' > "$d/bm/m82.yml"
+        _bq_in '/name: macOS boundary red-team — report-only extras/ { g = 1 } g && /^        if: / { print "        if: always()"; g = 0; next } { print }' > "$d/bm/m83.yml"
+        _bq_in '/^          echo "C42R real-path cell, alone/ { print "          sh conformance/boundary-redteam.sh --settings .claude/settings.json --measure C36 || :" } { print }' > "$d/bm/m84.yml"
+        _bq_in '/retention-days:/ { next } { print }' > "$d/bm/m85.yml"
+        _bq_in '/echo "3750b2e9/ { sub(/3750b2e9/, "4750b2e9") } { print }' > "$d/bm/m86.yml"
+        _bq_in '/command -v jq >\/dev\/null [|][|]/ { next } { print }' > "$d/bm/m87.yml"
+        _bq_in '/^  contents: read$/ { print "  contents: write"; next } { print }' > "$d/bm/m88.yml"
+        { cat "$_bq_mac"; printf '  extra:\n    name: x\n'; } > "$d/bm/m89.yml"
+        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          bash conformance/boundary-redteam.sh --settings .claude/settings.json --measure C42 || :" } { print }' > "$d/bm/m99.yml"
+        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh ./conformance/boundary-redteam.sh --settings .claude/settings.json --measure C42 || :" } { print }' > "$d/bm/m100.yml"
+        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          curl -fsSL https://example.invalid/x -o /dev/null" } { print }' > "$d/bm/m101.yml"
+        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh conformance/boundary-redteam.sh --c9-candidate x ; curl https://example.invalid/x || :" } { print }' > "$d/bm/m102.yml"
+        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh conformance/boundary-redteam.sh --settings \"$RUNNER_TEMP/c42/candidate-literal.json\" --c73-candidate A || :" } { print }' > "$d/bm/m103.yml"
+        # BR104-BR116 (fix round 4): one candidate-line fixture per shape the positive allowlist must refuse (BR104-BR115), then the accepted redirect form (BR116). The line is passed with awk -v (no backslash in any of them).
+        _bq_ad() {  # <fixture name> <the line to plant before the literal control>
+          awk -v ln="$2" '/^          echo "SWAS-497 literal-path/ { print ln } { print }' "$_bq_mac" > "$d/bm/$1.yml"
+        }
+        _bq_hp='          sh conformance/boundary-redteam.sh'
+        _bq_ad m104 "$_bq_hp --a-candidate b & curl https://example.invalid/x || :"
+        _bq_ad m105 "$_bq_hp --settings <(curl -o x.sh https://example.invalid/x) --a-candidate b || :"
+        _bq_ad m106 "$_bq_hp --a-candidate b >(curl https://example.invalid/x) || :"
+        _bq_ad m107 "$_bq_hp --a-candidate b <<EOF || :"
+        _bq_ad m108 "$_bq_hp --a-candidate b > \"\$RUNNER_TEMP/macos-out/leg-1.out\" 2>&1 || :"
+        _bq_ad m109 "$_bq_hp --a-candidate b >> \"\$GITHUB_STEP_SUMMARY\" || :"
+        _bq_ad m110 "$_bq_hp --measure C36 --c73-candidate A || :"
+        _bq_ad m111 "$_bq_hp --a-candidate b \`curl https://example.invalid/x\` || :"
+        _bq_ad m112 "$_bq_hp --a-candidate \"\$(curl https://example.invalid/x)\" || :"
+        _bq_ad m113 "$_bq_hp --a-candidate b | sh || :"
+        _bq_ad m114 "$_bq_hp --a-candidate b && curl https://example.invalid/x || :"
+        _bq_ad m115 "$_bq_hp --a-candidate b > \"\$RUNNER_TEMP/macos-out/C42R.out\" 2>&1 || :"
+        _bq_ad m116 "$_bq_hp --c73-candidate A > \"\$RUNNER_TEMP/macos-out/c73-a.out\" 2>&1 || :"
+        _bq_in '/^          echo "C42R real-path cell, alone/ { print "          echo ${{ inputs.profile }}" } { print }' > "$d/bm/m91.yml"
+        _bq_in '/^        description: / { sub(/Which slice/, "Which inputs.profile slice") } { print }' > "$d/bm/m92.yml"
+        _bq_in '/^          echo "C42R real-path cell, alone/ { print "          # ${{ inputs.profile }}" } { print }' > "$d/bm/m93.yml"
+        # each row is file|want|id|description, split on '|' (a separator no want or description holds; the descriptions carry ':' and quotes)
+        for _bq_m in "m53|must run on the LITERAL|BR53|runs-on rewritten to a KIT_CI_RUNNER-style expression" \
+                     "m54|must run on the LITERAL|BR54|runs-on rewritten to macos-latest" \
+                     "m55|must carry job-level|BR55|job-level continue-on-error removed" \
+                     "m56|exactly one 'timeout-minutes|BR56|the timeout changed to 45" \
+                     "m57|'contents: read' at the workflow level|BR57|the job permission widened to contents: write" \
+                     "m58|checkout step|BR58|persist-credentials: false moved off the checkout step onto setup-node's with:" \
+                     "m59|on: block|BR59|a pull_request trigger added" \
+                     "m60|on: block|BR60|a push trigger added" \
+                     "m61|in any spelling|BR61|upload-artifact unpinned (@v4)" \
+                     "m62|in any spelling|BR62|a quoted uses value (a spelling the plain pin scan would miss)" \
+                     "m63|flow-style or quoted key|BR63|a flow-style permissions key" \
+                     "m64|flow-style or quoted key|BR64|a quoted runs-on key" \
+                     "m65|not the same pinned SHA as the Linux|BR65|checkout given a different SHA than the Linux job's" \
+                     "m66|must not change how its steps run|BR66|a shell: key added to a step" \
+                     "m67|must not change how its steps run|BR67|a second env: key (only the resolver's PROFILE is allowed)" \
+                     "m68|must not change how its steps run|BR68|a GITHUB_ENV write planted in the graded step" \
+                     "m69|must not change how its steps run|BR69|a second GITHUB_PATH write" \
+                     "m70|GitHub expression|BR70|the profile input on a run line directly (script injection)" \
+                     "m71|profile resolver step|BR71|the resolver's env variable renamed (the case would read an empty subject)" \
+                     "m72|profile resolver step|BR72|the unknown-profile arm made to exit 0" \
+                     "m73|full profile's cell set differs|BR73|a cell dropped from the full profile (parity)" \
+                     "c74|full profile's cell set differs|BR74|a cell added to the Linux temp-root step only (parity)" \
+                     "m75|subset rule|BR75|a profile arm with a cell the full profile lacks" \
+                     "m76|graded legs step|BR76|a leg dropped from the graded loop" \
+                     "m77|graded legs step|BR77|the --leg-verdict call made to grade a constant exit code" \
+                     "m78|graded legs step|BR78|bad=1 at the start of the graded step" \
+                     "m79|graded legs step|BR79|exit \"\$bad\" moved before the legs loop" \
+                     "m80|graded legs step|BR80|a stray exit 0 planted before done" \
+                     "m81|graded legs step|BR81|the graded step's if: changed to always()" \
+                     "m82|report-only extra|BR82|the C42R extra un-masked (|| : dropped)" \
+                     "m83|extras step's name and if|BR83|the extras step's if: changed to always()" \
+                     "m84|report-only extra|BR84|an unlisted harness line (C36) in the extras" \
+                     "m85|artifact upload step|BR85|retention-days removed from the upload" \
+                     "m86|tools step|BR86|the ripgrep checksum altered" \
+                     "m87|tools step|BR87|the jq presence check removed" \
+                     "m88|'contents: read' at the workflow level|BR88|the workflow permission widened to contents: write" \
+                     "m89|artifact upload step|BR89|a second job appended to the file" \
+                     "m90|is absent|BR90|the macOS workflow file absent from a kit tree" \
+                     "m91|GitHub expression|BR91|a dollar-brace expression in a run body (the profile input in an echo line)" \
+                     "m92|must appear exactly once|BR92|the profile input named a second time outside the resolver's env" \
+                     "m93|GitHub expression|BR93|a comment line holding the profile input inside a run body (GitHub still expands it)" \
+                     "m99|extras step's run body|BR99|a bash-spelled harness line planted in the extras step" \
+                     "m100|extras step's run body|BR100|an sh ./conformance spelled harness line planted in the extras step" \
+                     "m101|extras step's run body|BR101|an arbitrary curl line planted in the extras step" \
+                     "m102|extras step's run body|BR102|a candidate-shaped harness line with a ; command chained before the mask" \
+                     "m104|extras step's run body|BR104|a candidate line with a single & chaining a command" \
+                     "m105|extras step's run body|BR105|a candidate line with a <( process substitution" \
+                     "m106|extras step's run body|BR106|a candidate line with a >( process substitution" \
+                     "m107|extras step's run body|BR107|a candidate line opening a heredoc that never closes" \
+                     "m108|extras step's run body|BR108|a candidate line redirecting into the graded legs' leg-1.out" \
+                     "m109|extras step's run body|BR109|a candidate line appending to the step summary" \
+                     "m110|extras step's run body|BR110|a candidate line carrying --measure (an unlisted cell)" \
+                     "m111|extras step's run body|BR111|a candidate line with a backtick command" \
+                     "m112|extras step's run body|BR112|a candidate line with a dollar-paren command" \
+                     "m113|extras step's run body|BR113|a candidate line piping into sh" \
+                     "m114|extras step's run body|BR114|a candidate line chaining with &&" \
+                     "m115|extras step's run body|BR115|a candidate line redirecting into C42R.out (the C42R output, in another case)"; do
+          _bq_f=${_bq_m%%|*}; _bq_r=${_bq_m#*|}; _bq_want=${_bq_r%%|*}; _bq_r=${_bq_r#*|}
+          _bq_id=${_bq_r%%|*}; _bq_desc=${_bq_r#*|}
+          _bq_ci="$_br_real"; _bq_mf="$d/bm/$_bq_f.yml"
+          case "$_bq_f" in
+            c*) _bq_ci="$d/bm/$_bq_f.yml"; _bq_mf="$_bq_mac" ;;
+          esac
+          if [ "$_bq_ci" = "$_br_real" ] && cmp -s "$_bq_mac" "$_bq_mf"; then
+            echo "selftest FAIL: $_bq_id — the mutant equals the original (nothing to mutate; the macOS workflow is not pinned there)"; sf=1
+          elif [ "$_bq_ci" != "$_br_real" ] && cmp -s "$_br_real" "$_bq_ci"; then
+            echo "selftest FAIL: $_bq_id — the mutant equals the original (nothing to mutate; the Linux cell list is not pinned there)"; sf=1
+          elif _bq_o=$(check_boundary_macos_leg "$_bq_ci" "$_bq_mf" 2>&1); then
+            echo "selftest FAIL: $_bq_id — $_bq_desc was NOT caught"; sf=1
+          elif _has "$_bq_o" "$_bq_want"; then
+            echo "selftest PASS: $_bq_id — $_bq_desc -> RED, naming '$_bq_want'"
+          else echo "selftest FAIL: $_bq_id — $_bq_desc reds without naming '$_bq_want': $_bq_o"; sf=1; fi
+        done
+        # BR94-BR98 (+ their -M mutants) — the fail-closed captures. BR94/BR96/BR97/BR98 cannot be reached by rewriting the INPUT (an awk that dies on a real file needs a different awk), so each runs a throwaway
+        # copy of the SHIPPED function text whose awk program is broken by a sed (the one-true-awk failure, reproduced), and must red naming its cause. BR95 is reachable knob-free: a workflow whose checkout and
+        # setup-node uses lines name another pinned action. Each -M mutant weakens the tagged guard in the function copy and must NOT name the cause (the guard is what carries the red).
+        _bq_in '/uses: actions\/(checkout|setup-node)@/ { sub(/actions\/(checkout|setup-node)@/, "actions/cache@") } { print }' > "$d/bm/m95.yml"
+        _bq_fn=$(awk '/^check_boundary_macos_leg\(\) \{/ { p = 1 } p { print } p && /^\}/ { exit }' "$0")
+        _bq_fc() {  # <id> <fixture> <awk-break sed|-> <guard-weaken sed|-> <want> <what> [<beyond: rc0 (default), or text>]: the shipped function, run on <fixture>; with a weaken program it is a mutant (must not name <want>, must have RUN to its end with no eval error, and must show <beyond>, the proof it got past the weakened guard), else a cell (must red naming <want>)
+          if [ -z "$_bq_fn" ]; then echo "selftest FAIL: $1 — the shipped check_boundary_macos_leg could not be extracted from $0"; sf=1; return 0; fi
+          _bf_t=$_bq_fn
+          if [ "$3" != - ]; then
+            _bf_t=$(printf '%s\n' "$_bf_t" | sed "$3")
+            if [ "$_bf_t" = "$_bq_fn" ]; then echo "selftest FAIL: $1 — the awk-break rewrite equals the shipped function (a tag or a pattern is gone)"; sf=1; return 0; fi
+          fi
+          if [ "$4" != - ]; then
+            _bf_w=$(printf '%s\n' "$_bf_t" | sed "$4")
+            if [ "$_bf_w" = "$_bf_t" ]; then echo "selftest FAIL: $1 — the guard-weaken rewrite equals the function it weakens (a tag or a pattern is gone)"; sf=1; return 0; fi
+            _bf_t=$_bf_w
+          fi
+          # the subshell drops the inherited function first, so a rewrite that fails to evaluate cannot fall back to the shipped one; the BQ-RAN marker proves the function ran and returned
+          if _bf_o=$( ( unset -f check_boundary_macos_leg; eval "$_bf_t"; command -v check_boundary_macos_leg >/dev/null || { echo NOT-DEFINED; exit 97; }; _bf_c=0; check_boundary_macos_leg "$_br_real" "$2" || _bf_c=$?; echo "BQ-RAN rc=$_bf_c"; exit "$_bf_c" ) 2>&1 ); then _bf_rc=0; else _bf_rc=$?; fi
+          # a 7th arg 'abort:<text>' is the abort mode: with the guard weakened the run must die under set -u (the measured macOS failure) BEFORE the marker, and say <text>; 'abort:nounset' accepts either shell's wording (bash "unbound variable", dash/ash "parameter not set")
+          _bf_ab=
+          case "${7:-}" in
+            abort:*) _bf_ab=${7#abort:} ;;
+          esac
+          if [ -n "$_bf_ab" ] && [ "$4" = - ]; then echo "selftest FAIL: $1 — $6: the abort mode is for a mutant (a guard-weaken program) only"; sf=1; return 0; fi
+          case "$_bf_o" in
+            *"BQ-RAN rc="*)
+              if [ -n "$_bf_ab" ]; then echo "selftest FAIL: $1 — $6: the weakened function ran to its end, but the set -u abort was expected: $_bf_o"; sf=1; return 0; fi ;;
+            *)
+              if [ -z "$_bf_ab" ]; then echo "selftest FAIL: $1 — $6: the rewritten function did not run to its end (no BQ-RAN marker): $_bf_o"; sf=1; return 0; fi ;;
+          esac
+          if [ "$4" != - ]; then
+            case "$_bf_o" in
+              *"syntax error"*|*"not found"*|*"unexpected"*|*NOT-DEFINED*) echo "selftest FAIL: $1 — $6: the weakened function failed to evaluate or run, so a missing '$5' proves nothing: $_bf_o"; sf=1; return 0 ;;
+              *"$5"*) echo "selftest FAIL: $1 — $6: the guard is weakened and the red still names '$5', so the guard is not what carries it"; sf=1; return 0 ;;
+            esac
+            case "${7:-rc0}" in
+              rc0) _bf_b="BQ-RAN rc=0" ;;
+              abort:nounset) _bf_b="unbound variable' (bash) or 'parameter not set" ;;
+              abort:*) _bf_b=$_bf_ab ;;
+              *) _bf_b=$7 ;;
+            esac
+            # the token 'nounset' matches EXACTLY two phrases and no others: bash's "unbound variable" and dash's/ash's "parameter not set"; the PASS line prints the one that matched
+            _bf_hit=
+            case "$_bf_ab" in
+              nounset)
+                case "$_bf_o" in
+                  *"unbound variable"*) _bf_hit="unbound variable" ;;
+                  *"parameter not set"*) _bf_hit="parameter not set" ;;
+                esac ;;
+              *)
+                case "$_bf_o" in
+                  *"$_bf_b"*) _bf_hit=$_bf_b ;;
+                esac ;;
+            esac
+            case "$_bf_hit" in
+              ?*) echo "selftest PASS: $1 — $6 (guard weakened -> no longer names '$5', and the run reached past it: shows '$_bf_hit'; the guard has teeth)" ;;
+              *) echo "selftest FAIL: $1 — $6: the guard is weakened but the run did not show '$_bf_b' (it did not get past the guard as intended): $_bf_o"; sf=1 ;;
+            esac
+          elif [ "$_bf_rc" = 0 ]; then echo "selftest FAIL: $1 — $6 was NOT caught"; sf=1
+          else
+            case "$_bf_o" in
+              *"$5"*) echo "selftest PASS: $1 — $6 -> RED, naming '$5'" ;;
+              *) echo "selftest FAIL: $1 — $6 reds without naming '$5': $_bf_o"; sf=1 ;;
+            esac
+          fi
+        }
+        _bq_ws='/# BRMS$/s/if .*; then/if false; then/'
+        _bq_wu='/# BRMU$/s/if .*; then/if false; then/'
+        _bq_wn='/# BRMN$/s/if .*; then/if false; then/'
+        _bq_wx='/# BRMX$/s/\[ "\$_bm_xb" != ok \]/false/'
+        _bq_wb='/# BRMB$/s/if .*; then/if false; then/'
+        _bq_wr='/# BRMR$/s/_bm_chk/:/'
+        _bq_fc BR94 "$_bq_mac" '/# BRMA$/s/print q + 0, fl + 0, ua + 0, uo + 0, ih + 0, be + 0, gp + 0/print q + 0, fl + 0, ua + 0/' - "could not be read (the key-count awk returned 3 fields" "the key-count awk returning 3 fields, not 7"
+        _bq_fc BR94-M "$_bq_mac" '/# BRMA$/s/print q + 0, fl + 0, ua + 0, uo + 0, ih + 0, be + 0, gp + 0/print q + 0, fl + 0, ua + 0/' "$_bq_ws" "could not be read (the key-count awk returned 3 fields" "the key-count awk returning 3 fields, not 7" "abort:nounset"
+        _bq_fc BR94b "$_bq_mac" '/# BRMA$/s/print q + 0, fl + 0, ua + 0, uo + 0, ih + 0, be + 0, gp + 0/exit 2/' - "the key-count awk returned 0 fields" "the key-count awk dying (the measured macOS failure: an empty capture, 0 fields)"
+        _bq_fc BR94b-M "$_bq_mac" '/# BRMA$/s/print q + 0, fl + 0, ua + 0, uo + 0, ih + 0, be + 0, gp + 0/exit 2/' "$_bq_ws" "the key-count awk returned 0 fields" "the key-count awk dying (the measured macOS failure: an empty capture, 0 fields)" "abort:nounset"
+        _bq_fc BR95 "$d/bm/m95.yml" - - "the checkout/setup-node scan matched 0 uses: line(s)" "a workflow whose checkout and setup-node uses lines name another pinned action (the same-SHA loop runs zero times)"
+        _bq_fc BR95-M "$d/bm/m95.yml" - "$_bq_wu" "the checkout/setup-node scan matched 0 uses: line(s)" "a workflow whose checkout and setup-node uses lines name another pinned action (the same-SHA loop runs zero times)" "the checkout step (persist-credentials"
+        _bq_fc BR96 "$_bq_mac" '/# BRMC$/s/print n + 0/print "x"/' - "the report-only extras count could not be read" "the extras-count awk returning a non-integer"
+        _bq_fc BR96-M "$_bq_mac" '/# BRMC$/s/print n + 0/print "x"/' "$_bq_wn" "the report-only extras count could not be read" "the extras-count awk returning a non-integer"
+        _bq_fc BR97 "$_bq_mac" '/# BRMD$/s/print "ok"/print ""/' - "report-only extra of the macOS workflow must end" "the bad-extras awk returning without its sentinel"
+        _bq_fc BR97-M "$_bq_mac" '/# BRMD$/s/print "ok"/print ""/' "$_bq_wx" "report-only extra of the macOS workflow must end" "the bad-extras awk returning without its sentinel"
+        _bq_fc BR98 "$_bq_mac" '/# BRME$/s/print "[.]"/print ""/' - "(subset rule; an empty subset scan reads as a failure" "the subset awk returning without its sentinel"
+        _bq_fc BR98-M "$_bq_mac" '/# BRME$/s/print "[.]"/print ""/' "$_bq_wb" "(subset rule; an empty subset scan reads as a failure" "the subset awk returning without its sentinel"
+        # BR99-BR102 (fix round 2): the extras step's run body is an exact line sequence; each -M weakens the BRMR compare (the _bm_chk call becomes ':') and the rest of the function must then run to its end clean (rc 0)
+        for _bq_k in "BR99:m99:a bash-spelled harness line planted in the extras step" "BR100:m100:an sh ./conformance spelled harness line planted in the extras step" "BR101:m101:an arbitrary curl line planted in the extras step" "BR102:m102:a candidate-shaped harness line with a ; command chained before the mask"; do
+          _bq_kd=${_bq_k%%:*}; _bq_kr=${_bq_k#*:}; _bq_kf=${_bq_kr%%:*}; _bq_kw=${_bq_kr#*:}
+          _bq_fc "$_bq_kd-M" "$d/bm/$_bq_kf.yml" - "$_bq_wr" "extras step's run body" "$_bq_kw"
+        done
+        # BR104-BR115 -M (fix round 4): each weakens ONE rule of the candidate-line allowlist (BRMT the token classes and the --settings value, BRMM the --measure refusal, BRMG the graded-output-name refusal) so the planted line is dropped
+        # like a clean candidate line; the compare then sees the seven fixed lines and the rest of the function must run to its end clean (rc 0), while the shipped function (the cell in the main loop) reds naming the run body
+        _bq_wt='/# BRMT$/s/ok = 0/ok = ok/'
+        _bq_wm='/# BRMM$/s/ok = 0/ok = ok/'
+        _bq_wg='/# BRMG$/s/ok = 0/ok = ok/'
+        for _bq_k in "BR104:m104:$_bq_wt:a candidate line with a single & chaining a command" "BR105:m105:$_bq_wt:a candidate line with a <( process substitution" "BR106:m106:$_bq_wt:a candidate line with a >( process substitution" "BR107:m107:$_bq_wt:a candidate line opening a heredoc that never closes" "BR108:m108:$_bq_wg:a candidate line redirecting into the graded legs' leg-1.out" "BR109:m109:$_bq_wt:a candidate line appending to the step summary" "BR110:m110:$_bq_wm:a candidate line carrying --measure (an unlisted cell)" "BR111:m111:$_bq_wt:a candidate line with a backtick command" "BR112:m112:$_bq_wt:a candidate line with a dollar-paren command" "BR113:m113:$_bq_wt:a candidate line piping into sh" "BR114:m114:$_bq_wt:a candidate line chaining with &&" "BR115:m115:$_bq_wg:a candidate line redirecting into C42R.out (the C42R output, in another case)"; do
+          _bq_kd=${_bq_k%%:*}; _bq_kr=${_bq_k#*:}; _bq_kf=${_bq_kr%%:*}; _bq_kr=${_bq_kr#*:}; _bq_kw=${_bq_kr#*:}; _bq_ks=${_bq_kr%%:*}
+          _bq_fc "$_bq_kd-M" "$d/bm/$_bq_kf.yml" - "$_bq_ks" "extras step's run body" "$_bq_kw"
+        done
+        # BR116: a candidate line with a redirect to a fresh macos-out name stays green (the positive control for the redirect arm of the allowlist)
+        if check_boundary_macos_leg "$_br_real" "$d/bm/m116.yml" >/dev/null 2>&1; then
+          echo "selftest PASS: BR116 — a --<id>-candidate line redirecting to a fresh macos-out/*.out name (2>&1 || :) is accepted"
+        else echo "selftest FAIL: BR116 — a --<id>-candidate line redirecting to a fresh macos-out/*.out name was refused"; sf=1; fi
+        # BR103: the one shape a slice may add (a --<id>-candidate harness line ending '|| :') stays green, so the exact compare does not block the documented extension
+        if check_boundary_macos_leg "$_br_real" "$d/bm/m103.yml" >/dev/null 2>&1; then
+          echo "selftest PASS: BR103 — a clean --<id>-candidate harness line added to the extras step is accepted"
+        else echo "selftest FAIL: BR103 — a clean --<id>-candidate harness line added to the extras step was refused"; sf=1; fi
+      else
+        echo "selftest FAIL: BR0m — the real macOS workflow is not sound (SWAS-552)"; sf=1
+      fi
       mkdir -p "$d/br9/.github/workflows" "$d/br9/docs" "$d/br9/conformance"
       : > "$d/br9/docs/ROADMAP-KIT.md"
       cp "$_kr/conformance/gate-dispositions.txt" "$d/br9/conformance/gate-dispositions.txt"
@@ -2657,6 +3909,60 @@ selftest() {
     else
       echo "selftest FAIL: BR0 — the real ci.yml's boundary-redteam job is not sound (SWAS-359 352a)"; sf=1
     fi
+    # CG0-CG7 (SWAS-460) — the core-face grader lock. CG0 is the positive control on the REAL tree; each fixture is a kit-marked scratch tree holding a copy of the real
+    # ci.yml (or a mutant of it) and a copy of the real selftest-hermetic.sh (or a mutant of it) and must red AND name its cause. CG4/CG5/CG6 are the fail-closed
+    # cells: a deleted list line, an empty list and an absent selftest-hermetic.sh are FAIL, never N/A. CG7 runs the empty list through the REAL --own-tree entry
+    # point. An adopter-shaped tree never reaches the leg (RP6 above is that cell: an adopter tree with no selftest-hermetic.sh stays green).
+    mkdir -p "$d/cg"
+    _cg_ci="$_kr/.github/workflows/ci.yml"; _cg_hs="$_kr/conformance/selftest-hermetic.sh"
+    _cg_fx() { # <id> <ci.yml> <hermetic: real|empty|nolist|extra|indent|export|eval|rodown|noro|glob|absent> -> the fixture root is $d/cg/<id>
+      mkdir -p "$d/cg/$1/.github/workflows" "$d/cg/$1/conformance" "$d/cg/$1/docs"
+      : > "$d/cg/$1/docs/ROADMAP-KIT.md"
+      cp "$2" "$d/cg/$1/.github/workflows/ci.yml"
+      case "$3" in
+        real) cp "$_cg_hs" "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        indent) awk '{ print } /^core_face_listed\(\) \{$/ { print "  CORE_FACE_TARGETS=\"$CORE_FACE_TARGETS conformance/no-job-here.sh\"" }' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        export) awk '{ print } /^CORE_FACE_TARGETS=/ { print "export CORE_FACE_TARGETS=\"$CORE_FACE_TARGETS conformance/no-job-here.sh\"" }' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        eval) awk '{ print } /^readonly CORE_FACE_TARGETS$/ { print "eval \"CORE_FACE_TARGETS=x\"" }' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        rodown) awk '{ print } /^CORE_FACE_TARGETS=/ { print ":" }' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        noro) sed '/^readonly CORE_FACE_TARGETS$/d' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        glob) sed "s|^CORE_FACE_TARGETS=.*|CORE_FACE_TARGETS='conformance/*.sh'|" "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        empty) sed "s/^CORE_FACE_TARGETS=.*/CORE_FACE_TARGETS=''/" "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        nolist) sed '/^CORE_FACE_TARGETS=/d' "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+        extra) sed "s|^CORE_FACE_TARGETS=.*|CORE_FACE_TARGETS='conformance/boundary-redteam.sh conformance/no-job-here.sh'|" "$_cg_hs" > "$d/cg/$1/conformance/selftest-hermetic.sh" ;;
+      esac
+    }
+    sed 's/ conformance\/boundary-redteam\.sh; then/; then/' "$_cg_ci" > "$d/cg/pathspec.yml"
+    sed '/^        run: sh conformance\/boundary-redteam\.sh --selftest  # full: all mutants$/d' "$_cg_ci" > "$d/cg/nofull.yml"
+    if check_core_face_graders "$_kr" >/dev/null 2>&1; then
+      echo "selftest PASS: CG0 — the real tree's core-face list names only jobs that are diff-gated on the entry and run its full --selftest"
+    else echo "selftest FAIL: CG0 — the real tree's core-face graders are not sound (SWAS-460)"; sf=1; fi
+    for _cg_m in "CG1:$_cg_ci:extra:has no CI job named:a list entry whose basename has no job" \
+                 "CG2:$d/cg/pathspec.yml:real:diff gate does not name:the job's diff-gate pathspec omits the entry" \
+                 "CG3:$d/cg/nofull.yml:real:does not run the full:the job without the full --selftest run line" \
+                 "CG4:$_cg_ci:nolist:CORE_FACE_TARGETS= line:the list line deleted (FAIL, not N/A)" \
+                 "CG5:$_cg_ci:empty:CORE_FACE_TARGETS is empty:an empty list (FAIL, not N/A)" \
+                 "CG6:$_cg_ci:absent:selftest-hermetic.sh is absent:selftest-hermetic.sh absent from a kit-shaped tree (FAIL, not N/A)" \
+                 "CG8:$_cg_ci:indent:any indentation counts:an indented reassignment of the list inside a function" \
+                 "CG9:$_cg_ci:noro:one 'readonly CORE_FACE_TARGETS' line:the readonly line dropped" \
+                 "CG10:$_cg_ci:glob:glob character:a list entry that is a glob (conformance/*.sh)" \
+                 "CG11:$_cg_ci:export:directly after the literal:an export of the list between the literal and readonly lines" \
+                 "CG12:$_cg_ci:eval:any indentation counts:an eval line naming the list" \
+                 "CG13:$_cg_ci:rodown:directly after the literal:the readonly line moved off the line directly after the literal"; do
+      _cg_id=${_cg_m%%:*}; _cg_r=${_cg_m#*:}
+      _cg_ciin=${_cg_r%%:*}; _cg_r=${_cg_r#*:}
+      _cg_mode=${_cg_r%%:*}; _cg_r=${_cg_r#*:}
+      _cg_want=${_cg_r%%:*}; _cg_desc=${_cg_r#*:}
+      _cg_fx "$_cg_id" "$_cg_ciin" "$_cg_mode"
+      if _cg_o=$(check_core_face_graders "$d/cg/$_cg_id" 2>&1); then
+        echo "selftest FAIL: $_cg_id — $_cg_desc was NOT caught"; sf=1
+      elif _has "$_cg_o" "$_cg_want"; then
+        echo "selftest PASS: $_cg_id — $_cg_desc -> RED, naming '$_cg_want'"
+      else echo "selftest FAIL: $_cg_id — $_cg_desc reds without naming '$_cg_want': $_cg_o"; sf=1; fi
+    done
+    cp "$_kr/.github/workflows/golden-path.yml" "$d/cg/CG5/.github/workflows/golden-path.yml"
+    cp "$_kr/conformance/gate-dispositions.txt" "$d/cg/CG5/conformance/gate-dispositions.txt"
+    _ot_case CG7 "$d/cg/CG5" 1 "CORE_FACE_TARGETS is empty" "--own-tree reds a kit tree whose core-face list is empty"
     # H2D0-H2D10 (SWAS-376 Slice 0, C2 + C4) — the H2 step's battery-defer lock. H2D0 is the positive control on the REAL ci.yml; each mutant is a
     # SCRATCH COPY and must red AND name its cause. The first occurrence only is mutated where another job repeats the text: H2 is the first
     # `gb-ref` clone in the file (cf-verify-enforced, cf-export-claims and cf-claims write the same variables to $GITHUB_ENV, legitimately).
@@ -2727,7 +4033,7 @@ selftest() {
           echo "selftest FAIL: $_h2_id — the mutant equals the original (nothing to mutate; the step is not pinned)"; sf=1
         elif _h2_o=$(check_h2_defer_step "$d/h2/$_h2_f.yml" 2>&1); then
           echo "selftest FAIL: $_h2_id — $_h2_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_h2_o" | grep -qF -- "$_h2_want"; then
+        elif _has "$_h2_o" "$_h2_want"; then
           echo "selftest PASS: $_h2_id — $_h2_desc -> RED, naming '$_h2_want'"
         else echo "selftest FAIL: $_h2_id — $_h2_desc reds without naming '$_h2_want': $_h2_o"; sf=1; fi
       done
@@ -2746,7 +4052,7 @@ selftest() {
           echo "selftest FAIL: $_h2_id — the mutant equals the original (nothing to mutate; the step is not pinned)"; sf=1
         elif _h2_o=$(check_h2_defer_step "$d/h2/$_h2_f.yml" 2>&1); then
           echo "selftest FAIL: $_h2_id — $_h2_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_h2_o" | grep -qF -- "$_h2_want"; then
+        elif _has "$_h2_o" "$_h2_want"; then
           echo "selftest PASS: $_h2_id — $_h2_desc -> RED, naming '$_h2_want'"
         else echo "selftest FAIL: $_h2_id — $_h2_desc reds without naming '$_h2_want': $_h2_o"; sf=1; fi
       done
@@ -2808,7 +4114,7 @@ selftest() {
           echo "selftest FAIL: $_gd_id — the mutant equals the original (nothing to mutate; the lock is not pinned)"; sf=1
         elif _gd_o=$(check_delta_stress "$d/gd10/$_gd_f.sh" 2>&1); then
           echo "selftest FAIL: $_gd_id — $_gd_desc was NOT caught"; sf=1
-        elif printf '%s\n' "$_gd_o" | grep -qF -- "$_gd_want"; then
+        elif _has "$_gd_o" "$_gd_want"; then
           echo "selftest PASS: $_gd_id — $_gd_desc -> RED, naming '$_gd_want'"
         else echo "selftest FAIL: $_gd_id — $_gd_desc reds without naming '$_gd_want': $_gd_o"; sf=1; fi
       done
@@ -2824,6 +4130,7 @@ selftest() {
     cp "$_kr"/.github/workflows/*.yml "$_rp_tree/.github/workflows/"
     cp "$_kr"/docs/operations/*.github.yml "$_rp_tree/docs/operations/"
     cp "$_kr/conformance/gate-dispositions.txt" "$_rp_tree/conformance/"
+    cp "$_kr/conformance/selftest-hermetic.sh" "$_rp_tree/conformance/"  # SWAS-460: a kit-marked tree owes the core-face list (CG)
     for _rp_p in "$_kr"/profiles/*.yml "$_kr"/profiles/*/ci.yml; do
       [ -f "$_rp_p" ] || continue
       _rp_rel=${_rp_p#"$_kr"/profiles/}
@@ -2840,7 +4147,7 @@ selftest() {
       cp "$d/rp/$_rm_id.mut" "$_rm_dst"
       if _rm_o=$(sh "$0" --own-tree "$_rp_tree" 2>&1); then _rm_rc=0; else _rm_rc=$?; fi
       cp "$_rm_real" "$_rm_dst"
-      if [ "$_rm_rc" = 1 ] && printf '%s' "$_rm_o" | grep -qF -- "'ubuntu-latest'" && printf '%s' "$_rm_o" | grep -qF -- "$4"; then
+      if [ "$_rm_rc" = 1 ] && _has "$_rm_o" "'ubuntu-latest'" && _has "$_rm_o" "$4"; then
         echo "selftest PASS: $_rm_id — $5 -> RED, naming 'ubuntu-latest' and $4"
       else echo "selftest FAIL: $_rm_id — $5 (rc=$_rm_rc, want 1 naming 'ubuntu-latest' and $4): $_rm_o"; sf=1; fi
     }
@@ -2936,7 +4243,8 @@ AGGCLS
   }
 
   # liveness: a matched pair -> OK, rc0.
-  _agg_write_yml "$d/agg/ci-ok.yml" "needs: [changes, conformance-core, conformance-docs]"
+  _agg_x="gate, secret-scan, sast, sbom, threat-obligation, uat-obligation, a11y-obligation"   # SWAS-382 S3: the gate and the six cheap jobs the aggregator also needs
+  _agg_write_yml "$d/agg/ci-ok.yml" "needs: [$_agg_x, changes, conformance-core, conformance-docs]"
   _agg_write_cls "$d/agg/cls-ok.sh" "changes conformance-core conformance"
   if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-ok.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
   case "$_agg_out" in
@@ -2947,7 +4255,7 @@ AGGCLS
 
   # negative — job dropped from needs: (still carries the push-graded if:, no exemption marker):
   # a job present in the pipeline but ABSENT from the aggregator's needs: must red.
-  _agg_write_yml "$d/agg/ci-dropped.yml" "needs: [changes, conformance-docs]"        # conformance-core dropped
+  _agg_write_yml "$d/agg/ci-dropped.yml" "needs: [$_agg_x, changes, conformance-docs]"        # conformance-core dropped
   if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-dropped.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
   case "$_agg_out" in
     *"job 'conformance-core' carries the push-graded if:"*) [ "$_agg_rc" -ne 0 ] && echo "selftest PASS: AGG2 — a job dropped from needs: (no marker) -> reds, naming the job" \
@@ -2957,7 +4265,7 @@ AGGCLS
 
   # negative — marker-delete mutant: side-job's exemption marker is removed (still absent from
   # needs:) -> must red, naming side-job.
-  _agg_write_yml "$d/agg/ci-nomarker.yml" "needs: [changes, conformance-core, conformance-docs]"
+  _agg_write_yml "$d/agg/ci-nomarker.yml" "needs: [$_agg_x, changes, conformance-core, conformance-docs]"
   sed 's/   # not a required check -> a job-level skip is safe//' "$d/agg/ci-nomarker.yml" > "$d/agg/ci-nomarker2.yml"
   if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-nomarker2.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
   case "$_agg_out" in
@@ -3494,29 +4802,29 @@ AGGCLS
   _st_ledger ST3b "A B" " A B B" "section B was marked 2 times" "a section marked twice"
   _st_ledger ST3c "A" " A Z" "section Z" "a mark for an id outside the list"
   # ST3d — _st_end itself: a shortfall sets sf (so the verdict line follows) and still sets the end marker; a complete ledger leaves sf alone.
-  _st_sf=$(_ST_SECTIONS="A B"; _st_seen=" A"; sf=0; _st_end --no-trap-check >/dev/null; echo "$sf$_st_done")
+  _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; _ST_SECTIONS="A B"; _st_seen=" A"; sf=0; _st_end --no-trap-check >/dev/null; echo "$sf$_st_done")
   if [ "$_st_sf" = 11 ]; then echo "selftest PASS: ST3d — _st_end on a shortfall sets sf=1 and the end marker (the verdict line then reds)"
   else echo "selftest FAIL: ST3d — _st_end on a shortfall left sf/_st_done as '$_st_sf' (want 11)"; sf=1; fi
-  _st_sf=$(_ST_SECTIONS="A B"; _st_seen=" B A"; sf=0; _st_end --no-trap-check >/dev/null; echo "$sf$_st_done")
+  _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; _ST_SECTIONS="A B"; _st_seen=" B A"; sf=0; _st_end --no-trap-check >/dev/null; echo "$sf$_st_done")
   if [ "$_st_sf" = 01 ]; then echo "selftest PASS: ST3e — _st_end on a complete ledger leaves sf=0 and sets the end marker"
   else echo "selftest FAIL: ST3e — _st_end on a complete ledger left sf/_st_done as '$_st_sf' (want 01)"; sf=1; fi
   # ST8 — S3: _st_end also reads the shell's own trap listing; a replaced EXIT trap (one that no longer names _st_done) sets sf. The trap is set inside the subshell, so the listing is that subshell's own.
-  _st_sf=$($_st_tr ':' EXIT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
+  _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; $_st_tr ':' EXIT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
   if [ "$_st_sf" = 1 ]; then echo "selftest PASS: ST8m — _st_end with the EXIT trap replaced sets sf=1 (the EXIT trap was replaced)"
   else echo "selftest FAIL: ST8m — _st_end with a replaced EXIT trap left sf='$_st_sf' (want 1)"; sf=1; fi
-  _st_sf=$($_st_tr 'x=$_st_done' EXIT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
+  _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; $_st_tr 'x=$_st_done' EXIT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
   if [ "$_st_sf" = 0 ]; then echo "selftest PASS: ST8b — _st_end with an EXIT trap that names _st_done leaves sf=0"
   else echo "selftest FAIL: ST8b — _st_end with an EXIT trap naming _st_done left sf='$_st_sf' (want 0)"; sf=1; fi
-  _st_sf=$($_st_tr - EXIT; $_st_tr 'x=$_st_done' INT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
+  _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; $_st_tr - EXIT; $_st_tr 'x=$_st_done' INT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
   if [ "$_st_sf" = 1 ]; then echo "selftest PASS: ST8c — a trap that names _st_done on INT, not EXIT, does not count (sf=1)"
   else echo "selftest FAIL: ST8c — _st_end accepted a non-EXIT trap naming _st_done (sf='$_st_sf', want 1)"; sf=1; fi
   # ST8cm — the mutant of ST8c: _st_end with its EXIT-line requirement loosened back to "any trap line naming _st_done". Its function text is cut out of the mutated copy and sourced in a subshell.
-  awk '{ i = index($0, " | grep -Eq "); if (i && index($0, "EXIT|0")) $0 = substr($0, 1, i - 1) " | grep -q .; then" } { print }' "$0" > "$d/st/m8c.sh"
+  awk '{ if (index($0, "# ST8EXIT") && index($0, "_st8=1")) $0 = "        *_st_done*) _st8=1 ;;   # ST8LOOSE" } { print }' "$0" > "$d/st/m8c.sh"
   sed -n '/^_st_end() {/,/^}/p' "$d/st/m8c.sh" > "$d/st/end_m.sh"
-  if cmp -s "$0" "$d/st/m8c.sh" || ! grep -qF 'grep -q .; then' "$d/st/end_m.sh"; then
+  if cmp -s "$0" "$d/st/m8c.sh" || ! grep -qF '# ST8LOOSE' "$d/st/end_m.sh"; then
     echo "selftest FAIL: ST8cm — the loosening was not applied to the copy (nothing to mutate)"; sf=1
   else
-    _st_sf=$(. "$d/st/end_m.sh"; $_st_tr - EXIT; $_st_tr 'x=$_st_done' INT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
+    _st_sf=$(_unv_f="$d/st/um"; : > "$_unv_f"; . "$d/st/end_m.sh"; $_st_tr - EXIT; $_st_tr 'x=$_st_done' INT; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end >/dev/null; echo "$sf")
     if [ "$_st_sf" = 0 ]; then echo "selftest PASS: ST8cm — with the EXIT-line requirement loosened, the ST8c scenario reads sf=0, so ST8c would red (it has teeth)"
     else echo "selftest FAIL: ST8cm — with the EXIT-line requirement loosened the ST8c scenario still reads sf='$_st_sf': ST8c pins nothing"; sf=1; fi
   fi  # ST3m — every _ST_SECTIONS id is exactly one plain top-level mark line in selftest() (a mark in a pipeline or a subshell would be lost).
@@ -3572,6 +4880,61 @@ AGGCLS
       else echo "selftest FAIL: $_st_id — $_st_desc reds without naming 'want exactly one' (check rc $_st_cr): $_st_o"; sf=1; fi
     fi
   done
+  # MTC1-MTC3 (SWAS-577) — the in-process matcher (_has) and the rc-aware wrapper (_grepx). Each cell carries its own mutant, applied as a function redefined in a subshell (no knob).
+  _mtc_nl='
+'
+  _mtc_h="line one${_mtc_nl}line two"
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_mut=$(printf '%s\n' "$_mtc_fn" | sed 's/\*"\$2"\*) return 0/*) return 0/')
+  if _has "abc def" def && ! _has "abc def" xyz && _has "abc" "" && ! _has "" x && _has "$_mtc_h" "one${_mtc_nl}line" && ! _has "$_mtc_h" "two${_mtc_nl}line"; then
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_mut" != "$_mtc_fn" ] && ( eval "$_mtc_mut"; _has "abc def" xyz ); then echo "selftest PASS: MTC1 — _has answers present, absent, empty-needle and multi-line questions, and an always-true mutant made by a sed of the real function text flips the absent question (the cell has teeth)"
+    else echo "selftest FAIL: MTC1 — the always-true mutant of _has did not apply or did not flip the absent-needle question"; sf=1; fi
+  else echo "selftest FAIL: MTC1 — _has answered a present/absent/empty/multi-line question wrongly"; sf=1; fi
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_want="y1${_mtc_nl}n1${_mtc_nl}y2${_mtc_nl}n2${_mtc_nl}y3${_mtc_nl}n3${_mtc_nl}y4${_mtc_nl}n4"
+  for _mtc_sh in sh dash bash; do
+    if ! command -v "$_mtc_sh" >/dev/null 2>&1; then echo "selftest SKIP: MTC2[$_mtc_sh] — the shell is absent here"; continue; fi
+    _mtc_o=$("$_mtc_sh" -c "$_mtc_fn
+_has 'x a\\b y' 'a\\b' && echo y1
+_has 'x ab y' 'a\\b' || echo n1
+_has 'x * y' '*' && echo y2
+_has 'x ab y' '*' || echo n2
+_has 'x ? y' '?' && echo y3
+_has 'xy' '?' || echo n3
+_has 'x [ y' '[' && echo y4
+_has 'x a y' '[a]' || echo n4" 2>&1)
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_o" = "$_mtc_want" ]; then echo "selftest PASS: MTC2[$_mtc_sh] — _has treats a backslash and the glob characters * ? [ literally"
+    else echo "selftest FAIL: MTC2[$_mtc_sh] — _has mishandled a backslash or glob needle (got: $_mtc_o)"; sf=1; fi
+  done
+  mkdir -p "$d/mtc/bin2" "$d/mtc/bin3"
+  printf '#!/bin/sh\nexit 2\n' > "$d/mtc/bin2/grep"; chmod +x "$d/mtc/bin2/grep"
+  printf '#!/bin/sh\nkill -TERM $$\n' > "$d/mtc/bin3/grep"; chmod +x "$d/mtc/bin3/grep"
+  _mtc_r=$( _unv_f="$d/mtc/m0"; _grepx abc -q b && echo a0 || echo a$?; _grepx abc -q z && echo b0 || echo b$? )
+  if [ "$_mtc_r" = "a0${_mtc_nl}b1" ] && [ ! -s "$d/mtc/m0" ]; then echo "selftest PASS: MTC3a — _grepx passes grep's rc 0 and rc 1 through and marks nothing"
+  else echo "selftest FAIL: MTC3a — _grepx altered grep's own answer (got: $_mtc_r)"; sf=1; fi
+  for _mtc_s in 2:bin2 143:bin3; do
+    _mtc_rc=${_mtc_s%%:*}; _mtc_b=${_mtc_s#*:}
+    if ( _unv_f="$d/mtc/m$_mtc_b"; PATH="$d/mtc/$_mtc_b:$PATH"; export PATH
+         if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+         _has "$_mtc_x" "UNVERIFIED (grep rc=$_mtc_rc)" && [ -s "$_unv_f" ] && ! _unv_end >/dev/null ); then
+      echo "selftest PASS: MTC3[$_mtc_b] — a grep that exits $_mtc_rc inside \$( ) prints UNVERIFIED (grep rc=$_mtc_rc), marks the run, and _unv_end reads non-zero"
+    else echo "selftest FAIL: MTC3[$_mtc_b] — an unanswered grep (rc $_mtc_rc) was not marked or not read back by _unv_end"; sf=1; fi
+  done
+  _mtc_gx=$(sed -n '/^_grepx() {/,/^}/p' "$0")
+  _mtc_gm=$(printf '%s\n' "$_mtc_gx" | sed '/>> "\$_unv_f"/d')
+  if [ -n "$_mtc_gx" ] && [ "$_mtc_gm" != "$_mtc_gx" ] && ( _unv_f="$d/mtc/mm"; : > "$_unv_f"; PATH="$d/mtc/bin2:$PATH"; export PATH; eval "$_mtc_gm"
+       if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+       _unv_end >/dev/null ); then echo "selftest PASS: MTC3m — with the marker write deleted from the real _grepx text (a sed), _unv_end reads clean, so MTC3's marker assertion has teeth"
+  else echo "selftest FAIL: MTC3m — the marker-drop mutant of _grepx did not apply or still read non-zero: MTC3 pins nothing"; sf=1; fi
+  # MTC6 (SWAS-577, S-LOW-1): a marker file that is missing or unnamed reads RED, never clean; the mutant is the real _unv_end text with its existence test turned off
+  _mtc_ue=$(sed -n '/^_unv_end() {/,/^}/p' "$0")
+  _mtc_um=$(printf '%s\n' "$_mtc_ue" | sed 's/^  if \[ -z .*# UNVMISS$/  if false; then/')
+  if [ -n "$_mtc_ue" ] && [ "$_mtc_um" != "$_mtc_ue" ] && ( _unv_f="$d/mtc/gone"; rm -f "$_unv_f"; ! _unv_end >/dev/null ) && ( _unv_f=""; ! _unv_end >/dev/null ) \
+     && ( _unv_f="$d/mtc/gone"; rm -f "$_unv_f"; eval "$_mtc_um"; _unv_end >/dev/null ); then echo "selftest PASS: MTC6 — _unv_end reads RED on a missing or unnamed marker file, and the real text with its existence test off reads clean (the cell has teeth)"
+  else echo "selftest FAIL: MTC6 — _unv_end did not red on a missing marker, or its mutant did not apply or still read non-zero"; sf=1; fi
+  _mtc_sf=$( _unv_f="$d/mtc/mbin2"; _ST_SECTIONS="A"; _st_seen=" A"; sf=0; _st_end --no-trap-check >/dev/null; echo "$sf" )
+  if [ "$_mtc_sf" = 1 ]; then echo "selftest PASS: MTC3e — _st_end with a non-empty marker sets sf=1 (the verdict line then reds)"
+  else echo "selftest FAIL: MTC3e — _st_end ignored a non-empty marker (sf='$_mtc_sf', want 1)"; sf=1; fi
   _st_mark ST
 
   # ── SWAS-281 (CI-TIME-BUDGET) — `--count-legs` (B4, B17) and the ci-time-report lock TW1 (B11) ──────────────────
@@ -3601,14 +4964,16 @@ AGGCLS
   _cl_mk "$d/cl4" a.yml "${_cl_pr}  a:\n    strategy:\n      matrix: \${{ fromJSON(needs.x.outputs.m) }}\n    steps:\n      - run: x\n"
   _cl_expect B4d "$d/cl4" 1 "FAIL: count-legs" "an expression matrix is a FAIL, never 1"
   _cl_mutc=$(_cl_mut matrix 's/sz \*= cnt\[k\]/sz *= 1/') || sf=1
-  if [ -n "${_cl_mutc:-}" ] && ! sh "$_cl_mutc" --count-legs "$d/cl1" 2>&1 | grep -qF "a.yml a 8"; then
+  _b4m_o=''; if [ -n "${_cl_mutc:-}" ]; then _b4m_o=$(sh "$_cl_mutc" --count-legs "$d/cl1" 2>&1) || :; fi
+  if [ -n "${_cl_mutc:-}" ] && ! _has "$_b4m_o" "a.yml a 8"; then
     echo "selftest PASS: B4m — the ignore-the-matrix mutant no longer prints 8 for the 2 x 4 fixture"
   else echo "selftest FAIL: B4m — the matrix mutant still prints 8, so the 2 x 4 fixture cannot see it"; sf=1; fi
   # B17: every triggered workflow, no list to forget; refusals; the one allowlisted privileged job.
   _cl_mk "$d/cl5" z-unlisted.yml "${_cl_pr}  q:\n    steps:\n      - run: x\n"
   _cl_mk "$d/cl5" s.yml 'on:\n  schedule:\n    - cron: "0 7 * * 1"\njobs:\n  sched:\n    steps:\n      - run: x\n'
   _cl_expect B17a "$d/cl5" 0 "z-unlisted.yml q 1" "an unlisted workflow with a pull_request trigger is counted"
-  if sh "$0" --count-legs "$d/cl5" 2>&1 | grep -qF "s.yml"; then echo "selftest FAIL: B17a2 — a schedule-only workflow was counted"; sf=1
+  if _b17_o=$(sh "$0" --count-legs "$d/cl5" 2>&1); then _b17_rc=0; else _b17_rc=$?; fi
+  if _has "$_b17_o" "s.yml"; then echo "selftest FAIL: B17a2 — a schedule-only workflow was counted (rc=$_b17_rc): $_b17_o"; sf=1
   else echo "selftest PASS: B17a2 — a schedule-only workflow is not counted"; fi
   _cl_mk "$d/cl6" a.yml "${_cl_pr}  u:\n    uses: ./.github/workflows/other.yml\n"
   _cl_expect B17b "$d/cl6" 1 "reusable" "a reusable-workflow uses: job is a FAIL (its legs cannot be counted here)"
@@ -3653,8 +5018,9 @@ AGGCLS
   _tw_try TW1g "does not list job b in its needs" "jobs:\n  a:\n    steps:\n      - run: x\n  b:\n    steps:\n      - run: y\n$_tw_job"
   if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && [ -f "$_agg_kr/conformance/ci-classify-changes.sh" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
     _tw_r=$(check_ci_time_report "$_agg_kr/.github/workflows/ci.yml" 2>&1 || true)
+    _tw_blk=$(extract_job_block "$_agg_kr/.github/workflows/ci.yml" ci-time-report | sed 's/#.*//')
     if [ -z "$_tw_r" ] \
-       && [ "$(extract_job_block "$_agg_kr/.github/workflows/ci.yml" ci-time-report | sed 's/#.*//' | grep -c 'continue-on-error: true')" = 1 ]; then
+       && [ "$(_grepx "$_tw_blk" -c 'continue-on-error: true')" = 1 ]; then
       echo "selftest PASS: TW1r — the real ci.yml carries the ci-time-report job (liveness) and it passes TW1"
     else echo "selftest FAIL: TW1r — the real ci.yml has no ci-time-report job, or it fails TW1: [$_tw_r]"; sf=1; fi
     awk 'BEGIN{j=0} /^  ci-time-report:/{j=1} j && /^    continue-on-error: true/{next} /^  [a-z]/&&!/^  ci-time-report:/{j=0} {print}' "$_agg_kr/.github/workflows/ci.yml" > "$d/tw-real.yml"
@@ -4030,8 +5396,9 @@ AGGCLS
   # LBr: the real kit tree is clean, and the walk is live (exactly the judged set; the count moves only with a deliberate template add or remove)
   if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && [ -f "$_agg_kr/conformance/ci-classify-changes.sh" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
     if check_line_breaks_tree "$_agg_kr" > "$d/lb/lbr.out" 2>&1; then _lbr_rc=0; else _lbr_rc=$?; fi
-    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 25 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 25 judged files"
-    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 25; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
+    # 26 = the 25 before SWAS-552 plus its on-demand macOS workflow (.github/workflows/boundary-redteam-macos.yml), a deliberate add
+    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 26 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 26 judged files"
+    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 26; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
   else echo "selftest SKIP: LBr — not a kit tree"; fi
   # the mutants: a sed-edited COPY of this script runs the cell's fixture; the original must show the needle (the positive control) and the mutant must not.
   # A sed that matches nothing is "unbound" and fails loud: the pinned line moved, and a mutant equal to the original proves nothing.
@@ -4053,6 +5420,710 @@ AGGCLS
   _lb_mut LBm2 "deleting the own_tree_run call (LB13)" '/^    check_line_breaks_tree "\$_ot_root" || _ot_rc=1/d' own "$_lb_k" "RP liveness"
   _lb_mut LBm3 "deleting the shard_join_run call (LB14)" '/^  check_line_breaks "\$_sr_wf" || return 1/d' join "$d/lb/st-cr.yml" "in-run negative"
   _st_mark LB
+
+  # SCP1-SCP26 (SWAS-499) — the shellcheck pin lock (check_shellcheck_pin_tree). Fixtures are workflow files in scratch trees; every case runs the lock through its
+  # REAL read-only entry point (--shellcheck-pin). Each mutant is a sed-edited COPY of this script run on the fixture the cell reds: the original must show the cell's
+  # needle (it reds) and the mutant must not. A sed that matches nothing is "unbound" and fails loud.
+  mkdir -p "$d/scp"
+  cat > "$d/scp/good.yml" <<'EOF'
+jobs:
+  lintjob:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@abc
+      - name: Install pinned shellcheck
+        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"
+      - name: Pinned
+        run: sh scripts/install-shellcheck.sh --check
+      - name: Lint
+        run: sh conformance/verify.sh --require
+EOF
+  sed -e '/install-shellcheck/d' -e '/- name: Install pinned/d' -e '/- name: Pinned/d' "$d/scp/good.yml" > "$d/scp/none.yml"
+  awk '{ print } /name: Install pinned shellcheck/ { print "        if: always()" }' "$d/scp/good.yml" > "$d/scp/cond.yml"
+  sed -e '/- name: Pinned/d' -e '/--check/d' "$d/scp/good.yml" > "$d/scp/nocheck.yml"
+  sed 's/ && echo .*$//' "$d/scp/good.yml" > "$d/scp/nopath.yml"
+  { sed -n '1,5p' "$d/scp/good.yml"; sed -n '10,11p' "$d/scp/good.yml"; sed -n '6,9p' "$d/scp/good.yml"; } > "$d/scp/late.yml"
+  # a --selftest-only job lints nothing and needs no installer
+  printf 'jobs:\n  selfonly:\n    steps:\n      - run: sh conformance/shellcheck.sh --selftest\n' > "$d/scp/selfonly.yml"
+  # the gate-lint step: the exact capture, the OFF-line requirement, and no pipe
+  { sed -n '1,9p' "$d/scp/good.yml"
+    printf '      - name: Gate\n        id: gate-lint\n        run: |\n'
+    printf '          if sh conformance/shellcheck.sh > "$RUNNER_TEMP/sc.out" 2>&1; then rc=0; else rc=$?; fi\n'
+    printf '          cat "$RUNNER_TEMP/sc.out"\n'
+    printf '          grep -q '"'"'^shellcheck: dataflow analysis OFF for 3 files'"'"' "$RUNNER_TEMP/sc.out" || exit 1\n'
+  } > "$d/scp/gl-ok.yml"
+  sed '/dataflow analysis OFF/d' "$d/scp/gl-ok.yml" > "$d/scp/gl-nooff.yml"
+  { cat "$d/scp/gl-ok.yml"; printf '          sh conformance/shellcheck.sh | cat\n'; } > "$d/scp/gl-pipe.yml"
+  _scp_tree() {  # <root> <ci-variant> [<other-variant>] — a scratch tree with ci.yml (and other.yml)
+    mkdir -p "$1/.github/workflows"; cp "$d/scp/$2.yml" "$1/.github/workflows/ci.yml"
+    if [ -n "${3:-}" ]; then cp "$d/scp/$3.yml" "$1/.github/workflows/other.yml"; fi
+  }
+  _scp_run() {  # <script> <root> -> _scp_o, _scp_rc
+    if _scp_o=$(sh "$1" --shellcheck-pin "$2" 2>&1); then _scp_rc=0; else _scp_rc=$?; fi
+  }
+  _scp_case() {  # <id> <desc> <want-rc> <needle> <root>
+    _scp_run "$0" "$5"
+    if [ "$_scp_rc" = "$3" ] && _has "$_scp_o" "$4"; then echo "selftest PASS: $1 — $2"
+    else echo "selftest FAIL: $1 — $2 (rc=$_scp_rc want $3, needle '$4'): $_scp_o"; sf=1; fi
+  }
+  _scp_mut() {  # <id> <desc> <sed-expr> <root> <needle>
+    sed "$3" "$0" > "$d/scp/$1.sh"
+    if cmp -s "$0" "$d/scp/$1.sh"; then echo "selftest FAIL: $1 — unbound: the sed matched nothing (the pinned line moved), so the mutant equals the original"; sf=1; return 0; fi
+    _scp_run "$0" "$4"
+    case "$_scp_o" in *"$5"*) : ;; *) echo "selftest FAIL: $1 — the unmutated script does not show '$5' on this fixture: $_scp_o"; sf=1; return 0 ;; esac
+    _scp_run "$d/scp/$1.sh" "$4"
+    case "$_scp_o" in
+      *"$5"*) echo "selftest FAIL: $1 — $2 was NOT caught (the mutant still shows '$5')"; sf=1 ;;
+      *"shellcheck-pin"*) echo "selftest PASS: $1 — $2 -> the needle is gone under the mutant, so the cell has teeth" ;;
+      *) echo "selftest FAIL: $1 — the mutant run died early (no shellcheck-pin line at all): $_scp_o"; sf=1 ;;
+    esac
+  }
+  _scp_tree "$d/scp/t-ok" good selfonly
+  _scp_case SCP1 "a linting job with the installer and --check first, plus a --selftest-only job -> green, one linting job" 0 "OK: shellcheck-pin — 1 linting job(s)" "$d/scp/t-ok"
+  _scp_tree "$d/scp/t-none" none
+  _scp_case SCP2 "a linting job in ci.yml with no installer -> RED naming the job" 1 "job lintjob" "$d/scp/t-none"
+  _scp_tree "$d/scp/t-other" good none
+  _scp_case SCP3 "the same plant in a SECOND workflow file (other.yml) -> RED naming that file" 1 "other.yml job lintjob" "$d/scp/t-other"
+  _scp_tree "$d/scp/t-late" late
+  _scp_case SCP4 "the installer AFTER the lint step -> RED" 1 "lints before the pinned installer" "$d/scp/t-late"
+  _scp_tree "$d/scp/t-cond" cond
+  _scp_case SCP5 "an installer step with a step-level if: -> RED (a skipped install pins nothing)" 1 "lints before the pinned installer" "$d/scp/t-cond"
+  _scp_tree "$d/scp/t-nocheck" nocheck
+  _scp_case SCP6 "no --check step -> RED" 1 "lints before the pinned installer" "$d/scp/t-nocheck"
+  _scp_tree "$d/scp/t-nopath" nopath
+  _scp_case SCP7 "an install that never writes GITHUB_PATH -> RED (the pin would not shadow the image's shellcheck)" 1 "lints before the pinned installer" "$d/scp/t-nopath"
+  _scp_tree "$d/scp/t-glok" gl-ok
+  _scp_case SCP8 "a gate-lint step with the pipe-free capture and the OFF-line requirement -> green" 0 "OK: shellcheck-pin" "$d/scp/t-glok"
+  _scp_tree "$d/scp/t-glno" gl-nooff
+  _scp_case SCP9 "a gate-lint step that does not require the OFF line -> RED" 1 "the gate-lint step must capture the wrapper without a pipe" "$d/scp/t-glno"
+  _scp_tree "$d/scp/t-glpipe" gl-pipe
+  _scp_case SCP10 "a gate-lint step that pipes the wrapper -> RED" 1 "the gate-lint step must capture the wrapper without a pipe" "$d/scp/t-glpipe"
+  # SCP11: the data-flow lists in conformance/shellcheck.sh must equal the lock's literals
+  for _scp_v in 1 2 3; do _scp_tree "$d/scp/t-list$_scp_v" good selfonly; mkdir -p "$d/scp/t-list$_scp_v/conformance"; done
+  printf 'SC_NOFLOW_FILES="%s scripts/extra.sh"\nSC_NOFOLLOW_FILES="%s"\n' "$SCP_NOFLOW" "$SCP_NOFOLLOW" > "$d/scp/t-list1/conformance/shellcheck.sh"
+  printf 'SC_NOFLOW_FILES="%s"\nSC_NOFOLLOW_FILES="%s"\n' "$SCP_NOFLOW" "$SCP_NOFOLLOW" > "$d/scp/t-list2/conformance/shellcheck.sh"
+  printf 'SC_NOFLOW_FILES="%s"\nSC_NOFOLLOW_FILES="%s scripts/tracker-read.sh"\n' "$SCP_NOFLOW" "$SCP_NOFOLLOW" > "$d/scp/t-list3/conformance/shellcheck.sh"
+  _scp_case SCP11 "a data-flow list in shellcheck.sh with one more file than the lock holds -> RED naming it" 1 "SC_NOFLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list1"
+  _scp_case SCP11b "both lists equal to the lock's literals -> green" 0 "the data-flow lists match" "$d/scp/t-list2"
+  _scp_case SCP11c "the no--x list widened by one file -> RED naming SC_NOFOLLOW_FILES" 1 "SC_NOFOLLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list3"
+  # SCP12: the real kit tree, exactly its seven linting jobs (a new linting job is a deliberate edit of this count, with its installer)
+  if [ -f "$_kr/.github/workflows/ci.yml" ] && { [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    _scp_case SCP12 "the real kit tree: its 7 linting jobs all run the pinned installer first, and the data-flow lists match" 0 "OK: shellcheck-pin — 7 linting job(s)" "$_kr"
+  else echo "selftest SKIP: SCP12 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned)"; fi
+  # SCP13: a .github/workflows/ that holds no workflow file must RED (a glob that matched nothing is a vacuous green)
+  mkdir -p "$d/scp/t-empty/.github/workflows"
+  _scp_case SCP13 "an empty .github/workflows/ -> RED, naming the liveness failure" 1 "liveness" "$d/scp/t-empty"
+  # SCP14: FAIL CLOSED on indentation — a 4-space workflow (job and steps one level shallower than the lock reads) holds a lint line it cannot attribute
+  printf 'jobs:\n    lintjob:\n        runs-on: ubuntu-24.04\n        steps:\n            - run: sh conformance/shellcheck.sh\n' > "$d/scp/indent4.yml"
+  _scp_tree "$d/scp/t-indent4" indent4
+  _scp_case SCP14 "a 4-space-indented workflow with a lint line the scan cannot attribute to a step -> RED naming the file" 1 "ci.yml holds 1 lint line(s) but only 0 sit inside a step" "$d/scp/t-indent4"
+  # SCP15: a swallowed installer failure (|| true) pins nothing
+  sed 's/ >> "[$]GITHUB_PATH"$/ >> "$GITHUB_PATH" || true/' "$d/scp/good.yml" > "$d/scp/swallow.yml"
+  _scp_tree "$d/scp/t-swallow" swallow
+  _scp_case SCP15 "an installer step ending in || true -> RED" 1 "lints before the pinned installer" "$d/scp/t-swallow"
+  # SCP16: the installer text in a name: line (and no real run: step) pins nothing
+  { printf 'jobs:\n  lintjob:\n    steps:\n'
+    printf '      - name: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"\n        run: echo hi\n'
+    printf '      - name: sh scripts/install-shellcheck.sh --check\n        run: echo hi\n'
+    printf '      - run: sh conformance/verify.sh --require\n'
+  } > "$d/scp/nameonly.yml"
+  _scp_tree "$d/scp/t-nameonly" nameonly
+  _scp_case SCP16 "the installer and --check named only in name: lines -> RED" 1 "lints before the pinned installer" "$d/scp/t-nameonly"
+  # SCP17: what lints. Any verify.sh form but --selftest --from-output; selftest-hermetic.sh --touched; a plain --selftest of verify.sh nests the aggregate.
+  for _scp_v in bare:"sh conformance/verify.sh" selftest:"sh conformance/verify.sh --selftest" hermetic:"sh conformance/selftest-hermetic.sh --touched"; do
+    printf 'jobs:\n  lintjob:\n    steps:\n      - run: %s\n' "${_scp_v#*:}" > "$d/scp/lint-${_scp_v%%:*}.yml"
+    _scp_tree "$d/scp/t-lint-${_scp_v%%:*}" "lint-${_scp_v%%:*}"
+    _scp_case "SCP17-${_scp_v%%:*}" "'${_scp_v#*:}' before any installer -> RED" 1 "lints before the pinned installer" "$d/scp/t-lint-${_scp_v%%:*}"
+  done
+  printf 'jobs:\n  fromout:\n    steps:\n      - run: sh conformance/verify.sh --selftest --from-output out.txt\n      - run: sh conformance/shellcheck.sh --selftest\n' > "$d/scp/fromout.yml"
+  _scp_tree "$d/scp/t-fromout" fromout
+  _scp_case SCP17-fromout "verify.sh --selftest --from-output and shellcheck.sh --selftest lint nothing -> green, 0 linting jobs" 0 "OK: shellcheck-pin — 0 linting job(s)" "$d/scp/t-fromout"
+  printf 'jobs:\n  joiner:\n    steps:\n      - run: sh conformance/verify.sh --merge --output-file out.txt rec1 rec2\n' > "$d/scp/merge.yml"
+  _scp_tree "$d/scp/t-merge" merge
+  _scp_case SCP17-merge "verify.sh --merge (a join of shard records, no row run) lints nothing -> green, 0 linting jobs" 0 "OK: shellcheck-pin — 0 linting job(s)" "$d/scp/t-merge"
+  # SCP18: there is no exemption — an unpinned lint in a job named conformance-selftests-4 reds like any other
+  printf 'jobs:\n  conformance-selftests-4:\n    steps:\n      - run: sh conformance/verify.sh --selftest\n' > "$d/scp/ex4.yml"
+  _scp_tree "$d/scp/t-ex4" ex4
+  _scp_case SCP18 "an unpinned lint in a job named conformance-selftests-4 -> RED (no exemption)" 1 "job conformance-selftests-4" "$d/scp/t-ex4"
+  # SCP19-SCP20: FAIL CLOSED on a job header the lock cannot read — it must not inherit the previous job's installer
+  { cat "$d/scp/good.yml"; printf '  "lint2":\n    runs-on: ubuntu-24.04\n    steps:\n      - run: sh conformance/verify.sh --require\n'; } > "$d/scp/quoted.yml"
+  _scp_tree "$d/scp/t-quoted" quoted
+  _scp_case SCP19 "a quoted job key after a pinned job, whose step lints -> RED naming the line (rule a)" 1 "ci.yml line 12 is not a job header" "$d/scp/t-quoted"
+  { printf 'jobs:\n    lintjob:\n      runs-on: ubuntu-24.04\n      steps:\n'
+    printf '      - run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"\n'
+    printf '      - run: sh scripts/install-shellcheck.sh --check\n      - run: sh conformance/verify.sh --require\n'
+  } > "$d/scp/indentless.yml"
+  _scp_tree "$d/scp/t-indentless" indentless
+  _scp_case SCP20 "a 4-space job with its steps' '- ' at 6 spaces, installer first -> RED naming the line (rule b)" 1 "ci.yml line 2 is not a job header" "$d/scp/t-indentless"
+  # SCP21-SCP26: the installer and --check count only as the EXACT literal, anchored from run: to the end of the line
+  sed 's/run: sh scripts\/install-shellcheck.sh "/run: echo sh scripts\/install-shellcheck.sh "/' "$d/scp/good.yml" > "$d/scp/echoed.yml"
+  sed 's/ >> "[$]GITHUB_PATH"$/ >> "$GITHUB_PATH"; true/' "$d/scp/good.yml" > "$d/scp/semitrue.yml"
+  sed 's/ >> "[$]GITHUB_PATH"$/ >> "$GITHUB_PATH" || exit 0/' "$d/scp/good.yml" > "$d/scp/exit0.yml"
+  sed 's/ >> "[$]GITHUB_PATH"$/ >> "$GITHUB_PATH" || echo x/' "$d/scp/good.yml" > "$d/scp/orecho.yml"
+  sed 's/ >> "[$]GITHUB_PATH"$/& /' "$d/scp/good.yml" > "$d/scp/trail.yml"
+  sed 's/install-shellcheck.sh --check$/& || true/' "$d/scp/good.yml" > "$d/scp/chktrue.yml"
+  for _scp_v in 21:echoed:"echo sh scripts/install-shellcheck.sh ... >> GITHUB_PATH (an echo, not an install)" 22:semitrue:"an installer line ending in '; true'" 23:exit0:"an installer line ending in '|| exit 0'" 24:orecho:"an installer line ending in '|| echo x'" 26:chktrue:"a --check line ending in '|| true'"; do
+    _scp_n=${_scp_v%%:*}; _scp_r=${_scp_v#*:}; _scp_f=${_scp_r%%:*}
+    _scp_tree "$d/scp/t-$_scp_f" "$_scp_f"
+    _scp_case "SCP$_scp_n" "${_scp_r#*:} -> RED" 1 "lints before the pinned installer" "$d/scp/t-$_scp_f"
+  done
+  _scp_tree "$d/scp/t-trail" trail
+  _scp_case SCP25 "an installer line with trailing whitespace -> green (trailing whitespace is allowed)" 0 "OK: shellcheck-pin — 1 linting job(s)" "$d/scp/t-trail"
+  # the mutants
+  _scp_mut SCPm1 "scanning ci.yml only (SCP3)" 's|for _sp_f in .*; do|for _sp_f in "$1"/.github/workflows/ci.yml; do|' "$d/scp/t-other" "other.yml job lintjob"
+  _scp_mut SCPm2 "skipping the failure report (SCP2)" 's/if \[ -n "[$]_sp_bad" \]; then/if false; then/' "$d/scp/t-none" "job lintjob"
+  _scp_mut SCPm3 "not requiring --check (SCP6)" 's/if (!(inst [&][&] chk))/if (!(inst))/' "$d/scp/t-nocheck" "lints before the pinned installer"
+  _scp_mut SCPm4 "ignoring a step-level if: on the installer (SCP5)" 's/if (s_inst [&][&] !s_cond) inst = 1/if (s_inst) inst = 1/' "$d/scp/t-cond" "lints before the pinned installer"
+  _scp_mut SCPm5 "matching the installer by its prefix only, so a line without the GITHUB_PATH write passes (SCP7)" 's/else if (rest == lit_inst)/else if (index(rest, "sh scripts\/install-shellcheck.sh \\"") == 1)/' "$d/scp/t-nopath" "lints before the pinned installer"
+  _scp_mut SCPm6 "not requiring the OFF line (SCP9)" 's/(s_cap [&][&] s_off [&][&] !s_pipe)/(s_cap \&\& !s_pipe)/' "$d/scp/t-glno" "the gate-lint step must capture the wrapper without a pipe"
+  _scp_mut SCPm7 "not looking for a pipe (SCP10)" 's/(s_cap [&][&] s_off [&][&] !s_pipe)/(s_cap \&\& s_off)/' "$d/scp/t-glpipe" "the gate-lint step must capture the wrapper without a pipe"
+  _scp_mut SCPm8 "skipping the list compare (SCP11)" 's/if \[ "[$]_sp_nf" != "[$]SCP_NOFLOW" \]; then/if false; then/' "$d/scp/t-list1" "SC_NOFLOW_FILES in conformance/shellcheck.sh"
+  _scp_mut SCPm9 "removing the fail-closed lint-line count (SCP14)" 's/if \[ -z "[$]_sp_c" \] || \[ "[$]_sp_all" != "[$]_sp_seen" \]; then/if false; then/' "$d/scp/t-indent4" "lint line(s) but only"
+  _scp_mut SCPm10 "dropping the end anchor of the installer literal, so trailing text passes (SCP15)" 's/else if (rest == lit_inst)/else if (index(rest, lit_inst) == 1)/' "$d/scp/t-swallow" "lints before the pinned installer"
+  _scp_mut SCPm11 "accepting the literal on a name: line, not only a run: line (SCP16)" 's/if (match([$]0, \/^(      - |        )run:/if (match($0, \/^(      - |        )(run|name):/' "$d/scp/t-nameonly" "lints before the pinned installer"
+  _scp_mut SCPm12 "lint trigger narrowed back to verify.sh --require (SCP17)" 's|index(l, "conformance/verify.sh") [&][&]|index(l, "conformance/verify.sh --require") \&\&|' "$d/scp/t-lint-bare" "lints before the pinned installer"
+  _scp_mut SCPm13 "dropping the --selftest --from-output carve-out (SCP17)" 's|![(]index(l, "--selftest") [&][&] index(l, "--from-output"))|1|' "$d/scp/t-fromout" "OK: shellcheck-pin — 0 linting job(s)"
+  _scp_mut SCPm13b "dropping the --merge carve-out (SCP17)" 's| [&][&] !index(l, "conformance/verify.sh --merge")||' "$d/scp/t-merge" "OK: shellcheck-pin — 0 linting job(s)"
+  _scp_mut SCPm14 "not treating selftest-hermetic.sh --touched as a lint (SCP17)" 's|index(l, "conformance/selftest-hermetic.sh") [&][&] index(l, "--touched")|0|' "$d/scp/t-lint-hermetic" "lints before the pinned installer"
+  _scp_mut SCPm15 "removing rule (a): a line under 4 spaces that is not a job header (SCP19)" 's/if ((match([$]0, \/^ \*\/) ? RLENGTH : 0) < 4)/if (0)/' "$d/scp/t-quoted" "ci.yml line 12 is not a job header"
+  _scp_mut SCPm16 "removing rule (b): the first line after jobs: must be a header (SCP20)" 's/if (first [&][&] !ura)/if (0)/' "$d/scp/t-indentless" "ci.yml line 2 is not a job header"
+  _scp_mut SCPm17 "dropping the start anchor of the installer literal, so an echo prefix passes (SCP21)" 's/else if (rest == lit_inst)/else if (index(rest, lit_inst) > 0)/' "$d/scp/t-echoed" "lints before the pinned installer"
+  _scp_mut SCPm18 "dropping the end anchor of the --check literal, so trailing text passes (SCP26)" 's/if (rest == lit_chk)/if (index(rest, lit_chk) == 1)/' "$d/scp/t-chktrue" "lints before the pinned installer"
+  # SCPm19 (SCP13): the liveness branch still SAYS it, but without `_sp_rc=1` the empty tree goes green — graded on the rc, not the needle
+  sed '/[l]iveness: read no workflow file/,/_sp_rc=1/s/_sp_rc=1/:/' "$0" > "$d/scp/SCPm19.sh"
+  if cmp -s "$0" "$d/scp/SCPm19.sh"; then echo "selftest FAIL: SCPm19 — unbound: the sed matched nothing (the liveness branch moved), so the mutant equals the original"; sf=1
+  else
+    _scp_run "$d/scp/SCPm19.sh" "$d/scp/t-empty"
+    if [ "$_scp_rc" = 1 ]; then echo "selftest FAIL: SCPm19 — deleting _sp_rc=1 in the liveness branch was NOT caught (the empty tree still reds): $_scp_o"; sf=1
+    else echo "selftest PASS: SCPm19 — without _sp_rc=1 the empty tree goes rc $_scp_rc, so SCP13 has teeth"; fi
+  fi
+  _st_mark SCP
+
+  # RS0-RS1 and M280-1..M280-15 (SWAS-280) — the runner-switch lock (R1-R7). RS0 is the positive control on the REAL kit tree (and on its ci.yml alone);
+  # each mutant is a SCRATCH COPY and must red AND name its cause. A mutant is judged only when RS0 is green, so a missing lock cannot make every
+  # mutant red for the wrong reason. M280-1/2 put the expression on a gate / write a label by hand, M280-3/4/5 break one part of the expression,
+  # M280-6/7 drop persist-credentials from a moved checkout, M280-8 moves a floor job, M280-9 adds a job on neither list, M280-10/11 plant a RunsOn
+  # fragment in another workflow / the App-writable runs-on.yml, M280-13/14/15 give a moved job a token or a wider scope, and M280-12 runs an
+  # INCEPTED adopter tree (expression on a non-moved job, runs-on.yml present) through the REAL --own-tree entry: it must PASS (the lock is N/A there).
+  mkdir -p "$d/rs"
+  _rs_real="$_kr/.github/workflows/ci.yml"
+  RSX=$(printf %s "$KIT_RUNNER_EXPR"); export RSX  # the awk actions below read the expression through ENVIRON (an awk -v would process escapes)
+  if [ ! -f "$_rs_real" ] || { [ ! -f "$_kr/docs/ROADMAP-KIT.md" ] && [ ! -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    # the twin-marker discriminator (as AGG5/AGG6): ci.yml and the kit markers are export-ignored, so an adopter export has none of them
+    echo "selftest SKIP: RS0/M280 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned); the cells grade the KIT's own ci.yml. M280-12 below runs everywhere"
+  elif check_runner_switch "$_rs_real" >/dev/null 2>&1 && check_runner_switch_tree "$_kr" >/dev/null 2>&1; then
+    echo "selftest PASS: RS0 — the real kit tree keeps the one runner expression on the moved set only, the hosted floor on ubuntu-24.04, persist-credentials: false on every moved checkout, and no token or wider scope in a moved job"
+    # _rs_in_job <job> <awk-action>: run the action on every line of that job's block (its header to the next job key) of the real ci.yml
+    _rs_in_job() { awk -v job="$1" 'BEGIN { hdr = "^  " job ":[ \t]*(#.*)?$" } $0 ~ hdr { j = 1; print; next } j && /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { j = 0 } '"$2" "$_rs_real"; }
+    _rs_in_job secret-scan 'j && /^    runs-on:/ { print "    runs-on: " ENVIRON["RSX"]; next } { print }' > "$d/rs/m1.yml"
+    _rs_in_job cf-claims 'j && /^    runs-on:/ { print "    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64"; next } { print }' > "$d/rs/m2.yml"
+    sed "s/vars\.KIT_CI_RUNNER && //" "$_rs_real" > "$d/rs/m3.yml"
+    sed 's/ && github\.event\.pull_request\.head\.repo\.full_name == github\.repository//' "$_rs_real" > "$d/rs/m4.yml"
+    sed "s/|| 'ubuntu-24.04' }}/|| 'runs-on=1\/runner=2cpu-linux-x64' }}/" "$_rs_real" > "$d/rs/m5.yml"
+    _rs_in_job guard-delta 'j && /^ +persist-credentials: false[ \t]*$/ { next } { print }' > "$d/rs/m6.yml"
+    _rs_in_job non-vacuity 'j && /^ +persist-credentials: false[ \t]*$/ { next } { print }' > "$d/rs/m7.yml"
+    _rs_in_job boundary-redteam 'j && /^    runs-on:/ { print "    runs-on: " ENVIRON["RSX"]; next } { print }' > "$d/rs/m8.yml"
+    awk '$0 == "  changes:" { print "  x-new:"; print "    runs-on: ubuntu-24.04"; print "    steps:"; print "      - run: echo x" } { print }' "$_rs_real" > "$d/rs/m9.yml"
+    _rs_in_job conformance-docs-1 '{ print } j && /^    steps:[ \t]*$/ { print "      - run: echo x"; print "        env:"; print "          GH_TOKEN: ${{ github.token }}" }' > "$d/rs/m13.yml"
+    _rs_in_job guard-delta '{ print } j && /^    steps:[ \t]*$/ { print "      - run: echo x"; print "        env:"; print "          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" }' > "$d/rs/m14.yml"
+    _rs_in_job non-vacuity '{ print } j && /^    runs-on:/ { print "    permissions: { actions: read }" }' > "$d/rs/m15.yml"
+    # the fix-round mutants (SWAS-280 round 2): header shape, workflow-level inheritance, widened token test, comment strip, duplicate runs-on, checkout forms
+    awk '$0 == "  non-vacuity:" { print "  \"non-vacuity\":"; next } { print }' "$_rs_real" > "$d/rs/m16.yml"
+    awk '$0 == "  changes:" { print "  x-flow: {runs-on: ubuntu-24.04}" } { print }' "$_rs_real" > "$d/rs/m17.yml"
+    awk '$0 == "  changes:" { print "  changes: &anc"; next } { print }' "$_rs_real" > "$d/rs/m18.yml"
+    sed 's/^  contents: read$/  contents: write/' "$_rs_real" > "$d/rs/m19.yml"
+    awk '{ print } $0 == "  contents: read" { print "  actions: read" }' "$_rs_real" > "$d/rs/m20.yml"
+    awk '/^concurrency:/ { print "env:"; print "  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" } { print }' "$_rs_real" > "$d/rs/m21.yml"
+    _rs_in_job conformance-docs-1 '{ print } j && /^    steps:[ \t]*$/ { print "      - run: echo x"; print "        env:"; print "          GH_TOKEN: ${{ secrets[\047GITHUB_TOKEN\047] }}" }' > "$d/rs/m22.yml"
+    _rs_in_job guard-delta '{ print } j && /^    steps:[ \t]*$/ { print "      - run: echo x"; print "        env:"; print "          ALL: ${{ toJSON(secrets) }}" }' > "$d/rs/m23.yml"
+    _rs_in_job non-vacuity '{ print } j && /^    steps:[ \t]*$/ { print "      - run: echo x"; print "        env: *anc" }' > "$d/rs/m25.yml"
+    _rs_in_job docs-links 'j && /^    runs-on:/ { print "    runs-on: ubuntu-24.04#/runs-on=1/runner=2cpu-linux-x64"; next } { print }' > "$d/rs/m26.yml"
+    _rs_in_job boundary-redteam '{ print } j && /^    runs-on:/ { print "    runs-on: ubuntu-24.04" }' > "$d/rs/m27.yml"
+    _rs_in_job non-vacuity 'j && /^ +persist-credentials: false[ \t]*$/ { next } j && /uses: actions\/checkout@/ { sub(/@[0-9a-f]+/, "&\"") ; sub(/uses: /, "uses: \"") } { print }' > "$d/rs/m28.yml"
+    _rs_in_job guard-delta 'j && !done && /^        with:[ \t]*$/ { done = 1; print "        env:"; next } { print }' > "$d/rs/m29.yml"
+    for _rs_m in "m1:(R1):M280-1:the expression on a security gate" \
+                 "m2:cf-claims:M280-2:a hand-written RunsOn label on a moved job" \
+                 "m3:variable guard:M280-3:the vars.KIT_CI_RUNNER guard removed" \
+                 "m4:fork clause:M280-4:the fork clause removed" \
+                 "m5:ubuntu-24.04 fallback:M280-5:the fallback changed to a RunsOn label" \
+                 "m6:guard-delta:M280-6:persist-credentials removed from guard-delta's checkout" \
+                 "m7:non-vacuity:M280-7:persist-credentials removed from non-vacuity's checkout" \
+                 "m8:boundary-redteam:M280-8:the expression on boundary-redteam" \
+                 "m9:x-new:M280-9:a new job on neither list" \
+                 "m13:conformance-docs-1:M280-13:github.token named in a conformance-docs-1 step" \
+                 "m14:guard-delta:M280-14:secrets.GITHUB_TOKEN named in guard-delta" \
+                 "m15:non-vacuity:M280-15:a permissions: scope beyond contents: read on non-vacuity" \
+                 "m16:bare job header:M280-16:a quoted job key" \
+                 "m17:bare job header:M280-17:a flow-mapping job" \
+                 "m18:bare job header:M280-18:an anchored job header" \
+                 "m19:workflow-level permissions:M280-19:top-level contents: write" \
+                 "m20:workflow-level permissions:M280-20:top-level actions: read added" \
+                 "m21:workflow-level env:M280-21:a token in a top-level env" \
+                 "m22:conformance-docs-1:M280-22:secrets[...] index form in a moved job" \
+                 "m23:guard-delta:M280-23:toJSON(secrets) in a moved job" \
+                 "m25:anchor, alias or merge key:M280-25:a YAML alias" \
+                 "m26:docs-links:M280-26:a floor job runs-on with a #-glued RunsOn fragment" \
+                 "m27:more than one runs-on:M280-27:a second job-level runs-on on boundary-redteam" \
+                 "m28:non-vacuity:M280-28:a quoted uses: checkout without persist-credentials" \
+                 "m29:guard-delta:M280-29:persist-credentials under env: instead of with:"; do
+      _rs_f=${_rs_m%%:*}; _rs_r=${_rs_m#*:}; _rs_want=${_rs_r%%:*}; _rs_r=${_rs_r#*:}
+      _rs_id=${_rs_r%%:*}; _rs_desc=${_rs_r#*:}
+      if cmp -s "$_rs_real" "$d/rs/$_rs_f.yml"; then
+        echo "selftest FAIL: $_rs_id — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1
+      elif _rs_o=$(check_runner_switch "$d/rs/$_rs_f.yml" 2>&1); then
+        echo "selftest FAIL: $_rs_id — $_rs_desc was NOT caught"; sf=1
+      elif _has "$_rs_o" "$_rs_want"; then
+        echo "selftest PASS: $_rs_id — $_rs_desc -> RED, naming '$_rs_want'"
+      else echo "selftest FAIL: $_rs_id — $_rs_desc reds without naming '$_rs_want': $_rs_o"; sf=1; fi
+    done
+    # M280-10/11: the tree legs. Each is a scratch copy of the real workflows with one plant.
+    for _rs_m in "10:golden-path.yml:M280-10:runner=2cpu-linux-x64 planted in golden-path.yml" \
+                 "11:runs-on.yml:M280-11:.github/runs-on.yml planted" \
+                 "30:drift-watch.yml:M280-30:the array label form runs-on: [runs-on, cpu=2] in drift-watch.yml" \
+                 "31:.hidden.yml:M280-31:a dot-named workflow naming the variable in another case" \
+                 "32:boundary-redteam-macos.yml:M280-32:macos-latest in the macOS workflow (only the literal macos-15 is allowed there)" \
+                 "33:drift-watch.yml:M280-33:the macos-15 literal in a workflow other than the macOS one"; do
+      _rs_n=${_rs_m%%:*}; _rs_r=${_rs_m#*:}; _rs_want=${_rs_r%%:*}; _rs_r=${_rs_r#*:}
+      _rs_id=${_rs_r%%:*}; _rs_desc=${_rs_r#*:}
+      mkdir -p "$d/rs/t$_rs_n/.github/workflows"
+      cp "$_kr"/.github/workflows/*.yml "$d/rs/t$_rs_n/.github/workflows/"
+      case "$_rs_n" in
+        10) printf '    runs-on: runner=2cpu-linux-x64\n' >> "$d/rs/t10/.github/workflows/golden-path.yml" ;;
+        11) : > "$d/rs/t11/.github/runs-on.yml" ;;
+        30) awk '/^    runs-on: ubuntu-24.04[ \t]*$/ && !done { done = 1; print "    runs-on: [runs-on, cpu=2]"; next } { print }' "$_kr/.github/workflows/drift-watch.yml" > "$d/rs/t30/.github/workflows/drift-watch.yml" ;;
+        31) printf 'jobs:\n  x:\n    runs-on: ${{ vars.kit_ci_runner }}\n' > "$d/rs/t31/.github/workflows/.hidden.yml" ;;
+        32) sed 's/^    runs-on: macos-15$/    runs-on: macos-latest/' "$_kr/.github/workflows/boundary-redteam-macos.yml" > "$d/rs/t32/.github/workflows/boundary-redteam-macos.yml" ;;
+        33) awk '/^    runs-on: ubuntu-24.04[ \t]*$/ && !done { done = 1; print "    runs-on: macos-15"; next } { print }' "$_kr/.github/workflows/drift-watch.yml" > "$d/rs/t33/.github/workflows/drift-watch.yml" ;;
+      esac
+      if _rs_o=$(check_runner_switch_tree "$d/rs/t$_rs_n" 2>&1); then
+        echo "selftest FAIL: $_rs_id — $_rs_desc was NOT caught"; sf=1
+      elif _has "$_rs_o" "$_rs_want"; then
+        echo "selftest PASS: $_rs_id — $_rs_desc -> RED, naming '$_rs_want'"
+      else echo "selftest FAIL: $_rs_id — $_rs_desc reds without naming '$_rs_want': $_rs_o"; sf=1; fi
+    done
+    # M280-W: the --own-tree wiring, through the REAL entry point on a kit-marked scratch tree (as GD4): the secret-scan mutant must red there.
+    mkdir -p "$d/rs/tw/.github/workflows" "$d/rs/tw/docs" "$d/rs/tw/conformance"
+    : > "$d/rs/tw/docs/ROADMAP-KIT.md"
+    cp "$_kr/.github/workflows/golden-path.yml" "$d/rs/tw/.github/workflows/golden-path.yml"
+    cp "$_kr/conformance/gate-dispositions.txt" "$d/rs/tw/conformance/gate-dispositions.txt"
+    cp "$_kr/conformance/selftest-hermetic.sh" "$d/rs/tw/conformance/"  # SWAS-460: a kit-marked tree owes the core-face list (CG)
+    cp "$_kr/.github/workflows/$KIT_MACOS_WORKFLOW" "$d/rs/tw/.github/workflows/$KIT_MACOS_WORKFLOW"  # SWAS-552: a kit-marked tree owes the on-demand macOS workflow
+    cp "$_rs_real" "$d/rs/tw/.github/workflows/ci.yml"
+    _ot_case M280-W0 "$d/rs/tw" 0 "OK: ci-gates --own-tree" "the real ci.yml on a kit-marked scratch tree -> green"
+    cp "$d/rs/m1.yml" "$d/rs/tw/.github/workflows/ci.yml"
+    _ot_case M280-W "$d/rs/tw" 1 "KIT_RUNNER_MOVABLE" "--own-tree reds a kit tree whose ci.yml puts the expression on a security gate"
+  else
+    echo "selftest FAIL: RS0 — the real kit tree does not satisfy the runner-switch lock (SWAS-280)"; sf=1
+  fi
+  # M280-12: an incepted adopter tree, in EVERY tree (the fixture is built here). The expression sits on a job that is not movable and runs-on.yml
+  # exists: on a kit tree both would red.
+  mkdir -p "$d/rs/t12"; : > "$d/rs/t12/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086 # $ALLG is a deliberate word-list
+  _ot_gh "$d/rs/t12" 1 $ALLG
+  awk '{ print } /^  ci:[ \t]*$/ { print "    runs-on: " ENVIRON["RSX"] }' "$d/rs/t12/.github/workflows/ci.yml" > "$d/rs/t12.yml"
+  mv "$d/rs/t12.yml" "$d/rs/t12/.github/workflows/ci.yml"
+  : > "$d/rs/t12/.github/runs-on.yml"
+  _ot_case M280-12 "$d/rs/t12" 0 "OK: ci-gates --own-tree" "an incepted adopter tree with the expression and runs-on.yml passes (the lock is N/A off a kit tree)"
+  _st_mark RS
+
+  # CS0-CS5 and CSL1-CSL4 (SWAS-382 S1) — the cheap-set lock. Hermetic: a fixture workflow with the six cheap jobs; each mutant is a scratch copy and must red AND
+  # name its cause. CS0 is the positive control (the fixture, and on a kit tree the real ci.yml). CSL1-CSL4 mutate THIS SCRIPT (the lock's own job list, needs: scan,
+  # if: scan and pin scan) and require the broken workflow to pass: the lock is carried by those lines, not by luck.
+  mkdir -p "$d/cs"
+  _cs_job() { printf '  %s:\n' "$1"; [ -z "${2:-}" ] || printf '%s\n' "$2"; printf '    runs-on: ubuntu-24.04\n    steps:\n      - run: %s\n' "${3:-echo ok}"; }  # <job> [extra job-level line] [run text]
+  { printf 'jobs:\n'
+    _cs_job secret-scan
+    _cs_job sast '' 'pipx run semgrep==1.182.1 --version'
+    _cs_job sbom
+    for _cs_o in threat-obligation uat-obligation a11y-obligation; do _cs_job "$_cs_o" "    if: github.event_name == 'pull_request'"; done
+    for _cs_o in backlog-presence ceremony-binding review-lane loop-state; do _cs_job "$_cs_o" "    if: github.event_name == 'pull_request'"; done  # SWAS-382 S3: the PR-scoped required jobs (CS_PR_SCOPED)
+    _cs_job other '    needs: [sast]'
+  } > "$d/cs/good.yml"
+  _cs_ins() { awk -v j="  $2:" -v l="$3" '{ print } $0 == j { print l }' "$1"; }  # <file> <job> <line> -> the file with the line right under that job's header
+  _cs_ins "$d/cs/good.yml" secret-scan '    needs: changes' > "$d/cs/m1a.yml"
+  _cs_ins "$d/cs/good.yml" sast '    needs: [changes]' > "$d/cs/m1b.yml"
+  _cs_ins "$d/cs/good.yml" sbom '    needs:' > "$d/cs/m1c.yml"
+  _cs_ins "$d/cs/good.yml" threat-obligation '    needs: gate' > "$d/cs/m1d.yml"
+  _cs_ins "$d/cs/good.yml" sast "    if: needs.changes.outputs.docs_only != 'true'" > "$d/cs/m2a.yml"
+  sed "/^  a11y-obligation:/,/^    runs-on/s/github.event_name == 'pull_request'/needs.changes.outputs.docs_only != 'true'/" "$d/cs/good.yml" > "$d/cs/m2b.yml"
+  _cs_ins "$d/cs/good.yml" secret-scan "    if: github.event_name == 'pull_request'" > "$d/cs/m2c.yml"
+  sed 's/semgrep==1.182.1/semgrep/' "$d/cs/good.yml" > "$d/cs/m3a.yml"
+  sed 's/semgrep==1.182.1/semgrep>=1.0/' "$d/cs/good.yml" > "$d/cs/m3b.yml"
+  sed 's|echo ok|pipx run semgrep==1.0.0 --version|' "$d/cs/good.yml" > "$d/cs/m3c.yml"
+  sed 's|echo ok|pipx run semgrep --version|' "$d/cs/good.yml" > "$d/cs/m3d.yml"  # sast stays pinned; every other cheap job runs an unpinned semgrep
+  awk '$0 == "  sbom:" { skip = 1; next } skip && /^  [A-Za-z0-9_-]+:/ { skip = 0 } !skip' "$d/cs/good.yml" > "$d/cs/m4.yml"
+  sed 's/pipx run semgrep==1.182.1 --version/echo no/' "$d/cs/good.yml" > "$d/cs/m5.yml"
+  if o=$(check_cheap_set "$d/cs/good.yml" 2>&1); then echo "selftest PASS: CS0 — six cheap jobs with no needs:, the PR-event clause only on the obligation jobs and one pinned semgrep -> green"
+  else echo "selftest FAIL: CS0 — the cheap-set fixture was rejected: $o"; sf=1; fi
+  _cs_case() {  # <id> <file> <needle> <what>
+    if o=$(check_cheap_set "$d/cs/$2.yml" 2>&1); then echo "selftest FAIL: $1 — $4 was NOT caught"; sf=1
+    elif _has "$o" "$3"; then echo "selftest PASS: $1 — $4 -> RED, naming '$3'"
+    else echo "selftest FAIL: $1 — $4 reds without naming '$3': $o"; sf=1; fi
+  }
+  _cs_case CS1a m1a "carries a needs:" "secret-scan given needs: changes"
+  _cs_case CS1b m1b "carries a needs:" "sast given needs: [changes]"
+  _cs_case CS1c m1c "carries a needs:" "sbom given a block-form needs:"
+  _cs_case CS1d m1d "carries a needs:" "an obligation job given needs: gate"
+  _cs_case CS2a m2a "job-level if:" "sast given a lane if: (docs_only)"
+  _cs_case CS2b m2b "job-level if:" "an obligation job's PR-event clause swapped for a lane clause"
+  _cs_case CS2c m2c "job-level if:" "secret-scan given the PR-event clause (only the obligation jobs may carry it)"
+  _cs_case CS3a m3a "unpinned semgrep" "an unpinned semgrep"
+  _cs_case CS3b m3b "unpinned semgrep" "semgrep>=1.0 (a range, not a pin)"
+  _cs_case CS3c m3c "pin drift" "a second semgrep version in the workflow"
+  _cs_case CS3d m3d "unpinned semgrep" "an unpinned semgrep in every other cheap job (the sast job stays pinned)"
+  _cs_case CS4 m4 "sbom is missing" "the sbom job deleted"
+  _cs_case CS5 m5 "runs no pinned semgrep" "the sast job without a pinned semgrep"
+  _cs_lockmut() {  # <id> <what> <sed-script> <broken-fixture>
+    sed "$3" "$0" > "$d/cs/lock.sh"
+    if cmp -s "$0" "$d/cs/lock.sh"; then echo "selftest FAIL: $1 — unbound: the sed matched nothing, so the mutant equals the original"; sf=1; return 0; fi
+    if sh "$d/cs/lock.sh" --cheap-set "$4" >/dev/null 2>&1; then echo "selftest PASS: $1 — $2 -> the broken workflow now passes (the cell has teeth)"
+    else echo "selftest FAIL: $1 — $2: the broken workflow still reds, so the lock is not carried by that line"; sf=1; fi
+  }
+  _cs_lockmut CSL1 "the lock's job list narrowed (sast dropped)" '/^CS_JOBS=/s/ sast / /' "$d/cs/m1b.yml"
+  _cs_lockmut CSL2 "the needs: scan skipped" '/# CSM1$/d' "$d/cs/m1a.yml"
+  _cs_lockmut CSL3 "the if: scan skipped" '/# CSM2$/d' "$d/cs/m2a.yml"
+  _cs_lockmut CSL4 "the semgrep pin scan skipped" '/# CSM3$/d' "$d/cs/m3d.yml"
+  # CS7-CS11 and CSL5-CSL8 (hardening): an alias, a masking continue-on-error, a masking run text, errexit off or a bare exit 0 in a cheap job. Each one-line edit of the
+  # good fixture must red AND name its cause; the benign shapes (continue-on-error: false, an ordinary run line) stay green; each lock mutant deletes one scan.
+  _cs_stepins() { awk -v j="  $2:" -v l="$3" '$0 == j { inj = 1; print; next } inj && /^  [A-Za-z0-9_-]+:/ { inj = 0 } inj && !done && /^      - / { print; print l; done = 1; next } { print }' "$1"; }  # <file> <job> <line> -> the line right under the job's first step line
+  _cs_setrun() { awk -v j="  $2:" -v t="$3" '$0 == j { inj = 1; print; next } inj && /^  [A-Za-z0-9_-]+:/ { inj = 0 } inj && /^      - run:/ { print "      - run: " t; next } { print }' "$1"; }  # <file> <job> <run text> -> that job's run line replaced
+  _cs_ins "$d/cs/good.yml" sast '    env: *anc' > "$d/cs/m6a.yml"
+  _cs_ins "$d/cs/good.yml" sbom '    continue-on-error: true' > "$d/cs/m7a.yml"
+  _cs_stepins "$d/cs/good.yml" sast '        continue-on-error: true' > "$d/cs/m7b.yml"
+  _cs_ins "$d/cs/good.yml" secret-scan '    continue-on-error: ${{ always() }}' > "$d/cs/m7c.yml"
+  _cs_ins "$d/cs/good.yml" sbom '    continue-on-error: false' > "$d/cs/g7d.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'echo ok || true' > "$d/cs/m8a.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'echo ok; exit 0' > "$d/cs/m8b.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'echo ok || :' > "$d/cs/m8c.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'exit 0' > "$d/cs/m9a.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'set +e' > "$d/cs/m9b.yml"
+  _cs_setrun "$d/cs/good.yml" sbom 'echo "a || b"' > "$d/cs/g8d.yml"
+  _cs_case CS7a m6a "uses a YAML merge key or alias" "an env: *alias in the sast job"
+  _cs_case CS8a m7a "continue-on-error that is not false" "a job-level continue-on-error: true on sbom"
+  _cs_case CS8b m7b "continue-on-error that is not false" "a step-level continue-on-error: true on a sast step"
+  _cs_case CS8c m7c "continue-on-error that is not false" "a continue-on-error expression on secret-scan"
+  _cs_case CS9a m8a "has '|| true'" "'|| true' in the sbom run text"
+  _cs_case CS9b m8b "has '|| true'" "'; exit 0' in the sbom run text"
+  _cs_case CS9c m8c "has '|| true'" "'|| :' in the sbom run text"
+  _cs_case CS10a m9a "carries a bare exit 0" "a bare exit 0 as the sbom run text"
+  _cs_case CS10b m9b "switches errexit off with set +e" "set +e as the sbom run text"
+  for _cs_g in "g7d:continue-on-error: false" "g8d:an ordinary run line holding the characters || inside a string"; do
+    if o=$(check_cheap_set "$d/cs/${_cs_g%%:*}.yml" 2>&1); then echo "selftest PASS: CS11 [${_cs_g%%:*}] — ${_cs_g#*:} -> green (the hardening does not over-red)"
+    else echo "selftest FAIL: CS11 [${_cs_g%%:*}] — ${_cs_g#*:} wrongly reds: $o"; sf=1; fi
+  done
+  _cs_lockmut CSL5 "the alias scan skipped" '/# CSM4$/d' "$d/cs/m6a.yml"
+  _cs_lockmut CSL6 "the continue-on-error scan skipped" '/# CSM5$/d' "$d/cs/m7a.yml"
+  _cs_lockmut CSL7 "the masking run-text scan skipped" '/# CSM6$/d' "$d/cs/m8a.yml"
+  _cs_lockmut CSL8 "the errexit scan skipped" '/# CSM7$/d' "$d/cs/m9a.yml"
+  # SBP0-SBP8 and SBPL1 (SBOM parity): a hermetic two-job fixture, then the real ci.yml. A one-line edit of ONE side must red and name the block.
+  _sbp_q="'"
+  _sbp_steps() {  # [comments] -> the three copied blocks of one job (the artifact-gate copy carries explanatory comments inside the python)
+    printf '      - name: Install uv\n        uses: astral-sh/setup-uv@abc123  # v1\n      - name: Steps\n        run: |\n'
+    printf '          extract() {\n          uvx python3 -c %sprint(1)%s\n          }\n' "$_sbp_q" "$_sbp_q"
+    printf '          for id in a b; do :; done\n          python3 -c %s\n' "$_sbp_q"
+    [ "${1:-}" != comments ] || printf '            # an explanatory comment inside the python text\n'
+    printf '          import json\n          print(2)\n          %s\n' "$_sbp_q"
+  }
+  { printf 'jobs:\n  sbom:\n    steps:\n'; _sbp_steps; printf '  artifact-gate:\n    steps:\n'; _sbp_steps comments; } > "$d/cs/p0.yml"
+  awk '/^  artifact-gate:/ { ag = 1 } ag && /print\(1\)/ { sub(/print\(1\)/, "print(9)") } { print }' "$d/cs/p0.yml" > "$d/cs/p1.yml"
+  awk '/^  artifact-gate:/ { ag = 1 } ag && /print\(2\)/ { sub(/print\(2\)/, "print(9)") } { print }' "$d/cs/p0.yml" > "$d/cs/p2.yml"
+  awk '/^  artifact-gate:/ { ag = 1 } !ag { sub(/abc123/, "abc124") } { print }' "$d/cs/p0.yml" > "$d/cs/p3.yml"
+  sed 's/^  sbom:/  sbomx:/' "$d/cs/p0.yml" > "$d/cs/p4.yml"
+  if o=$(check_sbom_parity "$d/cs/p0.yml" 2>&1); then echo "selftest PASS: SBP0 — equal blocks (the artifact-gate copy carries python comments the sbom copy lacks) -> green"
+  else echo "selftest FAIL: SBP0 — the equal-blocks fixture was rejected: $o"; sf=1; fi
+  _sbp_case() {  # <id> <file> <needle> <what>
+    if o=$(check_sbom_parity "$d/cs/$2.yml" 2>&1); then echo "selftest FAIL: $1 — $4 was NOT caught"; sf=1
+    elif _has "$o" "$3"; then echo "selftest PASS: $1 — $4 -> RED, naming '$3'"
+    else echo "selftest FAIL: $1 — $4 reds without naming '$3': $o"; sf=1; fi
+  }
+  _sbp_case SBP1 p1 "the sbom job's extract block differs" "the extract() function edited on the artifact-gate side only"
+  _sbp_case SBP2 p2 "the sbom job's assert block differs" "the SBOM assertion edited on the artifact-gate side only"
+  _sbp_case SBP3 p3 "the sbom job's setup block differs" "the setup-uv pin edited on the sbom side only"
+  _sbp_case SBP4 p4 "was not found in both" "the sbom job renamed (nothing to compare)"
+  sed '/# SBM1$/d' "$0" > "$d/cs/lock.sh"
+  if cmp -s "$0" "$d/cs/lock.sh"; then echo "selftest FAIL: SBPL1 — unbound: the sed matched nothing, so the mutant equals the original"; sf=1
+  elif sh "$d/cs/lock.sh" --sbom-parity "$d/cs/p2.yml" >/dev/null 2>&1; then echo "selftest PASS: SBPL1 — the compare deleted -> the drifted fixture now passes (SBP2 has teeth)"
+  else echo "selftest FAIL: SBPL1 — the compare is deleted and the drifted fixture still reds, so the lock is not carried by it"; sf=1; fi
+  _cs_real="$_kr/.github/workflows/ci.yml"
+  if [ ! -f "$_cs_real" ] || { [ ! -f "$_kr/docs/ROADMAP-KIT.md" ] && [ ! -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    echo "selftest SKIP: CS6 — not a kit tree (no kit-source ci.yml); the cells above ran on the fixture"
+  elif o=$(check_cheap_set "$_cs_real" 2>&1); then echo "selftest PASS: CS6 — the real ci.yml's six cheap jobs carry no needs: and no lane if:, and every semgrep is pinned to one version"
+  else echo "selftest FAIL: CS6 — the real ci.yml breaks the cheap-set lock: $o"; sf=1; fi
+  if [ -f "$_cs_real" ] && { [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    if o=$(check_sbom_parity "$_cs_real" 2>&1); then echo "selftest PASS: SBP5 — the real ci.yml's sbom job copies artifact-gate's setup-uv step, extract() function and SBOM assertion exactly"
+    else echo "selftest FAIL: SBP5 — the real ci.yml's sbom job has drifted from artifact-gate: $o"; sf=1; fi
+    awk '/^  sbom:/ { j = 1 } /^  artifact-gate:/ { j = 0 } j && !d && /pyyaml==6\.0\.3/ { sub(/6\.0\.3/, "6.0.4"); d = 1 } { print }' "$_cs_real" > "$d/cs/p6.yml"
+    awk '/^  artifact-gate:/ { j = 1 } /^  artifact-gate-gitlab:/ { j = 0 } j && !d && /OK: sbom\.json inventories the app/ { sub(/inventories/, "inventoried"); d = 1 } { print }' "$_cs_real" > "$d/cs/p7.yml"
+    for _sbp_m in "p6:extract:SBP6:the pyyaml pin edited on the real sbom side only" "p7:assert:SBP7:the OK message edited on the real artifact-gate side only"; do
+      _sbp_f=${_sbp_m%%:*}; _sbp_r=${_sbp_m#*:}; _sbp_w=${_sbp_r%%:*}; _sbp_r=${_sbp_r#*:}
+      if cmp -s "$_cs_real" "$d/cs/$_sbp_f.yml"; then echo "selftest FAIL: ${_sbp_r%%:*} — the mutant equals the original (nothing to edit; the block moved)"; sf=1
+      else _sbp_case "${_sbp_r%%:*}" "$_sbp_f" "the sbom job's $_sbp_w block differs" "${_sbp_r#*:}"; fi
+    done
+  else echo "selftest SKIP: SBP5-SBP7 — not a kit tree (no kit-source ci.yml)"; fi
+  _st_mark CS
+
+  # GT0-GT34, GT9e-GT15b, GB1-GB4, GA1-GA3, CS12-CS13, AGG7-AGG9 and GTL1-GTL10 (SWAS-382 S3, SWAS-536; the fix round adds the S3-SEC-1/3/4, M3 and M4 cells) — the runtime-gate lock. Written BEFORE the lock: on the code that stood at the S1+S2 fold
+  # every one of these cells is red. GT0 is the positive control on the real ci.yml; each mutant is a scratch copy of it and must red AND name its cause. GB1-GB3 run the
+  # REAL gate step's shell body, taken out of ci.yml, in a throwaway merge repository: the decider it runs must be the BASE commit's copy, so a head-edited decider that
+  # always says "cheap" changes nothing (Architect ruling Q4). GTL1-GTL4 mutate THIS script's own lines and require the broken workflow to pass.
+  # CEILING, stated once: a pull_request run uses the HEAD's ci.yml, so a PR that edits ci.yml can bypass any gate in it, this one included. That edit is a control-plane
+  # diff, caught by review, the ci-gates lock and the owner's GO, not by this gate.
+  mkdir -p "$d/gt"
+  _gt_real="$_kr/.github/workflows/ci.yml"; _gt_dec="$_kr/conformance/ci-gate-state.sh"
+  _gt_case() {  # <id> <file> <needle> <what> [<decider>]
+    if o=$(check_gate_shape "$d/gt/$2.yml" "${5:-$_gt_dec}" 2>&1); then echo "selftest FAIL: $1 — $4 was NOT caught"; sf=1
+    elif _has "$o" "$3"; then echo "selftest PASS: $1 — $4 -> RED, naming '$3'"
+    else echo "selftest FAIL: $1 — $4 reds without naming '$3': $o"; sf=1; fi
+  }
+  _gt_m() {  # <id> <file> <needle> <what> -> the mutant must differ from the real ci.yml, then must red naming the needle
+    if cmp -s "$_gt_real" "$d/gt/$2.yml"; then echo "selftest FAIL: $1 — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1; else _gt_case "$1" "$2" "$3" "$4"; fi
+  }
+  _gt_inj() { awk -v job="$1" 'BEGIN { hdr = "^  " job ":[ \t]*(#.*)?$" } $0 ~ hdr { j = 1; print; next } j && /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { j = 0 } '"$2" "$_gt_real"; }  # <job> <awk action> -> the real ci.yml with the action run on every line of that job
+  if [ ! -f "$_gt_real" ] || { [ ! -f "$_kr/docs/ROADMAP-KIT.md" ] && [ ! -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    echo "selftest SKIP: GT0-GT34/GB1-GB3 — not a kit tree (no kit-source ci.yml); the AGG and CS cells below ran on fixtures"
+  elif o=$(check_gate_shape "$_gt_real" "$_gt_dec" 2>&1); then
+    echo "selftest PASS: GT0 — the real ci.yml: four-type pull_request trigger, a gate job on the hosted floor with exactly four read scopes that waits on nothing, reads the base decider and the live state, and every light job reaches it"
+    sed '/^    types: /s/, ready_for_review\]/]/' "$_gt_real" > "$d/gt/m1a.yml"
+    sed '/^    types: /s/ready_for_review\]/ready_for_review, labeled]/' "$_gt_real" > "$d/gt/m1b.yml"
+    sed '/^    types: \[opened/d' "$_gt_real" > "$d/gt/m1c.yml"
+    _gt_inj gate '{ print } j && /^    runs-on:/ { print "    needs: changes" }' > "$d/gt/m3a.yml"
+    _gt_inj gate '{ print } j && /^    runs-on:/ { print "    if: github.event_name == \047pull_request\047" }' > "$d/gt/m3b.yml"
+    _gt_inj gate '{ print } j && /^    runs-on:/ { print "    continue-on-error: true" }' > "$d/gt/m3c.yml"
+    _gt_inj gate 'j && /^      actions: read/ { print; print "      statuses: write"; next } { print }' > "$d/gt/m3d.yml"
+    _gt_inj gate 'j && /^      issues: read/ { next } { print }' > "$d/gt/m3e.yml"
+    _gt_inj gate 'j && /^          persist-credentials: false/ { next } { print }' > "$d/gt/m3f.yml"
+    _gt_inj gate 'j && /^          fetch-depth: 2/ { print "          fetch-depth: 1"; next } { print }' > "$d/gt/m3g.yml"
+    _gt_inj gate 'j && /^    runs-on:/ { print "    runs-on: ubuntu-latest"; next } { print }' > "$d/gt/m3h.yml"
+    _gt_inj gate '{ print } j && /^          set -eu$/ { print "          echo ${{ github.event.pull_request.head.sha }}" }' > "$d/gt/m3i.yml"
+    _gt_inj gate 'j && /BASE_REV=\$\(git rev-parse HEAD\^1\)/ { sub(/HEAD\^1/, "HEAD^2") } { print }' > "$d/gt/m4a.yml"
+    _gt_inj gate 'j && /HEAD_REV=\$\(git rev-parse HEAD\^2\)/ { sub(/HEAD\^2/, "HEAD^1") } { print }' > "$d/gt/m4b.yml"
+    sed 's|sh "\$RUNNER_TEMP/base-ci-gate-state.sh" --decide|sh conformance/ci-gate-state.sh --decide|' "$_gt_real" > "$d/gt/m4c.yml"
+    sed 's|git show "\$BASE_REV:conformance/ci-gate-state.sh"|git show "$HEAD_REV:conformance/ci-gate-state.sh"|' "$_gt_real" > "$d/gt/m4d.yml"
+    _gt_inj changes 'j && /^    needs: gate$/ { next } { print }' > "$d/gt/m5a.yml"
+    _gt_inj changes 'j && /^    if: needs\.gate\.outputs\.mode == / { next } { print }' > "$d/gt/m5b.yml"
+    _gt_inj bootstrap 'j && /^    needs: changes([ \t]|$)/ { next } { print }' > "$d/gt/m6a.yml"
+    _gt_inj repo-ownership 'j && /^    needs: changes([ \t]|$)/ { next } { print }' > "$d/gt/m6b.yml"
+    _gt_inj docs-links 'j && /^    needs: changes([ \t]|$)/ { next } { print }' > "$d/gt/m6c.yml"
+    _gt_inj conformance-docs 'j && /^    if: / { sub(/ needs\.changes\.result == .success. [&][&]/, "") } { print }' > "$d/gt/m7a.yml"
+    _gt_inj conformance-selftests 'j && /^    if: / { sub(/ needs\.changes\.result == .success. [&][&]/, "") } { print }' > "$d/gt/m7b.yml"
+    _gt_inj conformance 'j && /^    if: always\(\)$/ { next } { print }' > "$d/gt/m9a.yml"
+    _gt_inj conformance '{ print } j && /^          printf .%s. "\$NEEDS_JSON"/ { print "          echo ${{ toJSON(needs) }}" }' > "$d/gt/m9b.yml"
+    _gt_inj conformance 'j && /^        if: needs\.gate\.outputs\.mode != .cheap.$/ { next } { print }' > "$d/gt/m9c.yml"
+    sed 's/ci-gate-state\.sh --aggregate /ci-gate-state.sh --aggregate-x /' "$_gt_real" > "$d/gt/m9d.yml"
+    sed 's/^\(          RESULTS: \).*$/\1${{ steps.lane.outputs.results }}/' "$_gt_real" > "$d/gt/m9e.yml"
+    _gt_inj conformance 'j && /^        if: needs\.gate\.outputs\.mode != .cheap.$/ { print "        if: steps.lane.outputs.lane != \047cheap\047"; next } { print }' > "$d/gt/m9f.yml"
+    sed 's|sh \.kit-base/conformance/ci-gate-state.sh --aggregate|sh conformance/ci-gate-state.sh --aggregate|' "$_gt_real" > "$d/gt/m9g.yml"
+    _gt_inj conformance 'j && /ref: \$\{\{ github.event.pull_request.base.sha \}\}/ { sub(/base\.sha/, "head.sha") } { print }' > "$d/gt/m9h.yml"
+    _gt_inj conformance 'j && /^          GATE_RESULT: / { next } { print }' > "$d/gt/m9i.yml"
+    _gt_inj gate 'j && /^          BASE_REF: / { next } { print }' > "$d/gt/m12a.yml"
+    _gt_inj gate 'j && /non-main-base/ { sub(/non-main-base/, "unchecked") } { print }' > "$d/gt/m12b.yml"
+    _gt_inj cf-doctor '{ print } j && /^    runs-on:/ { print "    if: ${{ always() }}" }' > "$d/gt/m13.yml"
+    for _gt_x in "m1a|pull_request types|GT1a|ready_for_review dropped from the pull_request types" \
+                 "m1b|pull_request types|GT1b|labeled added to the pull_request types" \
+                 "m1c|pull_request types|GT1c|the pull_request types line deleted" \
+                 "m3a|carries a needs:|GT3a|a needs: on the gate job" \
+                 "m3b|carries a job-level if:|GT3b|a job-level if: on the gate job" \
+                 "m3c|continue-on-error|GT3c|continue-on-error on the gate job" \
+                 "m3d|permissions are not exactly|GT3d|a fifth permission (statuses: write)" \
+                 "m3e|permissions are not exactly|GT3e|issues: read dropped" \
+                 "m3f|persist-credentials: false|GT3f|persist-credentials removed from the gate's checkout" \
+                 "m3g|fetch-depth: 2|GT3g|fetch-depth set to 1 (HEAD^2 would not exist)" \
+                 "m3h|runs-on is not|GT3h|the gate moved off the hosted floor" \
+                 "m3i|expression inside a run:|GT3i|a workflow expression written into a run: block" \
+                 "m4a|BASE_REV=\$(git rev-parse HEAD^1)|GT4a|BASE_REV read from HEAD^2" \
+                 "m4b|HEAD_REV=\$(git rev-parse HEAD^2)|GT4b|HEAD_REV read from HEAD^1" \
+                 "m4c|head copy of the decider|GT4c|the PR path runs the head's decider" \
+                 "m4d|git show of the BASE revision|GT4d|the decider fetched from the head revision" \
+                 "m5a|must carry 'needs: gate'|GT5a|changes without needs: gate" \
+                 "m5b|the gate-mode if:|GT5b|changes without its gate-mode if:" \
+                 "m6a|does not reach the gate|GT6a|bootstrap without needs: changes" \
+                 "m6b|does not reach the gate|GT6b|repo-ownership without needs: changes" \
+                 "m6c|does not reach the gate|GT6c|docs-links without needs: changes" \
+                 "m7a|needs.changes.result|GT7a|the docs join without the changes-result clause" \
+                 "m7b|needs.changes.result|GT7b|the selftests join without the changes-result clause" \
+                 "m9a|if: always()|GT9a|the aggregator without if: always()" \
+                 "m9b|toJSON(needs)|GT9b|toJSON(needs) interpolated into a run: block" \
+                 "m9c|mode != 'cheap'|GT9c|the light step without its cheap-mode skip" \
+                 "m9d|--aggregate|GT9d|the aggregator no longer calls the cheap-mode grader" \
+                 "m9e|RESULTS must be written out|GT9e|the light step's RESULTS read from a script output (S3-SEC-1)" \
+                 "m9f|never on a script output|GT9f|the light step skipped on a script output (steps.lane.outputs.lane)" \
+                 "m9g|extracted base grader|GT9g|the aggregator runs the head's grader on a pull request" \
+                 "m9h|must check out the BASE commit once|GT9h|the aggregator's second checkout taken from the head revision" \
+                 "m9i|bind GATE_RESULT|GT9i|GATE_RESULT dropped from the aggregator's env" \
+                 "m12a|bind BASE_REF|GT12a|the gate no longer binds BASE_REF" \
+                 "m12b|non-main-base|GT12b|the non-main-base fallback removed from the gate" \
+                 "m13|status function|GT13|a reached job under always() without the changes-result clause (M3)"; do
+      _gt_f=${_gt_x%%|*}; _gt_r=${_gt_x#*|}; _gt_nd=${_gt_r%%|*}; _gt_r=${_gt_r#*|}
+      _gt_m "${_gt_r%%|*}" "$_gt_f" "$_gt_nd" "${_gt_r#*|}"
+    done
+    # GT11 — the decider's cheap-job list equals CS_JOBS (L11): edited on the decider side only.
+    sed 's/^CHEAP_JOBS="secret-scan sast/CHEAP_JOBS="sast secret-scan/' "$_gt_dec" > "$d/gt/dec-edited.sh"
+    if cmp -s "$_gt_dec" "$d/gt/dec-edited.sh"; then echo "selftest FAIL: GT11 — the mutant equals the original (the CHEAP_JOBS line moved)"; sf=1
+    else cp "$_gt_real" "$d/gt/real.yml"; _gt_case GT11 real "CHEAP_JOBS" "the decider's CHEAP_JOBS edited without CS_JOBS" "$d/gt/dec-edited.sh"; fi
+    # GT14 — the base decider sources no file (S3-SEC-4): a `. ./lib.sh` line added to the decider reds. GT15 — a required context that skips in cheap mode (bootstrap, docs-links) is missing
+    # from the decider's N/A list: the lock derives the set from ci.yml and REQUIRED-CHECKS.md and reds the difference (S3-SEC-3).
+    awk '{ print } /^set -u$/ { print ". ./lib.sh" }' "$_gt_dec" > "$d/gt/dec-src.sh"
+    if cmp -s "$_gt_dec" "$d/gt/dec-src.sh"; then echo "selftest FAIL: GT14 — the mutant equals the original (no set -u line to follow)"; sf=1
+    else _gt_case GT14 real "sources a file" "a sourced library added to the decider" "$d/gt/dec-src.sh"; fi
+    sed 's/^REQUIRED_NA_JOBS="bootstrap docs-links"/REQUIRED_NA_JOBS="bootstrap"/' "$_gt_dec" > "$d/gt/dec-na1.sh"
+    sed 's/^REQUIRED_NA_JOBS="bootstrap docs-links"/REQUIRED_NA_JOBS="bootstrap docs-links backlog-presence"/' "$_gt_dec" > "$d/gt/dec-na2.sh"
+    if cmp -s "$_gt_dec" "$d/gt/dec-na1.sh" || cmp -s "$_gt_dec" "$d/gt/dec-na2.sh"; then echo "selftest FAIL: GT15 — the mutant equals the original (the REQUIRED_NA_JOBS line moved)"; sf=1
+    else _gt_case GT15a real "REQUIRED_NA_JOBS" "docs-links missing from the decider's N/A list (a required context would skip silently)" "$d/gt/dec-na1.sh"
+         _gt_case GT15b real "REQUIRED_NA_JOBS" "a context that does run (backlog-presence) listed as N/A" "$d/gt/dec-na2.sh"; fi
+  else
+    echo "selftest FAIL: GT0 — the real ci.yml does not satisfy the runtime-gate lock (SWAS-382 S3): $o"; sf=1
+  fi
+  if [ -f "$_gt_real" ] && { [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    # GB1-GB3 — the REAL gate step, run in a throwaway merge repository. The step's body is cut out of the real ci.yml (the step with id: decide) and run
+    # with the variables the workflow gives it. The decider in the repository is a stub that writes its own name to --out: the base commit's says "light", the
+    # head commit's says "cheap". GB1: the base's must be the one that runs. GB2: no decider on the base -> mode=full, the fail-closed fallback. GB3: a base
+    # decider that fails -> the step fails (red), never a default.
+    _gt_body() { # <workflow> [<job> <step id>] -> the dedented run body of that job's step with that id: (default: the gate job's step with id: decide)
+      extract_job_block "$1" "${2:-gate}" | awk -v sid="${3:-decide}" '
+        function flush() { if (ok) printf "%s", buf; buf = ""; ok = 0; inrun = 0 }
+        /^      - / { flush() }
+        $0 == "        id: " sid { ok = 1 }
+        inrun { if ($0 ~ /^[ \t]*$/) { buf = buf "\n"; next } if (match($0, /^ */) && RLENGTH >= 10) { buf = buf substr($0, 11) "\n"; next } inrun = 0 }
+        /^        run: \|[ \t]*$/ { inrun = 1; buf = "" }
+        END { flush() }'
+    }
+    _gt_stub() { printf '#!/bin/sh\no=""\nwhile [ $# -gt 0 ]; do [ "$1" = "--out" ] && o=$2; shift; done\n%s\n' "$1"; }  # <shell line using $o>
+    _gt_git() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=gt -c user.email=gt@example.invalid -c commit.gpgsign=false -C "$d/gb" "$@"; }
+    _gt_gb() { # <id> <what> <decider on the base: light|none|fail> <workflow> <want-rc> <want-out-line|-> <must-not-line|-> -> builds the merge repo and runs the body
+      rm -rf "$d/gb"; mkdir -p "$d/gb/conformance" "$d/gb/tmp"
+      _gt_git init -q -b main . >/dev/null 2>&1; : > "$d/gb/gh-out"; : > "$d/gb/gh-sum"
+      printf 'base\n' > "$d/gb/README"
+      case "$3" in
+        light) _gt_stub 'printf "mode=light\nreason=base-stub\n" >> "$o"' > "$d/gb/conformance/ci-gate-state.sh" ;;
+        fail) _gt_stub 'exit 1' > "$d/gb/conformance/ci-gate-state.sh" ;;
+      esac
+      _gt_git add -A >/dev/null 2>&1; _gt_git commit -q -m base >/dev/null 2>&1
+      _gt_git checkout -q -b pr >/dev/null 2>&1
+      _gt_stub 'printf "mode=cheap\nreason=head-stub\n" >> "$o"' > "$d/gb/conformance/ci-gate-state.sh"
+      _gt_git add -A >/dev/null 2>&1; _gt_git commit -q -m head >/dev/null 2>&1
+      _gt_ph=$(_gt_git rev-parse HEAD)
+      _gt_git checkout -q main >/dev/null 2>&1; _gt_git checkout -q -b merge >/dev/null 2>&1
+      _gt_git merge -q --no-ff -m merge pr >/dev/null 2>&1
+      printf '{}\n' > "$d/gb/tmp/gate-pr.json"; printf '[]\n' > "$d/gb/tmp/gate-events.json"
+      _gt_body "$4" > "$d/gb/body.sh"
+      if [ ! -s "$d/gb/body.sh" ]; then echo "selftest FAIL: $1 — $2: the gate job has no step with id: decide to run"; sf=1; return 0; fi
+      if _gt_o=$(cd "$d/gb" && env -i PATH="$PATH" HOME="$d/gb" EVENT=pull_request BASE_REF="${8:-main}" PAYLOAD_HEAD="$_gt_ph" RUNNER_TEMP="$d/gb/tmp" GITHUB_OUTPUT="$d/gb/gh-out" GITHUB_STEP_SUMMARY="$d/gb/gh-sum" sh "$d/gb/body.sh" 2>&1); then _gt_rc=0; else _gt_rc=$?; fi
+      _gt_ok=1
+      [ "$_gt_rc" = "$5" ] || _gt_ok=0
+      if [ "$6" != - ]; then grep -qxF -- "$6" "$d/gb/gh-out" || _gt_ok=0; fi
+      if [ "$7" != - ]; then ! grep -qxF -- "$7" "$d/gb/gh-out" || _gt_ok=0; fi
+      if [ "$_gt_ok" = 1 ]; then echo "selftest PASS: $1 — $2"
+      else echo "selftest FAIL: $1 — $2 (rc=$_gt_rc want $5; out='$(tr '\n' '|' < "$d/gb/gh-out")'; log='$(printf '%s' "$_gt_o" | head -n 3 | tr '\n' '|')')"; sf=1; fi
+    }
+    sed 's|sh "\$RUNNER_TEMP/base-ci-gate-state.sh" --decide|sh conformance/ci-gate-state.sh --decide|' "$_gt_real" > "$d/gt/m4c.yml"
+    _gt_gb GB1 "the gate runs the BASE commit's decider: a head-edited decider that always says cheap does not change the mode" light "$_gt_real" 0 "mode=light" "mode=cheap"
+    _gt_gb GB1-M "the head's decider run instead (mutant GT4c) -> the head says cheap, so GB1's assertion would fail" light "$d/gt/m4c.yml" 0 "mode=cheap" -
+    _gt_gb GB2 "a base with no decider (S3's own PR, the first landing) -> mode=full, reason=no-base-decider, never cheap" none "$_gt_real" 0 "reason=no-base-decider" "mode=cheap"
+    _gt_gb GB2b "the same: mode=full is written" none "$_gt_real" 0 "mode=full" "mode=cheap"
+    sed "s/printf 'mode=full\\\\nreason=no-base-decider\\\\n'/printf 'mode=cheap\\\\nreason=no-base-decider\\\\n'/" "$_gt_real" > "$d/gt/m-gb2.yml"
+    if cmp -s "$_gt_real" "$d/gt/m-gb2.yml"; then echo "selftest FAIL: GB2-M — the mutant equals the original (the fallback line moved)"; sf=1
+    else _gt_gb GB2-M "the fallback written as mode=cheap (mutant) -> cheap appears in the output, which GB2 forbids" none "$d/gt/m-gb2.yml" 0 "mode=cheap" -; fi
+    _gt_gb GB3 "a base decider that fails makes the step fail (red), with no mode written" fail "$_gt_real" 1 - "mode=light"
+    # GB4 (S3 fix round, M4): a pull request whose base is not main gets mode=full, reason=non-main-base, and the base decider does not even run. GB4-M: the guard turned off -> the decider's "light" appears.
+    _gt_gb GB4 "a base other than main -> mode=full, reason=non-main-base, never the decider's mode" light "$_gt_real" 0 "reason=non-main-base" "mode=light" other
+    _gt_inj gate 'j && /^          if \[ "\$BASE_REF" != main \]; then$/ { sub(/!=/, "=") } { print }' > "$d/gt/m-gb4.yml"
+    if cmp -s "$_gt_real" "$d/gt/m-gb4.yml"; then echo "selftest FAIL: GB4-M — the mutant equals the original (the BASE_REF test moved)"; sf=1
+    else _gt_gb GB4-M "the non-main guard inverted (mutant) -> the decider's mode=light appears, which GB4 forbids" light "$d/gt/m-gb4.yml" 0 "mode=light" - other; fi
+    # GA1-GA3 (S3-SEC-1) — the REAL lane step and the REAL light step, run in a throwaway tree whose HEAD grader (conformance/) is a stub that always exits 0 and whose BASE grader (.kit-base/conformance/) is the real one or absent. GA1: the BASE's grader is the real one, so a red
+    # cheap set (secret-scan failure) still reds the step. GA1-M (mutant GT9g: the head grader on a pull request) -> the step is green over a red cheap set, which GA1 forbids. GA2: the light step
+    # reads the workflow's own RESULTS, so a red light job reds it whatever any script says. GA3: with no base grader the step grades in its own shell (fail closed), and cheap cannot be adjudicated.
+    _gt_light13="changes conformance-core conformance-docs conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam"
+    _gt_nj() {  # <mode> <secret-scan result> <light result> -> toJSON(needs)-shaped text
+      _gt_n="\"gate\":{\"result\":\"success\",\"outputs\":{\"mode\":\"$1\",\"reason\":\"draft\"}},\"secret-scan\":{\"result\":\"$2\"}"
+      for _gt_x in sast sbom threat-obligation uat-obligation a11y-obligation; do _gt_n="$_gt_n,\"$_gt_x\":{\"result\":\"success\"}"; done
+      for _gt_x in $_gt_light13; do _gt_n="$_gt_n,\"$_gt_x\":{\"result\":\"$3\"}"; done
+      printf '{%s}' "$_gt_n"
+    }
+    _gt_ga() {  # <id> <what> <base grader: real|none> <workflow> <mode> <secret-scan result> <light result> <want-rc>
+      rm -rf "$d/gb"; mkdir -p "$d/gb/conformance" "$d/gb/.kit-base/conformance" "$d/gb/tmp"
+      _gt_stub 'exit 0' > "$d/gb/conformance/ci-gate-state.sh"
+      if [ "$3" = real ]; then cp "$_gt_dec" "$d/gb/.kit-base/conformance/ci-gate-state.sh"; fi
+      _gt_body "$4" conformance lane > "$d/gb/body.sh"
+      if [ ! -s "$d/gb/body.sh" ]; then echo "selftest FAIL: $1 — $2: the aggregator has no step with id: lane to run"; sf=1; return 0; fi
+      if _gt_o=$(cd "$d/gb" && env -i PATH="$PATH" HOME="$d/gb" EVENT=pull_request NEEDS_JSON="$(_gt_nj "$5" "$6" "$7")" GATE_RESULT=success GATE_MODE="$5" SECRET_RESULT="$6" OBLIGATION_RESULTS="success success success" RUNNER_TEMP="$d/gb/tmp" sh "$d/gb/body.sh" 2>&1); then _gt_rc=0; else _gt_rc=$?; fi
+      if [ "$_gt_rc" = "$8" ]; then echo "selftest PASS: $1 — $2"
+      else echo "selftest FAIL: $1 — $2 (rc=$_gt_rc want $8; log='$(printf '%s' "$_gt_o" | tail -n 3 | tr '\n' '|')')"; sf=1; fi
+    }
+    _gt_gs() {  # <id> <what> <workflow> <RESULTS> <GATE_RESULT> <want-rc> -> the light step's body, run the way the runner runs it (bash -e)
+      _gt_body "$3" conformance shards > "$d/gb-shards.sh"
+      if [ ! -s "$d/gb-shards.sh" ]; then echo "selftest FAIL: $1 — $2: the aggregator has no step with id: shards to run"; sf=1; return 0; fi
+      if _gt_o=$(env -i PATH="$PATH" RESULTS="$4" GATE_RESULT="$5" CHANGES_RESULT=success DOCS_ONLY=false PUSH_GRADED=false GRADED_PR= DOCS_RESULT=success GB_RESULT=success GB_CONSUMERS="success success" bash -e "$d/gb-shards.sh" 2>&1); then _gt_rc=0; else _gt_rc=$?; fi
+      if [ "$_gt_rc" = "$6" ]; then echo "selftest PASS: $1 — $2"
+      else echo "selftest FAIL: $1 — $2 (rc=$_gt_rc want $6; log='$(printf '%s' "$_gt_o" | tail -n 3 | tr '\n' '|')')"; sf=1; fi
+    }
+    if ! command -v jq >/dev/null 2>&1 || ! command -v bash >/dev/null 2>&1; then echo "selftest SKIP: GA1-GA3 — they need jq and bash"
+    else
+      _gt_ga GA1 "a head grader that always exits 0 cannot green a red cheap set: the base grader reds secret-scan=failure in cheap mode" real "$_gt_real" cheap failure skipped 1
+      _gt_ga GA1-M "the head's grader run on a pull request (mutant GT9g) -> green over the red cheap set, which GA1 forbids" real "$d/gt/m9g.yml" cheap failure skipped 0
+      _gt_ga GA1b "the same step on a clean cheap run (every light job skipped) is green" real "$_gt_real" cheap success skipped 0
+      _gt_ga GA1c "light mode: a failed secret-scan reds, and a light job that ran is the light step's to grade" real "$_gt_real" light failure success 1
+      _gt_ga GA3a "no base grader: the step grades in its own shell, and a red secret-scan reds" none "$_gt_real" full failure success 1
+      _gt_ga GA3b "no base grader: cheap mode cannot be adjudicated, so it reds (fail closed)" none "$_gt_real" cheap success skipped 1
+      _gt_ga GA3c "no base grader, a clean full run: green" none "$_gt_real" full success success 0
+      _gt_gs GA2a "the light step: all light jobs succeeded -> green" "$_gt_real" "success success success success success success success success success success success success success" success 0
+      _gt_gs GA2b "the light step: one light job failed -> red, whatever any script says" "$_gt_real" "success success success success success success failure success success success success success success" success 1
+      _gt_gs GA2c "the light step: a gate that did not succeed -> red" "$_gt_real" "success success success success success success success success success success success success success" failure 1
+    fi
+  fi
+  # GTL1-GTL4 — mutants of THIS script: delete one scan and require the broken workflow to pass (the lock is carried by that line).
+  if [ -f "$d/gt/m1b.yml" ] && [ -f "$d/gt/m4c.yml" ] && [ -f "$d/gt/m6c.yml" ] && [ -f "$d/gt/m7a.yml" ]; then
+    _gt_lockmut() {  # <id> <what> <tag> <broken workflow> [<broken decider>]
+      sed "/# $3\$/d" "$0" > "$d/gt/lock.sh"
+      if cmp -s "$0" "$d/gt/lock.sh"; then echo "selftest FAIL: $1 — unbound: the sed matched nothing, so the mutant equals the original"; sf=1; return 0; fi
+      if sh "$d/gt/lock.sh" --gate-shape "$4" "${5:-$_gt_dec}" >/dev/null 2>&1; then echo "selftest PASS: $1 — $2 -> the broken workflow now passes (the cell has teeth)"
+      else echo "selftest FAIL: $1 — $2: the broken workflow still reds, so the lock is not carried by that line"; sf=1; fi
+    }
+    _gt_lockmut GTL1 "the base-decider scan skipped" GTM1 "$d/gt/m4c.yml"
+    _gt_lockmut GTL2 "the pull_request types scan skipped" GTM2 "$d/gt/m1b.yml"
+    _gt_lockmut GTL3 "the reach-the-gate scan skipped" GTM3 "$d/gt/m6c.yml"
+    _gt_lockmut GTL4 "the join clause scan (and the general status-function scan that also covers the joins) skipped" 'GTM[45]' "$d/gt/m7a.yml"
+    if [ -f "$d/gt/m13.yml" ] && [ -f "$d/gt/dec-src.sh" ]; then
+      _gt_lockmut GTL5 "the status-function scan skipped" GTM5 "$d/gt/m13.yml"
+      _gt_lockmut GTL6 "the BASE_REF scan skipped" GTM6 "$d/gt/m12a.yml"
+      _gt_lockmut GTL7 "the aggregator's base-grader scan skipped" GTM7 "$d/gt/m9g.yml"
+      _gt_lockmut GTL8 "the light step's mode and RESULTS scans skipped" GTM8 "$d/gt/m9e.yml"
+      _gt_lockmut GTL9 "the decider's sourcing scan skipped" GTM9 "$_gt_real" "$d/gt/dec-src.sh"
+      _gt_lockmut GTL10 "the required-context N/A list scan skipped" GTM10 "$_gt_real" "$d/gt/dec-na1.sh"
+      _gt_lockmut GTL11 "the aggregator's base-checkout scan skipped" GTM11 "$d/gt/m9h.yml"
+    fi
+  fi
+  # CS12-CS13 — the PR-scoped required jobs (backlog-presence, ceremony-binding, review-lane, loop-state) wait on nothing (CS-b only: their existing set +e / || true stay legal).
+  { printf 'jobs:\n'
+    _cs_job secret-scan
+    _cs_job sast '' 'pipx run semgrep==1.182.1 --version'
+    _cs_job sbom
+    for _cs_o in threat-obligation uat-obligation a11y-obligation; do _cs_job "$_cs_o" "    if: github.event_name == 'pull_request'"; done
+    for _cs_o in backlog-presence ceremony-binding review-lane loop-state; do _cs_job "$_cs_o" "    if: github.event_name == 'pull_request'" 'sh x || true'; done
+  } > "$d/cs/ps-good.yml"
+  if o=$(check_cheap_set "$d/cs/ps-good.yml" 2>&1) && _has "$o" "PR-scoped"; then echo "selftest PASS: CS12 — the four PR-scoped jobs without a needs: (and with a masking run text, which CS-e would refuse on a cheap job) -> green, and the OK line counts them"
+  else echo "selftest FAIL: CS12 — the PR-scoped fixture was rejected or not counted: $o"; sf=1; fi
+  for _cs_o in backlog-presence ceremony-binding review-lane loop-state; do
+    _cs_ins "$d/cs/ps-good.yml" "$_cs_o" '    needs: gate' > "$d/cs/ps-m-$_cs_o.yml"
+    if o=$(check_cheap_set "$d/cs/ps-m-$_cs_o.yml" 2>&1); then echo "selftest FAIL: CS13 [$_cs_o] — a needs: gate on a PR-scoped required job was NOT caught"; sf=1
+    elif _has "$o" "PR-scoped job $_cs_o carries a needs:"; then echo "selftest PASS: CS13 [$_cs_o] — a needs: on a PR-scoped required job -> RED, naming it"
+    else echo "selftest FAIL: CS13 [$_cs_o] — reds without naming the job: $o"; sf=1; fi
+  done
+  # AGG7-AGG9 — the aggregator's needs: is (PG_NEEDED - conformance + conformance-docs) + gate + the six cheap jobs (leg 2 widened). The matched fixture is green; each of
+  # a missing gate, a missing cheap job and a foreign job reds.
+  _gt_xneeds="gate, secret-scan, sast, sbom, threat-obligation, uat-obligation, a11y-obligation"
+  _agg_write_yml "$d/agg/ci-gt-ok.yml" "needs: [$_gt_xneeds, changes, conformance-core, conformance-docs]"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-gt-ok.yml" "$d/agg/cls-ok.sh" 3 2>&1); then echo "selftest PASS: AGG7 — needs: carrying the gate and the six cheap jobs beside the PG_NEEDED set -> OK"
+  else echo "selftest FAIL: AGG7 — the widened needs: pair was rejected: $_agg_out"; sf=1; fi
+  _agg_write_yml "$d/agg/ci-gt-nogate.yml" "needs: [secret-scan, sast, sbom, threat-obligation, uat-obligation, a11y-obligation, changes, conformance-core, conformance-docs]"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-gt-nogate.yml" "$d/agg/cls-ok.sh" 3 2>&1); then echo "selftest FAIL: AGG8a — a needs: without the gate was NOT caught"; sf=1
+  else case "$_agg_out" in *"missing from the aggregator's needs: gate"*) echo "selftest PASS: AGG8a — a needs: without the gate -> RED, on the 'missing from the aggregator's needs: gate' line" ;; *) echo "selftest FAIL: AGG8a — reds without the missing-gate line: $_agg_out"; sf=1 ;; esac; fi
+  _agg_write_yml "$d/agg/ci-gt-nocheap.yml" "needs: [gate, secret-scan, sbom, threat-obligation, uat-obligation, a11y-obligation, changes, conformance-core, conformance-docs]"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-gt-nocheap.yml" "$d/agg/cls-ok.sh" 3 2>&1); then echo "selftest FAIL: AGG8b — a needs: without a cheap job (sast) was NOT caught"; sf=1
+  else case "$_agg_out" in *"missing from the aggregator's needs: sast"*) echo "selftest PASS: AGG8b — a needs: without a cheap job -> RED, on the 'missing from the aggregator's needs: sast' line" ;; *) echo "selftest FAIL: AGG8b — reds without the missing-sast line: $_agg_out"; sf=1 ;; esac; fi
+  _agg_write_yml "$d/agg/ci-gt-foreign.yml" "needs: [$_gt_xneeds, changes, conformance-core, conformance-docs, side-job]"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-gt-foreign.yml" "$d/agg/cls-ok.sh" 3 2>&1); then echo "selftest FAIL: AGG9 — a foreign job in needs: was NOT caught"; sf=1
+  else case "$_agg_out" in *"not allowed in the aggregator's needs: side-job"*) echo "selftest PASS: AGG9 — a job in needs: that neither PG_NEEDED nor the gate set names -> RED, on the 'not allowed' line" ;; *) echo "selftest FAIL: AGG9 — reds without the not-allowed line: $_agg_out"; sf=1 ;; esac; fi
+  _st_mark GT
   _st_end
 
   if [ "$sf" -eq 0 ]; then echo "OK: ci-gates selftest"; exit 0; else echo "FAIL: ci-gates selftest"; exit 1; fi
@@ -4073,6 +6144,41 @@ _tt_expect() {  # <leg> <clone> <want-rc> <needle|-> <what> -> runs the SHIPPED 
   else echo "selftest FAIL: $1 — $5 (rc=$_te_rc want $3; needle '$4'; out='$_te_out')"; sf=1; fi
 }
 
+# --- SWAS-577: the in-process matcher and the rc-aware wrapper. Below selftest() on purpose: the non-vacuity sweep mutates only lines BEFORE the marker.
+# _has <haystack> <needle> — 0 iff the needle occurs in the haystack, literally (equal to grep -F for a needle with no newline). In-process: no fork, no signal, rc 0 or 1 only, so ! _has is safe.
+# _has "" "" is true; no call site passes an empty needle.
+_has() {
+  case $1 in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+# _grepx <haystack> <grep-args...> — grep over a captured string, for the shapes case cannot answer (-i, -c, an extracted line). rc 0 and 1 are grep's own answer and pass through.
+# Any other rc (an error, a spawn failure, a signal) is NOT an answer: print UNVERIFIED (grep rc=N) to stderr, append one line to the marker file $_unv_f (a $( ) subshell cannot lose a file), and return 2. The verdict reads the marker, never this return code.
+_grepx() {
+  _gx_h=$1; shift
+  _gx_rc=0
+  printf '%s\n' "$_gx_h" | grep "$@" || _gx_rc=$?
+  case $_gx_rc in
+    0|1) return "$_gx_rc" ;;
+  esac
+  printf 'selftest UNVERIFIED (grep rc=%s): grep %s\n' "$_gx_rc" "$*" >&2
+  printf 'rc=%s grep %s\n' "$_gx_rc" "$*" >> "$_unv_f"
+  return 2
+}
+# _unv_end — the final verdict's read of the marker: rc 1 (and one FAIL line naming the count) when any grep call could not answer.
+_unv_end() {
+  if [ -z "${_unv_f:-}" ] || [ ! -f "$_unv_f" ]; then   # UNVMISS
+    echo "selftest FAIL: UNVERIFIED: the marker file is missing or unnamed, so an unanswered grep could not have been recorded"
+    return 1
+  fi
+  [ -s "$_unv_f" ] || return 0
+  _un_n=0
+  while IFS= read -r _un_l || [ -n "$_un_l" ]; do _un_n=$((_un_n + 1)); done < "$_unv_f"
+  echo "selftest FAIL: UNVERIFIED: $_un_n grep call(s) could not answer (rc 2 or more, or a signal), so the verdict is not a PASS"
+  return 1
+}
+
 # --- SWAS-363: the selftest fails closed ------------------------------------------------------------------------------
 # The sentinel is test machinery and sits here, after selftest(), in the oracle region the non-vacuity harness copies unchanged (shell functions resolve at
 # call time), so its accumulator flip measures the cells and not the sentinel: a flipped trap beside a flipped end marker would otherwise launder every red to rc 0.
@@ -4083,7 +6189,7 @@ _tt_expect() {  # <leg> <clone> <want-rc> <needle|-> <what> -> runs the SHIPPED 
 _st_begin() {  # first statement of selftest(): state reset with no conditions (an inherited _st_done=1 must not survive), then the traps
   d=$(mktemp -d)
   _st_done=0 _st_seen='' _st_last=''
-  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB'
+  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB SCP RS CS GT'
   trap '_st_rc=$?; rm -rf "$d"; if [ "$_st_done" != 1 ]; then echo "FAIL: ci-gates selftest ended before its end marker (last section: ${_st_last:-none}, rc $_st_rc)" >&2; exit 1; fi; exit "$_st_rc"' EXIT
   trap 'exit 130' INT TERM
 }
@@ -4113,10 +6219,17 @@ _st_end() {  # [--no-trap-check] last act before the verdict line: grade the led
     printf '%s\n' "$_st_o" | while IFS= read -r _st_l; do echo "selftest FAIL: ST — $_st_l"; done
     sf=1
   fi
+  _unv_end || sf=1
   if [ "${1:-}" != --no-trap-check ]; then
     # the shell's own listing of its traps, written from the current shell (no subshell): the sentinel must still be the EXIT trap
     trap > "$d/trap.out" 2>/dev/null || :
-    if grep -F _st_done "$d/trap.out" 2>/dev/null | grep -Eq '[ ](EXIT|0)$'; then
+    _st8=0
+    while IFS= read -r _st8_l || [ -n "$_st8_l" ]; do
+      case $_st8_l in
+        *_st_done*" EXIT"|*_st_done*" 0") _st8=1 ;;   # ST8EXIT
+      esac
+    done < "$d/trap.out"
+    if [ "$_st8" = 1 ]; then
       echo "selftest PASS: ST8 — the EXIT trap still names _st_done at the end marker"
     else
       echo "selftest FAIL: ST — the EXIT trap was replaced (it no longer names _st_done)"; sf=1
@@ -4217,6 +6330,26 @@ case "${1:-}" in
     shift
     if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --line-breaks [<root>]" >&2; exit 1; fi
     check_line_breaks_tree "${1:-$(dirname "$0")/..}"; exit $? ;;
+  # SWAS-499: the read-only shellcheck pin lock over every workflow file (the tree walk of check_shellcheck_pin_tree).
+  --shellcheck-pin)
+    shift
+    if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --shellcheck-pin [<root>]" >&2; exit 1; fi
+    check_shellcheck_pin_tree "${1:-$(dirname "$0")/..}"; exit $? ;;
+  # SWAS-382 S1: the cheap-set lock (see the CS block above). Defaults to this kit's own ci.yml; the selftest passes a fixture or a mutated copy of this script.
+  --cheap-set)
+    shift
+    if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --cheap-set [<workflow>]" >&2; exit 1; fi
+    check_cheap_set "${1:-$(dirname "$0")/../.github/workflows/ci.yml}"; exit $? ;;
+  # SWAS-382 S1: the sbom job's copied blocks equal artifact-gate's (see the SBOM PARITY block above); same defaults as --cheap-set.
+  --sbom-parity)
+    shift
+    if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --sbom-parity [<workflow>]" >&2; exit 1; fi
+    check_sbom_parity "${1:-$(dirname "$0")/../.github/workflows/ci.yml}"; exit $? ;;
+  # SWAS-382 S3: the runtime-gate lock (see the GT block above). Defaults to this kit's own ci.yml and decider; the selftest passes mutated copies of both.
+  --gate-shape)
+    shift
+    if [ $# -gt 2 ]; then echo "usage: ci-gates.sh --gate-shape [<workflow> [<decider>]]" >&2; exit 1; fi
+    check_gate_shape "${1:-$(dirname "$0")/../.github/workflows/ci.yml}" "${2:-$(dirname "$0")/ci-gate-state.sh}"; exit $? ;;
   --aggregator-lock)
     shift
     _al_root="$(dirname "$0")/.."

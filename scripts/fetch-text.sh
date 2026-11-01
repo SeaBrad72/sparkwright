@@ -56,6 +56,7 @@ selftest() {
     printf '%s\n' 'STATUS=000; CTYPE=; REDIR=; BODYFILE=; RC=7; SLEEP=; ERRTXT=; PIPERC=141'
     printf '%s\n' '[ -f "$d/hop$n.sh" ] && . "$d/hop$n.sh"'
     printf '%s\n' '[ -n "$SLEEP" ] && sleep "$SLEEP"'
+    printf '%s\n' '[ -f "$d/clock" ] && echo $(( $(cat "$d/clock") + ${ADV:-0} )) >"$d/clock"'
     printf '%s\n' '[ -n "$ERRTXT" ] && printf "%s\n" "$ERRTXT" >&2'
     printf '%s\n' 'fmt=; want=0; for a in "$@"; do [ "$want" = 1 ] && fmt=$a; want=0; [ "$a" = --write-out ] && want=1; done'
     printf '%s\n' 'fmt=$(printf "%s" "$fmt" | sed -e "s/%{stderr}//" -e "s|%{http_code}|$STATUS|" -e "s|%{content_type}|$CTYPE|" -e "s|%{redirect_url}|$REDIR|")'
@@ -65,6 +66,18 @@ selftest() {
     printf '%s\n' 'exit "$RC"'
   } >"$BIN/curl"
   chmod +x "$BIN/curl"
+  # the stub date (SWAS-459): a slow-runner hook (dateslow seconds of real delay per call), a virtual clock
+  # (the clock file, in seconds; the stub curl advances it by a hop's ADV), else the real date
+  RD=$(command -v date)
+  [ -n "$RD" ] || { echo "FAIL: no date on PATH"; exit 1; }
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' 'd=$STUB_DIR'
+    printf '%s\n' '[ -f "$d/dateslow" ] && sleep "$(cat "$d/dateslow")"'
+    printf '%s\n' '[ -f "$d/clock" ] && { cat "$d/clock"; exit 0; }'
+    printf 'exec %s "$@"\n' "'$RD'"
+  } >"$BIN/date"
+  chmod +x "$BIN/date"
   FAILS=0; N=0
   cells="c_ref_scheme c_ref_auth c_ref_nonprint c_ref_braces c_ref_ipv4num c_ref_lastletter c_ref_single c_ref_reserved c_ref_port c_ref_labels c_ref_table c_accept c_argv c_convert c_convert_frame c_redirect_follow c_redirect_recheck c_hops c_budget c_cap c_nonce c_san_ansi c_san_ctrl c_san_bidi c_san_tags c_ctype c_exit1 c_probe c_proxy_seen c_charset c_cleanup c_usage"
   for c in $cells; do
@@ -77,7 +90,7 @@ selftest() {
 }
 
 # fixture helpers -------------------------------------------------------------------------------------
-reset() { rm -rf "$SD/count" "$SD/argv.log" "$SD/done" "$SD"/hop*.sh "$SD"/body* "${TD:?}"/*; }
+reset() { rm -rf "$SD/count" "$SD/argv.log" "$SD/done" "$SD/clock" "$SD/dateslow" "$SD"/hop*.sh "$SD"/body* "${TD:?}"/*; }
 hop() { # n status ctype redir bodyfile [rc] [sleep] [errtxt]
   printf 'STATUS=%s; CTYPE=%s; REDIR=%s; BODYFILE=%s; RC=%s; SLEEP=%s; ERRTXT=%s\n' \
     "$2" "'$3'" "'$4'" "'$5'" "${6:-0}" "${7:-}" "'${8:-}'" >"$SD/hop$1.sh"
@@ -193,7 +206,10 @@ c_hops() { # five fetches, the sixth refused with exit 2 before curl runs
   [ "$RC" -eq 2 ] && [ "$(calls)" -eq 5 ] || { say "hops rc=$RC calls=$(calls)"; return 1; }
 }
 c_budget() { # a TOTAL time budget across hops: hop 2 is not started once the budget is spent
-  reset; hop 1 302 'text/html' 'https://h2.example.org/' '' 0 2; hop 2 200 'text/plain' '' "$SD/body2"; body 2 late
+  # a virtual clock (the stub date): hop 1 "takes" 2 s of a 1 s budget, whatever the runner's real speed; each
+  # date call also costs a real second, the slowed runner that made the old wall-clock cell flake
+  reset; hop 1 302 'text/html' 'https://h2.example.org/' '' 0; echo 'ADV=2' >>"$SD/hop1.sh"; hop 2 200 'text/plain' '' "$SD/body2"; body 2 late
+  echo 100 >"$SD/clock"; echo 1 >"$SD/dateslow"
   run "$1" 'https://example.com/' 1
   [ "$RC" -eq 1 ] && [ "$(calls)" -eq 1 ] || { say "budget rc=$RC calls=$(calls)"; return 1; }
   grep -q late "$SD/out" && { say "late body printed"; return 1; }
@@ -452,6 +468,8 @@ mutants() {
   recheck_why "$ST/mut.sh"
   mut hops c_hops "$(shoff hops)"
   mut budget c_budget "$(shoff budget)"
+  # only the START read skips the stub: start is about 1.8e9, "now" is the virtual 100/102, so rem is huge and hop 2 always runs
+  mut budget-realclock c_budget 's#start=\$(date +%s)#start=$(/bin/date +%s)#'
   mut cap c_cap 's#head -c "$CAPP1"#cat#'
   mut marker c_nonce "$(pyoff marker)"
   mut ansi c_san_ansi "$(pyoff ansi)"

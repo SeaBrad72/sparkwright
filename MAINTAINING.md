@@ -43,7 +43,7 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
 ## 3. Releasing (platform team)
 
 1. Land the change on a feature branch via PR (the kit's own loop — see §5).
-2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version; run `sh conformance/conformance-mass-budget.sh` at the release commit and append the `next-baseline:` line it prints (the text after the label) to `conformance/mass-release-baseline.txt`.
+2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version; run `sh conformance/conformance-mass-budget.sh` at the release commit and append the `next-baseline:` line it prints (the text after the label) to `conformance/mass-release-baseline.txt`. **Step 2b, the macOS boundary reading (before the merge and tag):** dispatch `boundary-redteam-macos.yml` with `profile=full` ONLY on a reviewed ref (the release branch; for a sandbox slice, the reviewed PR head), never on an unreviewed one (`gh workflow run boundary-redteam-macos.yml --ref <release-branch> -f profile=full`), and record the run id TOGETHER WITH the ref's commit sha in the release PR's review record (the record under `docs/reviews/` that the review lane grades). It is report-only: a red is a finding to read before the cut, never an automatic stop.
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body. **Public-block rule:** `publish-public.sh --gate` (on every pull request) and the publish step that checks the release note refuse a public block that contains a `#` followed by digits (also as `PR#`, `owner/repo#` or an encoded `&#35;`), a `GH-` number, a forge `/pull(s)/`, `/issues/` or `/commit(s)/` URL, a github, gitlab or bitbucket URL (with or without a scheme or `www.`) under pull(s), issues, commit(s), compare, tree or blob, this project's tracker key with a number (any case; a space, `_` or `-` between), the word changelog, `[Unreleased]`, a path the export drops, or, in the block that ships, a marker that shares its line or opens twice. The aim beyond those shapes is conduct, not enforced: a public block names nothing a public reader cannot open. The public repo is a mirror with no PR history, so a PR number there links to nothing or to the wrong item.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
    - **`kit-current` on a scratch adopter tree is not performed by agents** (the guard refuses `incept` in a clone); a CI leg on the published tree is its own card.
@@ -65,6 +65,11 @@ milestone-gated act** — you do NOT publish per slice.
   private per-slice dev); `kit-update.sh --from <kit>` (they pull when they choose). No telemetry, no push.
 - **When to publish per-slice instead:** only for a hotfix an adopter is actively blocked on. Otherwise
   accumulate to the next milestone.
+- **Who types the public acts:** `sh scripts/publish-public.sh` and any `gh release edit` on the public mirror are
+  run by the owner in their own terminal. An agent session prepares them (the dry-run, the rollback record, the note
+  and command text for review), hands over the exact commands, and does the read-back after. At the 3.242.0 cut one
+  harness's permission mode (Claude Code's auto mode) refused these acts as a new public surface (observed once, not a
+  guarantee); on any harness, an agent does not route around such a refusal (conduct, not enforced).
 
 ### 3a. Authoring a control-plane change (the dev-clone)
 

@@ -437,7 +437,7 @@ selftest() {
              "templates/THREAT-MODEL-TEMPLATE.md" "templates/REVIEW-RECORD-TEMPLATE.md" \
              "templates/WAIVER-REGISTER.md" "templates/POSTMORTEM-TEMPLATE.md" \
              "docs/governance/DECISIONS.md" "docs/governance/promotion-contract.md" \
-             "docs/governance/promotion-log.md" ".kit/tracker.conf"; do
+             "docs/governance/promotion-log.md" ".kit/tracker.conf" ".kit/ci-pre-approval.conf"; do
     printf '%s\n' "$_cv" > "$_casef"
     _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
     if [ "$_got" = control-plane ]; then echo "PASS: governance source '$_cv' -> control-plane (ratification required)"
@@ -583,7 +583,7 @@ $_inv_body" 2>/dev/null ) || true
   # stderr went to /dev/null, and `[ -z "$_syn_out" ]` announced every invariant intact.
   if [ -f "$_inv_core" ]; then
     _syn_body='
-      . '"$_inv_core"' 2>/dev/null
+      . "$1" 2>/dev/null
       _kit_fs_ci=0
       for p in .claude/commands/x.md .claude/plugins/y.json .claude/newdir/deep/z.txt \
                vendor/pkg/.claude/commands/x.md scripts/zz-nonexistent.sh \
@@ -592,7 +592,7 @@ $_inv_body" 2>/dev/null ) || true
                .gitattributes docs/.gitattributes \
                templates/PROJECT-CLAUDE-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md \
                templates/WAIVER-REGISTER.md docs/governance/DECISIONS.md \
-               docs/governance/promotion-contract.md .kit/tracker.conf; do
+               docs/governance/promotion-contract.md .kit/tracker.conf .kit/ci-pre-approval.conf; do
         if ! is_control_plane_path "$p"; then printf "DEAD %s\n" "$p"; fi
         if _cpp_kitowned "$p"; then
           if ! _cpp_match "$p"; then printf "SUBSET %s\n" "$p"; fi
@@ -642,7 +642,7 @@ $_inv_body" 2>/dev/null ) || true
       done
       printf "ALIVE\n"
       exit 0'
-    _syn_out=$( sh -c "$_syn_body" 2>/dev/null )
+    _syn_out=$( sh -c "$_syn_body" _ "$_inv_core" 2>/dev/null )
     _sentinel_eval "$_syn_out"
     case "$_sv_state" in
       CLEAN) echo "PASS: synthetic never-tracked family paths — live (all control-plane), Tier 1 ⊆ Tier 2, fold-monotone, no family over-match on look-alike siblings, and the relieved workspace subtrees are ordinary in BOTH tiers while the bright line holds — block proven ALIVE" ;;
@@ -656,12 +656,46 @@ $_inv_body" 2>/dev/null ) || true
     # Error at the TOP and `|| true`, for the two measured reasons recorded at the sweep's mutant
     # above (incremental parsing; `set -e` on a failing command substitution).
     _syn_mout=$( sh -c "if then fi
-$_syn_body" 2>/dev/null ) || true
+$_syn_body" _ "$_inv_core" 2>/dev/null ) || true
     _sentinel_eval "$_syn_mout"
     if [ "$_sv_state" = NORUN ]; then echo "PASS: a syntax-error mutant of the synthetic family-path block reads as NORUN, not as every invariant holding"
     else echo "FAIL: a syntax-error mutant of the synthetic family-path block evaluated to '$_sv_state' — the ALIVE sentinel does not discriminate here, so an unparseable block still ships green"; st=1; fi
   else
     echo "FAIL: could not evaluate the synthetic family-path invariants (guard core unavailable) — do NOT read this as a pass"; st=1
+  fi
+
+  # ★ SWAS-382 S2, G5 — THE NAME IN TIER 1 ONLY. `.kit/ci-pre-approval.conf` is in the synthetic list above, so SUBSET reds the day
+  # `_cpp_kitowned` carries it and `_cpp_match` does not; this mutant proves that detector discriminates. A copy of the real core loses
+  # the conf's `_cpp_match` arm (the `_cpp_kitowned` arm stays), and the REAL detector (`_syn_body`, the same body that grades the
+  # shipped core above, not a re-implementation of it) is run against that copy: its output must name `SUBSET .kit/ci-pre-approval.conf`.
+  # (DEAD and MONOTONE lines appear beside it, because a lowercase path also needs the `_cpp_match` arm; only the SUBSET line is asserted.)
+  # An unbound mutant (the arm was not found to remove) is a FAIL, never a skip.
+  if [ -f "$_inv_core" ]; then
+    _g5core="$d/g5-core.sh"
+    sed '/^_cpp_match() {/,/^}/ { /^    \.kit\/ci-pre-approval\.conf|\*\/\.kit\/ci-pre-approval\.conf|\\$/d; }' "$_inv_core" > "$_g5core"
+    if cmp -s "$_inv_core" "$_g5core"; then
+      echo "FAIL: G5 mutant is UNBOUND — no _cpp_match arm for .kit/ci-pre-approval.conf was found to remove"; st=1
+    else
+      _g5out=$( sh -c "$_syn_body" _ "$_g5core" 2>/dev/null ) || true
+      _sentinel_eval "$_g5out"
+      case "$_g5out" in
+        *"SUBSET .kit/ci-pre-approval.conf"*) _g5hit=1 ;;
+        *) _g5hit=0 ;;
+      esac
+      # The same match run on the SHIPPED core's output (`_syn_out`, above) must find nothing: that is the red-before leg, proving the
+      # assertion is not satisfied by a core that still carries the arm.
+      case "$_syn_out" in
+        *"SUBSET .kit/ci-pre-approval.conf"*) _g5ctl=1 ;;
+        *) _g5ctl=0 ;;
+      esac
+      if [ "$_sv_state" = DIRTY ] && [ "$_g5hit" = 1 ] && [ "$_g5ctl" = 0 ]; then
+        echo "PASS: G5 — the real synthetic-family detector, run on a core whose Tier 1 carries .kit/ci-pre-approval.conf and whose Tier 2 does not, reports SUBSET .kit/ci-pre-approval.conf (and reports no SUBSET on the shipped core)"
+      else
+        echo "FAIL: G5 — the Tier-1-only mutant evaluated to state '$_sv_state', SUBSET line on the mutant=$_g5hit (want 1), on the shipped core=$_g5ctl (want 0)"; st=1
+      fi
+    fi
+  else
+    echo "FAIL: G5 — could not locate the guard core at '$_inv_core'"; st=1
   fi
 
   # ══ S2 M3 — THE CENSUS / AGREEMENT LOCK ═════════════════════════════════════════════════════════

@@ -96,6 +96,7 @@ mkrepo() {
     GIT_AUTHOR_NAME='Author A' GIT_AUTHOR_EMAIL='a@x' git commit -qm X
     git rev-parse HEAD > "$_d/.X"
   ) || return 1
+  _fxlike "$_d"
   printf '%s\n' "$_d"
 }
 
@@ -168,6 +169,11 @@ _mkwiring() {  # <verify-omit> <guard-omit> <reg-omit> -> echoes a dir holding v
 # above the ^selftest() marker, comments included — mutate() has no lexer and would count it as a
 # phantom accumulator, drifting ACC. Keep any such token strictly below the marker.
 selftest() {
+  _unv_f=$(mktemp) && : > "$_unv_f" || fail "the UNVERIFIED marker file cannot be created, so an unanswered grep could not be recorded"   # SWAS-577: the marker file of grep calls that could not answer (read by _unv_end before the verdict)
+  # SWAS-537: land and actuate merge only on exact-head CI evidence, so every cell that reaches a merge needs a
+  # forge that answers it. This default `gh` (first on PATH for the whole selftest) says "light run, exact head";
+  # an LE cell flips $EVD/mode for ITS run, and a cell with its own shim delegates the evidence calls here.
+  EVD="$(_mkevgh)"; PATH="$EVD:$PATH"; export PATH EVD
   # ---------------------------------------------------------------------------------------
   # WIRING coverage: 1 liveness (all six surfaces present) + 6 negatives (each omits exactly one
   # required token -> exactly one of wiring()'s six wiring-flag accumulators fires). Asserts the SPECIFIC
@@ -190,8 +196,8 @@ selftest() {
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] \
-     && printf '%s' "$OUT" | grep -q 'OK: actuated' \
-     && printf '%s' "$OUT" | grep -q 'shipped == approved'; then
+     && _has "$OUT" 'OK: actuated' \
+     && _has "$OUT" 'shipped == approved'; then
     pass "LIVENESS: authenticated GO + approver!=author -> merge stub invoked -> shipped==approved (rc=0)"
   else
     fail "LIVENESS: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -204,7 +210,7 @@ selftest() {
   X="$(cat "$D/.X")"
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
-  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q "no GO note bound to $X on origin"; then
+  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "no GO note bound to $X on origin"; then
     pass "NEG1: no note on X -> ACTUATE REFUSED, merge not invoked (rc=$RC)"
   else
     fail "NEG1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -218,7 +224,7 @@ selftest() {
   write_note "$D" "$G" "Reviewer B [authenticated: github-review]"
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
-  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q "no GO note bound to $X on origin"; then
+  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "no GO note bound to $X on origin"; then
     pass "NEG2: note binds G, actuate X -> refuse (SHA binding is exact) (rc=$RC)"
   else
     fail "NEG2: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -234,7 +240,7 @@ selftest() {
     MC="$(_act_stub "$D" "$X")"
     run_actuate "$VERIFY" "$D" feat "$X" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
-       && printf '%s' "$OUT" | grep -q 'does not meet the control-plane bar'; then
+       && _has "$OUT" 'does not meet the control-plane bar'; then
       pass "NEG(label): [$_lab] fails the bar -> refuse, merge not invoked (rc=$RC)"
     else
       fail "NEG(label): [$_lab] rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -251,7 +257,7 @@ selftest() {
     MC="$(_act_stub "$D" "$X")"
     run_actuate "$VERIFY" "$D" feat "$X" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
-       && printf '%s' "$OUT" | grep -q 'approver equals author'; then
+       && _has "$OUT" 'approver equals author'; then
       pass "NEG6: approver '$_id' == author -> refuse (builder!=ratifier), merge not invoked (rc=$RC)"
     else
       fail "NEG6: id='$_id' rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -268,7 +274,7 @@ selftest() {
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
-     && printf '%s' "$OUT" | grep -q 'does not meet the control-plane bar'; then
+     && _has "$OUT" 'does not meet the control-plane bar'; then
     pass "NEG7: [committer] + [authenticated:] decoy in body -> still refuse (label read ignores body)"
   else
     fail "NEG7: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -282,7 +288,7 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   MC="$(_act_stub "$D" "$X" "$G")"   # the stub moves the head ref to G AFTER step 0: tree != X
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
-  if [ "$RC" != 0 ] && [ -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q 'SHIPPED != APPROVED'; then
+  if [ "$RC" != 0 ] && [ -f "$D/.invoked" ] && _has "$OUT" 'SHIPPED != APPROVED'; then
     pass "NEG8: merge left tree != approved -> loud SHIPPED != APPROVED (merge ran, rc=$RC)"
   else
     fail "NEG8: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -291,7 +297,10 @@ selftest() {
   # ---------------------------------------------------------------------------------------
   # NEGATIVE 9: the actuate code path NEVER emits `--admin` (no bypass laundering via the wrapper).
   # ---------------------------------------------------------------------------------------
-  if sed -n '/^do_actuate()/,/^}/p' "$VERIFY" | grep -q -- '--admin'; then
+  _n9=$(sed -n '/^do_actuate()/,/^}/p' "$VERIFY")
+  if [ -z "$_n9" ]; then
+    fail "NEG9: the do_actuate body could not be read from $VERIFY -- an empty read proves nothing"
+  elif _has "$_n9" '--admin'; then
     fail "NEG9: '--admin' appears in the do_actuate code path -- the wrapper must NEVER emit the bypass"
   else
     pass "NEG9: '--admin' never appears in the do_actuate code path"
@@ -308,10 +317,14 @@ selftest() {
   #       un-merge it, and reporting a verified promotion as failed would be a lie in the log.
   # The stub is resolved the way the real one is — beside the gate — so the fixture copies the gate
   # into its own dir and puts board-claim.sh next to it. Same shape as the `gh` PATH shim below.
+  # SWAS-537: the gate also resolves the CI classifier from its own checkout (<gate dir>/../conformance), so the copy lives in a
+  # kit layout: <dir>/scripts (the gate and its stubs) beside <dir>/conformance (the classifier).
   _mk_release_fixture() {  # <dir> <stub-exit>
-    cp "$VERIFY" "$1/promotion-verify.sh"
-    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/.released"\necho "release: stub"\nexit %s\n' "$1" "$2" > "$1/board-claim.sh"
-    chmod +x "$1/board-claim.sh"
+    mkdir -p "$1/scripts" "$1/conformance"
+    cp "$VERIFY" "$1/scripts/promotion-verify.sh"
+    cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$1/conformance/ci-classify-changes.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/.released"\necho "release: stub"\nexit %s\n' "$1" "$2" > "$1/scripts/board-claim.sh"
+    chmod +x "$1/scripts/board-claim.sh"
   }
   D="$(mkrepo)" || { fail "fixture build (claim-release)"; return 1; }
   X="$(cat "$D/.X")"
@@ -319,10 +332,10 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ -f "$D/.released" ] \
      && grep -q 'release ROW-X --stale' "$D/.released" \
-     && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released"; then
+     && _has "$OUT" "board claim on 'ROW-X' released"; then
     pass "CLAIM-RELEASE: actuate releases the merged row's claim as 'release ROW-X --stale' and says so"
   else
     fail "CLAIM-RELEASE: rc=$RC released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
@@ -333,9 +346,9 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _mk_release_fixture "$D" 0
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] \
-     && printf '%s' "$OUT" | grep -q 'no kit-row on the GO note'; then
+     && _has "$OUT" 'no kit-row on the GO note'; then
     pass "CLAIM-RELEASE-NOROW: a note with no kit-row releases NOTHING and says so (no row invented)"
   else
     fail "CLAIM-RELEASE-NOROW: rc=$RC released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
@@ -347,10 +360,10 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 1
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] \
-     && printf '%s' "$OUT" | grep -q 'WARN — could not release the board claim' \
-     && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+     && _has "$OUT" 'WARN — could not release the board claim' \
+     && _has "$OUT" 'OK: actuated'; then
     pass "CLAIM-RELEASE-WARN: a FAILING release is a WARN — the verified merge still reports rc 0"
   else
     fail "CLAIM-RELEASE-WARN: rc=$RC OUT=[$OUT]"
@@ -364,11 +377,11 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
-  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/scripts/board.sh"; chmod +x "$D/scripts/board.sh"
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
-     && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released" \
+     && _has "$OUT" "board claim on 'ROW-X' released" \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim released' ]; then
     pass "CLAIM-RELEASE-MD-TAIL (C2): an md row never runs board.sh, keeps its message, and ends 'board: row closes with the PR (md); claim released'"
   else
@@ -382,7 +395,7 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 1
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim NOT released — see the WARN above' ]; then
     pass "CLAIM-RELEASE-MD-TAIL-FAIL: a failing md release ends 'claim NOT released — see the WARN above' (rc 0)"
   else
@@ -393,8 +406,8 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _mk_release_fixture "$D" 0
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
-  if [ "$RC" = 0 ] && ! printf '%s' "$OUT" | grep -q 'WARN' \
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
+  if [ "$RC" = 0 ] && ! _has "$OUT" 'WARN' \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); no claim to release' ]; then
     pass "CLAIM-RELEASE-MD-TAIL-NONE: md + no kit-row keeps today's output (no new WARN) and ends 'no claim to release'"
   else
@@ -410,11 +423,11 @@ selftest() {
   _mk_release_fixture "$D" 0
   mkdir -p "$D/conformance"; cp "$(dirname "$VERIFY")/../conformance/backlog-lib.sh" "$D/conformance/backlog-lib.sh"
   printf 'Backlog backend: github\n' > "$D/CLAUDE.md"
-  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/scripts/board.sh"; chmod +x "$D/scripts/board.sh"
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
-     && printf '%s' "$OUT" | grep -qF "no write adapter for 'github'; move the card on 'ROW-X' by hand" \
+     && _has "$OUT" "no write adapter for 'github'; move the card on 'ROW-X' by hand" \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
     pass "CLAIM-RELEASE-NOADAPTER: github-declared -> ref-only release, board.sh never run, WARN 'no write adapter', tail NOT CLOSED"
   else
@@ -428,12 +441,12 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: X;echo pwned' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
-  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/scripts/board.sh"; chmod +x "$D/scripts/board.sh"
   MC="$(_act_stub "$D" "$X")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] && [ ! -f "$D/.board-sh-ran" ] \
-     && printf '%s' "$OUT" | grep -qF 'kit-row is not a valid row id; nothing released or closed' \
-     && ! printf '%s' "$OUT" | grep -qF 'pwned' && ! printf '%s' "$OUT" | grep -qF 'sh scripts/board' \
+     && _has "$OUT" 'kit-row is not a valid row id; nothing released or closed' \
+     && ! _has "$OUT" 'pwned' && ! _has "$OUT" 'sh scripts/board' \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
     pass "CLAIM-RELEASE-BADROW: kit-row 'X;echo pwned' -> nothing released or closed, value not echoed, no command printed, tail NOT CLOSED"
   else
@@ -452,7 +465,7 @@ selftest() {
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" 999 "$X" "$MC"
   if [ "$RC" = 2 ] && [ ! -f "$D/.invoked" ] \
-     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --ref '999' resolves to nothing, not the approved sha $X"; then
+     && _has "$OUT" "ACTUATE REFUSED: --ref '999' resolves to nothing, not the approved sha $X"; then
     pass "ACT-S0-NOREF: --ref 999 (no local ref) -> rc 2, step 0 refusal, merge stub never ran"
   else
     fail "ACT-S0-NOREF: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -467,7 +480,7 @@ selftest() {
   MC="$(_act_stub "$D" "$X")"
   run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" = 2 ] && [ ! -f "$D/.invoked" ] \
-     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --ref 'feat' resolves to $MV, not the approved sha $X"; then
+     && _has "$OUT" "ACTUATE REFUSED: --ref 'feat' resolves to $MV, not the approved sha $X"; then
     pass "ACT-S0-MOVED: head branch moved past the GO sha -> rc 2, step 0 refusal naming the new head, merge stub never ran"
   else
     fail "ACT-S0-MOVED: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -481,7 +494,7 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _act_origin "$D"
   GHS="$(mktemp -d)"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
+  printf '#!/bin/sh\ncase "$1" in api) exec "%s/gh" "$@" ;; esac\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$EVD" "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
   if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$X" 2>&1 )"; then RC=0; else RC=$?; fi
   if [ "$RC" = 0 ] && [ "$(cat "$D/.gh-argv" 2>/dev/null)" = "pr merge feat --squash --match-head-commit $X" ]; then
     pass "ACT-PIN-DEFAULT: the default actuate merge carries --match-head-commit <asha> (gh shim argv: pr merge feat --squash --match-head-commit <asha>)"
@@ -492,7 +505,7 @@ selftest() {
   if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$X" \
          --merge-cmd "gh pr merge feat --squash --admin --match-head-commit $X" 2>&1 )"; then RC=0; else RC=$?; fi
   if [ "$RC" = 1 ] && [ ! -f "$D/.gh-argv" ] \
-     && printf '%s' "$OUT" | grep -qF 'ACTUATE REFUSED: --merge-cmd carries an --admin token'; then
+     && _has "$OUT" 'ACTUATE REFUSED: --merge-cmd carries an --admin token'; then
     pass "ACT-VET-ADMIN: a caller --merge-cmd carrying --admin -> refused by the shared vet, gh never ran (rc=$RC)"
   else
     fail "ACT-VET-ADMIN: rc=$RC ghran=$([ -f "$D/.gh-argv" ] && echo yes || echo no) OUT=[$OUT]"
@@ -509,7 +522,7 @@ selftest() {
     rm -f "$D/.invoked"
     run_actuate "$VERIFY" "$D" feat "$X" "$_pm"
     if [ "$RC" != 1 ] || [ -f "$D/.invoked" ] \
-       || ! printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --merge-cmd must pin --match-head-commit <approved-sha> ($X)"; then
+       || ! _has "$OUT" "ACTUATE REFUSED: --merge-cmd must pin --match-head-commit <approved-sha> ($X)"; then
       _pinbad="$_pinbad [$_pm rc=$RC invoked=$(invoked "$D")]"
     fi
   done
@@ -522,7 +535,7 @@ selftest() {
   _shape_case() {  # <label> <merge-cmd> <expected needle>
     rm -f "$D/.invoked"
     run_actuate "$VERIFY" "$D" feat "$X" "$2"
-    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --merge-cmd carries $3"; then
+    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "ACTUATE REFUSED: --merge-cmd carries $3"; then
       pass "$1: refused with its own line, merge stub never ran"
     else
       fail "$1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -540,7 +553,7 @@ selftest() {
   _shape_case "ACT-SHAPE-DOUBLEPIN" "sh $D/.stub.sh --match-head-commit $X --match-head-commit=$X" "more than one --match-head-commit token"
   rm -f "$D/.invoked"
   run_actuate "$VERIFY" "$D" feat "$X" "sh $D/.stub.sh --match-head-commit=$X"
-  if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+  if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && _has "$OUT" 'OK: actuated'; then
     pass "ACT-PIN-EQUALS: a single --match-head-commit=<sha> pin passes the shape, vet and pin checks and merges (rc=0)"
   else
     fail "ACT-PIN-EQUALS: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -552,7 +565,7 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _act_origin "$D"
   GHS="$(mktemp -d)"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
+  printf '#!/bin/sh\ncase "$1" in api) exec "%s/gh" "$@" ;; esac\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$EVD" "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
   if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$(printf '%s' "$X" | cut -c1-12)" 2>&1 )"; then RC=0; else RC=$?; fi
   if [ "$RC" = 0 ] && [ "$(cat "$D/.gh-argv" 2>/dev/null)" = "pr merge feat --squash --match-head-commit $X" ]; then
     pass "ACT-FULLSHA: an abbreviated --approved-sha -> the default merge pins the FULL sha (gh shim argv)"
@@ -569,8 +582,8 @@ selftest() {
     if [ "$_cn" = label ]; then write_note "$D" "$X" "Reviewer B [evil${_esc}x]"
     else write_note "$D" "$X" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "Ord${_esc}inary"; fi
     run_actuate "$VERIFY" "$D" feat "$X" "$(_act_stub "$D" "$X")"
-    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && ! printf '%s' "$OUT" | grep -q "$_esc" \
-       && printf '%s' "$OUT" | grep -qE "ACTUATE REFUSED: (assurance 'evilx'|unrecognised or missing change-class 'Ordinary')"; then
+    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && ! _has "$OUT" "$_esc" \
+       && { _has "$OUT" "ACTUATE REFUSED: assurance 'evilx'" || _has "$OUT" "ACTUATE REFUSED: unrecognised or missing change-class 'Ordinary'"; }; then
       pass "ACT-CNTRL: a control byte in the note's $_cn is stripped from the refusal (no ESC in the output)"
     else
       fail "ACT-CNTRL ($_cn): rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -585,7 +598,7 @@ selftest() {
   MC="$(_act_stub "$D" "$X")"
   ACT_LOCAL_ONLY=1; run_actuate "$VERIFY" "$D" feat "$X" "$MC"; ACT_LOCAL_ONLY=0
   if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && [ -n "$(_note_of "$D" "$X")" ] \
-     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: no GO note bound to $X on origin"; then
+     && _has "$OUT" "ACTUATE REFUSED: no GO note bound to $X on origin"; then
     pass "ACT-ORIGIN-LOCALONLY: a note present only locally -> refused 'no GO note bound to <sha> on origin', merge stub never ran"
   else
     fail "ACT-ORIGIN-LOCALONLY: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -599,9 +612,9 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
   MC="$(_act_stub "$D" "$X" "$G")"
-  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  run_actuate "$D/scripts/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 1 ] && [ -f "$D/.invoked" ] && grep -q 'release ROW-X --stale' "$D/.released" \
-     && printf '%s' "$OUT" | grep -qF 'SHIPPED != APPROVED' \
+     && _has "$OUT" 'SHIPPED != APPROVED' \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim released' ]; then
     pass "ACT-TAIL: a post-check mismatch after the merge -> rc 1, SHIPPED != APPROVED, the claim released, the board-tail line is the last line"
   else
@@ -658,8 +671,8 @@ selftest() {
   write_snote "$SD" "$SX" "the owner [self-asserted]" release-candidate AUTO
   _act_base "$SD" NONE NONE; SMC="$(_act_stub "$SD" "$SX")"
   run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
-  if [ "$RC" != 0 ] && [ ! -f "$SD/.invoked" ] && printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar' \
-     && printf '%s' "$OUT" | grep -qF 'merge relationship: team'; then
+  if [ "$RC" != 0 ] && [ ! -f "$SD/.invoked" ] && _has "$OUT" 'does not meet the control-plane bar' \
+     && _has "$OUT" 'merge relationship: team'; then
     pass "BASE-NEG-APPROVED-TREE: the approved tree declares solo but the base does not -> the team bar refuses, merge stub never ran"
   else
     fail "BASE-NEG-APPROVED-TREE: rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
@@ -675,10 +688,10 @@ selftest() {
     _act_base "$SD" "$_cpb" NONE; SMC="$(_act_stub "$SD" "$SX")"
     run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
     if [ "$RC" = 1 ] && [ ! -f "$SD/.invoked" ] \
-       && printf '%s' "$OUT" | grep -qF 'promotion-verify.sh land --ref <PR number> --approved-sha' \
-       && printf '%s' "$OUT" | grep -qF "land's --ref is the PR NUMBER" \
-       && ! printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar' \
-       && ! printf '%s' "$OUT" | grep -qF 'TIER-3'; then
+       && _has "$OUT" 'promotion-verify.sh land --ref <PR number> --approved-sha' \
+       && _has "$OUT" "land's --ref is the PR NUMBER" \
+       && ! _has "$OUT" 'does not meet the control-plane bar' \
+       && ! _has "$OUT" 'TIER-3'; then
       pass "ACT-CP-ORDER($_cpb): control-plane + [committer] -> the land pointer (class arm before step 2), not the label refusal, no TIER-3, stub never ran"
     else
       fail "ACT-CP-ORDER($_cpb): rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
@@ -691,8 +704,8 @@ selftest() {
   write_note "$SD" "$SX" "Reviewer B [committer]" "reviewer APPROVE" OMIT
   SMC="$(_act_stub "$SD" "$SX")"
   run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
-  if [ "$RC" = 1 ] && [ ! -f "$SD/.invoked" ] && printf '%s' "$OUT" | grep -qF 'unrecognised or missing change-class' \
-     && ! printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar'; then
+  if [ "$RC" = 1 ] && [ ! -f "$SD/.invoked" ] && _has "$OUT" 'unrecognised or missing change-class' \
+     && ! _has "$OUT" 'does not meet the control-plane bar'; then
     pass "ACT-UNKNOWN-ORDER: a [committer] note with no class -> the class refusal, before any label judgment"
   else
     fail "ACT-UNKNOWN-ORDER: rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
@@ -869,7 +882,9 @@ selftest() {
   # a mutant of the FAIL path must be detectable. (The DEFAULT wiring path ALSO catches this mutation:
   # grep -F of the exact bar string fails once the regex is neutralized.)
   # ---------------------------------------------------------------------------------------
-  NEUT="$D/neutered-gate.sh"
+  mkdir -p "$D/scripts" "$D/conformance"    # SWAS-537: the gate resolves the CI classifier beside its own scripts/ dir
+  cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$D/conformance/ci-classify-changes.sh"
+  NEUT="$D/scripts/neutered-gate.sh"
   cat > "$D/neuter.awk" <<'AWK'
 /grep -Eq/ && /authenticated:/ { print "  if ! printf '%s' \"$label\" | grep -Eq '.*'; then"; next }
 { print }
@@ -912,10 +927,10 @@ AWK
   GL="$(_mkgh "$(printf '%s' "$_RQ" | sed "s/@SHA@/$XL/g")" '"AuthorLogin"')"
   _run_record "$DL" "$GL" "PR #260" "Reviewer B" "$XL"
   NL="$(_note_of "$DL" "$XL")"
-  if [ "$RC" = 0 ] && printf '%s\n' "$NL" | grep -qF 'approved-by: Reviewer B [authenticated: github-review]'; then
+  if [ "$RC" = 0 ] && _has "$NL" 'approved-by: Reviewer B [authenticated: github-review]'; then
     MC="$(_act_stub "$DL" "$XL")"
     run_actuate "$VERIFY" "$DL" feat "$XL" "$MC"
-    if [ "$RC" = 0 ] && [ -f "$DL/.invoked" ] && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+    if [ "$RC" = 0 ] && [ -f "$DL/.invoked" ] && _has "$OUT" 'OK: actuated'; then
       pass "REC-L LIVENESS: derived [authenticated: github-review] -> actuate merged it (rc=0) — the gate is REACHABLE by a production path"
     else
       fail "REC-L LIVENESS (actuate half): rc=$RC invoked=$(invoked "$DL") OUT=[$OUT]"
@@ -935,7 +950,7 @@ AWK
   GL2="$(_mkgh "$(printf '%s' "$_RQ" | sed "s/@SHA@/$XL2/g")" '"AuthorLogin"')"
   _run_record "$DL2" "$GL2" "PR #260" "Reviewer B" "$(printf '%s' "$XL2" | cut -c1-8)"
   BL2="$(_note_of "$DL2" "$XL2")"
-  if [ "$RC" = 0 ] && printf '%s\n' "$BL2" | grep -qF 'approved-by: Reviewer B [authenticated: github-review]'; then
+  if [ "$RC" = 0 ] && _has "$BL2" 'approved-by: Reviewer B [authenticated: github-review]'; then
     pass "REC-L2 LIVENESS: an ABBREVIATED --approved-sha still upgrades (the compare resolves the full sha first)"
   else
     fail "REC-L2: abbreviated approved-sha did not upgrade; rc=$RC note=[$BL2] OUT=[$OUT]"
@@ -988,9 +1003,9 @@ AWK
   _run_record "$DN5" "$PN5" "PR #260" "Reviewer B" "$XN5" absolute
   BN5="$(_note_of "$DN5" "$XN5")"
   if [ "$RC" = 0 ] \
-     && printf '%s\n' "$BN5" | grep -qF 'approved-by: Reviewer B [self-asserted]' \
-     && printf '%s' "$OUT" | grep -qF 'forge-review derivation: gh-unavailable' \
-     && printf '%s' "$OUT" | grep -qF 'recording [self-asserted]'; then
+     && _has "$BN5" 'approved-by: Reviewer B [self-asserted]' \
+     && _has "$OUT" 'forge-review derivation: gh-unavailable' \
+     && _has "$OUT" 'recording [self-asserted]'; then
     pass "REC-N5: gh absent from PATH -> fallback label kept + 'gh-unavailable' notice printed (never a silent default)"
   else
     fail "REC-N5: rc=$RC note=[$BN5] OUT=[$OUT]"
@@ -1007,8 +1022,8 @@ AWK
   _run_record "$DN6" "$GN6" "PR #260" "Reviewer B" "$XN6"
   BN6="$(_note_of "$DN6" "$XN6")"
   if [ "$RC" = 0 ] \
-     && printf '%s\n' "$BN6" | grep -qF 'approved-by: Reviewer B [self-asserted]' \
-     && ! printf '%s\n' "$BN6" | grep -q 'authenticated' \
+     && _has "$BN6" 'approved-by: Reviewer B [self-asserted]' \
+     && ! _has "$BN6" 'authenticated' \
      && [ "$(printf '%s' "$BN6" | LC_ALL=C tr -d '\001-\010\013\014\016-\037')" = "$(printf '%s' "$BN6")" ]; then
     pass "REC-N6: hostile login (brackets + control char + newline) -> no upgrade AND the note body stays clean"
   else
@@ -1069,10 +1084,10 @@ AWK
   MC="$(_act_stub "$DCP" "$XCP")"
   run_actuate "$VERIFY" "$DCP" feat "$XCP" "$MC"
   if [ "$RC" != 0 ] && [ ! -f "$DCP/.invoked" ] \
-     && printf '%s' "$OUT" | grep -q 'ACTUATE REFUSED' \
-     && printf '%s' "$OUT" | grep -qF 'promotion-verify.sh land --ref' \
-     && printf '%s' "$OUT" | grep -qF -- "--approved-sha $XCP --class control-plane" \
-     && ! printf '%s' "$OUT" | grep -qF 'TIER-3'; then
+     && _has "$OUT" 'ACTUATE REFUSED' \
+     && _has "$OUT" 'promotion-verify.sh land --ref' \
+     && _has "$OUT" "--approved-sha $XCP --class control-plane" \
+     && ! _has "$OUT" 'TIER-3'; then
     pass "ACT-CP: Control-plane class + authenticated label -> REFUSED with the land pointer (no sitting cited), merge stub not run (rc=$RC)"
   else
     fail "ACT-CP: rc=$RC invoked=$(invoked "$DCP") OUT=[$OUT]"
@@ -1092,7 +1107,7 @@ AWK
     MC="$(_act_stub "$DUK" "$XUK")"
     run_actuate "$VERIFY" "$DUK" feat "$XUK" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$DUK/.invoked" ] \
-       && printf '%s' "$OUT" | grep -qF 'unrecognised or missing change-class'; then
+       && _has "$OUT" 'unrecognised or missing change-class'; then
       pass "ACT-UNKNOWN: change-class '$_uc' -> REFUSED by the allowlist, merge not invoked (rc=$RC)"
     else
       fail "ACT-UNKNOWN: class='$_uc' rc=$RC invoked=$(invoked "$DUK") OUT=[$OUT]"
@@ -1108,7 +1123,7 @@ AWK
   if ORC="$( cd "$DRC" && sh "$VERIFY" record --approved-sha "$XRC" --approved-by "Reviewer B" \
                --gate release-candidate --rung "Release candidate" --class "Contol-plane" \
                --scope "PR #260" --token "GO" 2>&1 )"; then RRC=0; else RRC=$?; fi
-  if [ "$RRC" = 2 ] && printf '%s' "$ORC" | grep -qF "invalid --class" \
+  if [ "$RRC" = 2 ] && _has "$ORC" "invalid --class" \
      && [ -z "$(_note_of "$DRC" "$XRC")" ]; then
     pass "REC-CLASS: record refuses an out-of-vocabulary --class (rc=2, NO note written)"
   else
@@ -1147,7 +1162,7 @@ AWK
   if [ "$RC" = 0 ] && [ -f "$LDMARK" ] \
      && [ "$(printf '%s\n' "$_ln" | sed -n '4p')" = 'approved-by: reviewer-login [authenticated: github-review]' ] \
      && [ "$(printf '%s\n' "$_ln" | sed -n '5p')" = 'go-by: SeaBrad72 [self-asserted]' ] \
-     && [ "$(printf '%s\n' "$_ln" | wc -l | tr -d ' ')" = 13 ] && printf '%s' "$OUT" | grep -qF 'authenticated non-author forge approval'; then
+     && [ "$(printf '%s\n' "$_ln" | wc -l | tr -d ' ')" = 13 ] && _has "$OUT" 'authenticated non-author forge approval'; then
     pass "L2: CP land, approved-by=reviewer reviewer-login [authenticated], go-by=SeaBrad72 [self-asserted] -> rc 0, merge ran, 13-line note on origin"
   else
     fail "L2: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) note=[$_ln] OUT=[$OUT]"
@@ -1161,8 +1176,8 @@ AWK
   _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
   _land_run "$_lg" SeaBrad72 SeaBrad72
   if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
-     && printf '%s' "$OUT" | grep -qF 'reviewer-not-in-reviews' && printf '%s' "$OUT" | grep -qF -e '--go-by' \
-     && printf '%s' "$OUT" | grep -qF 'LAND REFUSED' && printf '%s' "$OUT" | grep -qF 'SOLO'; then
+     && _has "$OUT" 'reviewer-not-in-reviews' && _has "$OUT" '--go-by' \
+     && _has "$OUT" 'LAND REFUSED' && _has "$OUT" 'SOLO'; then
     pass "L1: CP land with the GO-giver as --approved-by (no such review) -> rc 1 reviewer-not-in-reviews, NO note, merge never ran, the cure + SOLO path named"
   else
     fail "L1: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) local=[$(_land_note)] origin=[$(_land_onote)] OUT=[$OUT]"
@@ -1175,7 +1190,7 @@ AWK
   _lg="$(_mkgh "$(_L_json "$_L_BOTH")" '"SeaBrad72"')"
   _land_run "$_lg" SeaBrad72 SeaBrad72
   if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
-     && printf '%s' "$OUT" | grep -qF 'reviewer-is-pr-author'; then
+     && _has "$OUT" 'reviewer-is-pr-author'; then
     pass "L3: CP land with the PR author as approver (own APPROVED review present) -> rc 1 reviewer-is-pr-author, NO note, merge never ran"
   else
     fail "L3: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) local=[$(_land_note)] OUT=[$OUT]"
@@ -1187,7 +1202,7 @@ AWK
   _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
   _land_run "$_lg" reviewer-login NONE
   if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
-     && printf '%s' "$OUT" | grep -qF -e '--go-by <the GO-giver>'; then
+     && _has "$OUT" '--go-by <the GO-giver>'; then
     pass "L4: CP land without --go-by -> rc 1 naming '--go-by <the GO-giver>', NO note, merge never ran"
   else
     fail "L4: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) local=[$(_land_note)] OUT=[$OUT]"
@@ -1203,7 +1218,7 @@ AWK
   _ln="$(_land_note)"
   if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] \
      && [ "$(printf '%s\n' "$_ln" | sed -n '4p')" = 'approved-by: reviewer-login [self-asserted]' ] && [ -n "$(_land_onote)" ] \
-     && printf '%s' "$OUT" | grep -qF 'IS recorded' && printf '%s' "$OUT" | grep -qF 'supersedes'; then
+     && _has "$OUT" 'IS recorded' && _has "$OUT" 'supersedes'; then
     pass "L6: approval withdrawn between pre-check and record -> note recorded [self-asserted], merge NOT run, rc 1 (the belt re-reads the note's own label)"
   else
     fail "L6: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) note=[$_ln] OUT=[$OUT]"
@@ -1220,7 +1235,7 @@ AWK
        --merge-cmd "$LDR/stub" --approved-sha "$LDX" --approved-by reviewer-login --token --go-by --gate release-candidate \
        --rung "Release candidate" --class control-plane --scope "PR #260" 2>&1 )"; then RC=0; else RC=$?; fi
   if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
-     && printf '%s' "$OUT" | grep -qF -e '--go-by'; then
+     && _has "$OUT" '--go-by'; then
     pass "S2-1a: a flag-shaped peeked value (--go-by --gate) -> rc 2 naming the flag, NO note, merge never ran"
   else
     fail "S2-1a: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) origin=[$(_land_onote)] OUT=[$OUT]"
@@ -1234,7 +1249,7 @@ AWK
   chmod +x "$LDR/origin.git/hooks/post-receive"
   _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
   _land_run "$_lg" reviewer-login SeaBrad72
-  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -n "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF 'go-by' && printf '%s' "$OUT" | grep -qF 'IS recorded'; then
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -n "$(_land_note)" ] && _has "$OUT" 'go-by' && _has "$OUT" 'IS recorded'; then
     pass "S2-1b: origin's note differs from what land judged (go-by rewritten) -> merge NOT run, rc 1, note IS recorded"
   else
     fail "S2-1b: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) OUT=[$OUT]"
@@ -1245,14 +1260,14 @@ AWK
   _mkland_fx || { fail "S2-2: fixture build"; return 1; }
   _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
   _LREF=261; _land_run "$_lg" reviewer-login SeaBrad72 --scope "PR #12"; _LREF=""
-  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] && printf '%s' "$OUT" | grep -qF 'LAND REFUSED'; then
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] && _has "$OUT" 'LAND REFUSED'; then
     pass "S2-2: --scope PR #12 with --ref 261 -> rc 1, NO note, merge never ran (the judged PR is the merged PR)"
   else
     fail "S2-2: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) OUT=[$OUT]"
   fi
   # L2 (review): a branch/* scope has no PR to read, and the cure says --scope must be the PR id.
   _land_run "$_lg" reviewer-login SeaBrad72 --scope branch/x
-  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF -e '--scope must be the PR id'; then
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && _has "$OUT" '--scope must be the PR id'; then
     pass "S2-2/L2: a branch/* scope -> rc 1, the cure says '--scope must be the PR id', NO note"
   else
     fail "S2-2/L2: rc=$RC OUT=[$OUT]"
@@ -1261,7 +1276,7 @@ AWK
   _l1bad=""
   for _l1 in '' '   '; do
     _land_run "$_lg" reviewer-login "$_l1"
-    if [ "$RC" != 2 ] || [ -f "$LDMARK" ] || ! printf '%s' "$OUT" | grep -qF 'empty or whitespace-only'; then _l1bad="$_l1bad [$_l1 rc=$RC]"; fi
+    if [ "$RC" != 2 ] || [ -f "$LDMARK" ] || ! _has "$OUT" 'empty or whitespace-only'; then _l1bad="$_l1bad [$_l1 rc=$RC]"; fi
   done
   if [ -z "$_l1bad" ]; then pass "L1: land --go-by '' / whitespace -> rc 2 'empty or whitespace-only', no merge"; else fail "L1: got:$_l1bad"; fi
   rm -rf "$LDR" "$_lg" 2>/dev/null || true
@@ -1290,7 +1305,7 @@ AWK
   _land_run "$_lg" reviewer-login SeaBrad72
   unset STUB_TRANSITION_FAIL
   if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ "$(cat "$LDR/state")" != Done ] \
-     && printf '%s' "$OUT" | grep -qF 'WARN' && printf '%s' "$OUT" | grep -qF 'sh scripts/board.sh release AB-1 --stale' \
+     && _has "$OUT" 'WARN' && _has "$OUT" 'sh scripts/board.sh release AB-1 --stale' \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
     pass "LAND-CARD-CLOSE-FAIL (C1 -): a failed card move is rc 0 (merge kept), a WARN naming 'board.sh release AB-1 --stale', the card not Done, tail 'board: NOT CLOSED'"
   else
@@ -1310,7 +1325,7 @@ AWK
   TR5="$( ( cd "$DL5" && sh "$VERIFY" trace --ref "$XL5" 2>&1 ) || true )"
   if [ "$RC" = 0 ] && [ "$(printf '%s\n' "$N5" | wc -l | tr -d ' ')" = 13 ] \
      && [ "$(printf '%s\n' "$N5" | sed -n '5p')" = 'go-by: (none recorded)' ] \
-     && printf '%s' "$TR5" | grep -qF "$(printf '%s' "$XL5" | cut -c1-12)" && printf '%s' "$TR5" | grep -qF 'go-by: (none recorded)'; then
+     && _has "$TR5" "$(printf '%s' "$XL5" | cut -c1-12)" && _has "$TR5" 'go-by: (none recorded)'; then
     pass "L5: ordinary record without --go-by -> 13-line note, line 5 'go-by: (none recorded)'; trace recovers it and prints go-by"
   else
     fail "L5: rc=$RC lines=$(printf '%s\n' "$N5" | wc -l | tr -d ' ') note=[$N5] trace=[$TR5]"
@@ -1445,8 +1460,8 @@ AWK
     fi
     for _mn in "$@"; do
       case "$_mn" in
-        '!'*) _mn="${_mn#!}"; if printf '%s' "$OUT" | grep -qF -- "$_mn"; then _mbad="$_mbad; unexpected '$_mn'"; fi ;;
-        *)    printf '%s' "$OUT" | grep -qF -- "$_mn" || _mbad="$_mbad; missing '$_mn'" ;;
+        '!'*) _mn="${_mn#!}"; if _has "$OUT" "$_mn"; then _mbad="$_mbad; unexpected '$_mn'"; fi ;;
+        *)    _has "$OUT" "$_mn" || _mbad="$_mbad; missing '$_mn'" ;;
       esac
     done
     if [ -z "$_mbad" ]; then pass "$_ml [$MGA_SH]"; else fail "$_ml [$MGA_SH] — $_mbad; OUT=[$OUT]"; fi
@@ -1660,7 +1675,7 @@ AWK
   _rw_refuse() {  # <label> <expected rc> <needle> <verb> [args…] — run the verb in $D; it must refuse with that line
     _rwl="$1"; _rwc="$2"; _rwn="$3"; shift 3
     if OUT="$( cd "$D" && sh "$VERIFY" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
-    if [ "$RC" = "$_rwc" ] && printf '%s' "$OUT" | grep -qF -e "$_rwn"; then
+    if [ "$RC" = "$_rwc" ] && _has "$OUT" "$_rwn"; then
       pass "$_rwl: refused with its own line (rc=$RC)"
     else
       fail "$_rwl: rc=$RC OUT=[$OUT]"
@@ -1682,31 +1697,392 @@ AWK
   _mkland_fx || { fail "SAST-RW-LAND: fixture build"; return 1; }
   _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
   _LREF='-x'; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
-  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --ref '-x' (must not start with '-')"; then
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && _has "$OUT" "land: invalid --ref '-x' (must not start with '-')"; then
     pass "SAST-RW-LAND-REF: land --ref -x -> rc 2 with its own line, merge never ran"
   else fail "SAST-RW-LAND-REF: rc=$RC OUT=[$OUT]"; fi
   _LREF='a;b'; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
-  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --ref 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && _has "$OUT" "land: invalid --ref 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
     pass "SAST-RW-LAND-REF-CHARS: land --ref 'a;b' -> rc 2 with its own line, merge never ran"
   else fail "SAST-RW-LAND-REF-CHARS: rc=$RC OUT=[$OUT]"; fi
   _land_run "$_lg" reviewer-login SeaBrad72 --approved-sha 'a;b'
-  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --approved-sha 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && _has "$OUT" "land: invalid --approved-sha 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
     pass "SAST-RW-LAND-ASHA-CHARS: land --approved-sha 'a;b' -> rc 2 with its own line, merge never ran"
   else fail "SAST-RW-LAND-ASHA-CHARS: rc=$RC OUT=[$OUT]"; fi
   _land_run "$_lg" reviewer-login SeaBrad72 --scope "PR #12x"
-  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF "is not a PR id"; then
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && _has "$OUT" "is not a PR id"; then
     pass "SAST-RW-LAND-SCOPE: land --scope 'PR #12x' -> rc 1 'is not a PR id', NO note, merge never ran"
   else fail "SAST-RW-LAND-SCOPE: rc=$RC OUT=[$OUT]"; fi
   _LREF=feat; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
-  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF "the PR judged must be the PR merged"; then
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && _has "$OUT" "the PR judged must be the PR merged"; then
     pass "SAST-RW-LAND-REFNUM: land --ref feat (not a PR number) with --scope PR #260 -> rc 1, NO note, merge never ran"
   else fail "SAST-RW-LAND-REFNUM: rc=$RC OUT=[$OUT]"; fi
   rm -rf "$LDR" "$_lg" 2>/dev/null || true
 
+  # MTC1-MTC3 (SWAS-577) — the in-process matcher (_has) and the rc-aware wrapper (_grepx). Each cell carries its own mutant, applied as a function redefined in a subshell (no knob).
+  _mtc_nl='
+'
+  _mtc_h="line one${_mtc_nl}line two"
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_mut=$(printf '%s\n' "$_mtc_fn" | sed 's/\*"\$2"\*) return 0/*) return 0/')
+  if _has "abc def" def && ! _has "abc def" xyz && _has "abc" "" && ! _has "" x && _has "$_mtc_h" "one${_mtc_nl}line" && ! _has "$_mtc_h" "two${_mtc_nl}line"; then
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_mut" != "$_mtc_fn" ] && ( eval "$_mtc_mut"; _has "abc def" xyz ); then pass "MTC1 — _has answers present, absent, empty-needle and multi-line questions, and an always-true mutant made by a sed of the real function text flips the absent question (the cell has teeth)"
+    else fail "MTC1 — the always-true mutant of _has did not apply or did not flip the absent-needle question"; fi
+  else fail "MTC1 — _has answered a present/absent/empty/multi-line question wrongly"; fi
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_want="y1${_mtc_nl}n1${_mtc_nl}y2${_mtc_nl}n2${_mtc_nl}y3${_mtc_nl}n3${_mtc_nl}y4${_mtc_nl}n4"
+  for _mtc_sh in sh dash bash; do
+    if ! command -v "$_mtc_sh" >/dev/null 2>&1; then echo "SKIP: MTC2[$_mtc_sh] — the shell is absent here"; continue; fi
+    _mtc_o=$("$_mtc_sh" -c "$_mtc_fn
+_has 'x a\\b y' 'a\\b' && echo y1
+_has 'x ab y' 'a\\b' || echo n1
+_has 'x * y' '*' && echo y2
+_has 'x ab y' '*' || echo n2
+_has 'x ? y' '?' && echo y3
+_has 'xy' '?' || echo n3
+_has 'x [ y' '[' && echo y4
+_has 'x a y' '[a]' || echo n4" 2>&1)
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_o" = "$_mtc_want" ]; then pass "MTC2[$_mtc_sh] — _has treats a backslash and the glob characters * ? [ literally"
+    else fail "MTC2[$_mtc_sh] — _has mishandled a backslash or glob needle (got: $_mtc_o)"; fi
+  done
+  _mtc_d=$(mktemp -d)
+  mkdir -p "$_mtc_d/bin2" "$_mtc_d/bin3"
+  printf '#!/bin/sh\nexit 2\n' > "$_mtc_d/bin2/grep"; chmod +x "$_mtc_d/bin2/grep"
+  printf '#!/bin/sh\nkill -TERM $$\n' > "$_mtc_d/bin3/grep"; chmod +x "$_mtc_d/bin3/grep"
+  _mtc_r=$( _unv_f="$_mtc_d/m0"; _grepx abc -q b && echo a0 || echo a$?; _grepx abc -q z && echo b0 || echo b$? )
+  if [ "$_mtc_r" = "a0${_mtc_nl}b1" ] && [ ! -s "$_mtc_d/m0" ]; then pass "MTC3a — _grepx passes grep's rc 0 and rc 1 through and marks nothing"
+  else fail "MTC3a — _grepx altered grep's own answer (got: $_mtc_r)"; fi
+  for _mtc_s in 2:bin2 143:bin3; do
+    _mtc_rc=${_mtc_s%%:*}; _mtc_b=${_mtc_s#*:}
+    if ( _unv_f="$_mtc_d/m$_mtc_b"; PATH="$_mtc_d/$_mtc_b:$PATH"; export PATH
+         if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+         _has "$_mtc_x" "UNVERIFIED (grep rc=$_mtc_rc)" && [ -s "$_unv_f" ] && ! _unv_end >/dev/null ); then
+      pass "MTC3[$_mtc_b] — a grep that exits $_mtc_rc inside \$( ) prints UNVERIFIED (grep rc=$_mtc_rc), marks the run, and _unv_end reads non-zero"
+    else fail "MTC3[$_mtc_b] — an unanswered grep (rc $_mtc_rc) was not marked or not read back by _unv_end"; fi
+  done
+  _mtc_gx=$(sed -n '/^_grepx() {/,/^}/p' "$0")
+  _mtc_gm=$(printf '%s\n' "$_mtc_gx" | sed '/>> "\$_unv_f"/d')
+  if [ -n "$_mtc_gx" ] && [ "$_mtc_gm" != "$_mtc_gx" ] && ( _unv_f="$_mtc_d/mm"; : > "$_unv_f"; PATH="$_mtc_d/bin2:$PATH"; export PATH; eval "$_mtc_gm"
+       if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+       _unv_end >/dev/null ); then pass "MTC3m — with the marker write deleted from the real _grepx text (a sed), _unv_end reads clean, so MTC3's marker assertion has teeth"
+  else fail "MTC3m — the marker-drop mutant of _grepx did not apply or still read non-zero: MTC3 pins nothing"; fi
+  # MTC6 (SWAS-577, S-LOW-1): a marker file that is missing or unnamed reads RED, never clean; the mutant is the real _unv_end text with its existence test turned off
+  _mtc_ue=$(sed -n '/^_unv_end() {/,/^}/p' "$0")
+  _mtc_um=$(printf '%s\n' "$_mtc_ue" | sed 's/^  if \[ -z .*# UNVMISS$/  if false; then/')
+  if [ -n "$_mtc_ue" ] && [ "$_mtc_um" != "$_mtc_ue" ] && ( _unv_f="$_mtc_d/gone"; rm -f "$_unv_f"; ! _unv_end >/dev/null ) && ( _unv_f=""; ! _unv_end >/dev/null ) \
+     && ( _unv_f="$_mtc_d/gone"; rm -f "$_unv_f"; eval "$_mtc_um"; _unv_end >/dev/null ); then pass "MTC6 — _unv_end reads RED on a missing or unnamed marker file, and the real text with its existence test off reads clean (the cell has teeth)"
+  else fail "MTC6 — _unv_end did not red on a missing marker, or its mutant did not apply or still read non-zero"; fi
+  rm -rf "$_mtc_d"
+
+  # =====================================================================================
+  # SWAS-537 (S4 of SWAS-382, S3-SEC-2): land and actuate merge only when a COMPLETED run of the CI workflow on the EXACT
+  # approved head graded at least the light set. The forge is the default `gh` shim ($EVD/gh); each cell flips $EVD/mode for ITS
+  # run. A refusal is asserted on its OWN line, and (LE7) a land refusal leaves NO note, local or on origin: the leg sits
+  # before the record. Mutants for these cells run on a sed-rewritten throwaway copy, never a switch in the gate.
+  # =====================================================================================
+  _le_land() {  # <label> <forge-mode> <merge|refuse> <needle> : one control-plane land on a fresh fixture
+    if [ "$3" = refuse ] && [ "$(_fxkind)" = adopter ]; then _fxskip "$1"; return 0; fi
+    _mkland_fx || { fail "$1: fixture build"; return 0; }
+    _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+    printf '%s' "$2" > "$EVD/mode"; _land_run "$_lg" reviewer-login SeaBrad72; printf light > "$EVD/mode"
+    if [ "$3" = merge ]; then
+      if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ -n "$(_land_onote)" ]; then pass "$1: land merged, the GO note is on origin"
+      else fail "$1: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) OUT=[$OUT]"; fi
+    elif [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
+         && _has "$OUT" "LAND REFUSED (exact-head CI evidence): $4"; then
+      pass "$1: land refused on '$4', NO note (local or origin), merge never ran"
+    else fail "$1: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) local=[$(_land_note)] origin=[$(_land_onote)] OUT=[$OUT]"; fi
+    rm -rf "$LDR" "$_lg" 2>/dev/null || true
+  }
+  _le_act() {  # <label> <forge-mode> <merge|refuse> <needle> : one actuate on a fresh fixture
+    if [ "$3" = refuse ] && [ "$(_fxkind)" = adopter ]; then _fxskip "$1"; return 0; fi
+    D="$(mkrepo)" || { fail "$1: fixture build"; return 0; }
+    X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+    printf '%s' "$2" > "$EVD/mode"; run_actuate "$VERIFY" "$D" feat "$X" "$(_act_stub "$D" "$X")"; printf light > "$EVD/mode"
+    if [ "$3" = merge ]; then
+      if [ "$RC" = 0 ] && [ -f "$D/.invoked" ]; then pass "$1: actuate merged"; else fail "$1: rc=$RC OUT=[$OUT]"; fi
+    elif [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "ACTUATE REFUSED (exact-head CI evidence): $4"; then
+      pass "$1: actuate refused on '$4', merge stub never ran"
+    else fail "$1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"; fi
+    rm -rf "$D" 2>/dev/null || true
+  }
+  _le_land "LE3-land-light-run-exact-head" light merge ""
+  _le_land "LE1-land-draft" draft refuse "draft"
+  _le_land "LE2-land-cheap-run" cheap refuse "needed-job-not-success:changes"
+  _le_land "LE4-land-stale-head" stale refuse "stale-head"
+  _le_land "LE5-land-no-gate-job" nogate refuse "no-gate-job"
+  _le_land "LE6a-land-api-error" apierr refuse "forge-unreadable"
+  _le_land "LE6b-land-partial-page" partial refuse "forge-unreadable"
+  _le_land "LE6c-land-non-json" nonjson refuse "forge-unreadable"
+  _le_land "LE6d-land-pr-unreadable" apierr-pr refuse "forge-unreadable"
+  _le_land "LE9-land-run-pending" pending refuse "run-not-completed"
+  _le_land "LE9b-land-no-run-yet" norun refuse "no-graded-run"
+  _le_act "LE8a-actuate-light-run" light merge ""
+  _le_act "LE8b-actuate-cheap-run" cheap refuse "needed-job-not-success:changes"
+  _le_act "LE8c-actuate-draft" draft refuse "draft"
+  _le_act "LE8d-actuate-stale-head" stale refuse "stale-head"
+  _le_act "LE8e-actuate-api-error" apierr refuse "forge-unreadable"
+  _le_act "LE8f-actuate-pending" pending refuse "run-not-completed"
+  _le_act "LE8g-actuate-needs-no-gate-job" nogate merge ""
+  # LE9: the refusal names the run and what to wait for.
+  if [ "$(_fxkind)" = adopter ]; then _fxskip "LE9"; else
+  _mkland_fx || { fail "LE9: fixture build"; return 1; }
+  _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+  printf pending > "$EVD/mode"; _land_run "$_lg" reviewer-login SeaBrad72; printf light > "$EVD/mode"
+  if _has "$OUT" 'run 900 has not completed: wait for it to finish'; then pass "LE9: the pending-run refusal names the run and the wait"
+  else fail "LE9: OUT=[$OUT]"; fi
+  rm -rf "$LDR" "$_lg" 2>/dev/null || true
+  fi
+  # LE10: the leg is three production functions that read no environment variable, parse no flag and emit no bypass.
+  _le_fn="$(sed -n '/^pv_ev_read()/,/^}/p;/^pv_ev_read_in()/,/^}/p;/^pv_ci_evidence()/,/^}/p' "$VERIFY")"
+  _le_bad=0
+  case $_le_fn in
+    *--admin*|*'$'[A-Z]*|*'${'[A-Z]*|*'export '*|*getopts*|*'case "$1" in'*|*environ*) _le_bad=1 ;;
+  esac
+  if [ -n "$_le_fn" ] && [ "$(_grepx "$_le_fn" -c '^pv_')" = 3 ] \
+     && [ "$_le_bad" = 0 ]; then
+    pass "LE10: the evidence leg reads no environment variable, adds no flag and emits no --admin"
+  else fail "LE10: the evidence leg's source carries an env read, a flag parse or --admin"; fi
+
+  # =====================================================================================
+  # SWAS-537 FIX ROUND. H1: the leg is scoped to the KIT pipeline, keyed on two facts read from the RUNNING checkout (the copy of
+  # the gate under test, `$(dirname "$0")/..`): conformance/ci-gate-state.sh exists, and .github/workflows/ci.yml carries a `gate:`
+  # job. Both -> the leg runs; neither (an adopter) -> ONE N/A line and the merge proceeds; exactly one -> REFUSED
+  # `kit-pipeline-half-present`, so deleting one fact never silently turns the leg off. L1 (a fork head), the Security LOW (`--ref`
+  # must be the PR's head branch) and no-pr-scope get cells too. A cell with a trailing sed script is a MUTANT: the script rewrites a
+  # throwaway COPY of the gate (never a switch in the shipped file) and the cell passes only if the SAME assertion then FAILS.
+  # =====================================================================================
+  _le_pvcopy() {  # <dir> <decider 0|1> <gate-job 0|1> : a gate COPY in a kit-or-adopter layout; the classifier is always beside it
+    mkdir -p "$1/scripts" "$1/conformance" "$1/.github/workflows"
+    cp "$VERIFY" "$1/scripts/promotion-verify.sh"
+    cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$1/conformance/ci-classify-changes.sh"
+    if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
+    else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
+  }
+  _le_mutate() {  # <copy-of-gate> <sed-script> : rewrite the copy in place; rc 1 when the script changed nothing
+    cp "$1" "$1.orig"; sed "$2" "$1.orig" > "$1"; chmod +x "$1"
+    if cmp -s "$1" "$1.orig"; then return 1; fi
+    return 0
+  }
+  _le_land_ok() {  # <merge|refuse> <needle> : the assertion every land cell makes on RC / OUT / the marker / the notes
+    if [ "$1" = merge ]; then
+      [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ -n "$(_land_onote)" ] && _has "$OUT" "$2"
+    else
+      [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
+        && _has "$OUT" "LAND REFUSED (exact-head CI evidence): $2"
+    fi
+  }
+  _le_act_ok() {  # <merge|refuse> <needle> : the same for actuate (the stub is $D/.invoked)
+    if [ "$1" = merge ]; then
+      [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && _has "$OUT" "$2"
+    else
+      [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "ACTUATE REFUSED (exact-head CI evidence): $2"
+    fi
+  }
+  _le_judge() {  # <label> <mutant 0|1> <assertion rc> : a mutant cell passes only when its assertion FAILED
+    if [ "$2" = 1 ]; then
+      if [ "$3" = 0 ]; then fail "$1: the mutant SURVIVED (the cell passed against the broken gate)"; else pass "$1: the mutant is killed (the cell fails against it)"; fi
+    elif [ "$3" = 0 ]; then pass "$1"
+    else fail "$1: rc=$RC OUT=[$OUT]"; fi
+  }
+  _le_lay() {  # <label> <decider 0|1> <gate-job 0|1> <forge-mode> <merge|refuse> <needle> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] : one land through a gate COPY
+    _mkland_fx || { fail "$1: fixture build"; return 0; }
+    _fxlay "$LDR/c" "${8:-$2}" "${9:-$3}"
+    _lyv="$VERIFY"; _lym=0
+    _le_pvcopy "$LDR/pv" "$2" "$3"
+    if [ -n "${7:-}" ]; then
+      _lym=1
+      if ! _le_mutate "$LDR/pv/scripts/promotion-verify.sh" "$7"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$LDR" 2>/dev/null || true; return 0; fi
+    fi
+    _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+    VERIFY="$LDR/pv/scripts/promotion-verify.sh"
+    printf '%s' "$4" > "$EVD/mode"; _land_run "$_lg" reviewer-login SeaBrad72; printf light > "$EVD/mode"
+    VERIFY="$_lyv"
+    if _le_land_ok "$5" "$6"; then _lyr=0; else _lyr=1; fi
+    _le_judge "$1" "$_lym" "$_lyr"
+    rm -rf "$LDR" "$_lg" 2>/dev/null || true
+  }
+  _le_actx() {  # <label> <forge-mode> <merge|refuse> <needle> <note-scope|-> <ref> [<sed-script> = a mutant] : one actuate; ref `feat` is the PR's head branch
+    if [ "$3" = refuse ] && [ -z "${7:-}" ] && [ "$(_fxkind)" = adopter ]; then _fxskip "$1"; return 0; fi
+    D="$(mkrepo)" || { fail "$1: fixture build"; return 0; }
+    X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+    if [ "$5" != - ]; then
+      printf '%s\n' "record: promotion GO (fabricated fixture note)" "approved-sha: $X" "approved-by: Reviewer B [authenticated: github-review]" \
+        "gate: release-candidate" "rung: Release candidate" "change-class: Ordinary" "scope: $5" "approval-token: \"GO: merge #260\"" \
+        "basis: reviewer APPROVE" "recorded-at: fixture" | ( cd "$D" && git notes --ref=promotions add -f -F - "$X" >/dev/null 2>&1 )
+    fi
+    if [ "$6" != feat ]; then git -C "$D" branch "$6" "$X" >/dev/null 2>&1; fi
+    _axg="$VERIFY"; _axm=0
+    if [ -n "${7:-}" ]; then
+      _axm=1; _le_pvcopy "$D/pv" 1 1; _fxlay "$D" 1 1   # the copy is a kit layout, whatever tree this runs in: so is its repository
+      if ! _le_mutate "$D/pv/scripts/promotion-verify.sh" "$7"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$D" 2>/dev/null || true; return 0; fi
+      _axg="$D/pv/scripts/promotion-verify.sh"
+    fi
+    printf '%s' "$2" > "$EVD/mode"; run_actuate "$_axg" "$D" "$6" "$X" "$(_act_stub "$D" "$X")"; printf light > "$EVD/mode"
+    if _le_act_ok "$3" "$4"; then _axr=0; else _axr=1; fi
+    _le_judge "$1" "$_axm" "$_axr"
+    rm -rf "$D" 2>/dev/null || true
+  }
+  _NA='exact-head CI evidence: N/A (this repository'"'"'s CI has no gate/changes jobs)'
+  # H1: the four layouts, then one mutant per branch (and one per fact). Fix round 2: the layout is read at TWO locations (the copy's own
+  # checkout, and the repository the verb runs in: _le_lay gives the land repository the copy's layout unless told otherwise), so the
+  # cases are keyed `<script checkout>/<repository>`.
+  _le_lay "H1a-adopter-layout-na" 0 0 cheap merge "$_NA"
+  _le_lay "H1b-kit-layout-cheap-run-refused" 1 1 cheap refuse "needed-job-not-success:changes"
+  _le_lay "H1c-half-decider-only-refused" 1 0 light refuse "kit-pipeline-half-present"
+  _le_lay "H1d-half-gate-job-only-refused" 0 1 light refuse "kit-pipeline-half-present"
+  _le_lay "H1m1-mutant-adopter-branch-runs-the-leg" 0 0 cheap merge "$_NA" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
+  _le_lay "H1m2-mutant-kit-branch-skips-the-leg" 1 1 cheap refuse "needed-job-not-success:changes" 's/^    kit\/kit)         _pv_ev_layout=kit ;;/    kit\/kit)         _pv_ev_layout=adopter ;;/'
+  _le_lay "H1m3-mutant-half-branch-skips-the-leg" 1 0 light refuse "kit-pipeline-half-present" 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
+  _le_lay "H1m4-mutant-decider-fact-never-seen" 1 1 cheap refuse "needed-job-not-success:changes" 's#/conformance/ci-gate-state.sh"#/conformance/nope.sh"#'
+  _le_lay "H1m5-mutant-gate-job-fact-never-seen" 1 1 cheap refuse "needed-job-not-success:changes" "s#grep -q '^  gate:#grep -q '^  nogate:#"
+  # LM (fix round 2, closes a fail-open): the layout is read at the script's own checkout AND in the repository the verb runs in, and ANY
+  # disagreement refuses `layout-mismatch`. A copy or symlink of the gate run inside another repository used to read "adopter" from its own
+  # directory (against a draft forge: N/A, rc 0, merged). Each cell runs actuate and the evidence verb through a gate COPY that lives
+  # OUTSIDE the repository, against a DRAFT forge, so a gate that trusts either location alone merges (or says N/A) and the cell goes red.
+  _le_lname() { case "$1$2" in 11) printf kit ;; 00) printf adopter ;; *) printf half ;; esac; }
+  _le_lm2() {  # <label> <copy decider> <copy gate-job> <repo decider> <repo gate-job> <token> [<sed-script> = a mutant]
+    D="$(mkrepo)" || { fail "$1: fixture build"; return 0; }
+    X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+    _fxlay "$D" "$4" "$5"
+    _lmo="$(mktemp -d)"; _le_pvcopy "$_lmo" "$2" "$3"; _lmg="$_lmo/scripts/promotion-verify.sh"; _lmm=0
+    if [ -n "${7:-}" ]; then
+      _lmm=1
+      if ! _le_mutate "$_lmg" "$7"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$D" "$_lmo" 2>/dev/null || true; return 0; fi
+    fi
+    _lmn="reads $(_le_lname "$2" "$3") and the repository it operates on reads $(_le_lname "$4" "$5")"
+    printf draft > "$EVD/mode"
+    run_actuate "$_lmg" "$D" feat "$X" "$(_act_stub "$D" "$X")"
+    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "ACTUATE REFUSED (exact-head CI evidence): $6" && _has "$OUT" "$_lmn"; then _lmr=0; else _lmr=1; fi
+    _lmao="$OUT"
+    if OUT="$( cd "$D" && sh "$_lmg" evidence --pr 260 --approved-sha "$X" 2>&1 )"; then RC=0; else RC=$?; fi
+    if [ "$_lmr" = 0 ] && { [ "$RC" != 1 ] || ! _has "$OUT" "EVIDENCE REFUSED (exact-head CI evidence): $6" || ! _has "$OUT" "$_lmn"; }; then _lmr=1; fi
+    printf light > "$EVD/mode"
+    OUT="actuate: $_lmao || evidence: $OUT"
+    _le_judge "$1" "$_lmm" "$_lmr"
+    rm -rf "$D" "$_lmo" 2>/dev/null || true
+  }
+  _le_nogit() {  # <label> [<sed-script> = a mutant] : the evidence verb run from a directory that is NOT inside any git repository must refuse, never N/A
+    _lgn="$(mktemp -d)"; _lgo="$(mktemp -d)"; _le_pvcopy "$_lgo" 1 1; _lgm=0
+    if [ -n "${2:-}" ]; then
+      _lgm=1
+      if ! _le_mutate "$_lgo/scripts/promotion-verify.sh" "$2"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$_lgn" "$_lgo" 2>/dev/null || true; return 0; fi
+    fi
+    if OUT="$( cd "$_lgn" && GIT_CEILING_DIRECTORIES="$(dirname "$_lgn")" sh "$_lgo/scripts/promotion-verify.sh" evidence --pr 260 --approved-sha 1111111111111111111111111111111111111111 2>&1 )"; then RC=0; else RC=$?; fi
+    if [ "$RC" = 1 ] && _has "$OUT" "EVIDENCE REFUSED (exact-head CI evidence): forge-unreadable" && _has "$OUT" "the repository it operates on reads none"; then _lgr=0; else _lgr=1; fi
+    _le_judge "$1" "$_lgm" "$_lgr"
+    rm -rf "$_lgn" "$_lgo" 2>/dev/null || true
+  }
+  # (a) a gate copy that looks like an adopter's, run inside a kit-layout repository; (b) a kit-layout gate run inside an adopter repository;
+  # (c) a half repository; land (the record-first verb) for (a) and (b) through _le_lay, actuate and evidence through _le_lm2.
+  _le_lay "LM-a-land-adopter-copy-in-kit-repo" 0 0 draft refuse "layout-mismatch" "" 1 1
+  _le_lay "LM-b-land-kit-copy-in-adopter-repo" 1 1 draft refuse "layout-mismatch" "" 0 0
+  _le_lm2 "LM-a-actuate-and-evidence-adopter-copy-in-kit-repo" 0 0 1 1 layout-mismatch
+  _le_lm2 "LM-b-actuate-and-evidence-kit-copy-in-adopter-repo" 1 1 0 0 layout-mismatch
+  _le_lm2 "LM-c-actuate-and-evidence-repo-half" 1 1 0 1 kit-pipeline-half-present
+  _le_nogit "LM-d-evidence-outside-any-git-repository"
+  # (d) both kit: the leg runs (H1b above, and a forge draft read through two kit locations); both adopter: N/A (H1a above, EV5 below).
+  _le_lm2 "LM-m1-mutant-mismatch-branch-fails-open" 0 0 1 1 layout-mismatch 's/^    \*)               _pv_ev_layout=refuse; _pv_ev_lay_reason=layout-mismatch ;;/    *)               _pv_ev_layout=adopter ;;/'
+  _le_lm2 "LM-m2-mutant-repository-location-never-read" 0 0 1 1 layout-mismatch 's/_pl_repo="\$(pv_ev_lay_of "\$_pl_top")"/_pl_repo="$_pl_own"/'
+  _le_lm2 "LM-m3-mutant-script-location-always-kit" 0 0 1 1 layout-mismatch 's#^  _pl_own="\$(pv_ev_lay_of "\$(dirname -- "\$0")/..")"; _pl_repo=none#  _pl_own=kit; _pl_repo=none#'
+  _le_lm2 "LM-m4-mutant-script-location-always-adopter" 1 1 0 0 layout-mismatch 's#^  _pl_own="\$(pv_ev_lay_of "\$(dirname -- "\$0")/..")"; _pl_repo=none#  _pl_own=adopter; _pl_repo=none#'
+  _le_lm2 "LM-m5-mutant-half-repository-reads-adopter" 1 1 0 1 kit-pipeline-half-present 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
+  _le_nogit "LM-m6-mutant-no-repository-reads-adopter" 's/^    \*\/none)          _pv_ev_layout=refuse;/    *\/none)          _pv_ev_layout=adopter;/'
+  # L1: a head in a fork refuses with its own token, and the mutant (the compare removed) lets it through.
+  _le_land "L1-land-fork-head" fork refuse "fork-head"
+  _le_act "L1-actuate-fork-head" fork refuse "fork-head"
+  _le_lay "L1m-mutant-fork-compare-removed" 1 1 fork refuse "fork-head" 's/if \[ "\$_pe_hrepo" != "\$_pe_repo" \]; then/if false; then/'
+  # Security LOW: actuate binds the PR's head.ref to --ref. The forge says the head branch is `feat`; the operator names feat2 (same sha).
+  _le_actx "L5-actuate-ref-mismatch" light refuse "ref-mismatch" - feat2
+  _le_actx "L5-actuate-ref-matches" light merge "" - feat
+  _le_actx "L5m-mutant-ref-bind-removed" light refuse "ref-mismatch" - feat2 's/if \[ -n "\$_pv_ev_xref" \] && /if false \&\& /'
+  # LE8h: an actuate note scoped to a branch names no PR; refused before any merge. The mutant (the scope guard removed) merges.
+  _le_actx "LE8h-actuate-branch-scope-no-pr" light refuse "no-pr-scope" "branch/x" feat
+  _le_actx "LE8hm-mutant-pr-scope-guard-removed" light refuse "no-pr-scope" "branch/x" feat 's/elif \[ -z "\$_pc_n" \]; then/elif false; then/'
+  # EV1-EV4: the read-only evidence verb. It writes nothing and merges nothing; exit 0 evidenced, 1 refused, 2 usage.
+  D="$(mkrepo)" || { fail "EV: fixture build"; return 1; }
+  X="$(cat "$D/.X")"
+  _le_ev() {  # <forge-mode> <args...> -> RC, OUT
+    printf '%s' "$1" > "$EVD/mode"; shift
+    if OUT="$( cd "$D" && sh "$VERIFY" evidence "$@" 2>&1 )"; then RC=0; else RC=$?; fi
+    printf light > "$EVD/mode"
+  }
+  if [ "$(_fxkind)" = adopter ]; then _fxskip "EV1/EV2/EV3"; else
+  _le_ev light --pr 260 --approved-sha "$X"
+  if [ "$RC" = 0 ] && _has "$OUT" 'OK: exact-head CI evidence on '; then pass "EV1: a light run on the exact head -> rc 0 and the OK line"
+  else fail "EV1: rc=$RC OUT=[$OUT]"; fi
+  _le_ev cheap --pr 260 --approved-sha "$X"
+  if [ "$RC" = 1 ] && _has "$OUT" 'EVIDENCE REFUSED (exact-head CI evidence): needed-job-not-success:changes'; then pass "EV2: a cheap run -> rc 1 and needed-job-not-success:changes"
+  else fail "EV2: rc=$RC OUT=[$OUT]"; fi
+  _le_ev nogate --pr 260 --approved-sha "$X"
+  if [ "$RC" = 1 ] && _has "$OUT" 'EVIDENCE REFUSED (exact-head CI evidence): no-gate-job'; then pass "EV3: a run with no gate job -> rc 1 and no-gate-job"
+  else fail "EV3: rc=$RC OUT=[$OUT]"; fi
+  fi
+  _le_ev light --pr 12x --approved-sha "$X"
+  if [ "$RC" = 2 ]; then pass "EV4a: a non-digit --pr -> rc 2"; else fail "EV4a: rc=$RC OUT=[$OUT]"; fi
+  _le_ev light --pr 260 --approved-sha "$(printf '%s' "$X" | LC_ALL=C tr 'a-f' 'A-F')"
+  if [ "$RC" = 2 ] && _grepx "$X" -q '[a-f]'; then pass "EV4b: an uppercase --approved-sha -> rc 2"; else fail "EV4b: rc=$RC OUT=[$OUT]"; fi
+  _le_ev light --pr 260
+  if [ "$RC" = 2 ]; then pass "EV4c: a missing --approved-sha -> rc 2"; else fail "EV4c: rc=$RC OUT=[$OUT]"; fi
+  # EV5 (H1): in an adopter layout (the gate's checkout AND the repository it runs in) the verb prints the N/A line and exits 0, whatever the forge says.
+  _le_pvcopy "$D/pva" 0 0
+  _fxlay "$D" 0 0
+  printf cheap > "$EVD/mode"
+  if OUT="$( cd "$D" && sh "$D/pva/scripts/promotion-verify.sh" evidence --pr 260 --approved-sha "$X" 2>&1 )"; then RC=0; else RC=$?; fi
+  printf light > "$EVD/mode"
+  if [ "$RC" = 0 ] && [ "$OUT" = "$_NA" ]; then pass "EV5: an adopter layout -> exactly the N/A line, rc 0"
+  else fail "EV5: rc=$RC OUT=[$OUT]"; fi
+  _fxlay "$D" 1 1
+  _le_pvcopy "$D/pvh" 1 0
+  if OUT="$( cd "$D" && sh "$D/pvh/scripts/promotion-verify.sh" evidence --pr 260 --approved-sha "$X" 2>&1 )"; then RC=0; else RC=$?; fi
+  if [ "$RC" = 1 ] && _has "$OUT" 'EVIDENCE REFUSED (exact-head CI evidence): kit-pipeline-half-present'; then pass "EV6: a half-present layout -> rc 1 and kit-pipeline-half-present"
+  else fail "EV6: rc=$RC OUT=[$OUT]"; fi
+  rm -rf "$D" 2>/dev/null || true
+
+  # SWAS-537 fix round 3, FXL: the general fixtures follow the layout of the gate under test, and this runs in EVERY kind of tree (the
+  # exported tree is adopter-shaped; here an adopter-layout gate COPY proves the same on a kit tree, the H1a shape). a: actuate through the
+  # copy, the repository planted like it -> the N/A line, the merge proceeds, even against a CHEAP forge. b: the OLD plant (both kit facts)
+  # against the same copy -> REFUSED layout-mismatch (what the exported tree hit): the discriminant partner of a. c: the land fixture.
+  _fxo="$(mktemp -d)"; _le_pvcopy "$_fxo" 0 0
+  if [ "$(_fxfacts "$_fxo")" = "0 0" ]; then pass "FXL-d: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0)"
+  else fail "FXL-d: an adopter-layout gate copy read '$(_fxfacts "$_fxo")', not '0 0'"; fi
+  D="$(mkrepo)" || { fail "FXL: fixture build"; return 1; }
+  X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _fxlike "$D" "$_fxo"; printf cheap > "$EVD/mode"
+  run_actuate "$_fxo/scripts/promotion-verify.sh" "$D" feat "$X" "$(_act_stub "$D" "$X")"
+  if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && _has "$OUT" "$_NA"; then pass "FXL-a: an adopter-layout gate copy + a fixture planted like it -> the N/A line, actuate merges"
+  else fail "FXL-a: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"; fi
+  rm -f "$D/.invoked"; _fxlay "$D" 1 1
+  run_actuate "$_fxo/scripts/promotion-verify.sh" "$D" feat "$X" "$(_act_stub "$D" "$X")"; printf light > "$EVD/mode"
+  if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "layout-mismatch"; then pass "FXL-b: the same copy + a kit-planted fixture (the old plant) -> REFUSED layout-mismatch, no merge"
+  else fail "FXL-b: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"; fi
+  rm -rf "$D" 2>/dev/null || true
+  _mkland_fx || { fail "FXL-c: fixture build"; return 1; }
+  _fxlike "$LDR/c" "$_fxo"
+  _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"; _lyv="$VERIFY"; VERIFY="$_fxo/scripts/promotion-verify.sh"
+  printf cheap > "$EVD/mode"; _land_run "$_lg" reviewer-login SeaBrad72; printf light > "$EVD/mode"; VERIFY="$_lyv"
+  if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ -n "$(_land_onote)" ] && _has "$OUT" "$_NA"; then pass "FXL-c: an adopter-layout gate copy + the land fixture planted like it -> the N/A line, land merges (note on origin)"
+  else fail "FXL-c: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) OUT=[$OUT]"; fi
+  rm -rf "$LDR" "$_lg" "$_fxo" 2>/dev/null || true
+
+  # FXS: the skip count is load-bearing. A skip call raises it by exactly one, and the note carries the number (0 prints as "0 SKIPPED").
+  _fxs0="$_FXSKIPS"; _fxskip "FXS-probe" >/dev/null; _fxs1="$_FXSKIPS"; _FXSKIPS="$_fxs0"
+  if [ "$_fxs1" = "$((_fxs0 + 1))" ] && [ "$(_fxskip_note 3)" = "(3 SKIPPED: not a kit tree, counted per skip line above)" ] \
+     && _has "$(_fxskip_note 0)" "0 SKIPPED"; then pass "FXS: a skip is counted once and the summary note carries the count"
+  else fail "FXS: skip count $_fxs0 -> $_fxs1, note '$(_fxskip_note 3)'"; fi
+  # FXS-kit: a kit tree never skips. The judge kills the mutant (a skip forced on a kit tree) and spares an adopter tree's.
+  _fxskip_ok() { [ "$1" != "1 1" ] || [ "$2" = 0 ]; }
+  if _fxskip_ok "1 1" 0 && ! _fxskip_ok "1 1" 2 && _fxskip_ok "0 0" 2; then pass "FXS-kit: the judge kills a skip forced on a kit tree and allows an adopter tree's"
+  else fail "FXS-kit: the judge does not separate a kit tree's skips from an adopter tree's"; fi
+  if _fxskip_ok "$(_fxfacts "$(dirname "$VERIFY")/..")" "$_FXSKIPS"; then pass "FXS-kit: this tree skipped $_FXSKIPS cell group(s) and reads $(_fxkind)"
+  else fail "FXS-kit: a KIT tree skipped $_FXSKIPS cell group(s)"; fi
+
+  _unv_end || st=1
+  rm -f "$_unv_f"
   if [ "$st" = 0 ]; then
-    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by); SWAS-207a head binding: step 0 x2, the pinned default, the shared vet, the pin requirement, the origin-read note, the never-skipped tail; SWAS-207b declared relationship: the solo bar legs, the base and Governance reads, the control-plane pointer and its order before step 2)"
+    echo "OK: promotion-actuate-wired selftest $(_fxskip_note "$_FXSKIPS") — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by); SWAS-207a head binding: step 0 x2, the pinned default, the shared vet, the pin requirement, the origin-read note, the never-skipped tail; SWAS-207b declared relationship: the solo bar legs, the base and Governance reads, the control-plane pointer and its order before step 2)"
   else
-    echo "FAIL: promotion-actuate-wired selftest"
+    echo "FAIL: promotion-actuate-wired selftest $(_fxskip_note "$_FXSKIPS")"
   fi
   return $st
 }
@@ -1720,13 +2096,48 @@ st=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; st=1; }
 
+# --- SWAS-577: the in-process matcher and the rc-aware wrapper (below the ^selftest() marker on purpose: the non-vacuity sweep mutates only lines BEFORE it).
+# _has <haystack> <needle> — 0 iff the needle occurs in the haystack, literally (equal to grep -F for a needle with no newline). In-process: no fork, no signal, rc 0 or 1 only, so ! _has is safe.
+# _has "" "" is true; no call site passes an empty needle.
+_has() {
+  case $1 in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+# _grepx <haystack> <grep-args...> — grep over a captured string, for the shapes case cannot answer (an extracted line). rc 0 and 1 are grep's own answer and pass through.
+# Any other rc (an error, a spawn failure, a signal) is NOT an answer: print UNVERIFIED (grep rc=N) to stderr, append one line to the marker file $_unv_f (a $( ) subshell cannot lose a file), and return 2. The verdict reads the marker, never this return code.
+_grepx() {
+  _gx_h=$1; shift
+  _gx_rc=0
+  printf '%s\n' "$_gx_h" | grep "$@" || _gx_rc=$?
+  case $_gx_rc in
+    0|1) return "$_gx_rc" ;;
+  esac
+  printf 'selftest UNVERIFIED (grep rc=%s): grep %s\n' "$_gx_rc" "$*" >&2
+  printf 'rc=%s grep %s\n' "$_gx_rc" "$*" >> "$_unv_f"
+  return 2
+}
+# _unv_end — the final verdict's read of the marker: rc 1 (and one FAIL line naming the count) when any grep call could not answer.
+_unv_end() {
+  if [ -z "${_unv_f:-}" ] || [ ! -f "$_unv_f" ]; then   # UNVMISS
+    echo "selftest FAIL: UNVERIFIED: the marker file is missing or unnamed, so an unanswered grep could not have been recorded"
+    return 1
+  fi
+  [ -s "$_unv_f" ] || return 0
+  _un_n=0
+  while IFS= read -r _un_l || [ -n "$_un_l" ]; do _un_n=$((_un_n + 1)); done < "$_unv_f"
+  echo "selftest FAIL: UNVERIFIED: $_un_n grep call(s) could not answer (rc 2 or more, or a signal), so the verdict is not a PASS"
+  return 1
+}
+
 # Drive wiring() against fixture targets. The VERIFY/GUARD/VERIFY_SH reassignments live INSIDE the
 # $( … ) subshell, so they cannot leak between cases — wiring() always runs; only WHAT it inspects
 # changes.
 _expect_wiring() {  # <v-omit> <g-omit> <r-omit> <expected-rc> <needle> <label>
   _d=$(_mkwiring "$1" "$2" "$3")
   if _out=$( VERIFY="$_d/v.txt"; GUARD="$_d/g.txt"; VERIFY_SH="$_d/r.txt"; wiring 2>&1 ); then _rc=0; else _rc=$?; fi
-  if [ "$_rc" = "$4" ] && printf '%s\n' "$_out" | grep -qF "$5"; then
+  if [ "$_rc" = "$4" ] && _has "$_out" "$5"; then
     pass "wiring — $6 (rc $_rc)"
   else
     fail "wiring — $6 expected rc $4 + '$5'; got rc $_rc out=[$_out]"
@@ -1742,6 +2153,79 @@ _expect_wiring() {  # <v-omit> <g-omit> <r-omit> <expected-rc> <needle> <label>
 # and these are fixtures, not check logic. The pre-marker NAME=1 accumulator invariant (see the
 # marker's comment) is therefore untouched by this block.
 # ===========================================================================================
+
+# _fxlay <repo dir> <decider 0|1> <gate-job 0|1> : SWAS-537 fix round 2. The evidence leg reads its layout at TWO locations (the gate's own
+# checkout AND the repository it operates on), so a fixture repository that a gate in a kit layout runs in must carry the same two facts
+# (conformance/ci-gate-state.sh, and a `gate:` job in .github/workflows/ci.yml), and an adopter-looking one must carry neither. The files
+# are written untracked and listed in the repository's info/exclude, so no cell ever sees a dirty tree.
+_fxlay() {
+  mkdir -p "$1/conformance" "$1/.github/workflows"
+  rm -f "$1/conformance/ci-gate-state.sh"
+  if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+  if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
+  else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
+  if _fx_ex="$(git -C "$1" rev-parse --git-path info/exclude 2>/dev/null)"; then
+    case "$_fx_ex" in /*) ;; *) _fx_ex="$1/$_fx_ex" ;; esac
+    mkdir -p "$(dirname "$_fx_ex")"
+    printf '/conformance/ci-gate-state.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
+  fi
+}
+# SWAS-537 fix round 3: the GENERAL fixtures (mkrepo, _mkland_fx) plant the layout of the gate UNDER TEST, never a fixed kit one. In the
+# exported, adopter-shaped tree the decider and the workflow are export-ignored, so the gate reads adopter at its own checkout, and a
+# repository planted kit would be a layout-mismatch that refuses every merge. The two facts are read the way the gate reads them
+# (pv_ev_lay_of). The cells that assert an evidence refusal exist only on a kit tree and print a SKIP elsewhere.
+_fxfacts() {  # <root> -> "<decider 0|1> <gate-job 0|1>"
+  _xfd=0; _xfg=0
+  if [ -f "$1/conformance/ci-gate-state.sh" ]; then _xfd=1; fi
+  if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _xfg=1; fi
+  echo "$_xfd $_xfg"
+}
+_fxlike() {  # <repo dir> [<gate checkout root> = the gate under test's own]
+  _xff="$(_fxfacts "${2:-$(dirname "$VERIFY")/..}")"
+  _fxlay "$1" "${_xff% *}" "${_xff#* }"
+}
+_fxkind() {
+  case "$(_fxfacts "$(dirname "$VERIFY")/..")" in
+    "1 1") echo kit ;;
+    "0 0") echo adopter ;;
+    *) echo half ;;
+  esac
+}
+# Every skip is COUNTED and the count is printed on the final line, so a silent narrowing shows on the export lane (a kit tree says 0).
+_FXSKIPS=0
+_fxskip() { _FXSKIPS=$((_FXSKIPS + 1)); echo "selftest SKIP: $1 — not a kit tree (the evidence leg is N/A here)"; }
+_fxskip_note() { echo "($1 SKIPPED: not a kit tree, counted per skip line above)"; }
+
+# _mkevgh -> echoes a throwaway dir holding the DEFAULT forge for the SWAS-537 exact-head evidence reads. Mode (the file
+# `mode` beside it; light when absent) shapes the answer: light | draft | stale | fork | cheap | nogate | pending | norun | apierr |
+# apierr-pr | partial | nonjson. The head sha is the fixture's `feat` ref (else HEAD), or the file `sha`. Any call that is
+# not an evidence read fails, as an unreachable forge does, so the cells that never asked the forge keep their fallbacks.
+_mkevgh() {
+  _ev=$(mktemp -d)
+  cat > "$_ev/gh" <<'EVSHIM'
+#!/bin/sh
+d=$(dirname "$0"); mode=$(cat "$d/mode" 2>/dev/null || echo light)
+sha=$(cat "$d/sha" 2>/dev/null || git rev-parse -q --verify refs/heads/feat 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+job() { printf '{"name":"%s","conclusion":"%s"}\n' "$1" "$2"; }
+case "$*" in
+  *draft*)
+    [ "$mode" != apierr-pr ] || exit 1
+    dr=false; live=$sha; hr=acme/kit; [ "$mode" != draft ] || dr=true; [ "$mode" != stale ] || live=4444444444444444444444444444444444444444; [ "$mode" != fork ] || hr=evil/kit
+    printf '%s\t%s\tfeat\tacme/kit\t%s\n' "$dr" "$live" "$hr" ;;
+  */actions/workflows/*)
+    case "$mode" in apierr) exit 1 ;; partial) printf '{"id":1,'; exit 1 ;; nonjson) echo 'not json'; exit 0 ;; norun) exit 0 ;; esac
+    st=completed; cc=success; [ "$mode" != pending ] || { st=in_progress; cc=; }
+    printf '{"id":900,"path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s","head_branch":"feat","head_repository":{"full_name":"acme/kit"},"event":"pull_request"}\n' "$st" "$cc" "$sha" ;;
+  */actions/runs/*)
+    c=success; [ "$mode" != cheap ] || c=skipped
+    for n in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam conformance-docs docs-links; do job "$n" "$c"; done
+    job conformance success; job 'non-vacuity (1)' "$c"; [ "$mode" = nogate ] || job gate success ;;
+  *) exit 1 ;;
+esac
+EVSHIM
+  chmod +x "$_ev/gh"
+  printf '%s\n' "$_ev"
+}
 
 # _mkgh <reviews-json> <pr-author-login-as-JSON> -> echoes a throwaway dir holding an executable `gh`.
 #
@@ -1763,6 +2247,8 @@ _mkgh() {
   cat > "$_g/gh" <<'GHSHIM'
 #!/bin/sh
 # fake gh — answers `gh api <path> [--jq <filter>] [flags]` and nothing else.
+# SWAS-537: the exact-head evidence calls (the PR's draft/head read, the workflow runs, a run's jobs) are the default forge's.
+case "$*" in *draft*|*/actions/*) exec "$EVD/gh" "$@" ;; esac
 _p=""; _f="."
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -1919,13 +2405,13 @@ _solo_cell() {
   _act_base "$_sc_d" "$_sc_dial" "$_sc_gov"
   run_actuate "$VERIFY" "$_sc_d" feat "$_sc_x" "$(_act_stub "$_sc_d" "$_sc_x")"
   if [ "$_sc_w" = merge ]; then
-    if [ "$RC" = 0 ] && [ -f "$_sc_d/.invoked" ] && printf '%s' "$OUT" | grep -qF "$_sc_n" \
-       && printf '%s' "$OUT" | grep -qF 'OK: actuated'; then
+    if [ "$RC" = 0 ] && [ -f "$_sc_d/.invoked" ] && _has "$OUT" "$_sc_n" \
+       && _has "$OUT" 'OK: actuated'; then
       pass "$_sc_l: solo base + a named go-by -> merged (rc 0), the relationship line says solo"
     else
       fail "$_sc_l: rc=$RC invoked=$(invoked "$_sc_d") OUT=[$OUT]"
     fi
-  elif [ "$RC" != 0 ] && [ ! -f "$_sc_d/.invoked" ] && printf '%s' "$OUT" | grep -qF "$_sc_n"; then
+  elif [ "$RC" != 0 ] && [ ! -f "$_sc_d/.invoked" ] && _has "$OUT" "$_sc_n"; then
     pass "$_sc_l: refused naming '$_sc_n', merge stub never ran (rc=$RC)"
   else
     fail "$_sc_l: rc=$RC invoked=$(invoked "$_sc_d") OUT=[$OUT]"
@@ -1951,6 +2437,7 @@ _mkland_fx() {
     git checkout -q -b feat; printf 'x\n' >> f.txt; git add f.txt
     GIT_AUTHOR_NAME='Author A' GIT_AUTHOR_EMAIL='a@x' git commit -qm X
     git rev-parse HEAD > "$LDR/.X" ) >/dev/null 2>&1 || return 1
+  _fxlike "$LDR/c"
   LDX="$(cat "$LDR/.X")"; LDMARK="$LDR/.merged"
   printf '#!/bin/sh\ntouch %s\n' "'$LDMARK'" > "$LDR/stub"; chmod +x "$LDR/stub"
 }
@@ -1971,6 +2458,7 @@ _mkland_jira_fx() {
     printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\nstate.ready=Selected for Development\nstate.in-progress=In Progress\nstate.done=Done\n' > .kit/tracker.conf
     cp "$_jsrc/../conformance/backlog-lib.sh" conformance/backlog-lib.sh
     cp "$_jsrc/board.sh" "$_jsrc/tracker-conf.sh" scripts/
+    cp "$_jsrc/../conformance/ci-classify-changes.sh" conformance/   # SWAS-537: the gate's evidence leg resolves the classifier beside scripts/
     cp "$VERIFY" scripts/promotion-verify.sh
     printf '#!/bin/sh\ncase "$1" in check) exit 1 ;; *) exit 0 ;; esac\n' > scripts/board-claim.sh
     cat > scripts/tracker-jira.sh <<'JIRA_STUB'
@@ -2015,22 +2503,22 @@ _rec_case() {
   _cg="$(_mkgh "$_cj" "$_ca")"
   _run_record "$_cd" "$_cg" "$_csc" "$_cw" "$_cx"
   _cb="$(_note_of "$_cd" "$_cx")"
-  _cline="$(printf '%s\n' "$_cb" | grep '^approved-by:' || true)"
+  if _cline="$(_grepx "$_cb" '^approved-by:')"; then :; fi
   if [ "$_ce" = auth ]; then
-    if [ "$RC" = 0 ] && printf '%s' "$_cline" | grep -qF "$_cw [authenticated: github-review]"; then
+    if [ "$RC" = 0 ] && _has "$_cline" "$_cw [authenticated: github-review]"; then
       pass "$_cl: qualifying forge review -> recorded [authenticated: github-review]"
     else
-      fail "$_cl: expected the authenticated upgrade; rc=$RC approved-by=[$_cline] OUT=[$OUT]"
+      fail "$_cl: expected the authenticated upgrade; rc=$RC approved-by=[$_cline] note=[$_cb] OUT=[$OUT]"
     fi
   else
     if [ "$RC" = 0 ] \
-       && printf '%s' "$_cline" | grep -qF '[self-asserted]' \
-       && ! printf '%s' "$_cb" | grep -q 'authenticated' \
-       && printf '%s' "$OUT" | grep -qF "forge-review derivation: $_cn" \
-       && printf '%s' "$OUT" | grep -qF 'recording [self-asserted]'; then
+       && _has "$_cline" '[self-asserted]' \
+       && ! _has "$_cb" 'authenticated' \
+       && _has "$OUT" "forge-review derivation: $_cn" \
+       && _has "$OUT" 'recording [self-asserted]'; then
       pass "$_cl: no upgrade -> [self-asserted] kept + '$_cn' notice on stderr"
     else
-      fail "$_cl: expected NO upgrade + '$_cn'; rc=$RC approved-by=[$_cline] OUT=[$OUT]"
+      fail "$_cl: expected NO upgrade + '$_cn'; rc=$RC approved-by=[$_cline] note=[$_cb] OUT=[$OUT]"
     fi
   fi
   rm -rf "$_cd" "$_cg" 2>/dev/null || true

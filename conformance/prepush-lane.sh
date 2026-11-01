@@ -85,6 +85,11 @@
 #          [--green-on-clone | --exports | --non-vacuity <basename> | --slow | --warranted]
 #          [--base <ref>] [--ci-file <path>] [--verbose]     # NO MODE FLAG = THE RUN
 #        sh conformance/prepush-lane.sh --derive | --census [--ci-file <path>] | --selftest | --help
+#        sh conformance/prepush-lane.sh --plan [--base <ref>]                      # the touched-readers selection; executes nothing
+#        sh conformance/prepush-lane.sh --refresh-times [--ci-file <path>]         # pull CI step/job times and 30-day reds with gh (read-only)
+# THE TOUCHED-READERS ARM (SWAS-468 and its delta) closes the DEFAULT run: it fills PREPUSH_READERS_BUDGET_S (raise-only, default 300 s) with the
+#   CI-derived checks, red-history checks first, then by measured time, and prints the rest as a `CI-ONLY (paste into the PR):` block with each
+#   line's red cost and any TIMEOUT-RISK. See the section `TOUCHED READERS` below for the tiers, the time table and its sources.
 # THE DEFAULT RUN (no --warranted; PREPUSH-CORE-DEFAULT) proves the change's OWN surface, in this order:
 #   the scoped lint of the listing's shell files (shellcheck.sh --listed; the full lock stays in CI) ->
 #   the secret scan of <merge-base>..HEAD (`core-secretscan`: secret-scan-wired.sh --range, the PR-range scan
@@ -154,11 +159,16 @@ die2() { printf 'prepush-lane: %s\n' "$1" >&2; exit 2; }
 
 # --------------------------------------------------------------- work root (design §3.7, minimal)
 WORK=""
-cleanup() { hl_release; [ -n "$WORK" ] && rm -rf "$WORK" 2>/dev/null; return 0; }   # best-effort: a trap that
-trap 'cleanup' EXIT                                                    # FAILS would override exit 0
+# SWAS-428: the live arm's process group dies with the lane (a terminal Ctrl-C reaches only the lane's own group now).
+cleanup() {
+  trap '' INT TERM HUP   # a second signal (a TERM storm) must not re-enter this body and abandon the kill half-done
+  arm_trap_kill
+  hl_release; [ -n "$WORK" ] && rm -rf "$WORK" 2>/dev/null; return 0   # best-effort: a trap that
+}                                                                      # FAILS would override exit 0
+trap 'cleanup' EXIT
 # INT/TERM must EXIT (security L4): a handler that merely returns 0 resumes the script with its work
 # root already deleted. 130/143 are the conventional signal rcs; EXIT then re-cleans harmlessly.
-trap 'cleanup; exit 130' INT; trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 130' INT; trap 'cleanup; exit 143' TERM; trap 'cleanup; exit 129' HUP
 
 # repo root, physical. Every path below is relative to it.
 root_or_die() {
@@ -595,9 +605,23 @@ subst_argv() {
 # §3.7). The `selftest` bucket the SCANNER prints is a run-time question, so it is SPLIT HERE by the
 # touched set and the merged label never appears in a run report: `core-selftest` (one call to
 # selftest-hermetic.sh --touched — both faces, never re-implemented) and `untouched-selftest` (listed,
-# not run). The ONLY `&`s in this file are BOTH inside run_timed, and only on the no-timeout(1) path: its
-# watchdog, AND the guarded invocation itself (`"$@" & … wait "$_pid"`), backgrounded so the watchdog can
-# reach it. That `wait` keeps execution strictly serial; selftest_no_fanout proves it by OBSERVATION.
+# not run). The ONLY `&`s in this file are in run_bg (the scrubbed subshell, backgrounded so a trapped INT/TERM
+# interrupts the `wait` at once) and inside run_timed (the arm, in its own process group, and its watchdog).
+# Each `wait` keeps execution strictly serial; selftest_no_fanout proves it by OBSERVATION.
+# THE CEILING KILL (SWAS-428, docs/architecture/2026-10-28-prepush-orphan-428-design.md): an arm runs in a process group of its own (a
+#   perl setpgrp wrapper), and a ceiling hit snapshots the descendants, TERMs and CONTs the group, waits up to 5 s, re-snapshots, KILLs the
+#   group and the pids still in the lineage, and CONFIRMS. A kill it cannot confirm reads UNVERIFIED. A terminal Ctrl-C or a TERM to the
+#   lane kills the live arm's group too. HONEST CEILINGS, stated and not closed: (1) a descendant that double-forks into a NEW group after
+#   the snapshot is not reached; (2) pid reuse is narrowed by the re-snapshot, not closed (milliseconds between it and the KILL);
+#   (3) a signal in the first milliseconds, before the wrapper's setpgrp, finds no group; (4) SIGKILL cannot be trapped: the watchdog polls the
+#   lane pid once a second and kills the arm if the lane alone died, but a SIGKILL to the lane's whole GROUP takes the watchdog with it (running
+#   it in a group of its own would need a second wrapper per arm: judged too heavy for a case a person has to type), and the arm then runs on;
+#   (4b) the kill state lives in $WORK/ctl and an arm's TMPDIR is $WORK/tmp, so an arm cannot forge it by convention, not by a sandbox;
+#   (4c) the trap re-entry mutant is not graded; SWAS-467 owns it (K10 stays: a TERM storm still ends in the KILL);
+#   (4d) a pgid is signalled only if it is not the lane's own group or its PARENT's group; a pgid read from a file only if its pid is a descendant of the lane; (5) an arm that opens /dev/tty itself is a background-group member and would stop on SIGTTIN: the kill sends
+#   CONT right after TERM, so it wakes and dies, and a prompt never reaches the user; (6) with no /usr/bin/perl the arms are NOT
+#   process-grouped: today's direct-child kill runs, the lane says so once per run, and every ceiling FAIL line reads "tree NOT
+#   contained". The dash claims were probed on one machine's /bin/dash; CI grades the ubuntu dash.
 #
 # `conformance/ci-classify-changes.sh` (docs_classify, reco) is the LANE'S OWN helper, not a derived
 # invocation (reviewer M-4): the lane calls it directly, so it runs OUTSIDE the scrub, the dash shim and
@@ -606,8 +630,13 @@ subst_argv() {
 # `conformance/backlog-lib.sh` (resolve_backend) in a subshell, outside the scrub: this tree's own code, which the
 # twins already run, so it grants no new capability.
 RUN_HB=""; RUN_SPLIT=0; RUN_RC=0; RUN_S=0; VERBOSE=0; BEST=0; HEAVY=""; HEAVY_ARG=""; WARRANTED=0; BASE="origin/main"
-BASE_SHA=""; DOCS_ONLY=false; DASH=""; SHIMDIR=""; TIMEOUT_BIN=""; CEIL=120; FLOOR=6144; FREE=""
+BASE_SHA=""; DOCS_ONLY=false; DASH=""; SHIMDIR=""; CEIL=120; FLOOR=6144; FREE=""
+# SWAS-428: each arm runs in a process group of its own (the perl setpgrp wrapper), so a ceiling kill reaches the whole tree.
+# Plain assignments (no environment knob); the selftest overrides them in a COPY of the lane. ARM_PERL is called by absolute path, never through PATH.
+ARM_PERL=/usr/bin/perl
+ARM_GRACE_S=5; ARM_CONFIRM_S=5; LANE_PGID=""; LANE_PPGID=""; SR_PID=""; ARM_NOTE=""; ARM_CEIL_TXT=""
 ARGVLOG=""; UNV=""; MB=""; FAILS=0; RAN=0; HCEIL=3600; SELFCEIL=3600
+CRASH=0; CRASH_LIST=""; CRASH_EV=""; CRASH_TXT=""; CRASH_LINE=""; CRASH_BYLINE=0   # SWAS-600: the crashed-unit counter, its names, and the evidence of the unit just run
 # SELFCEIL (reviewer I-1): the core-selftest face is ONE call to selftest-hermetic.sh --touched running
 # BOTH hermeticity faces over the whole touched set, so it is not bounded by the 120 s per-check core
 # ceiling; "add a heavy row" is the wrong remedy (it is the core, not a heavy invocation), so its overrun
@@ -658,8 +687,10 @@ mem_guard() {
 work_init() {
   _par=${TMPDIR:-/tmp}; _par=${_par%/}
   WORK=${WORK:-$(mktemp -d "$_par/prepush-XXXXXX")}
-  TMPDIR=$WORK; export TMPDIR                        # every child's TMPDIR is this run's work root
-  ARGVLOG=$WORK/argv.log; : > "$ARGVLOG"; mkdir -p "$WORK/empty" "$WORK/gh"
+  TMPDIR=$WORK; export TMPDIR                        # the LANE's own TMPDIR is the work root; an ARM gets $WORK/tmp (scrubbed_run)
+  ARGVLOG=$WORK/argv.log; : > "$ARGVLOG"; mkdir -p "$WORK/empty" "$WORK/gh" "$WORK/tmp"
+  # SWAS-428: the kill state (pgids, markers, notes) lives in $WORK/ctl, which no arm is handed: an arm that forged it could aim the lane's kill.
+  ( umask 077; mkdir -p "$WORK/ctl" ); chmod 700 "$WORK/ctl"
   note "work root: $WORK (TMPDIR for every invocation; removed best-effort at exit)"
   _st=$(find "$_par" -maxdepth 1 -type d -name 'prepush-*' ! -name "${WORK##*/}" 2>/dev/null |
         sort | tr '\n' ' ') || _st=""
@@ -723,12 +754,17 @@ shim_init() {
 bounds_init() {
   CEIL=$(raise_only "${PREPUSH_CEILING_S-}" 120 PREPUSH_CEILING_S)
   FLOOR=$(raise_only "${PREPUSH_MEM_FLOOR_MB-}" 6144 PREPUSH_MEM_FLOOR_MB)
-  TIMEOUT_BIN=$(command -v timeout 2>/dev/null) || TIMEOUT_BIN=$(command -v gtimeout 2>/dev/null) ||
-    TIMEOUT_BIN=""
-  if [ -z "$TIMEOUT_BIN" ] && ! command -v sleep >/dev/null 2>&1; then unv "no timeout facility"; fi
+  command -v sleep >/dev/null 2>&1 || unv "no timeout facility"
+  LANE_PGID=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ') || LANE_PGID=""
+  LANE_PPGID=$(ps -o pgid= -p "$PPID" 2>/dev/null | tr -d ' ') || LANE_PPGID=""   # the group of whoever launched the lane: never ours to signal
+  _bi_mode="process-group watchdog"
+  if ! arm_perl_ok; then
+    _bi_mode="direct-child watchdog (no $ARM_PERL)"
+    note "NOTE: no $ARM_PERL: arms are not process-grouped; a ceiling kill reaches the direct child only"
+  fi
   FREE=$(mem_free_mb 2>/dev/null) || FREE=""
   [ "$CEIL" -le "$SELFCEIL" ] || SELFCEIL=$CEIL     # raise-only, and never BELOW the core ceiling
-  note "ceiling: ${CEIL}s/invocation (core-selftest ${SELFCEIL}s · heavy arms ${HCEIL}s or their budget-s) · memory floor: ${FLOOR} MB · free: ${FREE:-unreadable} MB · timeout: ${TIMEOUT_BIN:-watchdog}"
+  note "ceiling: ${CEIL}s/invocation (core-selftest ${SELFCEIL}s · heavy arms ${HCEIL}s or their budget-s) · memory floor: ${FLOOR} MB · free: ${FREE:-unreadable} MB · ceiling kill: ${_bi_mode}"
   mem_guard "${FREE-}" "$FLOOR" ||
     note "WARNING: free memory is not above the floor — the core is cheap and still runs; a heavy arm would be refused"
 }
@@ -894,26 +930,204 @@ unset_pfx() {
   for _v in $(env | LC_ALL=C awk -v p="$1" -F= 'index($1,p)==1 && $1 ~ /^[A-Za-z_][A-Za-z0-9_]*$/ {print $1}')
   do unset "$_v" 2>/dev/null || :; done
 }
-# run_timed <ceiling> <argv…> — timeout(1)/gtimeout when present, else a background watchdog. On the
-# watchdog path there are TWO background jobs, and the header's "the only `&`" claim names both
-# (reviewer M-1): the watchdog itself, AND the guarded invocation, which is backgrounded (`"$@" &`)
-# precisely so the lane can `wait` on it and still kill it — it is the one job that runs a derived
-# argv, and the `wait` keeps execution strictly serial. HONEST CEILING (reviewer M-2): the watchdog
-# signals the DIRECT CHILD only — TERM, then KILL after a one-second grace, so a child that ignores
-# TERM is still stopped; its GRANDCHILDREN are not in the lane's process group and may outlive it.
-# timeout(1), when present, has the same reach. A check that daemonizes is outside this bound.
-# AND (L3) the watchdog signals by PID: between the child exiting and the `kill`, the OS could have recycled that PID. Named, not closed (needs a process group or pidfd, neither POSIX); timeout(1) is clean.
+# SWAS-428 (design docs/architecture/2026-10-28-prepush-orphan-428-design.md): an arm runs in a PROCESS GROUP OF ITS OWN, and the ceiling kills the group.
+# arm_perl_ok — the group wrapper is /usr/bin/perl (absolute path, a fixed `-e` program, no module, the PERL* library names scrubbed).
+arm_perl_ok() { [ -x "$ARM_PERL" ]; }
+# arm_nap — a short pause (fractional where sleep allows it).
+arm_nap() { sleep 0.2 2>/dev/null || sleep 1; }
+# arm_note_w <line> — the outcome of a kill, to the file the caller named in ARM_NOTE (a file: run_timed runs inside a subshell, a variable would not get out).
+arm_note_w() { printf '%s\n' "$1" > "${ARM_NOTE:-/dev/null}"; }
+# arm_pgid_ok <pgid> — the ONE gate before any group signal: refuses empty, not all digits, <= 1 (`kill -- -1` reaches every process the user owns) and the lane's OWN group.
+arm_pgid_ok() {
+  _ap=${1-}; _ap_why=""
+  case $_ap in ''|*[!0-9]*) _ap_why="not a number" ;; esac
+  case $_ap in 0?*) _ap_why="leading zero" ;; esac   # `017570` passes a digits test and a string compare, then names the lane's own group
+  [ -n "$_ap_why" ] || [ "$_ap" -gt 1 ] || _ap_why="at most 1"
+  [ -n "$LANE_PGID" ] || LANE_PGID=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ') || LANE_PGID=""
+  [ -n "$_ap_why" ] || [ -n "$LANE_PGID" ] || _ap_why="the lane's own pgid is unreadable"
+  [ -n "$_ap_why" ] || [ "$_ap" != "$LANE_PGID" ] || _ap_why="the lane's own group"
+  [ -n "$LANE_PPGID" ] || LANE_PPGID=$(ps -o pgid= -p "$PPID" 2>/dev/null | tr -d ' ') || LANE_PPGID=""
+  [ -n "$_ap_why" ] || [ -z "$LANE_PPGID" ] || [ "$_ap" != "$LANE_PPGID" ] || _ap_why="the lane's parent group"
+  [ -n "$_ap_why" ] || return 0
+  arm_note_w "REFUSED $(hl_clean "${_ap:--}") $(hl_clean "$_ap_why")"
+  return 1
+}
+# arm_read_pgid <file> — prints the pgid in a file that holds exactly ONE line of digits; rc 1 (and nothing) otherwise.
+arm_read_pgid() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  [ "$(grep -c '' < "$1")" = 1 ] || return 1
+  _arp=$(sed -n 1p "$1")
+  case $_arp in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_arp"
+}
+# arm_ps <phase> — the process table, `pid ppid pgid` per line (POSIX -o fields only). The phase names WHICH reading it is, so the selftest can override one.
+arm_ps() { ps -A -o pid= -o ppid= -o pgid= 2>/dev/null; }
+# arm_desc <leader> — stdin is a table; prints `pid pgid` for every descendant of the leader (by ppid, transitively), the leader excluded.
+arm_desc() {
+  LC_ALL=C awk -v r="$1" '{ p[$1] = $2; g[$1] = $3 }
+    END { m[r] = 1
+          do { ch = 0; for (x in p) if (!(x in m) && (p[x] in m)) { m[x] = 1; ch = 1 } } while (ch)
+          for (x in m) if (x != r) print x, g[x] }'
+}
+# arm_killset <pgid> <first-snapshot> <second-table> — the pids OUTSIDE the group that are still in the arm's lineage: descended from a first-snapshot
+# pid (or the leader), or re-parented to pid 1 with the SAME pgid as in the first snapshot. A pid that died and was reused fails all three.
+arm_killset() {
+  printf '%s\n' "$3" | S1=$2 LC_ALL=C awk -v g="$1" '
+    BEGIN { n = split(ENVIRON["S1"], L, "\n"); for (i = 1; i <= n; i++) { split(L[i], f, " "); if (f[1] != "") { in1[f[1]] = 1; pg1[f[1]] = f[2] } } }
+    function lin(x) { return (p[x] in in1) || p[x] == g || (p[x] == 1 && (x in in1) && q[x] == pg1[x]) }
+    { p[$1] = $2; q[$1] = $3 }
+    END { for (x in p) if (q[x] != g && lin(x)) print x }'
+}
+# arm_survivors <pgid> [pid…] — what of the group and the listed pids is still alive (one per line). The confirm calls THIS, and the selftest overrides it.
+arm_survivors() {
+  _as_g=$1; shift
+  if kill -s 0 -- "-$_as_g" 2>/dev/null; then
+    _as_m=$(arm_ps members | LC_ALL=C awk -v g="$_as_g" '$3 == g { print $1 }')
+    if [ -n "$_as_m" ]; then printf '%s\n' "$_as_m"; else printf '%s\n' "-$_as_g"; fi
+  fi
+  for _as_p in "$@"; do
+    if kill -s 0 "$_as_p" 2>/dev/null; then printf '%s\n' "$_as_p"; fi
+  done
+  return 0
+}
+# arm_sig <signal> <pgid> / arm_sigp <signal> <pid> — the two signal acts (arm_kill calls them after arm_pgid_ok).
+arm_sig() { kill -s "$1" -- "-$2" 2>/dev/null || :; }
+arm_sigp() { kill -s "$1" "$2" 2>/dev/null || :; }
+# arm_wait_gone <seconds> <pgid> [pid…] — rc 0 as soon as nothing is left, rc 1 when the deadline passes first.
+arm_wait_gone() {
+  _aw_dl=$(( $(date +%s) + $1 )); shift
+  while :; do
+    arm_nap
+    [ -n "$(arm_survivors "$@")" ] || return 0
+    [ "$(date +%s)" -lt "$_aw_dl" ] || return 1
+  done
+}
+# arm_kill <pgid> — the whole kill, for the ceiling, the post-exit leftovers and the INT/TERM trap: refuse a dangerous pgid; snapshot the descendants
+# (they may have made groups of their own); TERM then CONT the group and those pids (CONT wakes a member stopped on /dev/tty); wait up to ARM_GRACE_S;
+# re-snapshot and KILL the group plus the pids still in the lineage; confirm. rc 0 gone and confirmed · rc 1 refused or NOT confirmed.
+# A second word `leader` (ceiling and trap only, where the leader is unreaped so its pid cannot be reused) also signals and confirms the LEADER by pid:
+# an arm leader that moved itself into another group (setpgrp) is in no group of ours, and the group acts alone would call it gone.
+# The outcome goes to $ARM_NOTE: `OK pgid ngroup nescaped kill-fired` · `NOTCONF pgid ngroup nescaped kill-fired pid…` · `REFUSED pgid why`.
+arm_kill() {
+  _ak_g=${1-}; _ak_ld=""
+  arm_pgid_ok "$_ak_g" || return 1
+  [ "${2-}" != leader ] || _ak_ld=$_ak_g
+  _ak_t=$(arm_ps first)
+  _ak_s1=$(printf '%s\n' "$_ak_t" | arm_desc "$_ak_g")
+  _ak_ng=$(printf '%s\n' "$_ak_t" | LC_ALL=C awk -v g="$_ak_g" '$3 == g { n++ } END { print n + 0 }')
+  _ak_pl=$(printf '%s\n' "$_ak_s1" | LC_ALL=C awk -v g="$_ak_g" 'NF && $2 != g { print $1 }')
+  _ak_ne=$(printf '%s\n' "$_ak_pl" | LC_ALL=C awk 'NF { n++ } END { print n + 0 }')
+  arm_sig TERM "$_ak_g"; for _ak_p in $_ak_pl $_ak_ld; do arm_sigp TERM "$_ak_p"; done
+  arm_sig CONT "$_ak_g"; for _ak_p in $_ak_pl $_ak_ld; do arm_sigp CONT "$_ak_p"; done
+  _ak_set=""; _ak_kf=0
+  if ! arm_wait_gone "$ARM_GRACE_S" "$_ak_g" $_ak_pl $_ak_ld; then
+    _ak_kf=1
+    _ak_set=$(arm_killset "$_ak_g" "$_ak_s1" "$(arm_ps second)")
+    arm_sig KILL "$_ak_g"
+    for _ak_p in $_ak_set $_ak_ld; do arm_sigp KILL "$_ak_p"; done
+    arm_wait_gone "$ARM_CONFIRM_S" "$_ak_g" $_ak_set $_ak_ld || :
+  fi
+  _ak_left=$(arm_survivors "$_ak_g" $_ak_set $_ak_ld | tr '\n' ' ' | sed 's/ *$//')
+  if [ -z "$_ak_left" ]; then arm_note_w "OK $_ak_g $_ak_ng $_ak_ne $_ak_kf"; return 0; fi
+  arm_note_w "NOTCONF $_ak_g $_ak_ng $_ak_ne $_ak_kf $_ak_left"
+  return 1
+}
+# arm_group_alive <pgid> — a group with live members, after the leader has been reaped and no ceiling kill ran.
+arm_group_alive() { [ ! -e "$WORK/ctl/wd.fired" ] && kill -s 0 -- "-$1" 2>/dev/null; }
+# arm_note_apply <ceiling|left> <label> — print and apply the note file run_timed wrote: a NOTE line, UNV on a refusal or an unconfirmed kill,
+# and (ceiling) the text report_inv appends to the FAIL line in ARM_CEIL_TXT.
+arm_note_apply() {
+  _an_f=$WORK/ctl/kill.note; [ "$1" != left ] || _an_f=$WORK/ctl/left.note
+  _an_lb=$2
+  if [ -L "$_an_f" ]; then   # a state file that is a symlink is never read
+    note "NOTE: $_an_lb: a kill-state file is a symlink and was not read; the arm's tree is NOT contained"
+    unv "$_an_lb: kill-state file is a symlink"; return 0
+  fi
+  [ -s "$_an_f" ] || return 0
+  _an_l=$(sed -n 1p "$_an_f"); _an_s=${_an_l%% *}; _an_r=${_an_l#"$_an_s"}; _an_r=${_an_r# }
+  case $_an_s in
+    NOGROUP) ARM_CEIL_TXT="tree NOT contained (no $ARM_PERL: direct child only)"; return 0 ;;
+    REFUSED)
+      _an_v=${_an_r%% *}; _an_w=$(printf '%s' "${_an_r#* }" | tr _ ' ')
+      note "NOTE: arm pgid $_an_v refused ($_an_w); the arm's tree is NOT contained"
+      ARM_CEIL_TXT="arm pgid $_an_v refused ($_an_w); tree NOT contained"
+      unv "$_an_lb: arm pgid refused ($_an_w); its tree is NOT contained"; return 0 ;;
+  esac
+  set -f; set -- $_an_r; set +f
+  _an_g=${1-}; _an_ng=${2-0}; _an_ne=${3-0}; _an_kf=${4-0}; if [ "$#" -ge 4 ]; then shift 4; else shift "$#"; fi
+  _apl=$(printf '%s' "$*" | sed 's/ /, /g')
+  _an_kt="TERM+CONT"; [ "$_an_kf" != 1 ] || _an_kt="TERM+CONT, KILL after $ARM_GRACE_S s"   # says KILL only if the KILL really fired
+  case "$_an_s:$_an_f" in
+    OK:*/kill.note) ARM_CEIL_TXT="process group $_an_g + $_an_ne escaped descendant(s): $_an_kt, confirmed gone" ;;
+    NOTCONF:*/kill.note)
+      ARM_CEIL_TXT="process group $_an_g + $_an_ne escaped descendant(s): $_an_kt, NOT confirmed gone: pid $_apl still alive"
+      unv "$_an_lb: ceiling kill NOT confirmed gone: pid $_apl" ;;
+    OK:*) note "NOTE: $_an_lb left $((_an_ng + _an_ne)) process(es) in its group after exit; killed (confirmed gone)" ;;
+    NOTCONF:*)
+      note "NOTE: $_an_lb left $((_an_ng + _an_ne)) process(es) in its group after exit; killed, NOT confirmed gone: pid $_apl"
+      unv "$_an_lb: leftover kill NOT confirmed gone: pid $_apl" ;;
+  esac
+  return 0
+}
+# arm_trap_kill — the INT/TERM trap's half: kill the live arm's group (the pgid file run_timed wrote, read through the same gate), then the
+# scrubbed_run subshell. Without perl the arms have no group of their own, so only the subshell is stopped, and it says so.
+arm_trap_kill() {
+  [ -n "$WORK" ] || return 0
+  if [ -f "$WORK/ctl/arm.pgid" ]; then
+    _at_g=$(arm_read_pgid "$WORK/ctl/arm.pgid") || _at_g=""
+    # a pgid read from a FILE is signalled only if that pid is proven, in the current table, to be a descendant of this lane
+    if arm_descends "$_at_g"; then ARM_NOTE=$WORK/ctl/trap.note arm_kill "$_at_g" leader || :
+    else printf 'REFUSED %s not_a_proven_descendant\n' "$(hl_clean "${_at_g:--}")" > "$WORK/ctl/trap.note"; fi
+    rm -f "$WORK/ctl/arm.pgid"   # only AFTER the kill: a re-entered trap must still find it
+    [ ! -s "$WORK/ctl/trap.note" ] || printf '# interrupted: arm kill: %s\n' "$(sed -n 1p "$WORK/ctl/trap.note")" >&2
+  elif [ -n "$SR_PID" ] && ! arm_perl_ok; then
+    printf '# interrupted: no %s, so the running arm is NOT process-grouped and is not killed\n' "$ARM_PERL" >&2
+  fi
+  arm_pid_term "$(arm_read_pgid "$WORK/ctl/wd.pid" 2>/dev/null)"   # the watchdog, by the pid run_timed recorded
+  arm_pid_term "$SR_PID"
+  return 0
+}
+# arm_descends <pid> — rc 0 iff the pid is a descendant of the lane ($$) in the CURRENT process table (ppid chain, bounded).
+arm_descends() {
+  case ${1-} in ''|*[!0-9]*) return 1 ;; esac
+  arm_ps desc | LC_ALL=C awk -v t="$1" -v r="$$" '{ p[$1] = $2 } END { x = t; n = 0; while ((x in p) && n++ < 4096) { if (p[x] == r) exit 0; x = p[x] } exit 1 }'
+}
+# arm_pid_term <pid> — TERM a pid that is all digits and > 1; anything else signals nothing.
+arm_pid_term() { case ${1-} in ''|*[!0-9]*) return 0 ;; esac; [ "$1" -gt 1 ] || return 0; kill -s TERM "$1" 2>/dev/null || :; }
+# run_timed <ceiling> <argv…> — runs the argv as an ARM in its own process group (perl setpgrp, then exec) under a watchdog. Two background jobs
+# live here, and the header's "the only `&`" claim names them (reviewer M-1): the arm, and the watchdog. The `wait` keeps execution strictly serial.
+# On expiry the watchdog writes $WORK/wd.fired and runs arm_kill (TERM+CONT, grace, re-snapshot, KILL, confirm); the parent then WAITS for it
+# (a parent that cut the grace short would never let the KILL fire). After a NORMAL exit a group that still has members is killed the same way.
+# No perl: today's direct-child watchdog (TERM, 5 s, KILL), the group acts disabled, and the FAIL line says "tree NOT contained".
 run_timed() {
   _tc=$1; shift
-  if [ -n "$TIMEOUT_BIN" ]; then "$TIMEOUT_BIN" "$_tc" "$@"; return $?; fi
-  "$@" & _pid=$!
+  rm -f "$WORK/ctl/wd.fired" "$WORK/ctl/kill.note" "$WORK/ctl/left.note" "$WORK/ctl/arm.pgid" "$WORK/ctl/wd.pid"
+  _grp=0; ! arm_perl_ok || _grp=1; _lpid=$$
+  # The program resets INT and QUIT (a background job starts with them IGNORED, and exec keeps that), then makes the group and execs the argv.
+  if [ "$_grp" -eq 1 ]; then
+    "$ARM_PERL" -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; setpgrp(0,0) or exit 125; exec {$ARGV[0]} @ARGV or exit 126' -- "$@" & _pid=$!
+    printf '%s\n' "$_pid" > "$WORK/ctl/arm.pgid"
+  else "$@" & _pid=$!; fi
   ( _i=0
-    while [ "$_i" -lt "$_tc" ]; do sleep 1; kill -0 "$_pid" 2>/dev/null || exit 0; _i=$((_i+1)); done
-    kill -TERM "$_pid" 2>/dev/null || :
-    sleep 1; kill -KILL "$_pid" 2>/dev/null || : ) & _wd=$!
+    while [ "$_i" -lt "$_tc" ]; do
+      sleep 1; kill -0 "$_pid" 2>/dev/null || exit 0
+      kill -0 "$_lpid" 2>/dev/null || { arm_orphaned "$_grp" "$_pid"; exit 0; }
+      _i=$((_i+1))
+    done
+    : > "$WORK/ctl/wd.fired"
+    if [ "$_grp" -eq 1 ]; then ARM_NOTE=$WORK/ctl/kill.note arm_kill "$_pid" leader || :
+    else printf 'NOGROUP\n' > "$WORK/ctl/kill.note"; kill -TERM "$_pid" 2>/dev/null || :; sleep 5; kill -KILL "$_pid" 2>/dev/null || :; fi ) & _wd=$!
+  printf '%s\n' "$_wd" > "$WORK/ctl/wd.pid"
   _rc=0; wait "$_pid" || _rc=$?
-  kill -TERM "$_wd" 2>/dev/null || :
+  if [ -e "$WORK/ctl/wd.fired" ]; then wait "$_wd" || :
+  else kill -TERM "$_wd" 2>/dev/null || :; wait "$_wd" 2>/dev/null || :; fi   # reaped here: bash would otherwise print "Terminated" into the arm's output
+  if [ "$_grp" -eq 1 ] && arm_group_alive "$_pid"; then ARM_NOTE=$WORK/ctl/left.note arm_kill "$_pid" || :; fi
+  rm -f "$WORK/ctl/arm.pgid" "$WORK/ctl/wd.pid"
   return "$_rc"
+}
+# arm_orphaned <grouped 0|1> <arm pid> — the lane died (SIGKILL cannot be trapped) while the arm ran: the watchdog, still alive, kills the arm.
+arm_orphaned() {
+  if [ "$1" -eq 1 ]; then ARM_NOTE=$WORK/ctl/kill.note arm_kill "$2" leader || :; else kill -TERM "$2" 2>/dev/null || :; fi
 }
 # qtok <token> — the executed-argv log is an EVIDENCE artifact, so it must stay unambiguous even if
 # the grammar's charset ever widens (reviewer M-6): a token outside the closed charset is printed in
@@ -928,12 +1142,21 @@ run_inv() {
   _cl=$1; shift
   _al=""; for _t in "$@"; do _al="$_al $(qtok "$_t")"; done
   printf '%s\n' "${_al# }" >> "$ARGVLOG"
-  _t0=$(date +%s); RUN_RC=0
+  _t0=$(date +%s); RUN_RC=0; ARM_CEIL_TXT=""
   if [ "$RUN_SPLIT" -eq 1 ]; then   # SWAS-163: a board-bound twin keeps stderr apart (hooks/pre-push's discriminant reads stderr alone)
-    scrubbed_run "$_cl" "$@" > "$WORK/out" 2> "$WORK/err" < /dev/null || RUN_RC=$?
-    cat "$WORK/err" >> "$WORK/out"
-  else scrubbed_run "$_cl" "$@" > "$WORK/out" 2>&1 < /dev/null || RUN_RC=$?; fi
+    run_bg "$_cl" "$@" > "$WORK/out" 2> "$WORK/err" < /dev/null || RUN_RC=$?
+    cat "$WORK/err" >> "$WORK/out"   # CRSPLIT
+  else run_bg "$_cl" "$@" > "$WORK/out" 2>&1 < /dev/null || RUN_RC=$?; fi
   RUN_S=$(( $(date +%s) - _t0 ))
+  arm_note_apply ceiling "${_al# }"; arm_note_apply left "${_al# }"
+}
+# run_bg — scrubbed_run as the lane's one background job, and a `wait` on it (SWAS-428, design item B1): a shell runs a trap only BETWEEN foreground
+# commands, but a trapped signal interrupts `wait` at once, so a TERM to the lane reaches cleanup (and the arm's group) while the arm is still running.
+run_bg() {
+  scrubbed_run "$@" & SR_PID=$!
+  _rb=0; wait "$SR_PID" || _rb=$?
+  SR_PID=""
+  return "$_rb"
 }
 # scrubbed_run <ceiling> <argv…> — the scrubbed subshell run_inv executes (the body, factored out so the split-stderr path shares it).
 scrubbed_run() {
@@ -942,9 +1165,9 @@ scrubbed_run() {
     _kgl=${KIT_GUARD_LOG-}; _hb=$RUN_HB
     unset_pfx GH_; unset_pfx GIT_; unset_pfx KIT_; unset_pfx BOARD_CLAIM_; unset_pfx PREPUSH_
     unset_pfx JIRA_   # SWAS-186: the tracker-contract twin's legacy credential pair (JIRA_EMAIL/JIRA_TOKEN); nothing else needs a JIRA_ name
-    unset SSH_AUTH_SOCK SSH_ASKPASS BASH_ENV ENV CDPATH NODE_OPTIONS PYTHONPATH PERL5OPT RUBYOPT \
+    unset SSH_AUTH_SOCK SSH_ASKPASS BASH_ENV ENV CDPATH NODE_OPTIONS PYTHONPATH PERL5OPT PERL5LIB PERLLIB PERL_USE_UNSAFE_INC RUBYOPT \
           HERMETIC_BASE IFS 2>/dev/null || :
-    HOME=$WORK/empty; GH_CONFIG_DIR=$WORK/gh; TMPDIR=$WORK; LC_ALL=C
+    HOME=$WORK/empty; GH_CONFIG_DIR=$WORK/gh; TMPDIR=$WORK/tmp; LC_ALL=C   # SWAS-428: an arm's TMPDIR is NOT the work root, so it never sees $WORK/ctl
     GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null
     [ -z "$SHIMDIR" ] || PATH=$SHIMDIR:$PATH
     export HOME GH_CONFIG_DIR TMPDIR LC_ALL GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM PATH
@@ -953,10 +1176,83 @@ scrubbed_run() {
     run_timed "$_cl" "$@"
   ) 9>&-   # SWAS-278b: the heavy-arm lock's descriptor is closed for every child, so a child that outlives the lane cannot hold the lock
 }
+# crash_sig_of <rc> - SWAS-600: rc above 128 is a signal death. Prints the signal NAME and returns 0 when it is a crash (SEGV BUS ILL ABRT FPE SYS TRAP); returns 1 for any other status, for TERM INT HUP KILL, and when kill -l cannot name it. Names, never numbers: BUS is 10 on macOS and 7 on Linux.
+crash_sig_of() {
+  case ${1-} in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -gt 128 ] || return 1
+  _cs_n=$(kill -l $(($1 - 128)) 2>/dev/null) || return 1
+  _cs_n=${_cs_n#SIG}
+  case $_cs_n in
+    SEGV|BUS|ILL|ABRT|FPE|SYS|TRAP) printf '%s\n' "$_cs_n"; return 0 ;;
+  esac
+  return 1
+}
+# crash_line_in <file> - SWAS-600: does a captured output hold a shell's crash line? WHOLE-LINE match under LC_ALL=C grep -E, two forms (dash: the bare line; bash 3.2: <file>: line N: <pid> <text>[ <cmd>]). Prose, a table row and a quoted source line do not match. rc 0 found (CRASH_LINE, CRASH_TXT set), 1 none, 2 the scan could not run (a grep rc other than 0 or 1, a signal, or a hit file that cannot be written) - never clean. CEILING, stated: the bash-form prefix is a bare token, so a crash line whose script path contains whitespace does not match; the exit-status evidence still covers a top-level crash.
+crash_line_in() {
+  CRASH_LINE=""; CRASH_TXT=""
+  _cl_x1="'"   # CRX1
+  _cl_x2='"'   # CRX2
+  _cl_x3='|'   # CRX3
+  _cl_s='(Segmentation fault|Bus error|Illegal instruction|Abort trap|Aborted|Floating point exception|Bad system call|Trace/BPT trap|Trace/breakpoint trap)'   # CRSET
+  _cl_pre='[^[:space:]'$_cl_x1$_cl_x2'`'$_cl_x3']+'   # CRPRE
+  _cl_d='^[[:space:]]*'$_cl_s'(: [0-9]+)?( \(core dumped\))?[[:space:]]*$'
+  _cl_b='^'$_cl_pre': line [0-9]+: +[0-9]+ '$_cl_s'(: [0-9]+)?( +\(core dumped\))?( .*)?$'   # CRBASH
+  # a failed redirect must never read as "no hit" (bash 3.2 gives rc 1 for it)
+  ( : > "$WORK/crash.hit" ) 2>/dev/null || return 2   # CRHIT
+  _cl_r=0
+  LC_ALL=C grep -E -e "$_cl_d" -e "$_cl_b" "$1" > "$WORK/crash.hit" 2>/dev/null || _cl_r=$?   # CRLINE
+  case $_cl_r in
+    0) ;;
+    1) return 1 ;;
+    *) return 2 ;;   # CRFAIL
+  esac
+  CRASH_LINE=$(sed -n 1p "$WORK/crash.hit") || return 2
+  for _cl_n in 'Segmentation fault' 'Bus error' 'Illegal instruction' 'Abort trap' 'Aborted' 'Floating point exception' 'Bad system call' 'Trace/BPT trap' 'Trace/breakpoint trap'; do
+    case $CRASH_LINE in
+      *"$_cl_n"*) CRASH_TXT=$_cl_n; break ;;
+    esac
+  done
+  return 0
+}
+# crash_ev_run - SWAS-600: did the run just made (RUN_RC, $WORK/out) crash? rc 0: yes, CRASH_EV names the evidence (the rc form wins when both show); rc 1: no; rc 2: the output scan could not run.
+crash_ev_run() {
+  CRASH_EV=""; CRASH_BYLINE=0
+  if _ce_s=$(crash_sig_of "$RUN_RC"); then CRASH_EV="$_ce_s, rc $RUN_RC"; return 0; fi   # CRRC
+  _ce_r=0; crash_line_in "$WORK/out" || _ce_r=$?   # CRLINE2
+  case $_ce_r in
+    0) CRASH_EV="$CRASH_TXT line"; CRASH_BYLINE=1; return 0 ;;
+    1) return 1 ;;
+  esac
+  return 2
+}
 # report_inv <bucket> <label> <expect-rc> <ceiling> — one line per invocation; a failing invocation's
 # output is printed IN FULL (never tail'd), indented so it can never be mistaken for a report line.
 report_inv() {
   RAN=$((RAN+1))
+  # SWAS-600: a crashed process is not a verdict. The ceiling test is computed first (its row stays a FAIL); otherwise the crash branch runs BEFORE the early OK return and before FAILS++.
+  _ri_ceil=0
+  case $RUN_RC in
+    124|137|143) [ "$RUN_S" -lt "$4" ] || _ri_ceil=1 ;;
+  esac
+  if [ "$_ri_ceil" -eq 0 ]; then
+    _ri_c=0; crash_ev_run || _ri_c=$?
+    if [ "$_ri_c" -ne 1 ]; then
+      _ri_nm=${2% }; _ri_rx=""
+      # line-only evidence does not name the unit's own exit status, so a status that is not the expected one is named beside it
+      if [ "$_ri_c" -eq 0 ] && [ "$CRASH_BYLINE" -eq 1 ] && [ "$RUN_RC" -ne "$3" ]; then _ri_rx="; unit rc=$RUN_RC, expected $3"; _ri_nm="$_ri_nm [rc $RUN_RC]"; fi   # CRRCX
+      if [ "$_ri_c" -eq 0 ]; then
+        printf '  UNVERIFIED  %-12s %-46s crashed (%s): a crashed process is not a verdict%s\n' "$1" "$2" "$CRASH_EV" "$_ri_rx"   # CRROW
+      else
+        printf '  UNVERIFIED  %-12s %-46s crash scan could not run: no verdict is claimed\n' "$1" "$2"
+        _ri_nm="$_ri_nm [scan failed]"
+      fi
+      CRASH=$((CRASH+1)); CRASH_LIST="${CRASH_LIST:+$CRASH_LIST, }$_ri_nm"   # CRCOUNT
+      LC_ALL=C sed 's/^/        | /' "$WORK/out" 2>/dev/null || cat "$WORK/out" || :
+      return 0
+    fi
+  fi
   if [ "$RUN_RC" -eq "$3" ]; then printf '  OK    %-18s %-46s %4ss\n' "$1" "$2" "$RUN_S"; return 0; fi
   # UNVERIFIED (rc 2 from the secret-scan range arm = gitleaks absent): the scan did NOT run, which is not a
   # FAIL and never an OK. It sets the lane's UNV, so the verdict is UNVERIFIED and the rc non-zero.
@@ -968,7 +1264,9 @@ report_inv() {
   case $RUN_RC in
     124|137|143) [ "$RUN_S" -lt "$4" ] || {
         _rm='raise PREPUSH_CEILING_S'; [ "$1" != heavy ] || _rm='add a heavy row with the measured budget or raise the ceiling'
-        printf '  FAIL  %-18s %-46s %4ss  exceeded ceiling — %s\n' "$1" "$2" "$RUN_S" "$_rm"; return 0; } ;;
+        _ri_cx=""; _ri_cr=0; crash_line_in "$WORK/out" || _ri_cr=$?
+        [ "$_ri_cr" -ne 0 ] || _ri_cx="; crash line also present ($CRASH_TXT)"   # SWAS-600: the row stays a FAIL (FAILS, not CRASH) and names the crash beside it
+        printf '  FAIL  %-18s %-46s %4ss  exceeded ceiling — %s%s%s\n' "$1" "$2" "$RUN_S" "$_rm" "${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}" "$_ri_cx"; return 0; } ;;
   esac
   printf '  FAIL  %-18s %-46s %4ss  rc=%s (expected %s)\n' "$1" "$2" "$RUN_S" "$RUN_RC" "$3"
   # A check's output is ARBITRARY BYTES. Under a UTF-8 locale `sed` refuses (or, on macOS, ABORTS) on
@@ -1261,9 +1559,9 @@ cache_record() {
 # PASSED (FAILS did not move) AND its output has no line starting `SKIP` (a tool-absent SKIP-pass is rc 0
 # but proved nothing). A failing arm is never recorded.
 exec_cached() {
-  _ec_f=$FAILS
+  _ec_f=$FAILS; _ec_c=$CRASH
   exec_check "$@"
-  [ "$CACHE_OK" -eq 1 ] && [ "$FAILS" -eq "$_ec_f" ] || return 0
+  [ "$CACHE_OK" -eq 1 ] && [ "$FAILS" -eq "$_ec_f" ] && [ "$CRASH" -eq "$_ec_c" ] || return 0   # CRCACHE
   if grep -q '^SKIP' "$WORK/out" 2>/dev/null; then return 0; fi
   cache_record "$1" "$1 $2 $3"
   return 0
@@ -1441,7 +1739,9 @@ TWEOF
     esac
     case $_tb in loop-state|backlog-presence) RUN_SPLIT=1 ;; esac
     run_inv "$CEIL" sh "conformance/$_script" "$@"; RUN_SPLIT=0
-    if twin_na "$_tb" "$RUN_RC"; then
+    # SWAS-600: a crash is never read as the NOT ENFORCED N/A
+    _tw_c=0; crash_ev_run || _tw_c=$?   # CRTWIN
+    if [ "$_tw_c" -eq 1 ] && twin_na "$_tb" "$RUN_RC"; then
       RAN=$((RAN+1)); TN=$((TN+1)); basename_ok "$TWIN_BE" || TWIN_BE='(unsafe-name)'
       printf "  N/A   %s  NOT ENFORCED only (backend '%s') — CI binds the row leg through tracker-board-gates where that context is required on the base; not verifiable locally\n" "$_tb" "$TWIN_BE"
     else report_inv twin "$_tb $(fld 4 "$_row")" "${_tx:-0}" "$CEIL"; fi
@@ -1723,6 +2023,325 @@ $_rw_snapshot
 RWEOF
 }
 
+# ===================================================================== TOUCHED READERS (SWAS-468)
+# Design of record: docs/architecture/2026-10-28-prepush-touched-readers-468-design.md as amended by ...-468-delta.md (the reader scan is dropped:
+# 232 of 232 checks read dynamically [M]). A new arm of the DEFAULT run, `touched-readers`: it fills a 300 s budget with the CI-derived checks,
+# those with a RED HISTORY first, then the rest by measured time, and prints what did not run as a pasteable CI-ONLY block with each check's red
+# cost. `--plan` prints the same selection and executes nothing. It adds NO capability: it only runs derived argv, through
+# run_inv (the scrub, the dash shim, the ceiling). Everything below is its own section; run_timed, the orphan code and the heavy arms are untouched.
+#   Fail-closed: no --derive output, an unreadable listing or a refused state dir makes the ARM UNVERIFIED. A check over its limit (max(120 s, 1.5 x its
+#   measured time)) is LISTED CI-GRADED, never a FAIL. The red history LEARNS: `--refresh-times` ingests the recent failed CI steps (gh, read-only).
+#   THE TIME TABLE: $HOME/.local/state/sparkwright/prepush/<root-commit>/times.tsv, a cache and never evidence, six tab fields:
+#   basename · argv · seconds · reds · source (local|ci|red) · epoch. A `red` row carries a failed-step count and the last-red epoch (counted for 30 days).
+#   `@job` rows (name · wall s · timeout-minutes) and one `@green` row (job-seconds of the last green PR run) ride in the same columns.
+#   A local row beats a CI row beats a built-in SEED row for the time; the red count is the max over all sources.
+#   Children run with TMPDIR=$WORK, so everything the run loop reads AFTER its first child (the order, the table, the lists) lives in shell variables.
+TR_BUDGET_DEFAULT=300
+TR_CEIL_MIN=120
+TR_UNKNOWN_S=30
+TR_RED_S=2592000
+TR_TIMES=""; TR_BUDGET=300; TR_TAB=""; TR_ORD=""; TR_HV=""; TR_CX=""; TR_CXJ=""; TR_TJ=""; TR_CIL=""
+TS_T=0; TR_RUNN=0; TR_USED=0; TR_CIN=0
+L_SEC=""; L_RED=0; L_SRC=""
+PLAN=0
+NL='
+'
+
+# shellcheck disable=SC2016  # the awk program is DATA: nothing in it may expand in the shell.
+TRTAB='
+BEGIN { OFS = "\t" }
+FILENAME == SEEDF { k = $1 SUBSEP $2; keys[k] = 1; kb[k] = $1; ka[k] = $2; ssec[k] = $3; sred[k] = $4; next }
+$1 ~ /^@/ { mk = $1 SUBSEP $2; mrow[mk] = $3 OFS $4 OFS $5; mb[mk] = $1; mn[mk] = $2; next }
+{ k = $1 SUBSEP $2; keys[k] = 1; kb[k] = $1; ka[k] = $2
+  if ($5 == "local") { if (!(k in lsec) || $3 + 0 > lsec[k]) lsec[k] = $3 + 0; if ($4 + 0 > lred[k]) lred[k] = $4 + 0 }
+  else if ($5 == "ci") { csec[k] = $3 + 0; cred[k] = $4 + 0 }
+  else if ($5 == "red") { if (NOW - $6 <= REDS && $4 + 0 > rrd[k]) rrd[k] = $4 + 0 } }
+END {
+  for (k in keys) {
+    if (k in lsec) { sec = lsec[k]; src = "local" }
+    else if (k in csec) { sec = csec[k]; src = "ci" }
+    else if (k in ssec) { sec = ssec[k]; src = "seed" }
+    else { sec = ""; src = "red" }
+    red = 0; if ((k in cred) && cred[k] > red) red = cred[k]; if ((k in sred) && sred[k] + 0 > red) red = sred[k] + 0; if ((k in lred) && lred[k] > red) red = lred[k]; if ((k in rrd) && rrd[k] > red) red = rrd[k]
+    print kb[k], ka[k], (sec == "" ? "" : int(sec)), red, src }
+  for (mk in mrow) print mb[mk], mn[mk], mrow[mk] }
+'
+# shellcheck disable=SC2016
+TRNAMES='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function unq(s) { gsub(/^["\047]|["\047]$/, "", s); return s }
+function ind(s) { match(s, /[^ ]/); return RSTART - 1 }
+/^jobs:/ { injobs = 1; next }
+!injobs { next }
+{ i = ind($0); t = trim($0) }
+inb && (t == "" || i > rind) { if (t != "") print "S\t" NR "\t" cur; next }
+{ inb = 0 }
+i == 2 && t ~ /^[A-Za-z0-9_-]+:$/ { job = substr(t, 1, length(t) - 1); jd[job] = job; next }
+i == 4 && t ~ /^name:/ { v = trim(substr(t, 6)); jd[job] = unq(v); next }
+i == 4 && t ~ /^timeout-minutes:/ { jt[job] = trim(substr(t, 17)) + 0; next }
+t ~ /^-( |$)/ { cur = ""; sind = i + 2 }
+{ u = t; sub(/^- /, "", u) }
+u ~ /^name:/ && (t ~ /^- / ? i + 2 : i) == sind { cur = unq(trim(substr(u, 6))) }
+u ~ /^run:/ { print "S\t" NR "\t" cur; if (trim(substr(u, 5)) ~ /^[|>][-+]?$/) { inb = 1; rind = (t ~ /^- / ? i + 2 : i) } }
+END { for (j in jd) print "J\t" j "\t" jd[j] "\t" jt[j] + 0 }
+'
+# the built-in SEED rows: a first cut from the design's measured table (basename, argv, seconds, reds30). A local or CI row replaces them.
+tr_seed() {
+  printf 'agent-autonomy\t--selftest\t129\t2\n'
+  printf 'prepush-lane\t--census\t21\t2\n'
+  printf 'citation-live\t\t10\t0\n'
+  printf 'conformance-mass-budget\t\t48\t0\n'
+}
+
+# ---- the time table --------------------------------------------------------------------------------
+tr_refuse() { note "times: refused — $1"; unv "touched-readers: the state dir is refused ($1)"; return 1; }
+# tr_state — sets TR_TIMES (a path, or empty = no persisted table); rc 1 = the state dir was refused (UNV set). The --warranted cache's leaf rules.
+tr_state() {
+  TR_TIMES=""
+  if [ "${PREPUSH_NO_CACHE-}" = 1 ]; then note "times: no persisted table (PREPUSH_NO_CACHE=1); seed rows only"; return 0; fi
+  case ${HOME-} in /?*) ;; *) tr_refuse "HOME is unset or not absolute"; return 1 ;; esac
+  _r0=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p)
+  case $_r0 in ''|*[!0-9a-f]*) tr_refuse "no root commit"; return 1 ;; esac
+  _sd=$HOME/.local/state/sparkwright/prepush/$_r0
+  if [ ! -e "$_sd" ] && [ ! -L "$_sd" ]; then ( umask 077; mkdir -p "$_sd" ) 2>/dev/null || { tr_refuse "the state dir cannot be created"; return 1; }; fi
+  _ls=$(ls -ld "$_sd" 2>/dev/null) || { tr_refuse "the state dir cannot be inspected"; return 1; }
+  case ${_ls%% *} in d????[!w]??[!w]*) ;; *) tr_refuse "the state dir is not a plain directory, or is group/world-writable"; return 1 ;; esac
+  _own=$(ls -ldn "$_sd" 2>/dev/null | LC_ALL=C awk '{ print $3 }'); _me=$(id -u 2>/dev/null) || _me=""
+  if [ -z "$_me" ] || [ "$_own" != "$_me" ]; then tr_refuse "the state dir is not owned by the current user"; return 1; fi
+  if [ ! -r "$_sd" ] || [ ! -w "$_sd" ] || [ ! -x "$_sd" ]; then tr_refuse "the state dir is unreadable"; return 1; fi
+  if [ -e "$_sd/times.tsv" ] || [ -L "$_sd/times.tsv" ]; then
+    if [ ! -f "$_sd/times.tsv" ] || [ -L "$_sd/times.tsv" ] || [ ! -r "$_sd/times.tsv" ]; then tr_refuse "times.tsv is not a readable regular file"; return 1; fi
+  fi
+  TR_TIMES=$_sd/times.tsv
+  note "times: state $_sd (a cache, never evidence)"
+}
+# tr_times_init — merge the seed rows with the persisted table into $WORK/tr.tab: basename argv seconds reds30 source stale.
+tr_times_init() {
+  tr_state || return 1
+  tr_seed > "$WORK/tr.seed"
+  _tf=/dev/null; if [ -n "$TR_TIMES" ] && [ -f "$TR_TIMES" ]; then _tf=$TR_TIMES; fi
+  TR_TAB=$(LC_ALL=C awk -F'\t' -v SEEDF="$WORK/tr.seed" -v NOW="$(date +%s)" -v REDS="$TR_RED_S" "$TRTAB" "$WORK/tr.seed" "$_tf" 2>/dev/null) ||
+    { unv "touched-readers: the time table cannot be read"; return 1; }
+}
+# tr_look <basename> <argv> — sets L_SEC (empty = unknown) L_RED L_SRC from the merged table (a variable, see the section header).
+tr_look() {
+  _lk=$(B=$1 A=$2 LC_ALL=C awk -F'\t' '$1 == ENVIRON["B"] && $2 == ENVIRON["A"] { print $3 "\t" $4 "\t" $5; exit }' <<EOF
+$TR_TAB
+EOF
+  ) || _lk=""
+  L_SEC=""; L_RED=0; L_SRC=""
+  [ -n "$_lk" ] || return 0
+  L_SEC=$(fld 1 "$_lk"); L_RED=$(fld 2 "$_lk"); L_SRC=$(fld 3 "$_lk")
+  case $L_SEC in ''|*[!0-9]*) L_SEC="" ;; esac
+  case $L_RED in ''|*[!0-9]*) L_RED=0 ;; esac
+}
+# tr_record <basename> <argv> <seconds> — append a local row, keep the last 3 local rows per check (the max of them is the time used).
+tr_record() {
+  [ -n "$TR_TIMES" ] || return 0
+  _rt=$(mktemp "$TR_TIMES.XXXXXX") || return 0
+  { if [ -f "$TR_TIMES" ]; then cat "$TR_TIMES"; fi; printf '%s\t%s\t%s\t0\tlocal\t%s\n' "$1" "$2" "$3" "$(date +%s)"; } |
+    LC_ALL=C awk -F'\t' '{ row[NR] = $0; k = $1 SUBSEP $2; if ($5 == "local") tot[k]++ }
+      END { for (r = 1; r <= NR; r++) { split(row[r], f, "\t"); k = f[1] SUBSEP f[2]
+              if (f[5] == "local") { idx[k]++; if (tot[k] - idx[k] >= 3) continue }
+              print row[r] } }' > "$_rt" 2>/dev/null
+  if [ -s "$_rt" ] && mv -f "$_rt" "$TR_TIMES" 2>/dev/null; then :; else rm -f "$_rt" 2>/dev/null; fi
+  return 0
+}
+# tr_cost <job> — the red cost, from the table: the job's measured wall until it reds and the job-minutes of the last green full PR run.
+tr_cost() {
+  _cs=""; tr_look @job "$1"; _jw=$L_SEC; tr_look @green all; _gs=$L_SEC
+  [ -z "$_jw" ] || _cs="~$(( (_jw + 30) / 60 )) min to red"
+  [ -z "$_gs" ] || _cs="${_cs:+$_cs · }~$(( (_gs + 30) / 60 )) job-min per red"
+  if [ -z "$_cs" ]; then printf 'cost unmeasured'; else printf '%s [M]' "$_cs"; fi
+}
+tr_ci() {   # tr_ci <label> <job> <why> — one CI-GRADED line for the paste block
+  TR_CIL="$TR_CIL$(printf 'CI-GRADED: %s (%s · %s)' "$1" "$3" "$(tr_cost "$2")")$NL"; TR_CIN=$((TR_CIN+1))
+}
+
+# ---- selection, order, run -------------------------------------------------------------------------
+# tr_select <listing> — walk $WORK/derive.out: the runnable candidates become TR_ORD (9 tab fields: tier · key · label · basename · argv · job ·
+# seconds · reds · source, sorted), the heavy ones TR_HV, one row per context job TR_CX, every candidate's job TR_TJ. All variables: see the section header.
+tr_select() {
+  _sl=$1; _rec=""; TR_HV=""; TR_CX=""; TR_CXJ=""; TR_TJ=""; _seen=$NL
+  TS_T=0
+  while IFS= read -r _l <&8; do
+    case $_l in '#'*|'') continue ;; esac
+    _bk=${_l%%"$TAB"*}; _job=$(fld 2 "$_l")
+    if [ "$_bk" = context ]; then
+      case $TR_CXJ in *"$NL$_job$NL"*) ;; *) TR_CXJ="$TR_CXJ$NL$_job$NL"; TR_CX="$TR_CX$_job$TAB$(fld 3 "$_l")$TAB$(fld 5 "$_l")$NL" ;; esac
+      TR_TJ="$TR_TJ$_job$NL"
+      continue
+    fi
+    _b=$(fld 4 "$_l"); _a=$(fld 5 "$_l"); _lab="$_b${_a:+ $_a}"
+    case $_seen in *"$NL$_lab$NL"*) continue ;; esac
+    _seen="$_seen$_lab$NL"
+    tr_look "$_b" "$_a"
+    # a basename-wide heavy twin row prices the bare battery, not this invocation: an EXACT-invocation time row within the budget lifts it (S7, design 3a)
+    _hv=0; if [ "$_bk" = heavy ]; then _hv=1; elif is_heavy_row "$_b" && { [ -z "$L_SEC" ] || [ "$L_SEC" -gt "$TR_BUDGET" ]; }; then _hv=1; fi
+    if [ "$_hv" -eq 1 ]; then TR_HV="$TR_HV$_lab$TAB$_job$NL"; continue; fi
+    if [ "$_bk" = selftest ] && grep -qxF -e "conformance/$_b.sh" "$_sl"; then continue; fi
+    if [ "$_b" = prepush-lane ] && [ "$_a" = --selftest ]; then tr_ci "$_lab" "$_job" "the lane's own selftest: CI binds it"; continue; fi
+    [ -s "$_sl" ] || continue     # nothing listed: nothing to push, nothing to run
+    TR_TJ="$TR_TJ$_job$NL"
+    if [ "$L_RED" -ge 1 ]; then _tier=1; _key=$((100000 - L_RED))
+    else _tier=2; _key=${L_SEC:-$TR_UNKNOWN_S}; fi
+    TS_T=$((TS_T+1))
+    _rec="$_rec$_tier$TAB$_key$TAB$_lab$TAB$_b$TAB$_a$TAB$_job$TAB$L_SEC$TAB$L_RED$TAB$L_SRC$NL"
+  done 8< "$WORK/derive.out"
+  TR_ORD=$(printf '%s' "$_rec" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3)
+}
+# tr_exec — walk the order under the budget. A tier-1 (red history) check starts whatever its recorded time says (a forged row cannot push it out);
+# any other starts only if its prediction fits what is left. The budget is charged with MEASURED wall, never with predictions.
+tr_exec() {
+  _rem=$TR_BUDGET; _lk=0; _ordl=$TR_ORD     # popped line by line from a VARIABLE: no descriptor or file a child could reach
+  while [ -n "$_ordl" ]; do
+    _l=${_ordl%%"$NL"*}
+    case $_ordl in *"$NL"*) _ordl=${_ordl#*"$NL"} ;; *) _ordl="" ;; esac
+    _tier=$(fld 1 "$_l"); _lab=$(fld 3 "$_l"); _b=$(fld 4 "$_l"); _a=$(fld 5 "$_l"); _job=$(fld 6 "$_l")
+    _sec=$(fld 7 "$_l"); _src=$(fld 9 "$_l")
+    case $_tier in 1) _tn=red-history ;; *) _tn=measured ;; esac
+    _pred=${_sec:-$TR_UNKNOWN_S}
+    _go=0
+    if [ "$_tier" = 1 ]; then _go=0; [ "$_rem" -le 0 ] || _go=1
+    else [ "$_pred" -gt "$_rem" ] || _go=1; fi
+    if [ "$_go" -eq 0 ]; then tr_ci "$_lab" "$_job" "budget spent: predicted ${_pred} s [${_src:-unknown}]"; continue; fi
+    _cl=$TR_CEIL_MIN
+    if [ -n "$_sec" ] && [ $((_sec * 3 / 2)) -gt "$_cl" ]; then _cl=$((_sec * 3 / 2)); fi
+    _cap=0; if [ "$_cl" -gt "$_rem" ]; then _cl=$_rem; _cap=1; fi
+    if [ "$PLAN" -eq 1 ]; then
+      _cut=""; if [ "$_rem" -lt "$_pred" ]; then _cut=" CUT: only ${_rem} s of the budget is left"; fi
+      printf '  PLAN  %-18s %-46s ~%4ss  [%s]%s%s\n' touched-readers "$_lab" "$_pred" "$_tn" "" "$_cut"
+      TR_RUNN=$((TR_RUNN+1)); TR_USED=$((TR_USED + _pred)); _rem=$((_rem - _pred)); if [ "$_rem" -lt 0 ]; then _rem=0; fi
+      continue
+    fi
+    if [ "$_lk" -eq 0 ]; then
+      hl_need touched-readers || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' touched-readers "the heavy-arm lock is not held: the touched readers are not run"; return 0; }
+      _lk=1
+    fi
+    _oi=$IFS; set -f; IFS=' '
+    # shellcheck disable=SC2086  # deliberate: the closed-charset argv becomes ARGV, never eval'd.
+    set -- $_a
+    IFS=$_oi; set +f
+    run_inv "$_cl" sh "conformance/$_b.sh" "$@"
+    _rem=$((_rem - RUN_S)); if [ "$_rem" -lt 0 ]; then _rem=0; fi
+    TR_USED=$((TR_USED + RUN_S)); TR_RUNN=$((TR_RUNN+1))
+    case $RUN_RC in
+      0) _tr_c=0; crash_ev_run || _tr_c=$?
+         if [ "$_tr_c" -ne 1 ]; then report_inv touched-readers "$_lab" 0 "$_cl"   # SWAS-600: a crash-demoted reader reads UNVERIFIED, takes no OK row and seeds no time
+         else RAN=$((RAN+1)); printf '  OK    %-18s %-46s %4ss  [%s]\n' touched-readers "$_lab" "$RUN_S" "$_tn"; tr_record "$_b" "$_a" "$RUN_S"; fi ;;
+      124|137|143)
+        if [ "$_cap" -eq 1 ]; then tr_ci "$_lab" "$_job" "budget spent: only ${_cl} s of the budget was left (killed at ${RUN_S} s)"
+        elif [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "local ceiling hit at ${RUN_S} s${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+        else report_inv touched-readers "$_lab" 0 "$_cl"; fi ;;
+      *) report_inv touched-readers "$_lab" 0 "$_cl" ;;
+    esac
+  done
+}
+# tr_list_rest — the heavy-bucket candidates and the context mentions are always listed (never run here); a context row is one per job (L2).
+tr_list_rest() {
+  while IFS= read -r _hv; do [ -z "$_hv" ] || tr_ci "$(fld 1 "$_hv")" "$(fld 2 "$_hv")" "heavy bucket: CI job placement, never run in the default"; done <<EOF
+$TR_HV
+EOF
+  while IFS= read -r _cx; do
+    [ -z "$_cx" ] || tr_ci "$(fld 1 "$_cx") — context step" "$(fld 1 "$_cx")" "context at line $(fld 2 "$_cx"): $(fld 3 "$_cx") — not runnable here"
+  done <<EOF
+$TR_CX
+EOF
+}
+# tr_timeout_risk — TIMEOUT-RISK for a touched job whose last measured wall is at least 80% of its timeout-minutes (L2). Run in $( ), prints only.
+tr_timeout_risk() {
+  printf '%s' "$TR_TJ" | LC_ALL=C sort -u | while IFS= read -r _j; do
+    tr_look @job "$_j"
+    [ -n "$L_SEC" ] && [ "$L_RED" -gt 0 ] || continue
+    if [ $((L_SEC * 100)) -ge $((L_RED * 60 * 80)) ]; then
+      printf 'TIMEOUT-RISK: %s — last wall %s of %s min [M, %s]\n' "$_j" "$(LC_ALL=C awk -v s="$L_SEC" 'BEGIN { printf "%.1f", s / 60 }')" "$L_RED" "${L_SRC:-table}"
+    fi
+  done
+}
+# tr_arm <ci-file> — the arm. rc 0 always; a failing check sets FAILS, a refused precondition sets UNV.
+tr_arm() {
+  if [ "$PLAN" -eq 0 ] && { [ "$WARRANTED" -eq 1 ] || [ -n "$HEAVY" ]; }; then
+    note "touched-readers: not run beside --warranted or a heavy arm (they run the core-live checks themselves)"; return 0
+  fi
+  [ -z "$UNV" ] || { note "touched-readers: not run — the run is already UNVERIFIED"; return 0; }
+  if ! grep -q '^# ci-file:' "$WORK/derive.out" 2>/dev/null || [ ! -f "$WORK/listing" ]; then
+    note "touched-readers: UNVERIFIED — no --derive output, or no readable listing"
+    unv "touched-readers: no --derive output, or an unreadable listing"; return 0
+  fi
+  tr_times_init || return 0
+  TR_BUDGET=$(raise_only "${PREPUSH_READERS_BUDGET_S-}" "$TR_BUDGET_DEFAULT" PREPUSH_READERS_BUDGET_S)
+  TR_CIL=""; TR_RUNN=0; TR_USED=0; TR_CIN=0
+  tr_select "$WORK/listing"
+  note "touched-readers: $TS_T candidate(s), red history first, then by measured time · budget ${TR_BUDGET}s$([ "$PLAN" -eq 0 ] || printf ' · PLAN, nothing is executed')"
+  tr_exec
+  tr_list_rest
+  _trl=$(tr_timeout_risk)
+  if [ "$PLAN" -eq 1 ]; then note "touched-readers: $TR_RUNN would run (~${TR_USED}s predicted) · $TR_CIN CI-graded"
+  else note "touched-readers: $TR_RUNN run (${TR_USED} s [M local]) · $TR_CIN CI-graded"; fi
+  if [ -n "$TR_CIL" ] || [ -n "$_trl" ]; then printf 'CI-ONLY (paste into the PR):\n%s' "$TR_CIL"; [ -z "$_trl" ] || printf '%s\n' "$_trl"
+  else printf 'CI-ONLY: none — %s derived check(s) ran above\n' "$TR_RUNN"; fi
+  return 0
+}
+# tr_refresh <ci-file> — `--refresh-times`: pull CI step walls, job walls (+ timeout-minutes), the last green PR run's job-seconds and, so the red history
+# LEARNS, the recent FAILED runs' failed steps (gh, read-only, gh's own auth) into the CI and red rows of the time table. A failed step maps to its
+# invocation by step NAME against the working-tree ci.yml; a red row holds the failure count and the last-red epoch (counted for 30 days).
+tr_refresh() {
+  command -v gh >/dev/null 2>&1 || { note "times: gh not found — local rows only"; return 0; }
+  tr_state || return 1
+  [ -n "$TR_TIMES" ] || { note "times: no persisted table (PREPUSH_NO_CACHE=1) — nothing to refresh"; return 0; }
+  _rel=$(ci_path "$1") || exit $?; ci_exists_or_die "$_rel"
+  WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/prepush-XXXXXX")}
+  derive "$_rel" > "$WORK/derive.out" || { sed -n '/^#/p' "$WORK/derive.out"; return 1; }
+  LC_ALL=C awk "$TRNAMES" "$ROOT/$_rel" > "$WORK/tr.names" 2>/dev/null || { note "times: ci.yml step names cannot be read"; return 1; }
+  _jq_steps='.jobs[] | .name as $j | .steps[] | select(.started_at != null and .completed_at != null) | [$j, .name, ((.completed_at|fromdate) - (.started_at|fromdate))] | @tsv'
+  _jq_jobs='.jobs[] | select(.started_at != null and .completed_at != null) | [.name, ((.completed_at|fromdate) - (.started_at|fromdate))] | @tsv'
+  _jq_fail='.jobs[] | .steps[] | select(.conclusion == "failure") | .name'
+  # only THIS repo's own runs count: a push to main, or a pull_request whose head repo is this repo (a fork PR's step names must not add red rows)
+  _own='(.event == "push" and .head_branch == "main") or (.event == "pull_request" and .head_repository.full_name == .repository.full_name)'
+  _runs='repos/{owner}/{repo}/actions/workflows/ci.yml/runs'
+  _now=$(date +%s); _gf=0
+  _d30=$(date -u -r "$((_now - TR_RED_S))" +%Y-%m-%d 2>/dev/null || date -u -d "@$((_now - TR_RED_S))" +%Y-%m-%d 2>/dev/null) || _d30=""
+  _push=$(gh api "$_runs?status=success&event=push&branch=main&per_page=1" --jq '.workflow_runs[0].id' 2>/dev/null) || _gf=1
+  _prr=$(gh api "$_runs?status=success&event=pull_request&per_page=30" --jq "[.workflow_runs[] | select($_own)][0].id" 2>/dev/null) || _gf=1
+  case $_push$_prr$_d30 in *null*) _gf=1 ;; esac
+  [ -n "$_push" ] && [ -n "$_prr" ] && [ -n "$_d30" ] || _gf=1
+  gh api "$_runs?status=failure&created=%3E%3D$_d30&per_page=100" --paginate --jq ".workflow_runs[] | select($_own) | [.id, (.created_at|fromdate)] | @tsv" > "$WORK/tr.gh.bad" 2>/dev/null || _gf=1
+  gh api "repos/{owner}/{repo}/actions/runs/$_push/jobs" --paginate --jq "$_jq_steps" > "$WORK/tr.gh.steps" 2>/dev/null || _gf=1
+  gh api "repos/{owner}/{repo}/actions/runs/$_push/jobs" --paginate --jq "$_jq_jobs" > "$WORK/tr.gh.jobs" 2>/dev/null || _gf=1
+  gh api "repos/{owner}/{repo}/actions/runs/$_prr/jobs" --paginate --jq "$_jq_jobs" > "$WORK/tr.gh.green" 2>/dev/null || _gf=1
+  [ -s "$WORK/tr.gh.steps" ] && [ -s "$WORK/tr.gh.jobs" ] && [ -s "$WORK/tr.gh.green" ] || _gf=1
+  : > "$WORK/tr.gh.fail"
+  while IFS="$TAB" read -r _bid _bts <&7; do
+    gh api "repos/{owner}/{repo}/actions/runs/$_bid/jobs" --paginate --jq "$_jq_fail" > "$WORK/tr.gh.one" 2>/dev/null || _gf=1
+    while IFS= read -r _bn; do printf '%s\t%s\n' "$_bn" "$_bts"; done < "$WORK/tr.gh.one" >> "$WORK/tr.gh.fail"
+  done 7< "$WORK/tr.gh.bad"
+  # M1: any gh failure or empty/null answer KEEPS the old CI and red rows (a failure must not wipe the red history) and is rc 1
+  [ "$_gf" -eq 0 ] || { note "times: gh failed or returned nothing — the old CI and red rows are KEPT, not refreshed"; return 1; }
+  _derive=$WORK/derive.out
+  {
+    LC_ALL=C awk -F'\t' -v NOW="$_now" -v NAMES="$WORK/tr.names" -v STEPS="$WORK/tr.gh.steps" -v JOBS="$WORK/tr.gh.jobs" -v GREEN="$WORK/tr.gh.green" -v FAIL="$WORK/tr.gh.fail" -v UNM="$WORK/tr.unm" '
+      BEGIN { OFS = "\t"
+        while ((getline l < NAMES) > 0) { split(l, f, "\t"); if (f[1] == "S") sname[f[2]] = f[3]; else if (f[1] == "J") { jdisp[f[2]] = f[3]; jto[f[2]] = f[4] } }
+        while ((getline l < STEPS) > 0) { split(l, f, "\t"); if (!(f[2] in ssec) || f[3] + 0 > ssec[f[2]]) ssec[f[2]] = f[3] + 0 }
+        while ((getline l < JOBS) > 0) { split(l, f, "\t"); if (!(f[1] in jwall) || f[2] + 0 > jwall[f[1]]) jwall[f[1]] = f[2] + 0 }
+        while ((getline l < GREEN) > 0) { split(l, f, "\t"); gsum += f[2] + 0; gseen = 1 }
+        while ((getline l < FAIL) > 0) { split(l, f, "\t"); fails[f[1]]++; if (f[2] + 0 > lastred[f[1]]) lastred[f[1]] = f[2] + 0 } }
+      $1 == "context" || /^#/ { next }
+      { nm = sname[$3]; if (nm == "") next
+        mapped[nm] = 1
+        if (nm in ssec) print $4, $5, int(ssec[nm]), 0, "ci", NOW
+        if (nm in fails) print $4, $5, 0, fails[nm], "red", lastred[nm] }
+      END { for (nm in fails) if (!(nm in mapped)) un++
+            print un + 0 > UNM
+            for (j in jdisp) { w = (jdisp[j] in jwall) ? jwall[jdisp[j]] : ((j in jwall) ? jwall[j] : ""); if (w != "") print "@job", j, int(w), int(jto[j]), "ci", NOW }
+            if (gseen) print "@green", "all", int(gsum), 0, "ci", NOW }' "$_derive"
+  } > "$WORK/tr.newci"
+  _rt=$(mktemp "$TR_TIMES.XXXXXX") || return 1
+  { if [ -f "$TR_TIMES" ]; then LC_ALL=C awk -F'\t' '$5 != "ci" && $5 != "red"' "$TR_TIMES"; fi; cat "$WORK/tr.newci"; } > "$_rt"
+  if ! mv -f "$_rt" "$TR_TIMES"; then rm -f "$_rt"; return 1; fi
+  note "times: refreshed $(grep -c '' < "$WORK/tr.newci" || :) CI row(s) into $TR_TIMES (steps map by NAME against the working-tree ci.yml); $(cat "$WORK/tr.unm" 2>/dev/null || echo '?') failed step name(s) mapped to no invocation"
+}
+
 # The recommendation block: which Tier-2 arm THIS listing warrants. Recommend-only, by ruling §4.2 —
 # the lane names the arm and the operator runs it (or `--warranted` runs exactly the derived set).
 reco() {
@@ -1764,7 +2383,11 @@ verdict() {
                             sed 's/^/#   /' "$ARGVLOG"; }
   note "work root: $WORK (removed best-effort at exit)"
   _rc=0
-  if [ -n "$UNV" ]; then _v="PARITY-CORE: UNVERIFIED ($UNV)"; _rc=1
+  # SWAS-600: the printed order is UNV, then CRASH, then FAILS
+  if [ "$CRASH" -gt 0 ]; then   # CRVERD
+    _vx=""; [ "$FAILS" -eq 0 ] || _vx="; plus $FAILS failing unit(s)"
+    _v="PARITY-CORE: UNVERIFIED (${UNV:+$UNV; plus }$CRASH unit(s) crashed: $CRASH_LIST$_vx)"; _rc=1
+  elif [ -n "$UNV" ]; then _v="PARITY-CORE: UNVERIFIED ($UNV)"; _rc=1
   elif [ "$FAILS" -gt 0 ]; then _v="PARITY-CORE: FAIL"; _rc=1
   else _v=$(ok_verdict); fi
   printf '%s\n' "$_v"                       # THE LAST LINE, always, and never `RESULT:`
@@ -1790,7 +2413,10 @@ run_lane() {
                                   unv "the twin table is malformed — run --census"; }
   split_buckets
   if [ -n "$UNV" ]; then note "NOT RUN: $UNV"; verdict; return $?; fi
-  run_core; run_board; run_twins; run_heavy; run_warranted; hl_release; reco
+  if [ "$PLAN" -eq 1 ]; then          # SWAS-468: the plan prints the touched-readers selection and executes nothing
+    tr_arm "$_ci"; printf 'PLAN: nothing was executed\n'; [ -z "$UNV" ] || { note "UNVERIFIED: $UNV"; return 1; }; return 0
+  fi
+  run_core; run_board; run_twins; run_heavy; run_warranted; tr_arm "$_ci"; hl_release; reco
   verdict
 }
 
@@ -1801,7 +2427,8 @@ main() {
   _mode=""; _ci=${KIT_CI_FILE:-$CI_DEFAULT}; _strict=0
   while [ $# -gt 0 ]; do
     case $1 in
-      --derive|--census|--selftest) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
+      --derive|--census|--selftest|--refresh-times) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
+      --plan) PLAN=1 ;;                           # SWAS-468: print the touched-readers selection, execute nothing
       --ci-file) [ $# -ge 2 ] || die2 "--ci-file needs a path"; _ci=$2; shift ;;
       --base) [ $# -ge 2 ] || die2 "--base needs a ref"; BASE=$2; shift ;;
       --require) _strict=1 ;;                     # the explicit spelling of the DEFAULT: a no-op
@@ -1832,6 +2459,7 @@ main() {
   done
   [ "$_strict" -eq 0 ] || [ "$BEST" -eq 0 ] || die2 "--require and --best-effort are contradictory"
   [ -n "$_mode" ] || _mode=--run
+  [ "$PLAN" -eq 0 ] || { [ "$_mode" = --run ] && [ -z "$HEAVY" ] && [ "$WARRANTED" -eq 0 ]; } || die2 "--plan takes no mode and no heavy arm"
   case $_mode in
     --selftest) selftest; exit $? ;;
     --run)      root_or_die; cd "$ROOT"
@@ -1839,6 +2467,8 @@ main() {
                 run_lane "$_rel" ;;
     --census)   root_or_die; cd "$ROOT"
                 census "$_ci" ;;
+    --refresh-times) root_or_die; cd "$ROOT"
+                tr_refresh "$_ci" ;;
     # NOTE: resolve_ci runs in a command substitution, so its `exit 2` ends only that SUBSHELL —
     # the rc must be propagated explicitly here or a rejected --ci-file would fall through as rc 1.
     --derive)   root_or_die; cd "$ROOT"
@@ -1893,7 +2523,10 @@ selftest() {
               lock_child_fd lock_ancestor_note lock_perl_env lock_flock_shim lock_owner_real lock_holder_symlink \
               cache_producer_skip_line cache_producer_other_tree cache_off_index_tags cache_off_sparse_filter \
               cache_filter_applied lock_kill_zero \
-              tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv
+              tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv \
+              orphan_ceiling orphan_unconfirmed orphan_trap orphan_leftover orphan_noperl orphan_guard orphan_parent orphan_leader orphan_reuse orphan_perl_env \
+              touched_failclosed touched_replay touched_budget touched_output touched_refresh \
+              preflight_case_variant crash
   do "selftest_$_leg"; done
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
   echo "prepush-lane --selftest: FAIL"; return 1
@@ -2367,7 +3000,7 @@ selftest_scrub() {
   # GIT_DIR is paired with GIT_WORK_TREE so the LANE's own git still works: unpaired, it points the lane itself at another repo — a different question (rc 2, "not a git repository").
   DVOUT=$( cd "$d" && GH_TOKEN=tok SSH_AUTH_SOCK=/tmp/s KIT_NOSE=1 GIT_SSH_COMMAND='ssh -i /k' GIT_DIR=$d/.git GIT_WORK_TREE=$d BOARD_CLAIM_X=1 PREPUSH_X=1 JIRA_EMAIL=e@x JIRA_TOKEN=jt sh "$LANE" --base HEAD --warranted 2>&1 )  # --warranted: the probe is a core-live check
   _wr=$(workroot); _env=$(cat "$d/env.out" 2>/dev/null || echo MISSING)
-  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] jira=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr]" "$_env"
+  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] jira=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr/tmp]" "$_env"
 }
 
 selftest_docs_only() {
@@ -2487,7 +3120,8 @@ selftest_core_selftest() {
   want "core-selftest: the touched face RUNS and is labelled core-selftest" "^  OK    core-selftest *selftest-hermetic --touched (1 targets by its own derivation, both faces)"
   want "core-selftest: the untouched invocations are LISTED, not run" "^# untouched-selftest: 1 derived --selftest invocations NOT run"
   wantnot "core-selftest: the MERGED scanner label never appears in a run report" "^  OK    selftest "
-  wantnot "core-selftest: and no untouched --selftest is executed" "^#   sh conformance/beta\.sh"
+  wantnot "core-selftest: and the core-selftest face does not run the untouched one (only the touched-readers arm may, by its measured budget; SWAS-468)" "^  OK    core-selftest .*beta"
+  want "core-selftest: beta appears only under touched-readers (the arm's budget, not the core-selftest face)" "^  OK    touched-readers  *beta --selftest "
   sfx "core-selftest: the hermetic call got --touched under HERMETIC_BASE=the base" "base=[HEAD] argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
   want "core-selftest: its ceiling is the named SELFCEIL, not the 120s core ceiling" "^# ceiling: 120s/invocation (core-selftest 3600s · heavy arms 3600s"
 }
@@ -4007,6 +4641,816 @@ selftest_tripwire_old_argv() {
   tw_run "$LANE" --warranted
   sfx "tripwire/old-argv: with the old argv the twin reaches the library's store recorder" yes "$([ -s "$_tw/sec.log" ] && echo yes || echo no)"
   sfx "tripwire/old-argv: and then the adapter recorder" yes "$([ -s "$_tw/jira.log" ] && echo yes || echo no)"
+}
+
+# ===================================================================================================
+# SWAS-468 — the touched-readers arm (design 2026-10-28-prepush-touched-readers-468-design.md as amended by the delta; cells TR8-TR13, TR15, LEARN).
+# Every cell drives a FIXTURE repo through `--plan` (reads, never executes) or a real default run, and every cell is bound to a
+# MUTANT: a sed on a COPY of the lane (the tripwire legs' idiom) that must turn the same scenario RED. A mutation that changes nothing fails its leg.
+trmut() {   # trmut <name> <sed-arg…> -> TRM = a mutated copy of ${TRSRC:-$LANE}, or empty (with a FAIL) when the mutation changed nothing
+  _mn=$1; shift; TRM=$WORK/lane-mut-$_mn.sh
+  sed "$@" "${TRSRC:-$LANE}" > "$TRM"
+  if cmp -s "${TRSRC:-$LANE}" "$TRM"; then echo "FAIL: $_mn: the mutation did not change the lane"; SF=1; TRM=""; fi
+  TRSRC=""; return 0
+}
+selftest_touched_failclosed() {
+  # the per-arm rule: no --derive output at all is UNVERIFIED (a lane copy whose derive step writes nothing)
+  one_step; mkchk alpha 'exit 0'; commit_fx; mkchk gamma 'exit 0'
+  _ed=$WORK/lane-emptyderive.sh
+  sed 's#^  derive "\$_ci" > "\$WORK/derive.out" 2>&1 || { sed -n#  { find conformance -maxdepth 1 -type f -name "*.sh" -print > "$WORK/scripts"; : > "$WORK/derive.out"; } || { sed -n#' "$LANE" > "$_ed"
+  sfx "TR9: the empty-derive lane copy differs" differs "$(cmp -s "$LANE" "$_ed" && echo same || echo differs)"
+  DVOUT=$( cd "$d" && sh "$_ed" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "TR9: an empty --derive makes the arm UNVERIFIED, rc 1" 1 "$DVRC"
+  want "TR9: and the verdict names it" '^PARITY-CORE: UNVERIFIED (touched-readers: no --derive output'
+  TRSRC=$_ed trmut tr9c -e 's/^  if ! grep -q ..# ci-file:.* 2>\/dev\/null || \[ ! -f "\$WORK\/listing" \]; then$/  if false; then/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    wantnot "TR9 mutant: the empty-derive guard removed -> no UNVERIFIED (the cell is RED)" '^PARITY-CORE: UNVERIFIED (touched-readers'; }
+}
+
+selftest_touched_replay() {
+  [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
+    { echo "PASS: TR8: N/A - not the kit tree"; return 0; }
+  _pb=$(git -C "$KROOT" rev-parse HEAD~1 2>/dev/null) || { echo "PASS: TR8: N/A - no parent commit to take a listing from"; return 0; }
+  DVOUT=$( cd "$KROOT" && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "TR8: the plan on the real tree is rc 0" 0 "$DVRC"
+  echo "PASS: TR8: measured on this tree [M] — $(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: \([0-9]* candidate.*\) · budget.*$/\1/p')"
+  want "TR8 (a) under an EMPTY table: S7 in agent-autonomy --selftest runs" '^  PLAN  touched-readers  *agent-autonomy --selftest '
+  want "TR8 (b) under an EMPTY table: the prepush-twins census runs" '^  PLAN  touched-readers  *prepush-lane --census '
+  want "TR8 (c) under an EMPTY table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
+  _h=$WORK/tr8home; _rc0=$(git -C "$KROOT" rev-list --max-parents=0 HEAD | sed -n 1p); _sd=$_h/.local/state/sparkwright/prepush/$_rc0; ( umask 077; mkdir -p "$_sd" )
+  _now=$(date +%s)
+  { printf 'agent-autonomy\t--selftest\t97\t2\tci\t%s\n' "$_now"; printf 'prepush-lane\t--census\t21\t2\tci\t%s\n' "$_now"
+    printf 'citation-live\t\t3\t0\tci\t%s\n' "$_now"; printf 'conformance-mass-budget\t\t62\t0\tci\t%s\n' "$_now"; } > "$_sd/times.tsv"
+  DVOUT=$( cd "$KROOT" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR8 (a) under the #914 table with reds30: S7 runs, in the red-history tier" '^  PLAN  touched-readers  *agent-autonomy --selftest .*\[red-history\]'
+  want "TR8 (b) under the #914 table: the census runs, in the red-history tier"     '^  PLAN  touched-readers  *prepush-lane --census .*\[red-history\]'
+  want "TR8 (c) under the #914 table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
+  wantnot "TR8 (a): and S7 is not cut short of its time (the budget is not spent on 100 cheap checks first)" '^  PLAN  touched-readers  *agent-autonomy --selftest .*CUT:'
+  trmut tr8a -e 's/-k1,1n -k2,2n -k3,3/-k2,2n -k3,3/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$KROOT" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR8 mutant: fastest-first ordering -> S7 is left behind the cheap checks and cut short (the cell is RED)" '^  PLAN  touched-readers  *agent-autonomy --selftest .*CUT:'; }
+}
+
+trtab() {   # trtab <home> <printf-rows-file-content already written to $WORK/trtab.rows> — put the rows where the lane under test looks
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _sd=$1/.local/state/sparkwright/prepush/$_rc0
+  ( umask 077; mkdir -p "$_sd" ); cp "$WORK/trtab.rows" "$_sd/times.tsv"
+}
+selftest_touched_budget() {
+  _sc=$WORK/lane-scaled-a.sh; _sb=$WORK/lane-scaled-b.sh
+  sed -e 's/^TR_CEIL_MIN=120$/TR_CEIL_MIN=2/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=4/' "$LANE" > "$_sc"
+  sed -e 's/^TR_CEIL_MIN=120$/TR_CEIL_MIN=10/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=4/' "$LANE" > "$_sb"
+  sfx "TR-scale: the scaled lane copies differ" differs "$(cmp -s "$LANE" "$_sc" || cmp -s "$LANE" "$_sb" && echo same || echo differs)"
+  # TR10 — a check killed at the ceiling is LISTED, neither FAIL nor UNVERIFIED
+  mkcin 'sh conformance/slow.sh'; commit_fx; mkchk slow 'sleep 8'
+  _now=$(date +%s); printf 'slow\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbh0; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sc" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10: a check killed at the local ceiling is listed CI-GRADED with the ceiling" '^CI-GRADED: slow (local ceiling hit at [0-9]* s'
+  wantnot "TR10: and it is not a FAIL" '^  FAIL  '
+  sfx "TR10: and the verdict is not UNVERIFIED or FAIL (rc 0)" 0 "$DVRC"
+  TRSRC=$_sc trmut tr10 -e 's/if \[ "\$RUN_S" -ge "\$_cl" \]; then tr_ci/if [ "$RUN_S" -lt 0 ]; then tr_ci/'
+  [ -z "$TRM" ] || { _h=$WORK/trbh0b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10 mutant: the kill read as a FAIL (the cell is RED)" '^  FAIL  touched-readers'; }
+  # TR11 — the budget is charged with MEASURED wall: a check predicted at 1 s that takes 3 s leaves too little for the next, predicted at 2 s
+  mkcin 'sh conformance/ba.sh' 'sh conformance/bb.sh'; commit_fx; mkchk ba 'sleep 3'; mkchk bb 'exit 0'
+  _h=$WORK/trbh; _now=$(date +%s)
+  { printf 'ba\t\t1\t0\tlocal\t%s\n' "$_now"; printf 'bb\t\t2\t0\tlocal\t%s\n' "$_now"; } > "$WORK/trtab.rows"; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR11: the first check ran" '^  OK    touched-readers  *ba '
+  want "TR11: the second is listed, the budget spent by the first measured 3 s (not its predicted 1 s)" '^CI-GRADED: bb (budget spent'
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p )
+  sfx "TR-record: the measured wall of the check that ran is appended as a local row (the next run's time)" "local" "$(awk -F'\t' '$1 == "ba" && $3 + 0 >= 3 { r = $5 } END { print r }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
+  TRSRC=$_sb trmut tr11 -e 's/_rem=\$((_rem - RUN_S))/_rem=$((_rem - _pred))/'
+  [ -z "$TRM" ] || { _h=$WORK/trbh2; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR11 mutant: charging the prediction lets the second run (the cell is RED)" '^  OK    touched-readers  *bb '; }
+  # TR15 — a forged 9999 s row: a red-history check still runs; any other is LISTED, visibly
+  mkcin 'sh conformance/fa.sh' 'sh conformance/fc.sh'; commit_fx; mkchk fa 'exit 0'; mkchk fc 'exit 0'
+  { printf 'fa\t\t9999\t1\tlocal\t%s\n' "$_now"; printf 'fc\t\t9999\t0\tlocal\t%s\n' "$_now"; } > "$WORK/trtab.rows"; _h=$WORK/trbh3; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR15: the red-history check with a forged 9999 s row still runs, in tier 1" '^  OK    touched-readers  *fa .*\[red-history\]'
+  want "TR15: the other check with a forged row is listed, visibly, with the predicted time" '^CI-GRADED: fc (budget spent: predicted 9999 s'
+  TRSRC=$_sb trmut tr15 -e 's/^    if \[ "\$_tier" = 1 \]; then _go=0;/    if false; then _go=0;/'
+  [ -z "$TRM" ] || { _h=$WORK/trbh4; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    wantnot "TR15 mutant: a forged row drops the red-history check silently (the cell is RED)" '^  OK    touched-readers  *fa '; }
+  # a tier-1 check cut by the budget says "budget spent", not "ceiling hit"
+  mkcin 'sh conformance/sl.sh'; commit_fx; mkchk sl 'sleep 8'
+  printf 'sl\t\t1\t1\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbh6; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10b: a red-history check killed by the shrunk budget is listed as budget spent" '^CI-GRADED: sl (budget spent: only 4 s of the budget was left'
+  # M3: a child that edits the lane's own scratch files cannot change the run order or the table
+  mkcin 'sh conformance/ma.sh' 'sh conformance/mb.sh'; commit_fx
+  mkchk ma 'printf junk > "$TMPDIR/tr.ord"; printf junk > "$TMPDIR/tr.tab"; rm -f "$TMPDIR"/tr.*; exit 0'; mkchk mb 'exit 0'
+  { printf 'ma\t\t1\t0\tlocal\t%s\n' "$_now"; printf 'mb\t\t2\t0\tlocal\t%s\n' "$_now"; printf '@job\tj1\t3600\t0\tci\t%s\n' "$_now"; } > "$WORK/trtab.rows"; _h=$WORK/trbh7; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "M3: after a child edits the scratch files the run order is unchanged (ma then mb, both OK)" "ma mb" "$(printf '%s\n' "$DVOUT" | sed -n 's/^  OK    touched-readers  *\(m[ab]\) .*$/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+  # TR9b — a refused state dir is UNVERIFIED, never a silent fallback
+  _h=$WORK/trbh5; trtab "$_h"; chmod 777 "$_sd"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  chmod 700 "$_sd"
+  want "TR9b: a group/world-writable state dir makes the arm UNVERIFIED" '^PARITY-CORE: UNVERIFIED (touched-readers: the state dir is refused'
+}
+
+selftest_touched_output() {
+  mkci <<'YAML'
+jobs:
+  guard-delta:
+    steps:
+      - run: |
+          git fetch
+          sh conformance/alpha.sh --grade-cells
+      - run: sh conformance/beta.sh; echo done
+  other:
+    steps:
+      - run: sh conformance/alpha.sh
+  third:
+    steps:
+      - run: sh conformance/gamma.sh
+YAML
+  mkchk beta 'touch ran.marker'; commit_fx; mkchk gamma 'exit 0'
+  _h=$WORK/trout; _now=$(date +%s)
+  { printf '@job\tguard-delta\t6368\t0\tci\t%s\n' "$_now"; printf '@job\tother\t1140\t20\tci\t%s\n' "$_now"
+    printf '@job\tthird\t600\t20\tci\t%s\n' "$_now"; printf '@green\tall\t21780\t0\tci\t%s\n' "$_now"; } > "$WORK/trtab.rows"; trtab "$_h"
+  _o=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD 2>&1 ) && _r=0 || _r=$?; DVOUT=$_o
+  sfx "TR12: the run is rc 0" 0 "$_r"
+  sfx "TR12: a context mention is never executed" "" "$(ls "$d/ran.marker" 2>/dev/null)"
+  sfx "TR12: two basename-less context steps of one job are listed ONCE" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^CI-GRADED: guard-delta' || :)"
+  want "TR13: a guard-delta-shaped context prints CI-GRADED with its cost (job wall to red, job-min per red)" '^CI-GRADED: guard-delta.*~106 min to red.*~363 job-min per red'
+  want "TR13: a job at 19 of 20 min prints TIMEOUT-RISK" '^TIMEOUT-RISK: other .*19.0 of 20 min'
+  wantnot "TR13: a job at 10 of 20 min does not" '^TIMEOUT-RISK: third '
+  want "TR12: the paste block is headed" '^CI-ONLY (paste into the PR):'
+  trmut tr12 -e 's/\*"\$NL\$_job\$NL"\*) ;;/__never__) ;;/'
+  [ -z "$TRM" ] || { _o=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :; DVOUT=$_o
+    sfx "TR12 mutant: duplicate rows per job (the cell is RED)" 2 "$(printf '%s\n' "$DVOUT" | grep -c '^CI-GRADED: guard-delta' || :)"; }
+  trmut tr13a -e 's/\[ \$((L_SEC \* 100)) -ge /[ $((L_SEC * 100)) -lt /'
+  [ -z "$TRM" ] || { _o=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :; DVOUT=$_o
+    want "TR13 mutant: the threshold inverted -> the calm job is flagged (the cell is RED)" '^TIMEOUT-RISK: third '; }
+  trmut tr13b -e 's/^  while IFS= read -r _cx; do$/  while false; do/'
+  [ -z "$TRM" ] || { _o=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :; DVOUT=$_o
+    wantnot "TR13 mutant: the context listing dropped (the cell is RED)" '^CI-GRADED: guard-delta'; }
+}
+
+selftest_touched_refresh() {
+  mkci <<'YAML'
+jobs:
+  job-a:
+    timeout-minutes: 20
+    steps:
+      - name: My step
+        run: sh conformance/alpha.sh
+      - name: Other step
+        run: sh conformance/beta.sh
+YAML
+  commit_fx; _g=$WORK/fakegh; mkdir -p "$_g"
+  cat > "$_g/gh" <<'GH'
+#!/bin/sh
+case "$*" in
+  *status=failure*) printf '333\t%s\n' "$(date +%s)" ;;
+  *event=push*) echo 111 ;;
+  *event=pull_request*) echo 222 ;;
+  *runs/333/*) printf 'Other step\n' ;;
+  *runs/111/*'.steps[]'*) printf 'job-a\tMy step\t97\n' ;;
+  *runs/111/*) printf 'job-a\t1140\n' ;;
+  *runs/222/*) printf 'job-a\t21780\n' ;;
+esac
+GH
+  chmod 755 "$_g/gh"; _h=$WORK/trref
+  DVOUT=$( cd "$d" && PATH=$_g:$PATH HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "refresh: rc 0" 0 "$DVRC"
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t=$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  sfx "refresh: the step row carries the CI wall" "alpha		97	0	ci" "$(awk -F'\t' '$1=="alpha" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
+  sfx "refresh: a failed step becomes a RED row (count, source red) for its invocation, mapped by step name" "beta		0	1	red" "$(awk -F'\t' '$1=="beta" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
+  # the red history LEARNS: beta had no red row and no seed, and is now tier 1; alpha is not
+  : > "$d/x.md"      # untracked = in the listing, so the plan has something to order
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "LEARN: a check with no prior red row that failed once in CI is in tier 1 (red-history)" '^  PLAN  touched-readers  *beta .*\[red-history\]'
+  want "LEARN: and the check that never failed is not" '^  PLAN  touched-readers  *alpha .*\[measured\]'
+  trmut learn -e 's/^  while IFS="\$TAB" read -r _bid _bts <&7; do$/  while false; do/'
+  [ -z "$TRM" ] || { _h2=$WORK/trref2; DVOUT=$( cd "$d" && PATH=$_g:$PATH HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --refresh-times 2>&1 ) || :
+    DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base HEAD 2>&1 ) || :
+    wantnot "LEARN mutant: the failed-job ingestion dropped -> beta stays measured (the cell is RED)" '^  PLAN  touched-readers  *beta .*\[red-history\]'; }
+  trmut learn2 -e 's/if (nm in fails) print/if (0) print/'
+  [ -z "$TRM" ] || { _h2=$WORK/trref3; DVOUT=$( cd "$d" && PATH=$_g:$PATH HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --refresh-times 2>&1 ) || :
+    DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base HEAD 2>&1 ) || :
+    wantnot "LEARN mutant 2: the failed step never becomes a red row -> beta stays measured (the cell is RED)" '^  PLAN  touched-readers  *beta .*\[red-history\]'; }
+  # AGEING: a red row older than 30 days is not tier 1; a fresh one is
+  _h3=$WORK/trage; _old=$(( $(date +%s) - 31 * 86400 )); _new=$(( $(date +%s) - 29 * 86400 ))
+  printf 'beta\t\t0\t3\tred\t%s\n' "$_old" > "$WORK/trtab.rows"; trtab "$_h3"
+  DVOUT=$( cd "$d" && HOME=$_h3 PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base HEAD 2>&1 ) || :
+  want "AGE: a red row 31 days old is not tier 1" '^  PLAN  touched-readers  *beta .*\[measured\]'
+  printf 'beta\t\t0\t3\tred\t%s\n' "$_new" > "$WORK/trtab.rows"; trtab "$_h3"
+  DVOUT=$( cd "$d" && HOME=$_h3 PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base HEAD 2>&1 ) || :
+  want "AGE: and one 29 days old is" '^  PLAN  touched-readers  *beta .*\[red-history\]'
+  printf 'beta\t\t0\t3\tred\t%s\n' "$_old" > "$WORK/trtab.rows"; trtab "$_h3"
+  trmut age -e 's/NOW - \$6 <= REDS && //'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h3 PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base HEAD 2>&1 ) || :
+    want "AGE mutant: no age filter -> a 31-day-old red row is tier 1 (the cell is RED)" '^  PLAN  touched-readers  *beta .*\[red-history\]'; }
+  # M1: a failing gh KEEPS the old rows and is rc 1 (a failure must not wipe the red history)
+  _gb=$WORK/badgh; mkdir -p "$_gb"; printf '#!/bin/sh\nexit 1\n' > "$_gb/gh"; chmod 755 "$_gb/gh"
+  printf 'beta\t\t0\t2\tred\t%s\n' "$(date +%s)" > "$WORK/trtab.rows"; _h4=$WORK/trkeep; trtab "$_h4"
+  _t4=$_h4/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  DVOUT=$( cd "$d" && PATH=$_gb:$PATH HOME=$_h4 PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "M1: a failing gh is rc 1" 1 "$DVRC"
+  sfx "M1: and the old red row is KEPT (count still 2)" "beta		0	2	red" "$(awk -F'\t' '$1=="beta" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t4" 2>/dev/null)"
+  want "M1: and says so" '^# times: gh failed or returned nothing'
+  trmut m1 -e 's/^  \[ "\$_gf" -eq 0 \] || { note "times: gh failed.*$/  :/'
+  [ -z "$TRM" ] || { trtab "$_h4"; DVOUT=$( cd "$d" && PATH=$_gb:$PATH HOME=$_h4 PREPUSH_NO_CACHE=0 sh "$TRM" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
+    sfx "M1 mutant: the guard dropped -> the failure wipes the red row and exits 0 (the cell is RED)" "0|" "$DVRC|$(awk -F'\t' '$1=="beta" { print $4 }' "$_t4" 2>/dev/null)"; }
+  sfx "refresh: the job row carries the wall and the job's timeout-minutes" "@job	job-a	1140	20	ci" "$(awk -F'\t' '$1=="@job" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
+  sfx "refresh: the green row carries the job-seconds of the last green PR run" "@green	all	21780	0	ci" "$(awk -F'\t' '$1=="@green" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
+  DVOUT=$( cd "$d" && PATH=/usr/bin:/bin HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
+  if command -v gh >/dev/null 2>&1 && [ -x /usr/bin/gh ] || [ -x /bin/gh ]; then echo "PASS: refresh: gh present at a fixed path; the no-gh note is not exercised here"
+  else want "refresh: with no gh the run says so in one note" '^# times: gh not found'; fi
+  # M2: a step's name applies to EVERY line inside its multi-line `run: |` block; a failed name that maps to no invocation is counted
+  mkci <<'YAML'
+jobs:
+  job-b:
+    steps:
+      - name: Blk step
+        run: |
+          sh conformance/alpha.sh
+          sh conformance/beta.sh
+YAML
+  commit_fx; _g2=$WORK/fakegh2; mkdir -p "$_g2"
+  sed -e "s/Other step/Blk step\\\\nGhost step/" -e "s/job-a/job-b/g" -e "s/My step/Blk step/g" "$_g/gh" > "$_g2/gh"; chmod 755 "$_g2/gh"
+  _h5=$WORK/trblk; DVOUT=$( cd "$d" && PATH=$_g2:$PATH HOME=$_h5 PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t5=$_h5/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  sfx "M2: BOTH lines of the block get the step's red row" "alpha beta" "$(awk -F'\t' '$5 == "red" { print $1 }' "$_t5" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')"
+  want "M2: and the failed step name that maps to no invocation is counted" '1 failed step name(s) mapped to no invocation'
+}
+
+# --- SWAS-428: the ceiling kills the arm's WHOLE process group, and an interrupted lane kills its live arm ---------------------
+# Every fixture arm spawns `sleep` grandchildren of a FINITE length (at most 120 s), so a cell that fails leaks for minutes at worst; each cell reaps what
+# it recorded. The seams are FUNCTION OVERRIDES appended to a COPY of the lane (arm_survivors, arm_ps, kill), never environment knobs: a probe
+# function below runs in that copy in place of main. A mutant is the same copy with ONE sed edit; it must turn its cell RED, for its named cause.
+# lane_mut <out> <sed-script|''> [override-text] — writes the copy; prints `differs` if the sed edit changed the lane, else `same`.
+lane_mut() {
+  if [ -n "$2" ]; then sed -e "$2" "$LANE" > "$1.tmp"; else cp "$LANE" "$1.tmp"; fi
+  if cmp -s "$LANE" "$1.tmp"; then _lm_r=same; else _lm_r=differs; fi
+  sed '$d' "$1.tmp" > "$1"; rm -f "$1.tmp"
+  [ -z "${3-}" ] || printf '%s\n' "$3" >> "$1"
+  printf 'main "$@"\n' >> "$1"
+  printf '%s\n' "$_lm_r"
+}
+# rnl <lane-copy> <repo> [args…] -> DVOUT/DVRC, like rn but through a lane copy.
+rnl() { _l=$1; _r=$2; shift 2; DVOUT=$( cd "$_r" && sh "$_l" --base HEAD "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
+# has <regex> -> yes|no over DVOUT.
+has() { if printf '%s\n' "$DVOUT" | grep -q -e "$1"; then echo yes; else echo no; fi; }
+# k_alive <pid-file> -> how many recorded pids are still alive. k_reap <pid-file> — kill what a failed cell left (digits, > 1 only).
+k_alive() {
+  _ka=0; [ -f "$1" ] || { echo 0; return 0; }
+  for _kq in $(cat "$1"); do
+    case $_kq in ''|*[!0-9]*) continue ;; esac
+    if kill -0 "$_kq" 2>/dev/null; then _ka=$((_ka+1)); fi
+  done
+  echo "$_ka"
+}
+k_reap() {   # the loop variable is NOT _kp: the cells keep their own survivor in _kp across a reap (the old K6b leak)
+  [ -f "$1" ] || return 0
+  for _kq in $(cat "$1"); do hl_kill "$_kq" -KILL || :; done
+  return 0
+}
+# k_stop <pid> — kill and reap a cell's own background sleeper quietly (bash would print "Killed: 9" for it).
+k_stop() { { hl_kill "$1" -KILL; wait "$1"; } 2>/dev/null || :; }
+# orph_fx <arm body> <budget-s> -> $d: a --slow fixture whose heavy check `alpha` runs the body with that ceiling.
+orph_fx() { one_step; mkchk alpha "$1"; tw alpha heavy '' '' '' "$2" 'fixture: a ceiling-hit arm'; commit_fx; }
+# the three arm shapes: a grandchild, a TERM-ignoring grandchild, a grandchild in a group of its own (all record their pids in $PWD/k.pids)
+K_BODY='( sleep 100 & echo $! >> "$PWD/k.pids"; wait ) &
+echo $! >> "$PWD/k.pids"
+wait'
+K_BODY_IGN='( trap "" TERM; sleep 100 & echo $! >> "$PWD/k.pids"; wait ) &
+echo $! >> "$PWD/k.pids"
+wait'
+K_BODY_ESC='/usr/bin/perl -e "setpgrp(0,0); exec @ARGV" sleep 100 &
+echo $! >> "$PWD/k.pids"
+sleep 1
+ps -o pgid= -p $! | tr -d " " > "$PWD/esc.pgid"
+ps -o pgid= -p $$ | tr -d " " > "$PWD/arm.pgid"
+wait'
+
+# K1/K2/K3 (C1-C3): a ceiling hit leaves no recorded descendant alive, however it hides. M-428a/b1/b2/c each turn their cell red.
+selftest_orphan_ceiling() {
+  _m=$WORK/lane-428.sh
+  orph_fx "$K_BODY" 2; rn "$d" --slow
+  want "orphan/K1: the ceiling FAIL says the group was killed, TERM+CONT then KILL, confirmed gone" "exceeded ceiling.*process group [0-9]* + [0-9]* escaped descendant(s): TERM+CONT, confirmed gone"
+  wantnot "orphan/K1: and no KILL is claimed when none fired (TERM was enough)" "exceeded ceiling.*KILL after"
+  sfx "orphan/K1: a grandchild and its subshell are dead after the ceiling" 0 "$(k_alive "$d/k.pids")"; k_reap "$d/k.pids"
+  sfx "orphan/M-428a: the mutation (signal the direct child, not the group) changed the lane" differs "$(lane_mut "$_m" 's|kill -s "\$1" -- "-\$2"|kill -s "$1" "$2"|')"
+  orph_fx "$K_BODY" 2; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428a: signalling the direct child only leaves the grandchild alive, so K1 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+  # K2: a member that ignores TERM dies on the KILL
+  orph_fx "$K_BODY_IGN" 2; rn "$d" --slow
+  sfx "orphan/K2: a TERM-ignoring grandchild is dead after the KILL" 0 "$(k_alive "$d/k.pids")"
+  want "orphan/K2: and the FAIL line says KILL fired and confirmed gone" "exceeded ceiling.*TERM+CONT, KILL after 5 s, confirmed gone"; k_reap "$d/k.pids"
+  sfx "orphan/M-428b1: the mutation (no KILL step) changed the lane" differs "$(lane_mut "$_m" 's#^    arm_sig KILL "\$_ak_g"$#    :#;s#^    for _ak_p in \$_ak_set \$_ak_ld; do arm_sigp KILL "\$_ak_p"; done$#    :#')"
+  orph_fx "$K_BODY_IGN" 2; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428b1: with no KILL the TERM-ignorer lives, so K2 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+  sfx "orphan/M-428b2: the mutation (the parent does not wait for a fired watchdog) changed the lane" differs "$(lane_mut "$_m" 's#^  if \[ -e "\$WORK/ctl/wd.fired" \]; then wait "\$_wd" || :$#  if false; then :#')"
+  orph_fx "$K_BODY_IGN" 2; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428b2: the parent kills the watchdog mid-grace, so the TERM-ignorer lives and K2 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+  # K3: a grandchild that made its OWN group (a nested lane does exactly this) is reached by the ppid snapshot
+  if [ ! -x /usr/bin/perl ]; then echo "SKIP: orphan/K3: /usr/bin/perl is absent — the escaped-group cell NOT exercised"; return 0; fi
+  orph_fx "$K_BODY_ESC" 2; rn "$d" --slow
+  sfx "orphan/K3: the fixture grandchild really is in a group of its own" differ "$([ "$(cat "$d/esc.pgid" 2>/dev/null)" != "$(cat "$d/arm.pgid" 2>/dev/null)" ] && echo differ || echo same)"
+  sfx "orphan/K3: the escaped grandchild is dead after the ceiling" 0 "$(k_alive "$d/k.pids")"; k_reap "$d/k.pids"
+  sfx "orphan/M-428c: the mutation (no ppid snapshot) changed the lane" differs "$(lane_mut "$_m" 's#^  _ak_s1=.*$#  _ak_s1=""#')"
+  orph_fx "$K_BODY_ESC" 2; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428c: without the snapshot the escaped grandchild lives, so K3 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+}
+
+# K4 (C4): a survivor the confirm can see is NEVER read as confirmed gone, and the verdict is UNVERIFIED (the override is a function appended to a lane copy).
+selftest_orphan_unconfirmed() {
+  sleep 110 & _kp=$!
+  _m=$WORK/lane-428d.sh; _ov="arm_survivors() { echo $_kp; }; ARM_GRACE_S=1; ARM_CONFIRM_S=1"
+  lane_mut "$_m" '' "$_ov" > /dev/null
+  orph_fx 'sleep 60' 2; rnl "$_m" "$d" --slow
+  want "orphan/K4: the ceiling FAIL names the survivor and says NOT confirmed gone" "exceeded ceiling.*NOT confirmed gone: pid $_kp still alive"
+  sfx "orphan/K4: a ceiling hit with a survivor reads UNVERIFIED, not FAIL" "PARITY-CORE: UNVERIFIED" "$(lastline | cut -c1-23)"
+  sfx "orphan/K4: rc 1" 1 "$DVRC"
+  sfx "orphan/M-428d: the mutation (hard-code confirmed gone) changed the lane" differs "$(lane_mut "$_m" 's#, NOT confirmed gone: pid \$_apl still alive#, confirmed gone#' "$_ov")"
+  rnl "$_m" "$d" --slow
+  sfx "orphan/M-428d: the FAIL line no longer says NOT confirmed gone, so K4 is RED" no "$(has 'exceeded ceiling.*NOT confirmed gone')"
+  k_stop "$_kp"
+}
+
+# K5 (C5, design item B1): a TERM to the LANE pid ONLY (never the group) while an arm runs. The ceiling is 300 s, so the watchdog cannot be what passes it:
+# within about 8 s the lane must exit 143 and the arm's group and grandchild must be gone. k5_run sets K5R to `ok` or `red: <why>`.
+# k5_run <lane> [term|storm|kill] — term: one TERM to the lane pid; storm: two TERMs 0.3 s apart over a TERM-ignoring grandchild (the KILL must still happen,
+# S-M2); kill: SIGKILL to the lane pid (the watchdog notices and kills the arm, R-M2). A red run names its reasons in K5R.
+k5_run() {
+  _mode=${2:-term}; _sig=TERM; _rcw=143; _max=8; _ign=""
+  [ "$_mode" != storm ] || { _ign='trap "" TERM; '; _max=14; }
+  [ "$_mode" != kill ] || { _sig=KILL; _rcw=137; }
+  one_step; mkchk alpha 'echo $$ > "$PWD/arm.pid"
+( '"$_ign"'sleep 110 & echo $! > "$PWD/gc.pid"; wait ) &
+wait'
+  commit_fx; _own=$(ps -o pgid= -p "$$" | tr -d ' ')
+  ( cd "$d" && PREPUSH_CEILING_S=300 && export PREPUSH_CEILING_S && exec sh "$1" --base HEAD --warranted ) > "$WORK/k5.out" 2>&1 &
+  _lp=$!; _dl=$(( $(now_s) + 25 ))
+  while [ ! -s "$d/gc.pid" ] && [ "$(now_s)" -lt "$_dl" ]; do sleep 1; done
+  if [ ! -s "$d/gc.pid" ]; then K5R="red: the arm never started"; hl_kill "$_lp" -KILL || :; return 0; fi
+  _ap=$(cat "$d/arm.pid"); _gc=$(cat "$d/gc.pid"); _pg=$(ps -o pgid= -p "$_ap" 2>/dev/null | tr -d ' ')
+  sleep 1; kill -s "$_sig" "$_lp" 2>/dev/null || :; _t0=$(now_s); _dl=$(( _t0 + 12 + _max - 8 )); K5R=""
+  if [ "$_mode" = storm ]; then sleep 0.3 2>/dev/null || sleep 1; kill -s TERM "$_lp" 2>/dev/null || :; fi
+  while :; do
+    _ls=$(ps -o stat= -p "$_lp" 2>/dev/null | tr -d ' '); _gs=$(ps -o stat= -p "$_gc" 2>/dev/null | tr -d ' ')
+    _gm=$(ps -A -o pid= -o pgid= 2>/dev/null | awk -v g="$_pg" '$2 == g { n++ } END { print n + 0 }')
+    case $_ls in ''|Z*) _lgone=1 ;; *) _lgone=0 ;; esac
+    case $_gs in ''|Z*) _ggone=1 ;; *) _ggone=0 ;; esac
+    if [ "$_lgone" -eq 1 ] && [ "$_ggone" -eq 1 ] && [ "$_gm" -eq 0 ]; then break; fi
+    [ "$(now_s)" -lt "$_dl" ] || break
+    sleep 1
+  done
+  _el=$(( $(now_s) - _t0 ))
+  [ "$_lgone" -eq 1 ] || K5R="$K5R lane-alive"
+  [ "$_ggone" -eq 1 ] || K5R="$K5R grandchild-alive"
+  [ "$_gm" -eq 0 ] || K5R="$K5R group-alive($_gm member(s), pgid $_pg)"
+  [ "$_pg" != "$_own" ] || K5R="$K5R arm-not-in-its-own-group"
+  [ "$_el" -le "$_max" ] || K5R="$K5R took-${_el}s"
+  # reap what a red run left (by PID: the arm's group may be the selftest's own, and must never be signalled)
+  hl_kill "$_ap" -KILL || :; hl_kill "$_gc" -KILL || :
+  _dl=$(( $(now_s) + 3 ))
+  while [ "$(now_s)" -lt "$_dl" ]; do
+    _ls=$(ps -o stat= -p "$_lp" 2>/dev/null | tr -d ' '); case $_ls in ''|Z*) break ;; esac; sleep 1
+  done
+  _lrc=0; case $_ls in ''|Z*) { wait "$_lp"; } 2>/dev/null || _lrc=$? ;; *) hl_kill "$_lp" -KILL || :; { wait "$_lp"; } 2>/dev/null || :; _lrc=killed ;; esac
+  [ "$_lrc" = "$_rcw" ] || K5R="$K5R lane-rc=$_lrc"
+  if [ -z "$K5R" ]; then K5R=ok; else K5R="red:$K5R"; fi
+}
+# k5_has <regex> -> yes|no over K5R: a mutant must be red for its NAMED cause, not merely red (a run whose arm never started is red for neither).
+k5_has() { if printf '%s' "$K5R" | grep -q -e "$1"; then echo yes; else echo no; fi; }
+selftest_orphan_trap() {
+  _m=$WORK/lane-428e.sh
+  k5_run "$LANE"; sfx "orphan/K5: TERM to the lane pid alone ends the lane (rc 143) and kills the arm's group and grandchild within 8 s" ok "$K5R"
+  # e1 swaps the background run for a foreground one; `SR_PID=$$` is only there so the following `wait` has a (non-child) operand and returns 127 at once, as a no-op.
+  sfx "orphan/M-428e1: the mutation (scrubbed_run in the foreground again) changed the lane" differs "$(lane_mut "$_m" 's#^  scrubbed_run "\$@" & SR_PID=\$!$#  scrubbed_run "$@" || :; SR_PID=$$#')"
+  k5_run "$_m"; sfx "orphan/M-428e1: with the trap deferred behind the foreground run, the lane is still alive, so K5 is RED for lane-alive" yes "$(k5_has 'lane-alive')"
+  # e2 and l also drop the watchdog's lane-pid poll: with it the watchdog would rescue the arm after a second, which is the point of R-M2 but masks the trap's own kill
+  sfx "orphan/M-428e2: the mutation (cleanup skips the arm kill; no lane-pid poll) changed the lane" differs "$(lane_mut "$_m" 's#^  arm_trap_kill$#  :#;/^      kill -0 "\$_lpid" 2>\/dev\/null || { arm_orphaned/d')"
+  k5_run "$_m"; sfx "orphan/M-428e2: with no arm kill in the trap, the arm lives, so K5 is RED for group-alive or grandchild-alive" yes "$(k5_has 'group-alive\|grandchild-alive')"
+  # S-M2: a TERM storm over a TERM-ignoring grandchild. The first handler must finish its KILL; a nested one must not abandon it.
+  k5_run "$LANE" storm; sfx "orphan/K10: two TERMs 0.3 s apart still end in a KILL: lane rc 143, TERM-ignoring grandchild and group gone" ok "$K5R"
+  # The trap re-entry mutant is not graded; SWAS-467 owns it. K10 above stays: a TERM storm still ends in the KILL.
+  # R-M2: SIGKILL cannot be trapped, but the watchdog polls the lane pid and kills the arm when the lane alone died
+  k5_run "$LANE" kill; sfx "orphan/K11: SIGKILL to the lane pid alone: the watchdog kills the arm's group within 8 s" ok "$K5R"
+  sfx "orphan/M-428m: the mutation (no lane-pid poll in the watchdog) changed the lane" differs "$(lane_mut "$_m" '/^      kill -0 "\$_lpid" 2>\/dev\/null || { arm_orphaned/d')"
+  k5_run "$_m" kill; sfx "orphan/M-428m: with no poll the arm runs on with a 300 s ceiling, so K11 is RED for grandchild-alive" yes "$(k5_has 'grandchild-alive')"
+}
+
+# K6/K6b (C6): an arm that exits 0 and leaves a process behind: killed and NAMED (a NOTE, not a FAIL); an unconfirmed kill is UNVERIFIED.
+selftest_orphan_leftover() {
+  _lb='sleep 100 & echo $! > "$PWD/k.pids"
+exit 0'
+  _m=$WORK/lane-428f.sh
+  orph_fx "$_lb" 30; rn "$d" --slow
+  sfx "orphan/K6: an arm that exits 0 is still rc 0" 0 "$DVRC"
+  want "orphan/K6: the lane names the leftover and says it was killed" "^# NOTE: .* left [0-9]* process(es) in its group after exit; killed (confirmed gone)"
+  sfx "orphan/K6: the leftover is dead" 0 "$(k_alive "$d/k.pids")"; k_reap "$d/k.pids"
+  sfx "orphan/M-428f: the mutation (no post-exit check) changed the lane" differs "$(lane_mut "$_m" 's#^  if \[ "\$_grp" -eq 1 \] && arm_group_alive "\$_pid"; then#  if false; then#')"
+  orph_fx "$_lb" 30; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428f: with no post-exit check the leftover lives, so K6 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+  # K6b: the same arm with an unconfirmable kill
+  sleep 110 & _kp=$!
+  _ov="arm_survivors() { echo $_kp; }; ARM_GRACE_S=1; ARM_CONFIRM_S=1"
+  lane_mut "$WORK/lane-428g0.sh" '' "$_ov" > /dev/null
+  orph_fx "$_lb" 30; rnl "$WORK/lane-428g0.sh" "$d" --slow
+  want "orphan/K6b: the NOTE says NOT confirmed gone, naming the pid" "^# NOTE: .*NOT confirmed gone: pid $_kp"
+  sfx "orphan/K6b: the verdict is UNVERIFIED" "PARITY-CORE: UNVERIFIED" "$(lastline | cut -c1-23)"
+  k_reap "$d/k.pids"
+  sfx "orphan/M-428g: the mutation (no UNV on an unconfirmed post-exit kill) changed the lane" differs "$(lane_mut "$_m" 's#unv "\$_an_lb: leftover kill NOT confirmed gone: pid \$_apl"#:#' "$_ov")"
+  orph_fx "$_lb" 30; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428g: without the UNV the verdict is not UNVERIFIED, so K6b is RED" no "$([ "$(lastline | cut -c1-23)" = 'PARITY-CORE: UNVERIFIED' ] && echo yes || echo no)"
+  k_reap "$d/k.pids"; k_stop "$_kp"
+}
+
+# K7 (C9): with no perl the arms are not process-grouped; the lane says so ONCE, every ceiling FAIL says the tree is NOT contained, and nothing over-claims.
+selftest_orphan_noperl() {
+  _m=$WORK/lane-428h.sh
+  sfx "orphan/K7: the fixture override (a missing perl) changed the lane" differs "$(lane_mut "$_m" 's|^ARM_PERL=.*$|ARM_PERL=/nonexistent/perl|')"
+  orph_fx 'sleep 6' 2; rnl "$_m" "$d" --slow
+  want "orphan/K7: the ceiling FAIL says the tree is NOT contained" "exceeded ceiling.*tree NOT contained (no /nonexistent/perl: direct child only)"
+  wantnot "orphan/K7: and never claims confirmed gone" "confirmed gone"
+  sfx "orphan/K7: the lane says so exactly once per run" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^# NOTE: no /nonexistent/perl: arms are not process-grouped' || :)"
+  orph_fx 'sleep 100 & echo $! > "$PWD/k.pids"
+exit 0' 30; rnl "$_m" "$d" --slow
+  wantnot "orphan/K7: the post-exit check does not run (no leftover NOTE)" "left [0-9]* process"; k_reap "$d/k.pids"
+  sfx "orphan/M-428h: the mutation (group acts left on in the fallback) changed the lane" differs "$(lane_mut "$WORK/lane-428h2.sh" 's|^ARM_PERL=.*$|ARM_PERL=/nonexistent/perl|;s#^    if \[ "\$_grp" -eq 1 \]; then ARM_NOTE=#    if true; then ARM_NOTE=#')"
+  orph_fx 'sleep 6' 2; rnl "$WORK/lane-428h2.sh" "$d" --slow
+  sfx "orphan/M-428h: the fallback then claims confirmed gone for a group that never existed, so K7 is RED" yes "$(has 'exceeded ceiling.*confirmed gone')"
+}
+
+# K8 (C10): a pgid that is empty, not a number, <= 1 or the lane's OWN group never reaches `kill`. The probe runs in a lane copy, with `kill` recording its calls.
+probe_k8() {
+  set +e
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/fx-k8-XXXXXX"); mkdir -p "$WORK/ctl"; ARM_NOTE=$WORK/ctl/kill.note; : > "$WORK/kills"; ARM_GRACE_S=1; ARM_CONFIRM_S=1
+  kill() { echo "$*" >> "$WORK/kills"; }
+  _own=$(ps -o pgid= -p "$$" | tr -d ' ')
+  for _v in '' abc 0 1 -5 "$_own" "0$_own"; do
+    rm -f "$ARM_NOTE"; _r=0; arm_kill "$_v" || _r=$?
+    printf 'v=[%s] rc=%s note=[%s]\n' "$_v" "$_r" "$(sed -n 1p "$ARM_NOTE" 2>/dev/null)"
+  done
+  UNV=""; arm_note_apply ceiling probe > /dev/null 2>&1; printf 'unv=[%s]\n' "$UNV"
+  printf '1234\n5678\n' > "$WORK/arm.pgid"; printf 'multi=[%s]\n' "$(arm_read_pgid "$WORK/arm.pgid" || echo refused)"
+  printf '4242\n' > "$WORK/arm.pgid"; printf 'single=[%s]\n' "$(arm_read_pgid "$WORK/arm.pgid" || echo refused)"
+  ln -s "$WORK/arm.pgid" "$WORK/arm.lnk"; printf 'link=[%s]\n' "$(arm_read_pgid "$WORK/arm.lnk" || echo refused)"
+  printf 'abc\n' > "$WORK/arm.nan"; printf 'nan=[%s]\n' "$(arm_read_pgid "$WORK/arm.nan" || echo refused)"
+  printf 'kills=%s\n' "$(wc -l < "$WORK/kills" | tr -d ' ')"
+}
+k8_check() {   # <label-prefix> -> the K8 assertions over DVOUT
+  _own=$(ps -o pgid= -p "$$" | tr -d ' ')
+  for _v in "" abc 0 1 -5 "$_own" "0$_own"; do want "$1: pgid [$_v] is refused" "^v=\[$_v\] rc=1 note=\[REFUSED"; done
+  want "$1: a refusal sets UNV" "^unv=\[.\+\]"
+  want "$1: a two-line arm.pgid file is refused" "^multi=\[refused\]$"
+  want "$1: a one-line arm.pgid file is read" "^single=\[4242\]$"
+  want "$1: a SYMLINKED arm.pgid file is refused" "^link=\[refused\]$"
+  want "$1: a file that is not a number is refused" "^nan=\[refused\]$"
+  want "$1: no signal was sent for any refused pgid" "^kills=0$"
+}
+selftest_orphan_guard() {
+  _m=$WORK/lane-428i.sh
+  lane_mut "$_m" '' 'probe_k8; exit 0' > /dev/null; DVOUT=$(sh "$_m" 2>&1) || :; k8_check "orphan/K8"
+  sfx "orphan/M-428i: the mutation (drop the <= 1 test) changed the lane" differs "$(lane_mut "$_m" '/_ap_why="at most 1"/d' 'probe_k8; exit 0')"
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428i: pgid 1 is no longer refused, so K8 is RED" no "$(has '^v=\[1\] rc=1 note=\[REFUSED')"
+  sfx "orphan/M-428j: the mutation (drop the own-group test) changed the lane" differs "$(lane_mut "$_m" "/_ap_why=\"the lane's own group\"/d;/the lane.s parent group/d" 'probe_k8; exit 0')"   # the probe shares its parent's group, so the parent test would still refuse: both are dropped
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428j: the lane's own pgid is no longer refused, so K8 is RED" no "$(has "^v=\[$_own\] rc=1 note=\[REFUSED")"
+  # S-L1 / S-L3: the leading-zero, symlink and not-a-number guards each have a mutant that reds
+  sfx "orphan/M-428n: the mutation (drop the leading-zero test) changed the lane" differs "$(lane_mut "$_m" '/_ap_why="leading zero"/d' 'probe_k8; exit 0')"
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428n: 0<own pgid> is no longer refused, so K8 is RED" no "$(has "^v=\[0$_own\] rc=1 note=\[REFUSED")"
+  sfx "orphan/M-428o: the mutation (drop the symlink test) changed the lane" differs "$(lane_mut "$_m" 's#^  \[ -f "\$1" \] && \[ ! -L "\$1" \] || return 1$#  [ -f "$1" ] || return 1#' 'probe_k8; exit 0')"
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428o: a symlinked arm.pgid is now read, so K8 is RED" no "$(has '^link=\[refused\]$')"
+  sfx "orphan/M-428p: the mutation (drop the not-a-number test) changed the lane" differs "$(lane_mut "$_m" "s#^  case \\\$_arp in ''|\\*\\[!0-9\\]\\*) return 1 ;; esac\$#  :#" 'probe_k8; exit 0')"
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428p: a non-numeric arm.pgid is now read, so K8 is RED" no "$(has '^nan=\[refused\]$')"
+}
+
+# K14: the group of the lane's PARENT is never signalled. The probe runs in a group of its own (perl setpgrp, then exec), so its parent's group is not its own.
+probe_k8b() {
+  set +e
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/fx-k14-XXXXXX"); mkdir -p "$WORK/ctl"; ARM_NOTE=$WORK/ctl/kill.note; : > "$WORK/kills"; ARM_GRACE_S=1; ARM_CONFIRM_S=1
+  kill() { echo "$*" >> "$WORK/kills"; }
+  _pp=$(ps -o pgid= -p "$PPID" | tr -d ' '); _own=$(ps -o pgid= -p "$$" | tr -d ' ')
+  printf 'pp=[%s] own=[%s]\n' "$_pp" "$_own"
+  _r=0; arm_kill "$_pp" || _r=$?
+  printf 'v=[%s] rc=%s note=[%s]\n' "$_pp" "$_r" "$(sed -n 1p "$ARM_NOTE" 2>/dev/null)"
+  printf 'kills=%s\n' "$(wc -l < "$WORK/kills" | tr -d ' ')"
+}
+selftest_orphan_parent() {
+  _m=$WORK/lane-428t.sh
+  if [ ! -x /usr/bin/perl ]; then echo "SKIP: orphan/K14: /usr/bin/perl is absent — the parent-group cell NOT exercised"; return 0; fi
+  lane_mut "$_m" '' 'probe_k8b; exit 0' > /dev/null
+  DVOUT=$(/usr/bin/perl -e 'setpgrp(0,0); exec @ARGV or exit 126' sh "$_m" 2>&1) || :
+  _pp=$(printf '%s\n' "$DVOUT" | sed -n 's/^pp=\[\([0-9]*\)\] .*/\1/p'); _po=$(printf '%s\n' "$DVOUT" | sed -n 's/^pp=\[[0-9]*\] own=\[\([0-9]*\)\]$/\1/p')
+  sfx "orphan/K14: the probe's own group is not its parent's (the cell is not vacuous)" differ "$([ -n "$_pp" ] && [ -n "$_po" ] && [ "$_pp" != "$_po" ] && echo differ || echo same)"
+  want "orphan/K14: the parent's pgid is refused" "^v=\[$_pp\] rc=1 note=\[REFUSED"
+  want "orphan/K14: and no signal was sent" "^kills=0$"
+  sfx "orphan/M-428t: the mutation (drop the parent-group test) changed the lane" differs "$(lane_mut "$_m" '/the lane.s parent group/d' 'probe_k8b; exit 0')"
+  DVOUT=$(/usr/bin/perl -e 'setpgrp(0,0); exec @ARGV or exit 126' sh "$_m" 2>&1) || :
+  sfx "orphan/M-428t: the parent's pgid is no longer refused, so K14 is RED" no "$(has "^v=\[$_pp\] rc=1 note=\[REFUSED")"
+}
+
+# S-M1: an arm LEADER that moves itself into another group (here: the lane's own) is in no group of ours; the leader is signalled and confirmed by pid.
+# R-M1: a background job starts with INT ignored and exec keeps that; the wrapper resets it, so the arm can be interrupted.
+selftest_orphan_leader() {
+  _m=$WORK/lane-428q.sh
+  if [ ! -x /usr/bin/perl ]; then echo "SKIP: orphan/K12: /usr/bin/perl is absent — the leader and INT cells NOT exercised"; return 0; fi
+  _lb='echo $$ > "$PWD/k.pids"
+exec /usr/bin/perl -e "setpgrp(0,getpgrp(getppid())); sleep 12"'
+  orph_fx "$_lb" 2; _t0=$(now_s); rn "$d" --slow; _el=$(( $(now_s) - _t0 ))
+  sfx "orphan/K12: a leader that joined another group is killed at the ceiling (the run took under 9 s, not the arm's 12)" yes "$([ "$_el" -lt 9 ] && echo yes || echo no)"
+  want "orphan/K12: and the ceiling FAIL line is there" "exceeded ceiling"
+  sfx "orphan/K12: the leader is dead" 0 "$(k_alive "$d/k.pids")"; k_reap "$d/k.pids"
+  sfx "orphan/M-428r: the mutation (the leader is not signalled by pid) changed the lane" differs "$(lane_mut "$_m" 's#^  \[ "\${2-}" != leader \] || _ak_ld=\$_ak_g$#  :#')"
+  orph_fx "$_lb" 2; _t0=$(now_s); rnl "$_m" "$d" --slow; _el=$(( $(now_s) - _t0 ))
+  sfx "orphan/M-428r: the leader outside any group of ours runs its 12 s, so K12 is RED" yes "$([ "$_el" -ge 9 ] && echo yes || echo no)"; k_reap "$d/k.pids"
+  # R-M1: INT must not be ignored in the arm (it sends itself INT: an ignored one survives and writes the marker)
+  orph_fx 'kill -s INT $$
+echo ignored > "$PWD/int.out"' 30; rn "$d" --slow
+  sfx "orphan/K13: an INT to the arm is not ignored (the arm died before its marker)" no "$([ -e "$d/int.out" ] && echo yes || echo no)"
+  sfx "orphan/M-428s: the mutation (INT and QUIT not reset in the wrapper) changed the lane" differs "$(lane_mut "$_m" 's#\$SIG{INT}=\$SIG{QUIT}="DEFAULT"; ##')"
+  orph_fx 'kill -s INT $$
+echo ignored > "$PWD/int.out"' 30; rnl "$_m" "$d" --slow
+  sfx "orphan/M-428s: the inherited ignore survives the exec, so the marker is written and K13 is RED" yes "$([ -e "$d/int.out" ] && echo yes || echo no)"
+}
+
+# K9 (C11): the KILL goes only to a pid still in the lineage; a first-snapshot pid that is now somebody else's is not signalled.
+probe_k9() {
+  set +e
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/fx-k9-XXXXXX"); mkdir -p "$WORK/ctl"; ARM_NOTE=$WORK/ctl/kill.note; ARM_GRACE_S=1; ARM_CONFIRM_S=1
+  kill() { echo "$*" >> "$WORK/kills"; }
+  arm_survivors() { echo 5002; }
+  arm_ps() { case $1 in first) printf '5000 1 5000\n5001 5000 5000\n5002 5000 5002\n' ;; second) printf '5002 %s %s\n' "$K9PP" "$K9PG" ;; esac; }
+  : > "$WORK/kills"; K9PP=777; K9PG=777; arm_kill 5000 > /dev/null 2>&1; sed 's/^/F /' "$WORK/kills"
+  : > "$WORK/kills"; K9PP=5000; K9PG=5002; arm_kill 5000 > /dev/null 2>&1; sed 's/^/L /' "$WORK/kills"
+}
+selftest_orphan_reuse() {
+  _m=$WORK/lane-428k.sh
+  lane_mut "$_m" '' 'probe_k9; exit 0' > /dev/null; DVOUT=$(sh "$_m" 2>&1) || :
+  want "orphan/K9: the first-snapshot pid outside the group gets the TERM" "^F -s TERM 5002$"
+  want "orphan/K9: the group still gets the KILL" "^F -s KILL -- -5000$"
+  wantnot "orphan/K9: a pid that is now someone else's (foreign ppid and pgid) gets NO KILL" "^F -s KILL 5002$"
+  want "orphan/K9: control — the same pid, still in the lineage, DOES get the KILL" "^L -s KILL 5002$"
+  sfx "orphan/M-428k: the mutation (KILL the first snapshot as-is) changed the lane" differs "$(lane_mut "$_m" 's#return (p\[x\] in in1).*$#return 1 }#' 'probe_k9; exit 0')"
+  DVOUT=$(sh "$_m" 2>&1) || :
+  sfx "orphan/M-428k: the reused pid is now signalled, so K9 is RED" yes "$(has '^F -s KILL 5002$')"
+}
+
+# C7: the perl wrapper takes no code from the environment. An arm reports what it can see of the three perl library names; the lane scrubs them.
+selftest_orphan_perl_env() {
+  _m=$WORK/lane-428c7.sh
+  one_step; mkchk alpha 'printf "[%s][%s][%s]\n" "${PERL5LIB-}" "${PERLLIB-}" "${PERL_USE_UNSAFE_INC-}" > "$PWD/penv.out"'; commit_fx
+  DVOUT=$( cd "$d" && PERL5LIB=/x PERLLIB=/y PERL_USE_UNSAFE_INC=1 sh "$LANE" --base HEAD --warranted 2>&1 ) || :
+  sfx "orphan/C7: an arm sees none of PERL5LIB, PERLLIB, PERL_USE_UNSAFE_INC" "[][][]" "$(cat "$d/penv.out" 2>/dev/null || echo MISSING)"
+  sfx "orphan/C7: the mutation (PERLLIB left out of the unset list) changed the lane" differs "$(lane_mut "$_m" 's# PERLLIB PERL_USE_UNSAFE_INC# PERL_USE_UNSAFE_INC#')"
+  rm -f "$d/penv.out"; DVOUT=$( cd "$d" && PERL5LIB=/x PERLLIB=/y PERL_USE_UNSAFE_INC=1 sh "$_m" --base HEAD --warranted 2>&1 ) || :
+  sfx "orphan/C7: with PERLLIB left in, an arm sees it, so the cell is RED" "[][/y][]" "$(cat "$d/penv.out" 2>/dev/null || echo MISSING)"
+}
+
+# SWAS-468: scripts/preflight.sh's case-variant cell, run as a lane arm, must not depend on WHICH sh it runs under. The cell needs `pwd -P` to keep a
+# case-variant spelling, which bash does and dash (the lane's PATH shim) does not: on a case-insensitive filesystem the string-compare mutant is then equivalent.
+# The cell is N/A on a case-sensitive filesystem (preflight skips there too). SWAS-487: the arms run ONLY that cell (`--selftest --selftest-cell case-variant`), not the whole
+# selftest five times; the full selftest stays graded by CI's own step and by selftest-hermetic/adopter-preflight-wired. pf_arm <preflight root> runs the cell as a lane arm: $d/pf.out, $d/pf.rc.
+pf_arm() {
+  one_step; mkchk alpha "o=\$PWD; cd \"$1\" && sh scripts/preflight.sh --selftest --selftest-cell case-variant > \"\$o/pf.out\" 2>&1; echo \$? > \"\$o/pf.rc\""; commit_fx
+  env_rn "$d" PREPUSH_CEILING_S 900 --warranted
+}
+# pf_live <label> <output file>: cell mode must have RUN the cell (exactly one owns_itself [case-variant-cd] line). Without it an arm that ran nothing would read as a mutant kill (no "survived" line).
+pf_live() {
+  sfx "preflight/CV/live: $1 runs the case-variant cell (one owns_itself line)" 1 "$(grep -c 'owns_itself \[case-variant-cd\]' "$2" 2>/dev/null || :)"
+}
+# pf_copy <dir> <sed expr> -> prints differs|same: a copy of scripts/ + the hook under <dir>, its preflight.sh mutated by the expression.
+pf_copy() {
+  mkdir -p "$1/hooks"; cp -R "$KROOT/scripts" "$1/scripts"; cp "$KROOT/hooks/pre-push" "$1/hooks/pre-push"
+  sed "$2" "$KROOT/scripts/preflight.sh" > "$1/scripts/preflight.sh"
+  if cmp -s "$KROOT/scripts/preflight.sh" "$1/scripts/preflight.sh"; then echo same; else echo differs; fi
+}
+pf_bash_half() {   # decided by the sh on PATH, which is what preflight's probe and mutant run use (not /bin/sh)
+  if [ -z "$(sh -c 'echo ${BASH_VERSION:-}' 2>/dev/null)" ]; then echo "N/A: preflight/CV: the sh on PATH is not bash ($(command -v sh 2>/dev/null || echo none)), the bash-kill half does not apply"; return 0; fi
+  _brc=0; ( cd "$KROOT" && /bin/sh scripts/preflight.sh --selftest --selftest-cell case-variant ) > "$WORK/pf-bash.out" 2>&1 || _brc=$?
+  sfx "preflight/CV: the preflight case-variant cell exits 0 under /bin/sh (bash)" 0 "$_brc"
+  pf_live "the bash half" "$WORK/pf-bash.out"
+  sfx "preflight/CV: under /bin/sh (bash) the owns-itself-string-compare mutant is still KILLED" 1 "$(grep -c '^PASS: mutant owns-itself-string-compare is killed' "$WORK/pf-bash.out" 2>/dev/null || :)"
+  sfx "preflight/CV: and under /bin/sh no SKIP line and no NOTE are printed" 0 "$(grep -cE '^(SKIP owns|NOTE: preflight selftest)' "$WORK/pf-bash.out" 2>/dev/null || :)"
+}
+selftest_preflight_case_variant() {
+  _pc=$(mktemp -d); mkdir "$_pc/ab"
+  [ -d "$_pc/AB" ] || { rm -rf "$_pc"; echo "N/A: preflight/CV — this filesystem is case-sensitive, where preflight's case-variant cell skips itself"; return 0; }
+  rm -rf "$_pc"; _sk='SKIP owns-itself-string-compare: this sh canonicalises case-variant pwd -P (dash); coverage WEAK here'
+  _w0=$(now_s); pf_arm "$KROOT"; echo "# preflight/CV: the dash lane arm took $(( $(now_s) - _w0 )) s"
+  sfx "preflight/CV: the real preflight case-variant cell exits 0 as a lane arm under the dash shim" 0 "$(cat "$d/pf.rc" 2>/dev/null || echo none)"
+  pf_live "the real arm" "$d/pf.out"
+  grep '^FAIL' "$d/pf.out" 2>/dev/null | sed 's/^/      /' || :
+  sfx "preflight/CV: under dash the case-variant mutant is a VISIBLE SKIP line, not a PASS" 1 "$(grep -cxF "$_sk" "$d/pf.out" 2>/dev/null || :)"
+  sfx "preflight/CV: and the SKIP is counted in a NOTE line before the unchanged OK line" 1 "$(grep -cxF 'NOTE: preflight selftest: 1 SKIP (coverage WEAK)' "$d/pf.out" 2>/dev/null || :)"
+  pf_bash_half
+  # face (a): a PATH whose sh is dash -> the half prints N/A and runs no assert
+  mkdir -p "$WORK/nobash"; printf '#!/bin/sh\nexec /bin/dash "$@"\n' > "$WORK/nobash/sh"; chmod +x "$WORK/nobash/sh"; _fa=$( PATH="$WORK/nobash:$PATH"; pf_bash_half 2>&1 )
+  sfx "preflight/CV/face-a: a non-bash sh on PATH prints the N/A line and runs no bash-kill assert (no PASS or FAIL)" "1,0" "$(printf '%s\n' "$_fa" | grep -c '^N/A: preflight/CV: the sh on PATH is not bash'),$(printf '%s\n' "$_fa" | grep -c '^\(PASS\|FAIL\)')"
+  sfx "preflight/CV/M-cvskip: the mutation (the probe deleted: the kill always runs) changed preflight" differs "$(pf_copy "$WORK/pfmut" '/MUT-CVSKIP/s/\[ "\$_cvp" = "\$_cvc" \]/false/')"
+  pf_arm "$WORK/pfmut"
+  sfx "preflight/CV/M-cvskip: without the probe the mutant survives under dash, so the preflight selftest is RED" 1 "$(grep -c '^FAIL: mutant owns-itself-string-compare survived' "$d/pf.out" 2>/dev/null || :)"
+  # I1 (fail-open): a probe that answers NOTHING must run the kill, not SKIP on ""="". The first copy empties the probe; the second also drops the -n guard.
+  sfx "preflight/CV/M-cvempty: the mutation (the probe prints nothing) changed preflight" differs "$(pf_copy "$WORK/pfmut2" "/MUT-CVPROBE/s/sh -c '[^']*'/sh -c :/")"
+  pf_arm "$WORK/pfmut2"
+  pf_live "the M-cvempty arm" "$d/pf.out"
+  sfx "preflight/CV/I1: an empty probe runs the kill (no SKIP line)" 0 "$(grep -cxF "$_sk" "$d/pf.out" 2>/dev/null || :)"
+  sfx "preflight/CV/M-cvnonempty: the mutation (the -n guard dropped, probe empty) changed preflight" differs "$(pf_copy "$WORK/pfmut3" "/MUT-CVPROBE/s/sh -c '[^']*'/sh -c :/;/MUT-CVSKIP/s/\[ -n \"\\\$_cvp\" \] && //")"
+  pf_arm "$WORK/pfmut3"
+  sfx "preflight/CV/M-cvnonempty: without the guard an empty probe SKIPs (fail-open), so I1 is RED" 1 "$(grep -cxF "$_sk" "$d/pf.out" 2>/dev/null || :)"
+  # SWAS-487 M-cvsel: a dispatch that runs no cell prints no owns_itself line and exits 0 with no "survived" line; only the liveness assert (pf_live) can see it.
+  sfx "preflight/CV/M-cvsel: the mutation (the dispatch runs no cell) changed preflight" differs "$(pf_copy "$WORK/pfmut4" '/MUT-CVSEL/s/st_case_variant/:/')"
+  pf_arm "$WORK/pfmut4"
+  sfx "preflight/CV/M-cvsel: a dispatch that runs nothing leaves no owns_itself line (exit 0, no survived line), so the liveness assert is RED" 0 "$(grep -c 'owns_itself \[case-variant-cd\]' "$d/pf.out" 2>/dev/null || :)"
+  echo "# preflight/CV: the whole cell (five arms, three mutant copies, M-cvsel) took $(( $(now_s) - _w0 )) s"
+}
+
+# ===================================================================================================
+# SWAS-600 - a check killed by a crash signal reads UNVERIFIED, never a verdict (design 2026-10-31-dash-segv-600-design.md, errata E2 and E3).
+# Fixture crash lines are built with printf from parts (no whole-line literal in this file), and every crash cell runs inside crash_cells so the group's OWN printed output can be
+# rescanned for a crash line (control 7). A mutant is a lane copy (lane_mut) with ONE tagged line rewritten; its crash functions are extracted to <copy>.fn and sourced in a subshell.
+crash_fns() {   # <lane copy> — its crash functions (and the two that call them) to <copy>.fn
+  sed -n -e '/^crash_sig_of() {/,/^}/p' -e '/^crash_line_in() {/,/^}/p' -e '/^crash_ev_run() {/,/^}/p' -e '/^report_inv() {/,/^}/p' "$1" > "$1.fn"
+}
+crash_scan_with() {   # <fn-file> <data-file> — that copy's crash_line_in over the data file, in a subshell; prints its rc
+  # shellcheck disable=SC1090  # sources a mutant copy's extracted crash functions (the path is built at run time)
+  ( . "$1"; _sc_r=0; crash_line_in "$2" || _sc_r=$?; echo "$_sc_r" )
+}
+crash_scan_bash() {   # <fn-file> <data-file> — the same under bash (a failed redirect on an external command is rc 1 there and rc 2 under dash); prints its rc
+  WORK=$WORK bash -c '. "$1"; _sc_r=0; crash_line_in "$2" || _sc_r=$?; echo "$_sc_r"' crash "$1" "$2" 2>/dev/null
+}
+crash_c1() {   # control 1 - the rc evidence wins
+  one_step; mkchk alpha 'kill -s SEGV $$'; commit_fx
+  rn "$d" --warranted
+  want "crash/1: a unit killed by SEGV reads UNVERIFIED naming the rc evidence" "^  UNVERIFIED  core-live  *alpha .*crashed (SEGV, rc 139): a crashed process is not a verdict"
+  wantnot "crash/1: and never a FAIL row" "^  FAIL  "
+  sfx "crash/1: the final line names the crashed unit" "PARITY-CORE: UNVERIFIED (1 unit(s) crashed: alpha)" "$(lastline)"
+  sfx "crash/1: rc 1" 1 "$DVRC"
+  _m=$WORK/lane-600a.sh
+  sfx "crash/1m: the mutation (the rc test dropped) changed the lane" differs "$(lane_mut "$_m" '/# CRRC$/s/^\( *\).*/\1:/')"
+  rnl "$_m" "$d" --warranted
+  wantnot "crash/1m: without the rc test no row names the rc evidence, so crash/1 has teeth" "crashed (SEGV, rc 139)"
+}
+crash_c2() {   # control 2 - a crash line at rc 0
+  one_step; mkchk alpha 'printf "%s %s\n" Segmentation "fault: 11"'; commit_fx; rn "$d" --warranted
+  want "crash/2: a crash line in a unit that exits 0 reads UNVERIFIED naming the line" "^  UNVERIFIED  core-live  *alpha .*crashed (Segmentation fault line): a crashed process is not a verdict"
+  wantnot "crash/2: and never an OK row" "^  OK    core-live "
+  wantnot "crash/2: an expected status adds no rc note" "unit rc="
+  sfx "crash/2: the final line names the crashed unit" "PARITY-CORE: UNVERIFIED (1 unit(s) crashed: alpha)" "$(lastline)"
+  _m=$WORK/lane-600b.sh
+  sfx "crash/2m: the mutation (the line scan dropped) changed the lane" differs "$(lane_mut "$_m" '/# CRLINE2$/s/^\( *\).*/\1_ce_r=1/')"
+  rnl "$_m" "$d" --warranted
+  want "crash/2m: without the scan the unit reads OK, so crash/2 has teeth" "^  OK    core-live  *alpha "
+}
+crash_c2p() {   # control 2, the real shape: a crashed FIRST pipeline stage exits 0 and only the parent shell's line shows it
+  _p=$WORK/crash.probe; : > "$_p"
+  if command -v dash >/dev/null 2>&1; then dash -c "dash -c 'kill -s SEGV \$\$' | cat" > "$_p" 2>&1 || :; fi
+  _r=0; crash_line_in "$_p" || _r=$?
+  if [ "$_r" -ne 0 ]; then echo "SKIP: crash/2p: this dash prints no line for a crashed first pipeline stage - the pipeline variant was NOT exercised"; return 0; fi
+  one_step; mkchk alpha "sh -c 'kill -s SEGV \$\$' | cat"; commit_fx; rn "$d" --warranted
+  want "crash/2p: a crashed first pipeline stage (the unit exits 0) reads UNVERIFIED by the parent shell's line" "^  UNVERIFIED  core-live  *alpha .*crashed (Segmentation fault line)"
+}
+crash_c2r() {   # a failing unit with a planted crash line: line-only evidence must not hide the unit's own status
+  one_step; mkchk alpha 'printf "%s %s\n" Segmentation "fault: 11"; exit 3'; commit_fx; rn "$d" --warranted
+  want "crash/2r: the row names the unit's own status beside the line evidence" "^  UNVERIFIED  core-live  *alpha .*crashed (Segmentation fault line): a crashed process is not a verdict; unit rc=3, expected 0"
+  sfx "crash/2r: the final line names the status too" "PARITY-CORE: UNVERIFIED (1 unit(s) crashed: alpha [rc 3])" "$(lastline)"
+  _m=$WORK/lane-600h.sh
+  sfx "crash/2rm: the mutation (the status note dropped) changed the lane" differs "$(lane_mut "$_m" '/# CRRCX$/s/^\( *\).*/\1:/')"
+  rnl "$_m" "$d" --warranted
+  wantnot "crash/2rm: without the note the row hides the status, so crash/2r has teeth" "unit rc=3"
+}
+crash_c345() {   # controls 3, 4 and 5 - the two forms, what is not a crash, and the scan that fails closed
+  _qd=$WORK/cq.dash; _qb=$WORK/cq.bash; _qc=$WORK/cq.clean
+  printf '%s %s\n' Segmentation 'fault: 11' > "$_qd"   # CQ3
+  printf '%s: line %s: %s %s %s  %s\n' x.sh 4 123 Segmentation 'fault: 11' cmd > "$_qb"
+  { printf '%s: %s\n' Terminated 15; printf '%s: %s\n' Killed 9
+    printf '%s %s %s\n' 'the lane reads' Segmentation 'fault: 11 in prose'
+    printf '`%s: line %s: %s %s %s  %s`\n' x.sh 4 123 Segmentation 'fault: 11' cmd
+    printf '| %s | %s %s |\n' row Segmentation 'fault: 11'
+    printf '  printf "x" # %s %s\n' Segmentation 'fault: 11'
+    printf "'%s: line %s: %s %s %s  %s\n" x.sh 4 123 Segmentation 'fault: 11' cmd
+    printf '"%s: line %s: %s %s %s  %s\n' x.sh 4 123 Segmentation 'fault: 11' cmd
+    printf '| %s: line %s: %s %s %s |\n' x.sh 4 123 Segmentation 'fault: 11'
+    printf '|%s: line %s: %s %s %s |\n' x.sh 4 123 Segmentation 'fault: 11'; } > "$_qc"
+  _r=0; crash_line_in "$_qd" || _r=$?; sfx "crash/3: the dash form is found" 0 "$_r"
+  sfx "crash/3: and its phrase is named" "Segmentation fault" "$CRASH_TXT"
+  _r=0; crash_line_in "$_qb" || _r=$?; sfx "crash/3: the bash-parent form is found" 0 "$_r"
+  _r=0; crash_line_in "$_qc" || _r=$?
+  sfx "crash/4: Terminated, Killed, prose, a backticked line, table rows, lines led by a quote or a pipe, and a quoted source line are not crashes" 1 "$_r"
+  _m=$WORK/lane-600c.sh
+  for _xc in 1 2 3; do
+    sfx "crash/4x$_xc: the mutation (prefix exclusion $_xc dropped) changed the lane" differs "$(lane_mut "$_m" "/# CRX$_xc\$/s/^\\( *\\).*/\\1_cl_x$_xc=/")"
+    crash_fns "$_m"; sfx "crash/4x$_xc: with that exclusion dropped a line led by it reads as a crash, so crash/4 has teeth" 0 "$(crash_scan_with "$_m.fn" "$_qc")"
+  done
+  # crash/R1: a hit file that cannot be written is rc 2, never clean (under bash 3.2 the failed redirect alone reads rc 1)
+  cp "$LANE" "$WORK/lane-600r.sh"; crash_fns "$WORK/lane-600r.sh"
+  rm -rf "$WORK/crash.hit"; mkdir "$WORK/crash.hit"
+  sfx "crash/R1: a hit file that cannot be written is rc 2, never clean" 2 "$(_r=0; crash_line_in "$_qd" || _r=$?; echo "$_r")"
+  if command -v bash >/dev/null 2>&1; then
+    sfx "crash/R1: and the same under bash" 2 "$(crash_scan_bash "$WORK/lane-600r.sh.fn" "$_qd")"
+    sfx "crash/R1m: the mutation (the hit-file test dropped) changed the lane" differs "$(lane_mut "$_m" '/# CRHIT$/s/^\( *\).*/\1:/')"
+    crash_fns "$_m"; sfx "crash/R1m: without the test a failed redirect reads clean under bash, so crash/R1 has teeth" 1 "$(crash_scan_bash "$_m.fn" "$_qd")"
+  else echo "SKIP: crash/R1 under bash - no bash here; the bash-only half was NOT exercised"; fi
+  rmdir "$WORK/crash.hit"
+  sfx "crash/3m: the mutation (the bash form dropped) changed the lane" differs "$(lane_mut "$_m" '/# CRBASH$/s/^\( *\).*/\1_cl_b=NOMATCHXQ/')"
+  crash_fns "$_m"; sfx "crash/3m: with the bash form dropped the bash-parent line goes unseen, so crash/3 has teeth" 1 "$(crash_scan_with "$_m.fn" "$_qb")"
+  sfx "crash/4a: the mutation (TERM added to the set) changed the lane" differs "$(lane_mut "$_m" '/# CRSET$/s/(Segmentation fault|/(Terminated|Segmentation fault|/')"
+  crash_fns "$_m"; sfx "crash/4a: with TERM in the set a deliberate Terminated line reads as a crash, so crash/4 has teeth" 0 "$(crash_scan_with "$_m.fn" "$_qc")"
+  sfx "crash/4b: the mutation (the bash-form prefix loosened to .+) changed the lane" differs "$(lane_mut "$_m" '/# CRPRE$/s/^\( *\).*/\1_cl_pre=.+/')"
+  crash_fns "$_m"; sfx "crash/4b: with the prefix loosened a quoted line reads as a crash, so crash/4 has teeth" 0 "$(crash_scan_with "$_m.fn" "$_qc")"
+  # control 5: a grep that exits 2 ONLY when its pattern holds the crash set; every other call reaches the real grep
+  _qs=$WORK/cq.stub; mkdir -p "$_qs"; _qg=$(command -v grep)
+  printf '#!/bin/sh\nfor _a in "$@"; do\n  case $_a in\n    *Segmentation*) exit 2 ;;\n  esac\ndone\nexec %s "$@"\n' "$_qg" > "$_qs/grep"; chmod +x "$_qs/grep"
+  sfx "crash/5: liveness - the stub passes any other pattern through (rc 1, not 2)" 1 "$( PATH="$_qs:$PATH"; _sr=0; grep -q zzzzz "$_qd" || _sr=$?; echo "$_sr" )"
+  sfx "crash/5: a crash scan whose grep cannot run is rc 2, never clean" 2 "$( PATH="$_qs:$PATH"; _sr=0; crash_line_in "$_qd" || _sr=$?; echo "$_sr" )"
+  DVOUT=$( PATH="$_qs:$PATH"; cp "$_qd" "$WORK/out"; RUN_RC=0; RUN_S=0; RAN=0; FAILS=0; CRASH=0; CRASH_LIST=""; report_inv core-live "alpha " 0 120; echo "CRASH=$CRASH LIST=$CRASH_LIST" )
+  want "crash/5: a unit whose scan cannot run reads UNVERIFIED, never OK" "^  UNVERIFIED  core-live  *alpha .*crash scan could not run: no verdict is claimed"
+  want "crash/5: and it is counted as a crash, with the scan-failed suffix" "^CRASH=1 LIST=alpha \[scan failed\]$"
+  sfx "crash/5m: the mutation (the scan's failure read as clean) changed the lane" differs "$(lane_mut "$_m" '/# CRFAIL$/s/^\( *\)\*.*/\1*) return 1 ;;/')"
+  crash_fns "$_m"
+  # shellcheck disable=SC1090  # sources a mutant copy's extracted crash functions (the path is built at run time)
+  DVOUT=$( PATH="$_qs:$PATH"; . "$_m.fn"; cp "$_qd" "$WORK/out"; RUN_RC=0; RUN_S=0; RAN=0; FAILS=0; CRASH=0; CRASH_LIST=""; report_inv core-live "alpha " 0 120; echo "CRASH=$CRASH LIST=$CRASH_LIST" )
+  wantnot "crash/5m: with the failure read as clean a forced scan failure no longer reads UNVERIFIED, so crash/5 has teeth" "crash scan could not run"
+}
+crash_c6() {   # controls 6a and 6b - the crash does not cut the run, and the final line orders UNV, CRASH, FAILS
+  mkcin 'sh conformance/beta.sh'; mkchk beta 'exit 0'; mkchk secret-scan-wired 'kill -s SEGV $$'; commit_fx; : > "$d/notes.txt"
+  rn "$d"
+  want "crash/6a: the crashed secret-scan row reads UNVERIFIED by the rc" "^  UNVERIFIED  core-secretscan .*crashed (SEGV, rc 139)"
+  want "crash/6a: and the run goes on - a passing touched reader still ran" "^  OK    touched-readers  *beta "
+  want "crash/6a: the final line names the crashed unit" "^PARITY-CORE: UNVERIFIED (1 unit(s) crashed: gitleaks range scan ("
+  _m=$WORK/lane-600d.sh
+  sfx "crash/6am: the mutation (the crash routed through unv) changed the lane" differs "$(lane_mut "$_m" '/# CRCOUNT$/s/^\( *\).*/\1unv "crashed: $2"/')"
+  rnl "$_m" "$d"
+  wantnot "crash/6am: through unv() the touched-readers arm is cut, so crash/6a has teeth" "^  OK    touched-readers"
+  # 6b: exact final lines. A crash beside a failing unit names both; a prior UNVERIFIED reason leads; --best-effort moves the rc only
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'; mkchk alpha 'kill -s SEGV $$'; mkchk beta 'exit 3'; commit_fx
+  rn "$d" --warranted
+  sfx "crash/6b: a crash beside a failing unit - the final line names both" "PARITY-CORE: UNVERIFIED (1 unit(s) crashed: alpha; plus 1 failing unit(s))" "$(lastline)"
+  sfx "crash/6b: rc 1" 1 "$DVRC"
+  rn "$d" --warranted --best-effort
+  sfx "crash/6b: --best-effort moves the rc only" "0|PARITY-CORE: UNVERIFIED (1 unit(s) crashed: alpha; plus 1 failing unit(s))" "$DVRC|$(lastline)"
+  DVOUT=$( UNV="no dash: fixture"; CRASH=1; CRASH_LIST=alpha; FAILS=0; VERBOSE=0; BEST=0; RAN=1; ARGVLOG=/dev/null; verdict 2>&1 ) || :
+  sfx "crash/6b: a prior UNVERIFIED reason leads the line" "PARITY-CORE: UNVERIFIED (no dash: fixture; plus 1 unit(s) crashed: alpha)" "$(lastline)"
+  sfx "crash/6bm: the mutation (a failing unit outranks a crash) changed the lane" differs "$(lane_mut "$_m" '/# CRVERD$/s/"\$CRASH" -gt 0 \]/"$CRASH" -gt 0 ] \&\& [ "$FAILS" -eq 0 ]/')"
+  rnl "$_m" "$d" --warranted
+  sfx "crash/6bm: with FAIL outranking the crash the line reads FAIL, so crash/6b has teeth" "PARITY-CORE: FAIL" "$(lastline)"
+}
+crash_c8() {   # control 8 - a crash-demoted PASS is never written to the --warranted pass cache
+  cfx 'printf "%s %s\n" Segmentation "fault: 11"'; cr; cr
+  sfx "crash/8: a crash-demoted pass is not cached - the second run executes the check again" 2 "$(nruns)"
+  wantnot "crash/8: and no SKIP row stands in for it" "^  SKIP  core-live"
+  want "crash/8: the row is the crash" "^  UNVERIFIED  core-live  *alpha .*crashed (Segmentation fault line)"
+  _lm8=$WORK/lane-600e.sh   # not _m: cfx owns that name
+  sfx "crash/8m: the mutation (the cache guard removed) changed the lane" differs "$(lane_mut "$_lm8" '/# CRCACHE$/s/ && \[ "\$CRASH" -eq "\$_ec_c" \]//')"
+  cfx 'printf "%s %s\n" Segmentation "fault: 11"'
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_lm8" --base HEAD --warranted 2>&1 ) || :; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_lm8" --base HEAD --warranted 2>&1 ) || :
+  sfx "crash/8m: with the guard removed the crash-demoted pass is cached and the second run SKIPs, so crash/8 has teeth" 1 "$(nruns)"
+}
+crash_c9() {   # control 9 (the split-stderr twin) and the N/A bypass
+  [ -n "$KROOT" ] && [ -f "$KROOT/conformance/backlog-lib.sh" ] || { echo "SKIP: crash/9: no backlog-lib.sh to build the twin fixture from - the cell was NOT exercised"; return 0; }
+  twfx jira '' 0 0
+  mkchk loop-state 'printf "%s %s\n" Segmentation "fault: 11" >&2; exit 0'; commit_fx; rn "$d"
+  want "crash/9: a split-stderr twin whose crash line is on stderr alone reads UNVERIFIED" "^  UNVERIFIED  twin  *loop-state .*crashed (Segmentation fault line)"
+  wantnot "crash/9: and never an OK row" "^  OK    twin  *loop-state"
+  _m=$WORK/lane-600f.sh
+  sfx "crash/9m: the mutation (stderr dropped from the capture) changed the lane" differs "$(lane_mut "$_m" '/# CRSPLIT$/d')"
+  rnl "$_m" "$d"
+  want "crash/9m: with only stdout scanned the twin reads OK, so crash/9 has teeth" "^  OK    twin  *loop-state"
+  # the N/A bypass: a hosted-tracker twin at rc 1 whose only stderr is NOT ENFORCED would read N/A beside a crash line on stdout
+  twfx jira '' 1 0
+  mkchk loop-state 'printf "%s %s\n" Segmentation "fault: 11"; { echo "loop-state: row check NOT ENFORCED: backend x - fixture"; echo "loop-state: FAIL - h does not carry a valid Entry Declaration."; } >&2; exit 1'; commit_fx; rn "$d"
+  want "crash/9b: a NOT-ENFORCED twin with a crash line on stdout reads UNVERIFIED, never N/A" "^  UNVERIFIED  twin  *loop-state .*crashed (Segmentation fault line)"
+  wantnot "crash/9b: and no N/A row" "^  N/A   loop-state"
+  sfx "crash/9bm: the mutation (the crash check before the N/A test removed) changed the lane" differs "$(lane_mut "$_m" '/# CRTWIN$/s/^\( *\).*/\1_tw_c=1/')"
+  rnl "$_m" "$d"
+  want "crash/9bm: without the check the twin reads N/A, so crash/9b has teeth" "^  N/A   loop-state"
+}
+crash_c11() {   # control 11 and the ceiling case
+  one_step; mkchk alpha 'echo plain failure; exit 1'; commit_fx; rn "$d" --warranted
+  want "crash/11: a real failure with no crash line still reads FAIL" "^  FAIL  core-live "
+  wantnot "crash/11: and never a crash row" "crashed ("
+  sfx "crash/11: the final line is FAIL" "PARITY-CORE: FAIL" "$(lastline)"
+  one_step; mkchk alpha 'printf "%s %s\n" Segmentation "fault: 11"; sleep 5'; tw alpha heavy '' '' '' 1 'fixture: a one-second budget'; commit_fx; rn "$d" --slow
+  want "crash/12: a unit over its ceiling stays a FAIL and names the crash line beside it" "^  FAIL  heavy .*exceeded ceiling.*; crash line also present (Segmentation fault)"
+  sfx "crash/12: the verdict is FAIL, counted in FAILS and not in CRASH" "PARITY-CORE: FAIL" "$(lastline)"
+}
+crash_cells() { crash_c1; crash_c2; crash_c2p; crash_c2r; crash_c345; crash_c6; crash_c8; crash_c9; crash_c11; }
+selftest_crash() {   # control 7 (errata E3): the crash cells run into a file, the file is printed, and the SAME file is rescanned
+  _cq=$WORK/crash.cells
+  crash_cells > "$_cq" 2>&1 || :
+  cat "$_cq"
+  _r=0; crash_line_in "$_cq" || _r=$?
+  sfx "crash/7: the crash cells' own printed output holds no crash line" 1 "$_r"
+  _n=$(grep -c '^PASS' "$_cq" || :)
+  if [ "$_n" -ge 45 ]; then echo "PASS: crash/7: the rescanned output is the real one ($_n PASS lines, at least 45)"
+  else echo "FAIL: crash/7: the rescanned output holds only $_n PASS lines, want at least 45 (an empty capture would pass vacuously)"; SF=1; fi
+  # crash/7m: one crash cell edited (in a lane copy) to print its built crash line on a PASS - the same rescan must find it
+  _m=$WORK/lane-600g.sh
+  sfx "crash/7m: the mutation (a cell prints its crash line) changed the lane" differs "$(lane_mut "$_m" '/# CQ3$/s/> "\$_qd"/| tee "$_qd"/')"
+  _fn=$(sed -n '/^crash_c345() {/,/^}/p' "$_m")
+  ( eval "$_fn"; crash_c345 ) > "$WORK/crash.cells.m" 2>&1 || :
+  _r=0; crash_line_in "$WORK/crash.cells.m" || _r=$?
+  sfx "crash/7m: with one cell printing its crash line the rescan finds it, so crash/7 has teeth" 0 "$_r"
 }
 
 main "$@"

@@ -233,6 +233,7 @@ _cpp_kitowned() {
     .kit/control-plane.conf|*/.kit/control-plane.conf|\
     .kit/tracker.conf|*/.kit/tracker.conf|\
     .kit/boundary-optout.conf|*/.kit/boundary-optout.conf|\
+    .kit/ci-pre-approval.conf|*/.kit/ci-pre-approval.conf|\
     codeowners|*/codeowners|claude.md|*/claude.md|\
     development-standards.md|*/development-standards.md|\
     development-process.md|*/development-process.md|\
@@ -476,6 +477,7 @@ _cpp_match() {
     .kit/control-plane.conf|*/.kit/control-plane.conf|\
     .kit/tracker.conf|*/.kit/tracker.conf|\
     .kit/boundary-optout.conf|*/.kit/boundary-optout.conf|\
+    .kit/ci-pre-approval.conf|*/.kit/ci-pre-approval.conf|\
     scripts/model-tier.sh|*/scripts/model-tier.sh|\
     scripts/runaway-guard.sh|*/scripts/runaway-guard.sh|\
     scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
@@ -1040,7 +1042,7 @@ guard_read_only_command() {
   # 1. ANY separator, redirect, substitution, expansion or backtick => not a simple, single
   #    invocation => never exempt. This is what makes the exemption safe rather than clever:
   #    `grep foo && rm -rf /`, `grep foo $(rm -rf /)`, `echo -n > ci.yml` all fail here.
-  printf '%s' "$_c" | grep -q '[;|&<>$()`]' && return 1
+  _gmq read-only-exempt "$_c" -q '[;|&<>$()`]' && return 1
   # 2. the leading verb, plainly: strip only whitespace and a leading backslash. An
   #    env-assignment prefix (`GIT_EXTERNAL_DIFF=rm git diff`) is not plainly a verb.
   _lead=$(printf '%s' "$_c" | sed -E 's/^[[:space:]]*\\?[[:space:]]*//; s/[[:space:]].*$//')
@@ -1210,7 +1212,7 @@ _ctm_match() {
 # (a listed name missing from any site FAILS; a `.kit/*.conf` at any site missing from the list FAILS,
 # so a site cannot quietly grow past the list either), plus an on-disk leg over `git ls-files .kit/*.conf`.
 # It lives HERE, in the control plane, so no agent can widen the corpus silently.
-_KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats control-plane tracker boundary-optout'
+_KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats control-plane tracker boundary-optout ci-pre-approval'
 # === ROOT-LEVEL CONTROL-PLANE LEAVES corpus (CP-MATCHER-CORPUS-ALL-FAMILIES) ======================
 # The third family that is named by hand at the same SIX sites: EVERY root-level control-plane leaf
 # named at the `case` sites (CLAUDE.md and the two DEVELOPMENT-* documents included) that belongs to
@@ -1233,8 +1235,8 @@ _ROOT_LEAF_CORPUS='hooks/pre-push docs/governance/meta-control-log.md docs/gover
 # shrink coverage. `.kit/tracker.conf` is NOT here — it rides the `.kit/*.conf` corpus (`_KIT_CONF_CORPUS`
 # + `dt_corpus_ok`) with the other confs. It lives HERE, in the control plane, so no agent widens it silently.
 _GOV_SUBJECT_CORPUS='docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md'
-_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
-_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md claude.md development-standards.md development-process.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/model-map-template.conf templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md claude.md development-standards.md development-process.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/model-map-template.conf templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
 
 # _cp8b_glob_scan "<token>" "<leaf-list>": 0 iff <token> (a glob pattern, already normalized/folded)
 # segment-safe intersects a leaf. Slash-count equality per leaf (pure parameter-expansion counter, no
@@ -1625,7 +1627,7 @@ _s6_http_segments() {
     *'`'*|*'$('*|*'${'*|*'<<'*)   _hqok=0 ;;
     *"$_cp8b_nl"*|*"$_cp8b_cr"*)  _hqok=0 ;;
   esac
-  if [ "$_hqok" = 1 ] && printf '%s' "$_hqi" | LC_ALL=C grep -q "$_cp8b_mask_bs"; then _hqok=0; fi
+  if [ "$_hqok" = 1 ] && _gmq http-segment-mask "$_hqi" LC_ALL=C -q "$_cp8b_mask_bs"; then _hqok=0; fi
   # ⚠️ THE FOURTH ESCAPED PAIR, ADDED IN FIX ROUND 2 (security C-2, HIGH) — and it is F-a's own
   # reasoning applied to the bytes F-a never had to care about. F-a's decline set is `\"`, `\'` and
   # `\\`, the three pairs that can desynchronise a QUOTE-SPAN walk. But this face uses the walk to find
@@ -1636,7 +1638,7 @@ _s6_http_segments() {
   # hands the whole view to the `nosuppress` fallback, which denies — the deny-ward direction, and no
   # new grammar. It is a SEPARATE pattern from `_cp8b_mask_bs` on purpose: widening that one would
   # change what the READ lanes accept, which is a different frontier with its own cells.
-  if [ "$_hqok" = 1 ] && printf '%s' "$_hqi" | LC_ALL=C grep -q '\\[;|&]'; then _hqok=0; fi
+  if [ "$_hqok" = 1 ] && _gmq http-segment-escape "$_hqi" LC_ALL=C -q '\\[;|&]'; then _hqok=0; fi
   if [ "$_hqok" = 1 ]; then
     _hqd=$(printf '%s' "$_hqi" | tr -dc '"' | wc -c | tr -d ' ')
     [ "$((_hqd % 2))" = 0 ] || _hqok=0
@@ -1716,8 +1718,8 @@ _s6_http_get_words() {
     # `-X` or a cluster ENDING in a capital X takes the next word; a cluster with letters AFTER the X
     # carries the value fused. The grep is what keeps `--MAX` and `-x` out: the pattern admits one
     # leading `-` and then letters only, and the X is capital.
-    if printf '%s' "$_hww" | grep -Eq '^-[A-Za-z]*X$'; then _hwpend=1; continue; fi
-    if printf '%s' "$_hww" | grep -Eq '^-[A-Za-z]*X[A-Za-z]+$'; then
+    if _gmq http-method-flag "$_hww" -Eq '^-[A-Za-z]*X$'; then _hwpend=1; continue; fi
+    if _gmq http-method-flag "$_hww" -Eq '^-[A-Za-z]*X[A-Za-z]+$'; then
       case "$(printf '%s' "${_hww##*X}" | tr 'A-Z' 'a-z')" in
         get|head) _S6H_GETFLAG=1 ;;
       esac
@@ -1927,7 +1929,7 @@ _s6_http_admin() {
   _hapre=$(_s6_dequote "$_hav1") || _guard_fault http-dequote
   _hapre2=$(_s6_dequote "$_hav2") || _guard_fault http-dequote
   _hapre=$_hapre$_hapre2
-  printf '%s' "$_hapre" | grep -Eq '(repos|orgs|user)/' || { unset _hapre _hapre2; return 1; }
+  _gmq http-precheck "$_hapre" -Eq '(repos|orgs|user)/' || { unset _hapre _hapre2; return 1; }
   unset _hapre _hapre2 2>/dev/null || :
   for _hajv in "$_hav1" "$_hav2"; do
     # THE MODE IS CARRIED, not inferred (R-2 = S-3): exit 1 from the segmenter means the span walk
@@ -2329,7 +2331,7 @@ _cp8b_mask_quoted() {
   # followed by `"`, `'` or `\`. Those three pairs are the only ones that can move a span boundary;
   # every other `\X` is two literal bytes and the walk handles it correctly with no rule at all. This
   # is what refunds R3/R4 (`grep "a\|b"`, BRE alternation) without re-opening reverted round 3.
-  if printf '%s' "$_mqi" | LC_ALL=C grep -q "$_cp8b_mask_bs"; then printf '%s' "$1"; return 1; fi
+  if _gmq quote-mask "$_mqi" LC_ALL=C -q "$_cp8b_mask_bs"; then printf '%s' "$1"; return 1; fi
   _mqd=$(printf '%s' "$_mqi" | tr -dc '"' | wc -c | tr -d ' ')
   [ "$((_mqd % 2))" = 0 ] || { printf '%s' "$1"; return 1; }
   _mqs=$(printf '%s' "$_mqi" | tr -dc "$_cp8b_sq" | wc -c | tr -d ' ')
@@ -2456,8 +2458,8 @@ _cp8b_carrier_why() {
 # (`git archive` is not a mutation verb). A bare '(' is NOT unparseable - a subshell's lead token is
 # unrecognized and already fails closed - so conventional-commit subjects like "fix(guard): ..." parse.
 _cp8b_unparseable() {
-  printf '%s' "$1" | grep -q '[$`]' && return 0
-  printf '%s' "$1" | grep -q '<(' && return 0
+  _gmq unparseable "$1" -q '[$`]' && return 0
+  _gmq unparseable "$1" -q '<(' && return 0
   return 1
 }
 
@@ -2838,7 +2840,7 @@ _cp8b_git_write_denied() {
       # to "the subcommands that actually honor the flag".
       # Match --output (space/=/joined) AND -o (space, or JOINED value `-oconformance`). This is an
       # OUTRIGHT deny with no target parsed, so a joined value cannot smuggle a write past it.
-      if printf '%s' "$_ws" | grep -Eq '(^|[[:space:]])(--output([=[:space:]]|$)|-o([[:space:]]|$|[^[:space:]]))'; then
+      if _gmq git-output-write "$_ws" -Eq '(^|[[:space:]])(--output([=[:space:]]|$)|-o([[:space:]]|$|[^[:space:]]))'; then
         printf '13: git %s --output/-o writes an arbitrary file via the diff machinery (defeats the shell-redirect guards) - human-gated. Redirect to a non-control-plane path instead (git diff > /tmp/x). (escape card R31 git-output)' "$_wsub"
         return 0
       fi
@@ -2887,8 +2889,10 @@ _cp8b_git_write_denied() {
 #
 # Prints each SAFE (allowlist-clean) target on its own line. Return code:
 #   0 = clean — every extracted target is a plain literal (or an fd-dup, which is excluded);
-#   2 = a NON-LITERAL target was seen — the caller MUST bail to the deny side (fail-closed): the
+#   3 = a NON-LITERAL target was seen — the caller MUST bail to the deny side (fail-closed): the
 #       guard cannot prove an unresolvable $(…)/$VAR/glob/backslash target is not control-plane.
+#       (It was 2 until SWAS-583. 2 is now reserved for a FAULT, which `_guard_fault` exits with, so
+#       a fault inside this function can never be read as a legitimate "non-literal" answer.)
 # THE DISQUALIFIER IS A POSITIVE ALLOWLIST, not a bad-byte denylist: a target is recognized safe ONLY
 # if every byte is in `[A-Za-z0-9._/@:+=,-]`; anything else ($ backtick * ? [ { ~ \ space etc.)
 # disqualifies. A denylist lost twice here — `$`/backtick failed open on globs, an 8-byte set failed
@@ -2913,10 +2917,10 @@ _redir_targets() {
     esac
   # design §12 B: the extraction below keeps only the FIRST word of a target, so a QUOTED target that holds
   # whitespace or a newline (`> "x /../skills/build/SKILL.md"`) resolved to the wrong path (`x`). Such a target is
-  # unresolvable; a control-plane token anywhere in it fails closed (rc 2). Covers `>>`, `>|`, `&>` and `n>`.
+  # unresolvable; a control-plane token anywhere in it fails closed (rc 3). Covers `>>`, `>|`, `&>` and `n>`.
   # design §13 M1: ANY quote byte in a target WORD (`>x" /../skills/…"`, `> ".claude/"hooks/…`, `>& "…"`) is the same doubt:
   # the awk below prints each target word that carried a quote, de-quoted (backslashes dropped too), and a control-plane
-  # path in it returns rc 2. It reads the word to its first unquoted blank, which is no more than a refuse-on-doubt scan.
+  # path in it returns rc 3. It reads the word to its first unquoted blank, which is no more than a refuse-on-doubt scan.
   _rq=$(printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C awk -v Q="$_cp8b_sq" '{
     n = length($0); oq = ""
     for (i = 1; i <= n; i++) {
@@ -2942,14 +2946,18 @@ _redir_targets() {
       if (hasq) print w
       i = j
     }
-  }') || :
-  if [ -n "$_rq" ] && _cp8b_pathhit "$_rq"; then return 2; fi
+  }') || _guard_fault redir-target-scan
+  if [ -n "$_rq" ] && _cp8b_pathhit "$_rq"; then return 3; fi
   # BELT (design §16 R1): the quote-blind view from fcf126b4 as a second opinion, so a mis-tracked span in the awk above cannot
-  # hide a quoted-with-whitespace target.
-  _rq2=$(printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C grep -Eo ">[|>]?[[:space:]]*(\"[^\"]*[[:space:]][^\"]*\"|'[^']*[[:space:]][^']*')") || :
-  if [ -n "$_rq2" ] && _cp8b_pathhit "$_rq2"; then return 2; fi
+  # hide a quoted-with-whitespace target. rc 0 (a match) and rc 1 (none) are both answers; a fault inside the matcher is not.
+  _rq2t=$(printf '%s' "$1" | tr '\n' ' ') || _guard_fault redir-target-view
+  _guard_vanished redir-target-view "$1" "$_rq2t"
+  _rq2rc=0
+  _rq2=$(_gmo redir-target-space "$_rq2t" LC_ALL=C -Eo ">[|>]?[[:space:]]*(\"[^\"]*[[:space:]][^\"]*\"|'[^']*[[:space:]][^']*')") || _rq2rc=$?
+  [ "$_rq2rc" -le 1 ] || _guard_fault redir-target-space
+  if [ -n "$_rq2" ] && _cp8b_pathhit "$_rq2"; then return 3; fi
   _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*|\{0,1\}/\n/g' | sed -e '1d' \
-        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//') || _guard_fault redir-target-list
   [ -n "$_rt" ] || return 0
   _rtc=0
   _rtg=0; case "$-" in
@@ -2966,7 +2974,7 @@ _redir_targets() {
       # true fd-dup/close — not a filesystem target — and stays excluded (the 14 relief forms). A
       # NON-NUMERIC word (`>&conformance/verify.sh`, `>&hooks/pre-pus*`, `>&$VAR`) is bash's combined-
       # redirect FILE write: strip the `&` and let it fall through to the literal/allowlist classifier
-      # below, so a literal CP target denies and a glob/$VAR target fails closed (rc 2). This narrows the
+      # below, so a literal CP target denies and a glob/$VAR target fails closed (rc 3). This narrows the
       # previously-broad `&`-exclusion (disclosed residual C1) without disturbing any fd-dup form.
       '&'*)
         _rtd=${_rtk#'&'}
@@ -2987,7 +2995,7 @@ _redir_targets() {
       # variable, the visible suffix (`pre-push`, `settings.json`, `reviewer.agent.md`) does not
       # self-classify, so relieving it would partially revert the Cure-2 closure — a deny-side
       # weakening inside a false-positive slice. The `$SCRATCH` idiom is answered by a TIP instead.
-      # Declines (fall through to rc 2, fail-closed): a `..` byte anywhere in the suffix (it climbs
+      # Declines (fall through to rc 3, fail-closed): a `..` byte anywhere in the suffix (it climbs
       # out of $HOME, so the target is no longer shown literally); any non-literal byte after the `~`
       # (a glob/backslash/substitution); and — the design's "cannot SEGMENT-MATCH a control-plane
       # path" condition — any `~` target that trips `_cp8b_pathhit`.
@@ -3009,10 +3017,10 @@ _redir_targets() {
       # `~/scratch/out.txt`, `~/logs/verify.log`) do not start with `/.`, so they stay allowed.
       '~'|'~/'*)
         case "${_rtk#\~}" in
-          *..*|*[!A-Za-z0-9._/@:+=,-]*|/.*) _rtc=2 ;;
-          *) if _cp8b_pathhit "$_rtk"; then _rtc=2; else printf '%s\n' "$_rtk"; fi ;;
+          *..*|*[!A-Za-z0-9._/@:+=,-]*|/.*) _rtc=3 ;;
+          *) if _cp8b_pathhit "$_rtk"; then _rtc=3; else printf '%s\n' "$_rtk"; fi ;;
         esac ;;
-      *[!A-Za-z0-9._/@:+=,-]*) _rtc=2 ;;                # NOT a plain literal -> disqualify (fail-closed)
+      *[!A-Za-z0-9._/@:+=,-]*) _rtc=3 ;;                # NOT a plain literal -> disqualify (fail-closed)
       *) printf '%s\n' "$_rtk" ;;
     esac
   done
@@ -3026,7 +3034,7 @@ _cp8b_redirect_hits_cp() {
     *'>'*) : ;;
     *) return 1 ;;
     esac
-  _rt=$(_redir_targets "$_rh") || return 0   # rc 2 => a non-literal target => fail closed (K-R1b)
+  _rt=$(_redir_targets "$_rh") || return 0   # rc 3 => a non-literal target, any other rc a fault => fail closed (K-R1b)
   [ -n "$_rt" ] || return 1
   _rg=0; case "$-" in
     *f*) _rg=1 ;;
@@ -3098,8 +3106,8 @@ _cp8b_redirect_hits_cp() {
 # introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
 # because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
 # fixtures and its own monotonicity run — not a tidy-up to ride along here.
-_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^a-zA-Z.])CLAUDE\.md|(^|[^a-zA-Z.])DEVELOPMENT-STANDARDS\.md|(^|[^a-zA-Z.])DEVELOPMENT-PROCESS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md|(^|[^A-Za-z0-9._-])templates/MODEL-MAP-TEMPLATE\.conf)'
-_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^a-z.])claude\.md|(^|[^a-z.])development-standards\.md|(^|[^a-z.])development-process\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md|(^|[^A-Za-z0-9._-])templates/model-map-template\.conf)'
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^a-zA-Z.])CLAUDE\.md|(^|[^a-zA-Z.])DEVELOPMENT-STANDARDS\.md|(^|[^a-zA-Z.])DEVELOPMENT-PROCESS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md|(^|[^A-Za-z0-9._-])templates/MODEL-MAP-TEMPLATE\.conf)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^a-z.])claude\.md|(^|[^a-z.])development-standards\.md|(^|[^a-z.])development-process\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md|(^|[^A-Za-z0-9._-])templates/model-map-template\.conf)'
 # TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
 # `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
 # and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
@@ -3114,7 +3122,7 @@ _CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/work
 # monotonicity run — it is a separate change, not a tidy-up, and it is not made here.
 _CP8B_PATHHIT_T2='(skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|(^|[^A-Za-z0-9._-])scripts/[^[:space:]]*|(^|[^A-Za-z0-9._-])profiles/[^[:space:]]*)'
 _cp8b_pathhit() {
-  printf '%s' "$1" | grep -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
+  _gmq control-plane-path "$1" -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
   # Arm 1 above is byte-identical to the pre-fold regex and returns first (the `_under_temp`
   # add-only shape at :309-328) — this can only ever ADD a pathhit. HOT PATH: guard the `tr` fork on an
   # UPPERCASE byte only (`*[A-Z]*`), mirroring `is_control_plane_path:93` — `tr 'A-Z' 'a-z'` cannot
@@ -3127,12 +3135,13 @@ _cp8b_pathhit() {
   case "$1" in
     *[A-Z]*) : ;;
     *)
-      printf '%s' "$1" | grep -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
+      _gmq control-plane-path "$1" -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
       return 1 ;;
     esac
-  _phl=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
-  printf '%s' "$_phl" | grep -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
-  _fs_case_insensitive && printf '%s' "$_phl" | grep -Eq "$_CP8B_PATHHIT_T2"
+  _phl=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault pathhit-fold
+  _guard_vanished pathhit-fold "$1" "$_phl"
+  _gmq control-plane-path "$_phl" -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
+  _fs_case_insensitive && _gmq control-plane-path "$_phl" -Eq "$_CP8B_PATHHIT_T2"
 }
 
 _cp8b_scan_denied() {
@@ -3164,15 +3173,16 @@ _cp8b_scan_denied() {
   # every other decision still reads the original `$_ss`.
   _ssl=$_ss
   case "$_ss" in
-    *[A-Z]*) _ssl=$(printf '%s' "$_ss" | LC_ALL=C tr 'A-Z' 'a-z') ;;
+    *[A-Z]*) _ssl=$(printf '%s' "$_ss" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault scan-fold
+      _guard_vanished scan-fold "$_ss" "$_ssl" ;;
     esac
   # VERBS FOLD TOO. On a case-insensitive filesystem `/bin/RM` resolves to `/bin/rm`, so a byte-literal
   # verb match is the same defect as a byte-literal PATH match, one argument position to the left.
   # Measured before this fold: `rm -rf conformance` DENY but `RM -rf conformance` ALLOW; likewise
   # `MV conformance /tmp/x`, which relocates every gate in the repo — the exact command the
   # is_control_plane_target comment exists to deny. `_ssl` is already computed above.
-  if printf '%s' "$_ssl" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
-     || printf '%s' "$_ssl" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
+  if _gmq control-plane-verb "$_ssl" -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
+     || _gmq control-plane-verb "$_ssl" -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
      || _cp8b_redirect_hits_cp "$_ss"; then
     return 0
   fi
@@ -4345,9 +4355,16 @@ _cp8b_strip_heredocs() {
   case "$1" in
     *"$_cp8b_cr"*) printf '%s' "$1"; return ;;
     esac
-  _hdc=$(printf '%s' "$1" | grep -o '<<' | wc -l | tr -d '[:space:]')
+  # rc 0 (a match) and rc 1 (none) are both answers; a fault inside the matcher is not (SWAS-583).
+  _hdc_rc=0; _hdo=$(_gmo heredoc-count "$1" -o '<<') || _hdc_rc=$?
+  [ "$_hdc_rc" -le 1 ] || _guard_fault heredoc-count
+  _hdc=0
+  if [ "$_hdc_rc" = 0 ] && [ -n "$_hdo" ]; then _hdc=$(printf '%s\n' "$_hdo" | wc -l | tr -d '[:space:]') || _guard_fault heredoc-count; fi
   [ "$_hdc" = 1 ] || { printf '%s' "$1"; return; }
-  _hdl=$(printf '%s\n' "$1" | grep -n '<<' | head -1 | cut -d: -f1)
+  _hdl_rc=0; _hdn=$(_gmo heredoc-line "$1$_cp8b_nl" -n '<<') || _hdl_rc=$?
+  [ "$_hdl_rc" -le 1 ] || _guard_fault heredoc-line
+  _hdl=''
+  if [ "$_hdl_rc" = 0 ]; then _hdl=$(printf '%s\n' "$_hdn" | head -1 | cut -d: -f1) || _guard_fault heredoc-line; fi
   [ -n "$_hdl" ] || { printf '%s' "$1"; return; }
   _hds=$(printf '%s\n' "$1" | sed -n "${_hdl}p")
   # REVIEW C2 — ENTRY guard: a quote byte BEFORE the `<<` on the start line means the `<<` is embedded
@@ -4373,7 +4390,7 @@ _cp8b_strip_heredocs() {
   case "$_hds" in
     *'<<-'*) printf '%s' "$1"; return ;;
     esac              # tab-stripped terminator (M2)
-  printf '%s' "$_hds" | grep -q "<<-\{0,1\}['\"]" || { printf '%s' "$1"; return; }  # QUOTED delimiter only
+  _gmq heredoc-delimiter "$_hds" -q "<<-\{0,1\}['\"]" || { printf '%s' "$1"; return; }  # QUOTED delimiter only
   _hdw=$(printf '%s' "$_hds" | sed -n 's/.*<<-\{0,1\}["'"'"']*\([A-Za-z0-9_][A-Za-z0-9_]*\).*/\1/p')
   [ -n "$_hdw" ] || { printf '%s' "$1"; return; }
   if _cp8b_tad_redir_cp "$_hds"; then printf '%s' "$1"; return; fi
@@ -4668,7 +4685,7 @@ _cp8b_control_plane_denied() {
     #    F-a: the redirect test reads `$_segm` — a `>` inside a quoted span is a character in an
     #    argument, not an operator, and treating it as one is what denies `echo "a -> b"`. The scan it
     #    guards still runs on the restored `$_seg`.
-    if _cp8b_unparseable "$_seg" || printf '%s' "$_segm" | grep -q '[<>]'; then
+    if _cp8b_unparseable "$_seg" || _gmq redirect-bail "$_segm" -q '[<>]'; then
       if _cp8b_scan_denied "$_seg"; then _cp8b_deny_reason "$_seg"; return 0; fi
       continue
     fi
@@ -5013,7 +5030,7 @@ _cp8b_abs_literal_phys() {
 # _cp8b_clone_redirs_ok "<segment>": design §2 D2.4. 0 iff every file-redirect TARGET of <segment> is a literal absolute path
 # whose PHYSICAL resolution is OUTSIDE the protected root. fd-dups (`N>&M`, `>&-`) are not targets and `_redir_targets` already
 # excludes them; `>&word` and `&>word` ARE file writes and arrive as targets. A relative target (cwd unknown) or a non-literal
-# one (rc 2) returns 1 and the segment keeps today's verdict.
+# one (rc 3) returns 1 and the segment keeps today's verdict.
 _cp8b_clone_redirs_ok() {
   _ccrc=0; _ccrt=$(_redir_targets "$1") || _ccrc=$?
   [ "$_ccrc" = 0 ] || return 1
@@ -5923,7 +5940,7 @@ _cp8b_tad_redir_cp() {
     *'>'*) : ;;
     *) return 1 ;;
     esac
-  _rt=$(_redir_targets "$1") || return 0   # rc 2 => a non-literal target => fail closed (K-R1a)
+  _rt=$(_redir_targets "$1") || return 0   # rc 3 => a non-literal target, any other rc a fault => fail closed (K-R1a)
   [ -n "$_rt" ] || return 1
   _rg=0; case "$-" in
     *f*) _rg=1 ;;
@@ -6337,7 +6354,7 @@ _CP8B_SED_SCRIPT_ADDR2='^(/[^/\\]*/|[0-9]+),(/[^/\\]*/|[0-9]+)p$'
 # — all decline here, which is why the trailing `p$` anchor is load-bearing (M-B1 pins it: a `w` admitted
 # here turns `sed -n 1,5w<cp> <file>`, a real WRITE, into an ALLOW).
 _cp8b_seg_sed_script_ro() {
-  printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_RO" && return 0
+  _gmq sed-read-grammar "$1" -Eq "$_CP8B_SED_SCRIPT_RO" && return 0
   [ "${2:-}" = msg ] || return 1
   printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_ADDR" && return 0
   printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_ADDR2"
@@ -6465,9 +6482,9 @@ _cp8b_seg_awk_range_strict() (
   _awp=$(_cp8b_seg_qstrip "$1") && _awq=0 || _awq=$?  # see the set -e note at _cp8b_seg_path_ok
   [ "$_awq" != 1 ] || return 1
   shift
-  if ! printf '%s' "$_awp" | grep -Eq "$_CP8B_AWK_PROG_RO"; then
+  if ! _gmq awk-read-grammar "$_awp" -Eq "$_CP8B_AWK_PROG_RO"; then
     [ "$_awq" = 2 ] || return 1                 # `{print $N}` is a SINGLE-quoted-only refund
-    printf '%s' "$_awp" | grep -Eq "$_CP8B_AWK_PROG_FIELD" || return 1
+    _gmq awk-read-grammar "$_awp" -Eq "$_CP8B_AWK_PROG_FIELD" || return 1
   fi
   while [ $# -gt 0 ]; do
     _cp8b_seg_path_ok "$1" || return 1
@@ -7345,7 +7362,7 @@ _cp8b_tad_is_msg_carrier() {
     *'>'*) return 1 ;;
     esac
   set -- "$_mcs"
-  printf '%s' "$1" | grep -Eq '(^|[[:space:]])(-m|-F|--message|--body|--body-file|--notes|--title)([=[:space:]]|$)'
+  _gmq message-carrier "$1" -Eq '(^|[[:space:]])(-m|-F|--message|--body|--body-file|--notes|--title)([=[:space:]]|$)'
 }
 
 # GUARD-TRAILER-IN-MESSAGE-FP (design §3, §10 item 2): `sh scripts/board.sh create`'s `--title`,
@@ -7600,7 +7617,7 @@ _cp8b_tad_cp_dest_denied() {
   _cp8b_cp_target_in last "$1" && return 0
   # design §11: with a whitespace-preceded `#` the composed (cd-relative) operands are judged too.
   if _cp8b_cp_doubt "$1"; then _cp8b_tad_composed_tok "$1" && return 0; fi
-  _cd=$(printf '%s' "$1" | awk '{for(i=NF;i>=1;i--) if(substr($i,1,1)!="-"){print $i; exit}}')
+  _cd=$(printf '%s' "$1" | awk '{for(i=NF;i>=1;i--) if(substr($i,1,1)!="-"){print $i; exit}}') || _guard_fault cp-dest-view
   _cp8b_composed_is_cp "$_cd" && return 0
   _cp8b_tad_redir_cp "$1"
 }
@@ -7729,14 +7746,14 @@ _cp8b_group_peel() { printf '%s' "$1" | sed -E 's/^([[:space:]]*[({;]+[[:space:]
 
 # _cp8b_cwd_redir_in "<seg>": 0 iff the segment carries a redirect whose target is RELATIVE, or one
 # whose target cannot be read at all. Reuses the SHARED _redir_targets extractor rather than a second
-# `>`-scan, so the two can never drift: rc 2 is its "non-literal target" answer (a redirect exists and
+# `>`-scan, so the two can never drift: rc 3 is its "non-literal target" answer (a redirect exists and
 # cannot be resolved — fail closed), and its output is the literal targets.
 # AN ABSOLUTE TARGET IS NOT DISQUALIFYING, and that is deliberate rather than an oversight: `> /tmp/x`
 # names the same file wherever the shell is standing, so a lost cwd tells you nothing about it and
 # denying it would be friction bought for nothing.
 _cp8b_cwd_redir_in() {
-  _cri=$(_redir_targets "$1"); _crc=$?
-  [ "$_crc" = 2 ] && return 0
+  _crc=0; _cri=$(_redir_targets "$1") || _crc=$?
+  [ "$_crc" = 0 ] || return 0   # rc 3 is a non-literal target and any other rc is a fault: both deny-ward (SWAS-583 E7)
   [ -n "$_cri" ] || return 1
   # Globbing off around the word-split (the discipline every operand walk in this file uses), and a
   # split on whitespace: a target containing a space splits into fragments that are EACH tested, and
@@ -7979,9 +7996,10 @@ _cp8b_xargs_git_denied() {
   _cp8b_piped_interp "$1" || return 1
   [ "$_cp8b_pi_xargs" = 1 ] || return 1
   [ "$_cp8b_pi_nonlit" = 0 ] || return 0                      # a write verb fed by data the guard cannot read
-  _xg=$(printf '%s' "$1" | tr '\n' ' ')
+  _xg=$(printf '%s' "$1" | tr '\n' ' ') || _guard_fault xargs-git-view
+  _guard_vanished xargs-git-view "$1" "$_xg"
   _cp8b_pathhit "$_xg" && return 0
-  printf '%s' "$_xg" | grep -Eq 'push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'
+  _gmq push-main "$_xg" -Eq 'push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'
 }
 
 # _cp8b_exec_arg_denied "<cmd>": design §12 C. `git rebase -x|--exec <cmd>`, `git bisect run <cmd>` and
@@ -7995,8 +8013,9 @@ _cp8b_exec_arg_denied() {
     *rebase*|*bisect*|*submodule*) : ;;
     *) return 1 ;;
   esac
-  _ea=$(printf '%s' "$1" | tr '\n' ' ')
-  printf '%s' "$_ea" | LC_ALL=C grep -Eq '(^|[;&|[:space:](])git[[:space:]]+([^;&|]*[[:space:]])?(rebase[[:space:]]+(.*[[:space:]])?(-x|--e)|bisect[[:space:]]+run|submodule[[:space:]]+foreach)' || return 1
+  _ea=$(printf '%s' "$1" | tr '\n' ' ') || _guard_fault exec-arg-view
+  _guard_vanished exec-arg-view "$1" "$_ea"
+  _gmq git-exec-arg "$_ea" LC_ALL=C -Eq '(^|[;&|[:space:](])git[[:space:]]+([^;&|]*[[:space:]])?(rebase[[:space:]]+(.*[[:space:]])?(-x|--e)|bisect[[:space:]]+run|submodule[[:space:]]+foreach)' || return 1
   _cp8b_pathhit "$_ea"
 }
 
@@ -8064,7 +8083,8 @@ _cp8b_target_arm_denied() {
       esac
     # S-H1 — the PEELED lead, used ONLY to add denies. `_lv` still drives every pre-existing arm
     # exactly as before; `_lvp` is a second, narrower reading consulted by Face B alone.
-    _lvp=$(_cp8b_lead "$(_cp8b_group_peel "$_seg")")
+    _lvg=$(_cp8b_group_peel "$_seg") || _guard_fault lead-peel
+    _lvp=$(_cp8b_lead "$_lvg") || _guard_fault lead-peel
     # A `cd`/`pushd`/`popd` hiding behind a group opener is a directory change this walk cannot
     # follow, so it ADMITS and FALLS THROUGH — it must NOT `continue` the way the bare forms above
     # do. Continuing would skip the pathhit/literal/composed triggers that judge this very segment
@@ -8234,7 +8254,10 @@ _cp8b_target_arm_denied() {
     # push-to-main floor run on the RAW string and are untouched, so `git clone <url> .claude`,
     # `git clone <url> hooks`, `git push <url> main` stay DENY. K-G pins the git-lead guard.
     _tad_c=$_seg
-    if [ "$_lv" = git ]; then _tad_c=$(_cp8b_mask_remote_urls "$_seg"); fi
+    if [ "$_lv" = git ]; then
+      _tad_c=$(_cp8b_mask_remote_urls "$_seg") || _guard_fault remote-url-mask
+      _guard_vanished remote-url-mask "$_seg" "$_tad_c"
+    fi
     if _cp8b_tad_pathhit "$_tad_c"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
     if _cp8b_tad_literal_tok "$_tad_c"; then _cp8b_target_reason "$_seg" token; return 0; fi
     if _cp8b_tad_composed_tok "$_tad_c"; then _cp8b_target_reason "$_seg" composed; return 0; fi
@@ -8283,7 +8306,8 @@ _cp8b_push_main_denied() {
         _cp8b_dq_vanished pushmain-dequote "$_seg" "$_pmq"
         _pmc=$(_cp8b_collapse_quotes "$_seg") || _guard_fault pushmain-collapse ;;   # GSR C5: a quoted value holding whitespace is ONE word
     esac
-    if printf '%s\n%s\n%s' "$_seg" "$_pmq" "$_pmc" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
+    _pmt=$(printf '%s\n%s\n%s' "$_seg" "$_pmq" "$_pmc") || _guard_fault pushmain-view
+    if _gmq push-main "$_pmt" -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
       return 0
     fi
   done
@@ -8819,7 +8843,7 @@ _s6_api_dotseg() {
 }
 _s6_api_endpoint_walk() {
   _aeg=0; _aea=0; _aeend=0; _aeep=''; _aen=0; _aepend=''
-  _aeout=$(_cp8b_api_tokens "$1")
+  _aeout=$(_cp8b_api_tokens "$1") || _guard_fault api-endpoint
   while [ -n "$_aeout" ]; do
     case "$_aeout" in
       *"$_cp8b_nl"*) _aet=${_aeout%%"$_cp8b_nl"*}; _aeout=${_aeout#*"$_cp8b_nl"} ;;
@@ -8908,8 +8932,8 @@ _s6_api_endpoint_walk() {
     | sed -E -e 's#[Hh][Tt][Tt][Pp][Ss]?://[^/[:space:]]*/# #g' \
              -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' \
              -e 's#^[^/[:space:]]+\.[^/[:space:]]*/##' \
-             -e 's#api/v3/##g')
-  _aeep=$(_s6_api_norm_tail "$_aeep")
+             -e 's#api/v3/##g') || _guard_fault api-endpoint
+  _aeep=$(_s6_api_norm_tail "$_aeep") || _guard_fault api-endpoint
   # (4) NORMALISE, THEN JUDGE — it used to DISQUALIFY, and that was an over-deny with the loudest
   # possible message (fix round 1, S-4). `%` and any capital letter were treated as "not certified",
   # i.e. denied outright under the merge-bypass reason. But a capital is ORDINARY in the two segments
@@ -8939,7 +8963,8 @@ _s6_api_endpoint_walk() {
       *) break ;;
       esac
     _aeprev=$_aeep
-    _aeep=$(_s6_pct_decode "$_aeep")
+    _aeep=$(_s6_pct_decode "$_aeep") || _guard_fault api-endpoint
+    _guard_vanished api-endpoint "$_aeprev" "$_aeep"   # a decode never turns a non-empty endpoint into nothing
     [ "$_aeep" != "$_aeprev" ] || break
     _aei=$((_aei + 1))
   done
@@ -8954,7 +8979,7 @@ _s6_api_endpoint_walk() {
   # ALREADY THERE — the round-4 lesson of the arm above ("a normalisation that runs after some probes
   # have read the raw string protects only the probes that come after it"), arriving here as its mirror
   # image. One helper, called at both points, so a mutant kills both and the two can never drift.
-  _aeep=$(_s6_api_norm_tail "$_aeep")
+  _aeep=$(_s6_api_norm_tail "$_aeep") || _guard_fault api-endpoint
   # ⚠️ THE FOLD RUNS **AFTER** THE DECODE, AND THE ORDER IS THE WHOLE RULE (fix round 2, security C-3).
   # Fix round 1 folded first and decoded second, which folds bytes that are not yet route words: the
   # hex escape `%4D` is not an uppercase `M` until it is decoded, so `…/pulls/5/%4D%45%52%47%45` was
@@ -8963,7 +8988,7 @@ _s6_api_endpoint_walk() {
   # partial `M%45RGE`, `%50ULLS`, the DOUBLE-encoded `%254D…`, and `%53TATUSES`. ★ A normalisation
   # PIPELINE has an order, and the order is a rule: fold what the decode produced, never what it
   # consumed. (The decoder itself is hex-case-insensitive, so `%4d` and `%4D` were never the issue.)
-  _aeep=$(printf '%s' "$_aeep" | tr 'A-Z' 'a-z')
+  _aeep=$(printf '%s' "$_aeep" | tr 'A-Z' 'a-z') || _guard_fault api-endpoint
   case "$_aeep" in
     *%*) return 2 ;;
     esac
@@ -8995,10 +9020,10 @@ _s6_gh_api_admin() {
   _guard_vanished api-joinlines "$1" "$_sgj"
   _sge=$(_cp8b_joinlines_empty "$1") || _guard_fault api-joinlines-empty
   _guard_vanished api-joinlines-empty "$1" "$_sge"
-  # RESIDUAL (GUARD-QUOTED-EXEC-INTERMITTENT, disclosed): a failed fork in the two `_cp8b_strip_subst` twins leaves
-  # an empty view that scans clean — only substitution-glued spellings (`--ad$(echo)min`) lose coverage; the
-  # `$_sgj`/`$_sge` views above are scanned first and are fault-checked. Not yet a fault site.
-  for _sgv in "$_sgj" "$_sge" "$(_cp8b_strip_subst "$_sgj")" "$(_cp8b_strip_subst "$_sge")"; do
+  # The two `_cp8b_strip_subst` twins below are fault sites too: a capture that fails faults, like the two views above.
+  _sgt1=$(_cp8b_strip_subst "$_sgj") || _guard_fault gh-api-subst
+  _sgt2=$(_cp8b_strip_subst "$_sge") || _guard_fault gh-api-subst
+  for _sgv in "$_sgj" "$_sge" "$_sgt1" "$_sgt2"; do
     if _s6_gh_api_admin_scan "$_sgv"; then unset _sgj _sge _sgv 2>/dev/null || :; return 0; fi
   done
   unset _sgj _sge _sgv 2>/dev/null || :
@@ -9101,8 +9126,8 @@ _s6_gh_api_admin_scan() {
   # needs; `$_sga` is the de-quoted, flattened one the substring scan needs. Two views, two jobs.
   # The `if` around the assignment is not style: a command substitution whose command exits non-zero
   # aborts under `set -e` outside a condition position.
-  # RESIDUAL (disclosed): rc 2 from `_s6_api_endpoint` is its LEGITIMATE "disqualified" answer, so it is not a
-  # fault boundary; a fork failure inside it surfaces as rc 1 and falls to the substring scan below (deny-ward).
+  # rc 2 from `_s6_api_endpoint` is its "disqualified" answer, which denies; a fault inside the walk (`_guard_fault`
+  # exits 2 in its capture) therefore also lands on a deny, because every capture in the walk faults on an error.
   if _sgep=$(_s6_api_endpoint "$1"); then _sgerc=0; else _sgerc=$?; fi
   # ⚠️ EACH BRANCH IS WRITTEN AS AN `if`, NOT AS `_sgr=$?`, for the same `set -e` reason.
   if [ "$_sgerc" = 2 ]; then
@@ -9396,6 +9421,12 @@ _guard_fault() {
   case "${1:-unknown}" in
     command-read-empty|input-read|input-type)
       _gf_msg="agent-guard: internal fault at $1 - the tool input was empty or malformed; denying fail-closed" ;;
+    grep-path-read|grep-glob-read)   # the adapter's input reads for the Grep and Glob tools: a failed fork, not a matcher
+      _gf_msg="agent-guard: internal fault at $1 - a command substitution failed (usually the process limit: stop the sibling battery or other heavy job, then retry); denying fail-closed" ;;
+    mcp-policy)
+      _gf_msg="agent-guard: internal fault at $1 - the MCP policy could not be read; denying fail-closed" ;;
+    grep-*)
+      _gf_msg="agent-guard: internal fault at $1 - an internal matcher errored; denying fail-closed" ;;
     *)
       _gf_msg="agent-guard: internal fault at ${1:-unknown} - a command substitution failed (usually the process limit: stop the sibling battery or other heavy job, then retry); denying fail-closed" ;;
   esac
@@ -9403,6 +9434,42 @@ _guard_fault() {
   if [ -n "${_GUARD_USR1:-}" ]; then kill -USR1 $$ 2>/dev/null || :; fi
   guard_log_deny pretooluse "$_gf_msg" "${TOOL:--}" || :
   exit 2
+}
+# The checked matchers. A matcher that cannot answer must never read as "no match" (SWAS-583): rc 0 is a match, rc 1 is none, and
+# anything else faults. <rule> names the rule it serves (it shows in the fault text as grep-<rule>), <text> is what is matched, and
+# the rest is the matcher's own arguments, passed through untouched. An optional LC_ALL=C first argument pins the locale for that one
+# call without leaving it set in the caller. `_gmq` feeds the text as it is (printf '%s'), `_gmqn` adds the trailing newline
+# (printf '%s\n'), and both send the matcher's output to /dev/null; `_gmo` feeds it as `_gmq` does and KEEPS the output for a caller
+# that consumes it. Inside a `$(…)` or a `( … )` body the fault leaves only that subshell, so the caller maps a non-zero rc.
+_gmq() {
+  _gmh_s=$1; _gmh_t=$2; shift 2; _gmh_rc=0
+  if [ "${1:-}" = LC_ALL=C ]; then
+    shift; printf '%s' "$_gmh_t" | LC_ALL=C grep "$@" >/dev/null || _gmh_rc=$?
+  else
+    printf '%s' "$_gmh_t" | grep "$@" >/dev/null || _gmh_rc=$?
+  fi
+  [ "$_gmh_rc" -le 1 ] || _guard_fault "grep-$_gmh_s"
+  return "$_gmh_rc"
+}
+_gmqn() {
+  _gmh_s=$1; _gmh_t=$2; shift 2; _gmh_rc=0
+  if [ "${1:-}" = LC_ALL=C ]; then
+    shift; printf '%s\n' "$_gmh_t" | LC_ALL=C grep "$@" >/dev/null || _gmh_rc=$?
+  else
+    printf '%s\n' "$_gmh_t" | grep "$@" >/dev/null || _gmh_rc=$?
+  fi
+  [ "$_gmh_rc" -le 1 ] || _guard_fault "grep-$_gmh_s"
+  return "$_gmh_rc"
+}
+_gmo() {
+  _gmh_s=$1; _gmh_t=$2; shift 2; _gmh_rc=0
+  if [ "${1:-}" = LC_ALL=C ]; then
+    shift; printf '%s' "$_gmh_t" | LC_ALL=C grep "$@" || _gmh_rc=$?
+  else
+    printf '%s' "$_gmh_t" | grep "$@" || _gmh_rc=$?
+  fi
+  [ "$_gmh_rc" -le 1 ] || _guard_fault "grep-$_gmh_s"
+  return "$_gmh_rc"
 }
 # `_guard_has_content "<s>"`: 0 iff <s> holds a byte that is not whitespace, a command separator (`;` `&` `|`)
 # or a backslash — i.e. something the segment transforms must keep. FORK-FREE (a `case` pattern): this test
@@ -9774,10 +9841,11 @@ guard_check_command() {
           _dqv=$(printf '%s' "$_seg" | tr -d "\"'\\\\") || _guard_fault h2-dequote
           _cp8b_dq_vanished h2-dequote "$_seg" "$_dqv" ;;
       esac
-      if printf '%s\n%s' "$_seg" "$_dqv" | grep -Eiq -e 'git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[[:space:]=]*core\.hooksPath' -e 'GIT_CONFIG_(KEY_[0-9]+|PARAMETERS)=[^;&|]*core\.hooksPath' && ! _cp8b_gitcfg_msg_data "$_seg"; then
+      _dqt=$(printf '%s\n%s' "$_seg" "$_dqv") || _guard_fault hooks-path-view
+      if _gmq hooks-path-inline "$_dqt" -Eiq -e 'git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[[:space:]=]*core\.hooksPath' -e 'GIT_CONFIG_(KEY_[0-9]+|PARAMETERS)=[^;&|]*core\.hooksPath' && ! _cp8b_gitcfg_msg_data "$_seg"; then
         printf '%s%s' '13: git -c core.hooksPath would disable the agent guard - human-gated.' "$(_guard_stop_pointer hooks-path)"; return 1
       fi
-      printf '%s\n%s' "$_seg" "$_dqv" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath' || continue
+      _gmq hooks-path-config "$_dqt" -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath' || continue
       _cp8b_gitcfg_msg_data "$_seg" && continue
       _cp8b_gitcfg_is_read "$_seg" && continue
       printf '%s%s' '13: git config core.hooksPath would disable the agent guard - human-gated.' "$(_guard_stop_pointer hooks-path)"; return 1
@@ -9873,9 +9941,9 @@ guard_check_command() {
   # own fixtures. Monotone: a strict superset of the match, so no DENY can become an ALLOW.
   if ! selfedit_allowed \
      && [ "${KIT_PROMOTION_FRONT_DOOR:-}" != "1" ] \
-     && printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+([^;&|]*[[:space:]])?notes[[:space:]]' \
-     && printf '%s' "$cmd" | grep -Eiq -- "--ref[= ][\"']?(refs/notes/)?promotions[\"']?([[:space:]]|\$)|refs/notes/promotions" \
-     && printf '%s' "$cmd" | grep -Eq 'notes[[:space:]]([^;&|]*[[:space:]])?(add|append|copy|edit|remove|prune|merge)([[:space:]]|$)'; then
+     && _gmq promotion-ledger "$cmd" -Eq '(^|[^[:alnum:]_])git[[:space:]]+([^;&|]*[[:space:]])?notes[[:space:]]' \
+     && _gmq promotion-ledger "$cmd" -Eiq -- "--ref[= ][\"']?(refs/notes/)?promotions[\"']?([[:space:]]|\$)|refs/notes/promotions" \
+     && _gmq promotion-ledger "$cmd" -Eq 'notes[[:space:]]([^;&|]*[[:space:]])?(add|append|copy|edit|remove|prune|merge)([[:space:]]|$)'; then
     printf '%s' '13: raw `git notes` WRITE verbs (add/append/copy/edit/remove/prune/merge) on refs/notes/promotions are denied - this is the default route a drifting agent takes to mint a GO record (governance-ledger integrity, D-240805-3). Use the front door: scripts/promotion-verify.sh record, which derives the assurance label and publishes the note itself; to reconcile a diverged ledger, use scripts/promotion-verify.sh sync. The control that binds is the record rendered at the CI judgment surface, not this deny; the ceiling of this deny is stated in the escape-card row. (escape card R36 promotion-ledger)'; return 1
   fi
   # --- B2-SESSION-IDENTITY-LEDGER: RAW WRITES AND DELETES OF THE CLAIM REFS ARE DENIED ----------
@@ -9933,12 +10001,15 @@ guard_check_command() {
   # between its anchor and `refs/claims` — belt and braces, because these two cover different
   # residues (the strip handles characters INSIDE the token, the run handles anything glued in front
   # of it). Still monotone in both halves.
-  _b2_claims_cmd=$(printf '%s' "$cmd" | tr -d '"$\\'"'")
+  _b2_claims_cmd=$(printf '%s' "$cmd" | tr -d '"$\\'"'") || _guard_fault claims-view
+  case "$cmd" in
+    *[!\"\'\\\$[:space:]]*) _guard_vanished claims-view "$cmd" "$_b2_claims_cmd" ;;
+  esac
   if ! selfedit_allowed \
      && [ "${KIT_CLAIM_FRONT_DOOR:-}" != "1" ] \
-     && printf '%s' "$_b2_claims_cmd" | grep -Eq '(^|[^[:alnum:]_])git([[:space:]]|$)' \
-     && printf '%s' "$_b2_claims_cmd" | grep -Eq '(^|[^[:alnum:]_])(push|send-pack|config)([[:space:]]|=|$)' \
-     && printf '%s' "$_b2_claims_cmd" | grep -Eiq -- ':[^[:alnum:]]*refs/claims(-log)?/|(--delete|-d)[[:space:]]+[^[:alnum:]]*refs/claims(-log)?/|(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/claims(-log)?/|remote\.[^[:space:]=]*\.push[[:space:]=][^;&|]*refs/claims(-log)?/'; then
+     && _gmq claim-refs "$_b2_claims_cmd" -Eq '(^|[^[:alnum:]_])git([[:space:]]|$)' \
+     && _gmq claim-refs "$_b2_claims_cmd" -Eq '(^|[^[:alnum:]_])(push|send-pack|config)([[:space:]]|=|$)' \
+     && _gmq claim-refs "$_b2_claims_cmd" -Eiq -- ':[^[:alnum:]]*refs/claims(-log)?/|(--delete|-d)[[:space:]]+[^[:alnum:]]*refs/claims(-log)?/|(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/claims(-log)?/|remote\.[^[:space:]=]*\.push[[:space:]=][^;&|]*refs/claims(-log)?/'; then
     printf '%s' '13: raw pushes whose refspec DESTINATION is refs/claims/ or refs/claims-log/ are denied, DELETES INCLUDED (`:refs/claims/X`, `--delete`, `-d`, `<sha>:refs/claims/X`, two-refspec, send-pack, --prune, and the `remote.*.push` configured routes, in any remote spelling). These refs are the work-in-progress truth (B4 counts the WIP ceiling from them) and the release record; a raw delete IS a release, and would make board-claim.sh refusing an unprovably-stale release into theatre. Use the front door: scripts/board-claim.sh claim | release [--stale] | status, which proves staleness and logs every non-holder release. Reads are allowed (`git ls-remote origin refs/claims/*`, the --depth=1 scratch fetch). This deny is a drift control, not a boundary; its ceiling is stated in the escape-card row. (escape card R18 claims)'; return 1
   fi
 
@@ -10022,8 +10093,8 @@ guard_check_command() {
   # separately. `_CP8B_READ_VERBS`' vetting of digests as harmless is UNCHANGED — a digest of a CONTROL-
   # PLANE config is genuinely harmless, so the secret/CP asymmetry is intentional and fixtured both ways.
   if ! selfedit_allowed \
-     && printf '%s' "$cmd" | grep -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
-     && printf '%s' "$cmd" | grep -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
+     && _gmq shell-secret-read "$cmd" -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
+     && _gmq shell-secret-read "$cmd" -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
     printf '%s%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated.' "$(_guard_stop_pointer secret-read)"; return 1
   fi
   # SWAS-332: a copy, move, link, archive or `dd if=` whose SOURCE is a secret is the read half of exfil under another name, and
@@ -10065,61 +10136,61 @@ guard_check_command() {
   if _ssr_denied "$cmd"; then printf '%s' "$_SSR_TIP"; return 1; fi
   # recursive rm in any flag arrangement (-rf, -fr, -r -f, --recursive), bounded so
   # 'confirm'/'npm' are not matched, but quoted forms (bash -c "rm -rf") are.
-  if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alnum:]]*[rR]|--recursive)'; then
+  if _gmq recursive-rm "$cmd" -Eq '(^|[^[:alnum:]_])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alnum:]]*[rR]|--recursive)'; then
     { printf '%s%s' '13: recursive rm is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: non-recursive rm of a DANGEROUS target — a glob, a data/critical file extension,
   # an absolute path, or a dotfile of record. Anchored to command position so a commit
   # message mentioning rm is not matched. Plain relative single files (rm stale.txt,
   # rm dist/bundle.js) remain ALLOWED to avoid over-blocking normal dev work.
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]'; then
-    if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?(--[[:space:]]+)?[^;&|[:space:]]*[*?[][^;&|[:space:]]*([[:space:]]|$)' \
-       || printf '%s' "$cmd" | grep -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$)' \
-       || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?/[^[:space:]]' \
-       || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*(\.env|/\.git)([[:space:]]|$|/)' \
-       || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?\.env([[:space:]]|$)'; then
+  if _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]'; then
+    if _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?(--[[:space:]]+)?[^;&|[:space:]]*[*?[][^;&|[:space:]]*([[:space:]]|$)' \
+       || _gmq rm-dangerous "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$)' \
+       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?/[^[:space:]]' \
+       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*(\.env|/\.git)([[:space:]]|$|/)' \
+       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?\.env([[:space:]]|$)'; then
       { printf '%s' '13: rm of a glob, data file, absolute path, or dotfile-of-record can be irreversible - human-gated. For an ABSOLUTE scratch path the escape is a repo-relative one. (escape card R8 rm-absolute)'; return 1; }
     fi
   fi
   # 9b: non-rm destruction primitives. Binaries are anchored to COMMAND POSITION
   # (start, or after a ; && || | separator, optional sudo) so a word like "truncate"
   # inside a commit message is NOT matched — only an actually-invoked command is.
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(truncate|shred|wipefs|blkdiscard|mkfs(\.[a-z0-9]+)?)([[:space:]]|$)'; then
+  if _gmq destroy-primitive "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(truncate|shred|wipefs|blkdiscard|mkfs(\.[a-z0-9]+)?)([[:space:]]|$)'; then
     { printf '%s%s' '13: in-place file/device destruction (truncate/shred/wipefs/blkdiscard/mkfs) is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # dd is a scalpel like rm: deny only when of= targets a device or a data-file extension
   # (dd of=test-fixture.img stays allowed; dd of=/dev/sda and dd of=db.sqlite are denied).
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?dd[[:space:]]' \
-     && printf '%s' "$cmd" | grep -Eiq 'of=(/dev/|[^[:space:]]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$))'; then
+  if _gmq dd-target "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?dd[[:space:]]' \
+     && _gmq dd-target "$cmd" -Eiq 'of=(/dev/|[^[:space:]]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$))'; then
     { printf '%s%s' '13: dd of= a device or data file overwrites it irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # redirection/empty-source truncation of an existing target. GENERIC by target: the
   # patterns below match ANY destination ([^[:space:]&|;]+), so truncating a scanner-config
   # (e.g. `: > .gitleaks.toml`) is already covered here — no path enumeration needed (KW10).
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*):[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
-     || printf '%s' "$cmd" | grep -Eq '/dev/null[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
-     || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
-     || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
+  if _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*):[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
+     || _gmq truncating-redirect "$cmd" -Eq '/dev/null[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
+     || _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
+     || _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
     { printf '%s%s' '13: redirection/empty-source truncation zeroes a file irreversibly - human-gated (a shell >/: truncation is denied because it can irreversibly zero an existing file).' "$(_guard_stop_pointer truncation)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete([[:space:]]|$)' \
-     || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)([[:space:]]|$)' \
-     || printf '%s' "$cmd" | grep -Eq '\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^|]*[[:space:]])?(rm|shred|truncate|unlink|wipefs)([[:space:]]|$)'; then
+  if _gmq bulk-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete([[:space:]]|$)' \
+     || _gmq bulk-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)([[:space:]]|$)' \
+     || _gmq bulk-delete "$cmd" -Eq '\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^|]*[[:space:]])?(rm|shred|truncate|unlink|wipefs)([[:space:]]|$)'; then
     { printf '%s%s' '13: bulk irreversible deletion (find -delete / -exec rm / pipe to xargs rm) - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rsync[[:space:]]+[^|]*--delete([[:space:]]|$|[^a-z])'; then
+  if _gmq rsync-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rsync[[:space:]]+[^|]*--delete([[:space:]]|$|[^a-z])'; then
     { printf '%s%s' '13: rsync --delete mirrors a source and removes destination files irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+clean[[:space:]]+[^|]*-[a-z]*[fdx]'; then
+  if _gmq git-clean "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+clean[[:space:]]+[^|]*-[a-z]*[fdx]'; then
     { printf '%s%s' '13: git clean -f/-d/-x force-deletes untracked/ignored files irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?mv[[:space:]]+[^;&|]*[[:space:]]/dev/null([[:space:]]|$)'; then
+  if _gmq mv-to-null "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?mv[[:space:]]+[^;&|]*[[:space:]]/dev/null([[:space:]]|$)'; then
     { printf '%s%s' '13: moving a file onto /dev/null destroys its contents - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+reset[[:space:]]+.*--hard'; then
+  if _gmq git-reset-hard "$cmd" -Eq 'git[[:space:]]+reset[[:space:]]+.*--hard'; then
     { printf '%s%s' '13: git reset --hard discards work irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(npm|yarn|pnpm)[[:space:]]+publish'; then
+  if _gmq package-publish "$cmd" -Eq '(npm|yarn|pnpm)[[:space:]]+publish'; then
     { printf '%s%s' '13: publishing a package is externally irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   _fpq=$cmd; _fpc=$cmd   # design §16 R4: the force-push rule also reads the quote-and-backslash-deleted view
@@ -10129,7 +10200,8 @@ guard_check_command() {
       _cp8b_dq_vanished forcepush-dequote "$cmd" "$_fpq"
       _fpc=$(_cp8b_collapse_quotes "$cmd") || _guard_fault forcepush-collapse ;;   # GSR C5: the quote-collapsed third view
   esac
-  if printf '%s\n%s\n%s' "$cmd" "$_fpq" "$_fpc" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
+  _fpt=$(printf '%s\n%s\n%s' "$cmd" "$_fpq" "$_fpc") || _guard_fault forcepush-view
+  if _gmq force-push "$_fpt" -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
     { printf '%s%s' '13: force/mirror push rewrites or deletes published history - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # push to main/master in any refspec form: 'main', '+main', 'HEAD:main', 'x:master', "main" (incl. git -c … push)
@@ -10231,14 +10303,18 @@ guard_check_command() {
   _guard_vanished merge-joinlines "$cmd" "$_pj"
   _pe=$(_cp8b_joinlines_empty "$cmd") || _guard_fault merge-joinlines-empty
   _guard_vanished merge-joinlines-empty "$cmd" "$_pe"
-  _pn=$(_s6_dequote "$_pj")
-  _pne=$(_s6_dequote "$_pe")
+  _pn=$(_s6_dequote "$_pj") || _guard_fault merge-views
+  _cp8b_dq_vanished merge-views "$_pj" "$_pn"
+  _pne=$(_s6_dequote "$_pe") || _guard_fault merge-views
+  _cp8b_dq_vanished merge-views "$_pe" "$_pne"
   # The substitution-stripped twins, now stripped to a FIXPOINT and newline-flattened first, so the
   # nested and newline-straddling forms collapse instead of surviving one pass. These twins are not
   # decoration: they also feed the merge-SHAPE test below, which is what lets the disqualifier see a
   # shape that is itself hidden inside a construct (`gh pr me$(echo $(echo))rge`).
-  _px=$(_s6_dequote "$(_cp8b_strip_subst "$_pj")")
-  _pxe=$(_s6_dequote "$(_cp8b_strip_subst "$_pe")")
+  _pxs=$(_cp8b_strip_subst "$_pj") || _guard_fault merge-views
+  _px=$(_s6_dequote "$_pxs") || _guard_fault merge-views
+  _pxs=$(_cp8b_strip_subst "$_pe") || _guard_fault merge-views
+  _pxe=$(_s6_dequote "$_pxs") || _guard_fault merge-views
   # (A) MERGE-SHAPED? Asked over every view, so a shape hidden by quoting, continuation or
   # substitution still counts. Two shapes: the porcelain verb, and the REST merge endpoint.
   _pms=0
@@ -10272,11 +10348,11 @@ guard_check_command() {
   _pai=1
   if _cp8b_api_expansion_indicator "$_pj" || _cp8b_api_expansion_indicator "$_pe"; then _pai=0; fi
   for _pv in "$_pn" "$_pne" "$_px" "$_pxe"; do
-    if printf '%s' "$_pv" | grep -Eq '[Gg][Hh][[:space:]]+pr[[:space:]]+merge' \
+    if _gmq merge-shape "$_pv" -Eq '[Gg][Hh][[:space:]]+pr[[:space:]]+merge' \
        || _cp8b_gh_pr_merge_order "$_pv"; then _pms=1; break; fi
-    if printf '%s' "$_pv" | grep -Eq '[Gg][Hh][[:space:]]+api' \
-       && printf '%s' "$_pv" | grep -Eq 'pulls/[^[:space:]]*/merge' \
-       && { printf '%s' "$_pv" | grep -Eq "$_CP8B_API_MUTATOR" \
+    if _gmq merge-shape "$_pv" -Eq '[Gg][Hh][[:space:]]+api' \
+       && _gmq merge-shape "$_pv" -Eq 'pulls/[^[:space:]]*/merge' \
+       && { _gmq merge-shape "$_pv" -Eq "$_CP8B_API_MUTATOR" \
             || [ "$_pai" = 0 ]; }; then _pms=1; break; fi
   done
   # (A) GLUE? Asked of the RAW command, deliberately: `_cp8b_joinlines` has already consumed the
@@ -10284,8 +10360,8 @@ guard_check_command() {
   # continuation was ever there. `$` covers `$(…)`, `${…}` and a bare `$VAR` alike — the last of
   # those is the one no byte-level normalisation could ever reach, because its bytes are ABSENT.
   _pgl=0
-  printf '%s' "$cmd" | grep -q '[$`]' && _pgl=1
-  printf '%s\n' "$cmd" | grep -q '\\$' && _pgl=1
+  _gmq merge-glue "$cmd" -q '[$`]' && _pgl=1
+  _gmqn merge-glue "$cmd" -q '\\$' && _pgl=1
   if [ "$_pms" = 1 ] && [ "$_pgl" = 1 ]; then
     unset _pj _pe _pn _pne _px _pxe _pv _pms _pgl _pai 2>/dev/null || :
     { printf '%s' '13: gh pr merge / merge-endpoint call carries shell substitution or continuation - spell it plainly (no $(...), ${...}, backticks, or line continuation) so the guard can read it; --admin is human-gated. A legitimate merge works with the number and subject written out, or with the body passed via -F file. (escape card R35 admin-merge)'; return 1; }
@@ -10296,9 +10372,9 @@ guard_check_command() {
   # `sh -c 'gh pr merge 5 --admin'` has nothing for the disqualifier to fire on.
   _phit=0
   for _pv in "$_pn" "$_pne" "$_px" "$_pxe"; do
-    if { printf '%s' "$_pv" | grep -Eq '[Gg][Hh][[:space:]]+pr[[:space:]]+merge' \
+    if { _gmq admin-probe "$_pv" -Eq '[Gg][Hh][[:space:]]+pr[[:space:]]+merge' \
          || _cp8b_gh_pr_merge_order "$_pv"; } \
-       && printf '%s' "$_pv" | grep -Eq '(--admin|--administrator)([^A-Za-z0-9_-]|$)'; then
+       && _gmq admin-probe "$_pv" -Eq '(--admin|--administrator)([^A-Za-z0-9_-]|$)'; then
       _phit=1; break
     fi
   done
@@ -10349,90 +10425,90 @@ guard_check_command() {
   fi
   unset _phit _pav _pbv _pcv 2>/dev/null || :
   # destructive SQL via a DB client
-  if printf '%s' "$cmd" | grep -Eiq '(psql|mysql|mariadb|sqlite3|mongosh?).*(drop[[:space:]]+(table|database)|truncate|delete[[:space:]]+from)'; then
+  if _gmq destructive-sql "$cmd" -Eiq '(psql|mysql|mariadb|sqlite3|mongosh?).*(drop[[:space:]]+(table|database)|truncate|delete[[:space:]]+from)'; then
     { printf '%s%s' '13: destructive SQL (DROP/TRUNCATE/DELETE via a DB client) - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # destructive DB resets via migration runners
-  if printf '%s' "$cmd" | grep -Eiq '(prisma[[:space:]]+migrate[[:space:]]+reset|prisma[[:space:]]+db[[:space:]]+push[^|]*--force-reset|sequelize[^|]*db:migrate:undo:all|knex[^|]*migrate:rollback[^|]*--all|drizzle-kit[[:space:]]+push)'; then
+  if _gmq db-reset-runner "$cmd" -Eiq '(prisma[[:space:]]+migrate[[:space:]]+reset|prisma[[:space:]]+db[[:space:]]+push[^|]*--force-reset|sequelize[^|]*db:migrate:undo:all|knex[^|]*migrate:rollback[^|]*--all|drizzle-kit[[:space:]]+push)'; then
     { printf '%s%s' '13: destructive DB reset via a migration runner - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # dropdb as an invoked command (start or after a shell separator), not when merely
   # mentioned in prose (e.g. a commit message "fix dropdb bug").
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)dropdb([[:space:]]|$)'; then
+  if _gmq dropdb "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)dropdb([[:space:]]|$)'; then
     { printf '%s%s' '13: dropdb destroys a database irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # ORM / framework DB destruction (drop/reset/wipe/fresh) across stacks
-  if printf '%s' "$cmd" | grep -Eiq '(rails|rake)[[:space:]]+db:(drop|reset|migrate:reset|purge)|artisan[[:space:]]+(migrate:fresh|migrate:reset|db:wipe)|manage\.py[[:space:]]+(flush|reset_db|sqlflush)|alembic[[:space:]]+downgrade[[:space:]]+base|flyway[[:space:]]+clean|dotnet[[:space:]]+ef[[:space:]]+database[[:space:]]+(drop|update[[:space:]]+0)'; then
+  if _gmq orm-db-reset "$cmd" -Eiq '(rails|rake)[[:space:]]+db:(drop|reset|migrate:reset|purge)|artisan[[:space:]]+(migrate:fresh|migrate:reset|db:wipe)|manage\.py[[:space:]]+(flush|reset_db|sqlflush)|alembic[[:space:]]+downgrade[[:space:]]+base|flyway[[:space:]]+clean|dotnet[[:space:]]+ef[[:space:]]+database[[:space:]]+(drop|update[[:space:]]+0)'; then
     { printf '%s%s' '13: destructive DB drop/reset via an ORM/framework tool - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'pg_restore[^|]*(--clean|[[:space:]]-c([[:space:]]|$))'; then
+  if _gmq pg-restore-clean "$cmd" -Eq 'pg_restore[^|]*(--clean|[[:space:]]-c([[:space:]]|$))'; then
     { printf '%s%s' '13: pg_restore --clean drops objects irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eiq 'redis-cli[^|]*(flushall|flushdb)'; then
+  if _gmq redis-flush "$cmd" -Eiq 'redis-cli[^|]*(flushall|flushdb)'; then
     { printf '%s%s' '13: redis FLUSHALL/FLUSHDB wipes the datastore - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'kubectl[[:space:]]+([^|]*[[:space:]])?delete([[:space:]]|$)'; then
+  if _gmq kubectl-delete "$cmd" -Eq 'kubectl[[:space:]]+([^|]*[[:space:]])?delete([[:space:]]|$)'; then
     { printf '%s%s' '13: kubectl delete removes cluster resources - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'docker[[:space:]]+(volume[[:space:]]+(rm|prune)|system[[:space:]]+prune[^|]*(-a|--all))'; then
+  if _gmq docker-prune "$cmd" -Eq 'docker[[:space:]]+(volume[[:space:]]+(rm|prune)|system[[:space:]]+prune[^|]*(-a|--all))'; then
     { printf '%s%s' '13: docker volume/system prune destroys persistent state - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'aws[[:space:]]+s3[[:space:]]+rm[^|]*--recursive|aws[[:space:]]+s3[[:space:]]+rb|aws[[:space:]]+rds[[:space:]]+delete-db-instance|aws[[:space:]]+dynamodb[[:space:]]+delete-table|gcloud[[:space:]]+sql[[:space:]]+instances[[:space:]]+delete|az[[:space:]]+group[[:space:]]+delete|az[[:space:]]+sql[^|]*[[:space:]]delete'; then
+  if _gmq cloud-delete-named "$cmd" -Eq 'aws[[:space:]]+s3[[:space:]]+rm[^|]*--recursive|aws[[:space:]]+s3[[:space:]]+rb|aws[[:space:]]+rds[[:space:]]+delete-db-instance|aws[[:space:]]+dynamodb[[:space:]]+delete-table|gcloud[[:space:]]+sql[[:space:]]+instances[[:space:]]+delete|az[[:space:]]+group[[:space:]]+delete|az[[:space:]]+sql[^|]*[[:space:]]delete'; then
     { printf '%s%s' '13: cloud resource deletion (storage/DB/instance) is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: cloud/infra destruction as capability families (verb-agnostic across vendors)
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)terraform[[:space:]]+(destroy|apply)([[:space:]]|$)'; then
+  if _gmq terraform "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)terraform[[:space:]]+(destroy|apply)([[:space:]]|$)'; then
     { printf '%s%s' '13: terraform destroy/apply changes real infrastructure - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(aws|gcloud|az)[[:space:]][^|]*[[:space:]](delete|delete-[a-z-]+|terminate-[a-z-]+|remove|rb|destroy)([[:space:]]|$)'; then
+  if _gmq cloud-delete "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(aws|gcloud|az)[[:space:]][^|]*[[:space:]](delete|delete-[a-z-]+|terminate-[a-z-]+|remove|rb|destroy)([[:space:]]|$)'; then
     { printf '%s%s' '13: cloud resource deletion/termination is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)helm[[:space:]]+(uninstall|delete)([[:space:]]|$)' \
-     || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)kubectl[[:space:]]+(drain|cordon)([[:space:]]|$)'; then
+  if _gmq workload-disrupt "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)helm[[:space:]]+(uninstall|delete)([[:space:]]|$)' \
+     || _gmq workload-disrupt "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)kubectl[[:space:]]+(drain|cordon)([[:space:]]|$)'; then
     { printf '%s%s' '13: helm uninstall / kubectl drain disrupts running workloads - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eiq '(mongosh?|cockroach|psql|mysql)[^|]*(dropDatabase|drop[[:space:]]+database)' \
-     || printf '%s' "$cmd" | grep -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then
+  if _gmq database-drop "$cmd" -Eiq '(mongosh?|cockroach|psql|mysql)[^|]*(dropDatabase|drop[[:space:]]+database)' \
+     || _gmq database-drop "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then
     { printf '%s%s' '13: database drop via a client/migration tool is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # SWAS-187: the shell name used to end on whitespace only, so a quote, a bracket or an operator right
   # after it (`sh -c '… | sh'`, `$(… | sh)`, `| sh;echo`) got past. The class lists the shell's word
   # terminators (blank ; & | ( ) < >), the three bytes that close a quoted body, `$` (`| sh$X`) and the
   # glob bytes * ? [ (`| sh*` runs /bin/sh when a file named sh is the only match).
-  if printf '%s' "$cmd" | grep -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|python[0-9.]*|node|perl|ruby|php)([[:space:]'\''"`$;&|()<>*?[]|$)'; then
+  if _gmq payload-to-shell "$cmd" -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|python[0-9.]*|node|perl|ruby|php)([[:space:]'\''"`$;&|()<>*?[]|$)'; then
     { printf '%s%s' '13: piping a fetched/decoded payload into a shell is high-blast-radius - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: data-exfiltration channels (PARTIAL — binary-name denial only; interpreters
   # (python -c, node -e) remain channels. The real control is the platform network-egress
   # allowlist — see docs/enterprise/platform-safety-boundary.md. This is a speed bump.)
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(scp|sftp)[[:space:]]' \
-     || printf '%s' "$cmd" | grep -Eq '(curl|wget)[[:space:]][^|]*(-T[[:space:]]|--upload-file|-F[[:space:]]*[^[:space:]&|;]*@|--data-binary[[:space:]]*@|--post-file)' \
-     || printf '%s' "$cmd" | grep -Eq '\|[[:space:]]*(nc|ncat|netcat)[[:space:]]+[^[:space:]]' \
-     || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)rclone[[:space:]]+(copy|sync|move)[[:space:]][^|]*[a-zA-Z0-9_-]+:' \
-     || printf '%s' "$cmd" | grep -Eq '\|[[:space:]]*mail[[:space:]]'; then
+  if _gmq exfil-channel "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(scp|sftp)[[:space:]]' \
+     || _gmq exfil-channel "$cmd" -Eq '(curl|wget)[[:space:]][^|]*(-T[[:space:]]|--upload-file|-F[[:space:]]*[^[:space:]&|;]*@|--data-binary[[:space:]]*@|--post-file)' \
+     || _gmq exfil-channel "$cmd" -Eq '\|[[:space:]]*(nc|ncat|netcat)[[:space:]]+[^[:space:]]' \
+     || _gmq exfil-channel "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)rclone[[:space:]]+(copy|sync|move)[[:space:]][^|]*[a-zA-Z0-9_-]+:' \
+     || _gmq exfil-channel "$cmd" -Eq '\|[[:space:]]*mail[[:space:]]'; then
     { printf '%s%s' '13: possible data exfiltration (scp/sftp/curl-upload/nc/rclone/mail). Partial guard - the boundary is the platform egress allowlist - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: eval of a command substitution hides the real command from inspection.
   # Anchored to command position so "eval $(...)" inside a commit message is NOT matched.
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?eval[[:space:]]+[^;&|]*(\$\(|`)'; then
+  if _gmq eval-substitution "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?eval[[:space:]]+[^;&|]*(\$\(|`)'; then
     { printf '%s%s' '13: eval of a command substitution obscures the executed command - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eiq '(vercel[[:space:]]+(deploy[[:space:]]+)?--prod|railway[[:space:]]+up|fly[[:space:]]+deploy|terraform[[:space:]]+apply|kubectl[[:space:]]+apply|helm[[:space:]]+(install|upgrade))'; then
+  if _gmq production-deploy "$cmd" -Eiq '(vercel[[:space:]]+(deploy[[:space:]]+)?--prod|railway[[:space:]]+up|fly[[:space:]]+deploy|terraform[[:space:]]+apply|kubectl[[:space:]]+apply|helm[[:space:]]+(install|upgrade))'; then
     { printf '%s%s' '13: production deploy / infra apply is high-blast-radius - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # prod-context catch-all: a mutating kube/helm op against a production context or namespace.
   # Patterns are intentionally `.`-prefixed (not leading `--`) so GNU grep does not parse them
   # as options; the leading `.` matches the space that always precedes the flag in real commands.
-  if printf '%s' "$cmd" | grep -Eiq '.(-(kube-)?context[[:space:]=][^[:space:]]*prod)|[[:space:]]-n[[:space:]]+[^[:space:]]*prod' \
-     && printf '%s' "$cmd" | grep -Eiq '(kubectl|helm)[[:space:]]([^|]*[[:space:]])?(apply|delete|create|replace|patch|scale|rollout|upgrade|install|uninstall|destroy)'; then
+  if _gmq production-context "$cmd" -Eiq '.(-(kube-)?context[[:space:]=][^[:space:]]*prod)|[[:space:]]-n[[:space:]]+[^[:space:]]*prod' \
+     && _gmq production-context "$cmd" -Eiq '(kubectl|helm)[[:space:]]([^|]*[[:space:]])?(apply|delete|create|replace|patch|scale|rollout|upgrade|install|uninstall|destroy)'; then
     { printf '%s%s' '13: mutating operation against a production context - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)([A-Z_]*ENV)=prod[a-z]*[[:space:]]' \
-     && printf '%s' "$cmd" | grep -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
+  if _gmq production-env "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)([A-Z_]*ENV)=prod[a-z]*[[:space:]]' \
+     && _gmq production-env "$cmd" -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
     { printf '%s%s' '13: destructive/deploy command in a production environment - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eiq '.(--(env|environment)[[:space:]=]prod)' \
-     && printf '%s' "$cmd" | grep -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
+  if _gmq production-flag "$cmd" -Eiq '.(--(env|environment)[[:space:]=]prod)' \
+     && _gmq production-flag "$cmd" -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
     { printf '%s%s' '13: destructive/deploy command targeting production - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   return 0
@@ -10503,13 +10579,27 @@ guard_check_mcp() {
   #    exfil action, a secret read via a generic name, and real egress remain the platform egress
   #    boundary's job (docs/enterprise/platform-safety-boundary.md).
   if [ "$_mcp_shape_ok" = 1 ]; then
-    if printf '%s\n' "$al" | grep -qxF -- "$t" 2>/dev/null; then return 0; fi
-    if printf '%s\n' "$al" | grep -qxF -- "mcp__*__${t##*__}" 2>/dev/null; then return 0; fi
+    if _gmqn mcp-allowlist "$al" -qxF -- "$t"; then return 0; fi
+    if _gmqn mcp-allowlist "$al" -qxF -- "mcp__*__${t##*__}"; then return 0; fi
   fi
   # 2. class: a per-tool override wins; else heuristic on the action segment.
   act=${t##*__}
-  _rest=${t#mcp__}; srv=$(printf '%s' "${_rest%%__*}" | tr 'A-Z' 'a-z')  # server segment, lowercased
-  cls=$(printf '%s\n' "$ov" | while IFS='=' read -r k v; do [ "$k" = "$t" ] && { printf '%s' "$v"; break; }; done || true)
+  _rest=${t#mcp__}; srv=$(printf '%s' "${_rest%%__*}" | tr 'A-Z' 'a-z') || _guard_fault mcp-server  # server segment, lowercased
+  _guard_vanished mcp-server "${_rest%%__*}" "$srv"
+  # The override lookup walks the lines of $ov with parameter expansion only: no pipeline subshell and no fork.
+  cls=''
+  _ovr=$ov
+  while [ -n "$_ovr" ]; do
+    case "$_ovr" in
+      *"$_cp8b_nl"*) _ovl=${_ovr%%"$_cp8b_nl"*}; _ovr=${_ovr#*"$_cp8b_nl"} ;;
+      *)             _ovl=$_ovr; _ovr='' ;;
+    esac
+    case "$_ovl" in
+      *=*) _ovk=${_ovl%%=*}; _ovv=${_ovl#*=} ;;
+      *)   _ovk=$_ovl; _ovv='' ;;
+    esac
+    if [ "$_ovk" = "$t" ]; then cls=$_ovv; break; fi
+  done
   if [ -z "$cls" ]; then
     # Tokenize the action: split camelCase to snake, lowercase, turn _/- into spaces.
     # Whole-token verb matching keeps legit compounds read (list_deployments, get_updates -
@@ -10538,10 +10628,10 @@ guard_check_mcp() {
     # so a squashed compound slips through (under-deny, disclosed); (b) the key/parameter action
     # tokens also deny non-secret config reads (over-deny; recoverable via .claude/mcp-policy.json
     # allowlist/classOverride); (c) 'ssm' is an unanchored server substring.
-    if [ "$cls" = "read" ] && printf '%s' "$act" | grep -Eiq 'secret|credential|passphrase|password|api[_-]?key|private[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|access[_-]?token|(^|[_-])keys?([_-]|$)|(^|[_-])parameter'; then
+    if [ "$cls" = "read" ] && _gmq mcp-secret-action "$act" -Eiq 'secret|credential|passphrase|password|api[_-]?key|private[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|access[_-]?token|(^|[_-])keys?([_-]|$)|(^|[_-])parameter'; then
       cls=secret.read
     fi
-    if [ "$cls" = "read" ] && printf '%s' "$srv" | grep -Eiq 'vault|1password|onepassword|secretsmanager|secrets[_-]?manager|secret[_-]?manager|keyvault|key[_-]?vault|credstash|doppler|infisical|akeyless|bitwarden|conjur|cyberark|ssm|parameter[_-]?store'; then
+    if [ "$cls" = "read" ] && _gmq mcp-secret-server "$srv" -Eiq 'vault|1password|onepassword|secretsmanager|secrets[_-]?manager|secret[_-]?manager|keyvault|key[_-]?vault|credstash|doppler|infisical|akeyless|bitwarden|conjur|cyberark|ssm|parameter[_-]?store'; then
       cls=secret.read
     fi
   fi
@@ -10588,6 +10678,8 @@ guard_check_path() {
   # BYTE-TWIN of _cp8b_norm's sed (GUARD-CP-WRITE-ROUTES K-COUPLE) — the /./ FIXPOINT edit is applied
   # here identically; a byte-identity selftest leg pins the two seds equal so they cannot drift.
   fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e ':b' -e 's#/\./#/#' -e 'tb' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
+  _fpn_rc=$?   # the substitution's own status: a failed normalise leaves only the literal and resolved legs, which is a fault, not a verdict
+  [ "$_fpn_rc" = 0 ] || _guard_fault path-normalize
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
   # GUARD-PATH-ALIAS-BYPASS (P0): judge the UNION — literal OR normalised OR RESOLVED. The rc is
   # CAPTURED, never discarded via `is_control_plane_path "$(_resolve_physical ...)"`: that form drops
@@ -10646,7 +10738,7 @@ guard_check_path() {
       # `scripts/kit-guard` that passes a bare or escaping name. Fold once, then match a LOWERCASE list.
       _bn=$base
       case "$_bn" in
-        *[A-Z]*) _bn=$(printf '%s' "$_bn" | LC_ALL=C tr 'A-Z' 'a-z') ;;
+        *[A-Z]*) _bn=$(printf '%s' "$_bn" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault path-basename-fold ;;
         esac
       case "$_bn" in
         guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|codeowners|.meta-control-last|meta-control-log.md|\
@@ -10775,7 +10867,7 @@ guard_check_skill() {
     _mode=$(grep -E '^[[:space:]]*MODE[[:space:]]*=' "$_conf" 2>/dev/null | tail -n1 \
       | sed -E 's/^[[:space:]]*MODE[[:space:]]*=[[:space:]]*//; s/#.*$//; s/["'"'"']//g; s/[[:space:]].*$//')
   fi
-  _mode=$(printf '%s' "$_mode" | tr 'A-Z' 'a-z')
+  _mode=$(printf '%s' "$_mode" | tr 'A-Z' 'a-z') || _guard_fault skill-mode
   # 2. fail-safe: only ask|deny are active; off / empty / garbage => allow.
   case "$_mode" in
     ask|deny) : ;;
@@ -10784,7 +10876,7 @@ guard_check_skill() {
 
   # 3. namespace = part before the first ':'; trim ws; lowercase (spoof-resistant).
   _ns=${_sk%%:*}
-  _ns=$(printf '%s' "$_ns" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr 'A-Z' 'a-z')
+  _ns=$(printf '%s' "$_ns" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | tr 'A-Z' 'a-z') || _guard_fault skill-namespace
   [ -n "$_ns" ] || { printf 'allow\n'; return 0; }
 
   # 4. blocklist (fail-safe empty if unreadable): whole-token membership, never substring.
@@ -11176,14 +11268,14 @@ _cp8b_via_link_cp() {
 
 # _cp8b_redir_link_denied "<segment>": 0 iff a LITERAL redirect target of the segment reaches the control plane through an existing
 # symlink (C9). The text triggers cannot see it (`echo x > lnk` names nothing protected), so the target arm calls this as a trigger of
-# its own. A non-literal target (rc 2) is the launder arm's, not this one's. Under a known `cd` the target is composed first.
+# its own. A non-literal target (rc 3) is the launder arm's, not this one's. Under a known `cd` the target is composed first.
 _cp8b_redir_link_denied() {
   case "$1" in
     *'>'*) : ;;
     *) return 1 ;;
   esac
-  _rl_rc=0; _rl_t=$(_redir_targets "$1") || _rl_rc=$?        # rc 2 is a non-literal target (the launder arm's); more is a fault
-  [ "$_rl_rc" -le 2 ] || _guard_fault redir-link
+  _rl_rc=0; _rl_t=$(_redir_targets "$1") || _rl_rc=$?        # rc 3 is a non-literal target (the launder arm's); any other non-zero rc is a fault (SWAS-583 E7)
+  [ "$_rl_rc" = 0 ] || [ "$_rl_rc" = 3 ] || _guard_fault redir-link
   while [ -n "$_rl_t" ]; do
     case "$_rl_t" in
       *"$_cp8b_nl"*) _rl_e=${_rl_t%%"$_cp8b_nl"*}; _rl_t=${_rl_t#*"$_cp8b_nl"} ;;

@@ -72,8 +72,8 @@ run() {
 #   (a) homed in a named other job, whose own `--selftest` runs there:
 #       doctor-wired sparkwright-verbs (cf-doctor) · adopter-export-wired brownfield-walk (cf-export) · claim-gate-counts claims-registry
 #       drift-watch-wired cost-governance-ready (cf-claims) · secret-scan-wired (secret-scan) · verify (cf-verify-enforced) · check-links
-#       (docs-links) · loop-state (loop-state) · boundary-redteam (its full --selftest runs in the diff-gated boundary-redteam job; the
-#       selftests job holds only the mutant-free --selftest-core, a non-counting step, BR15/BR16 in ci-gates.sh)
+#       (docs-links) · loop-state (loop-state) · boundary-redteam (its full --selftest, every mutant targeted to the segments it declares, runs in the diff-gated
+#       boundary-redteam job; the selftests job holds only the mutant-free --selftest-core, a non-counting step, BR15/BR16 in ci-gates.sh)
 #   (b) bare or live only: no `--selftest` anywhere in ci.yml. A PRE-EXISTING GAP this slice names and does not fix (the conductor boards it):
 #       discovery-complete onboarding-complete shim-coverage template-detectors-aligned ci-classify-changes inception-done backlog-presence
 #       repo-ownership

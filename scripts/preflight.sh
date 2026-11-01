@@ -25,13 +25,13 @@ bfail=0; bunv=0   # SWAS-355: bfail = an UNDECLARED opt-out or a malformed decla
 # moves it. Sweeping ~140 verdict lines would be diff without teeth.
 # THIS SENTENCE USED TO CLAIM MORE THAN THAT — "the `fail` accumulator AND the literal
 # `OK: preflight selftest` trailer that conformance/adopter-preflight-wired.sh requires" — and the
-# trailer half was wrong (security re-review, finding INFO-3). READ THAT CONSUMER: it runs the selftest
-# with `|| true`, DISCARDING the exit code, then greps stdout for the literal trailer. For it the
-# trailer IS the whole signal, so a line carrying that literal string would satisfy it whatever `fail`
-# says. (`fail` is still gated — by the OTHER route: the dedicated CI step in .github/workflows/ci.yml
+# trailer half was wrong (security re-review, finding INFO-3). READ THAT CONSUMER: it USED to run the
+# selftest with `|| true`, discarding the exit code, and grep stdout for the literal trailer; it NOW
+# requires exit code 0 AND the exact whole line (`grep -qx`), so a forged line alone no longer satisfies it.
+# (`fail` is also gated by the OTHER route: the dedicated CI step in .github/workflows/ci.yml
 # that runs `sh scripts/preflight.sh --selftest` bare reads its exit code. Cited by its command rather
-# than by a line number, for the reason stated at the k11_run block. One of the two consumers reads rc;
-# the sentence above said both did.) NOT EXPLOITABLE, and that is a property of the INPUTS rather than
+# than by a line number, for the reason stated at the k11_run block. Both consumers now read rc; the
+# sentence above said so before the lock did.) NOT EXPLOITABLE, and that is a property of the INPUTS rather than
 # of the output rule: every fixture path is `mktemp -d` under TMPDIR plus a suffix this script chooses,
 # and TMPDIR is the operator's or the runner's. The correction is recorded rather than quietly deleted
 # because a rationale that reads stronger than it is becomes the reason a later reviewer skips the
@@ -1775,7 +1775,7 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
 
 # SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
 # on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
-STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0
+STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0; SELFTEST_CELL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --stack) [ $# -ge 2 ] || { echo "preflight: --stack requires a value" >&2; exit 2; }; STACK=$2; shift 2 ;;
@@ -1793,6 +1793,14 @@ while [ $# -gt 0 ]; do
     # ambient env var being able to do the same thing in an adopter's shell. Not in --help: it is a test
     # seam, not a user-facing option, and the flag IS the authorization.
     --selftest-e2e) SEAMS=1; shift ;;
+    # --selftest-cell <name> (SWAS-487): internal. With --selftest it runs ONE named cell instead of the whole selftest (only case-variant is accepted), so the prepush lane
+    # can grade that cell's mutants without running ~3300 lines five times. Not in --help: it is a test seam, not a user-facing option, and the flag IS the authorization.
+    # A FLAG, never an environment variable (FLAG-NOT-ENV): SELFTEST_CELL is set to "" on the init line above, so an exported value is never read.
+    --selftest-cell)
+      case "${2:-}" in
+        case-variant) SELFTEST_CELL=$2; shift 2 ;;
+        *) echo "preflight: --selftest-cell requires a cell name (case-variant)" >&2; exit 2 ;;
+      esac ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
     # --allow-runtime-mismatch: the NAMED escape from the stack's runtime floor. It proceeds on an
     # unsupported runtime, loudly, and suppresses the clean green — see the runtime-floor block above.
@@ -1802,6 +1810,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "$SELFTEST_CELL" ] && [ "$SELFTEST" -eq 0 ]; then
+  echo "preflight: --selftest-cell requires --selftest" >&2
+  exit 2
+fi
+
 if [ "$SEAMS" -eq 1 ] && [ "$SELFTEST" -eq 0 ]; then
   echo "NOTE: test seams live — not a report on this machine"   # MUT-BANNER
 fi
@@ -1809,6 +1822,112 @@ fi
 if [ "$SELFTEST" -eq 1 ]; then
   _st_ci=${CI:-}${GITHUB_ACTIONS:-}; unset CI GITHUB_ACTIONS   # S34: capture the runner's CI first (the weak-result branches fail under it), then the selftest is CI-hermetic; cells that test CI set it explicitly   # MUT-HERMETIC
   fail=0
+  _pf_skips=0   # the skip counter starts at 0, never inherited from the environment (a stray value would print a false SKIP note and be evaluated as arithmetic)
+  # SWAS-487: the boundary section's shared setup and the case-variant cell are functions, so `--selftest-cell case-variant` can run that one cell alone (the prepush lane grades its
+  # mutants without running the ~3300-line selftest five times). They sit INSIDE this block, after the hermetic entry line above, so _hm_ok and _stci_ok still read what they read.
+  st_bnd_setup() {  # creates $_bnd and off.json; sets _self, _sd, the _g_* scenario globals (what _bnd_run reads) and defines _bnd_run, _bnd_moves, _bnd_kill. Called ONCE per run.
+    _bnd=$(mktemp -d)
+    printf '{"sandbox":{"enabled":false}}\n' > "$_bnd/off.json"
+    _self=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0"); _sd=$(dirname -- "$_self")
+    _g_proj=""; _g_user=""; _g_local=""; _g_mgd=""; _g_decl=""; _g_os=""; _g_env=""; _g_dir=""; _g_path=""; _g_home=""; _g_ci=""; _g_tty=""
+    _bnd_run() {  # <script> <flags> -> _br_out, _br_rc
+      _br_rc=0
+      # shellcheck disable=SC2086  # ${_g_env:-...} is one NAME=value word and $2 is a short flag list
+      _br_out=$( if [ -n "$_g_path" ]; then PATH="$_g_path:$PATH"; export PATH; fi
+        if [ -n "$_g_home" ]; then HOME="$_g_home"; else mkdir -p "$_bnd/emptyhome"; HOME="$_bnd/emptyhome"; fi   # N2: never the developer's real ~/.gitconfig
+        export HOME; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM
+        cd "${_g_dir:-.}" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_EXEC_PATH ${_g_env:-KIT_UNUSED=1} ${_g_ci:+CI=true} ${_g_tty:+PREFLIGHT_TTY_SEAM=$_g_tty} PREFLIGHT_SANDBOX_SETTINGS="$_g_proj" PREFLIGHT_SANDBOX_LOCAL="${_g_local:-/nonexistent-local}" PREFLIGHT_SANDBOX_USER="${_g_user:-/nonexistent-user}" PREFLIGHT_SANDBOX_MANAGED="${_g_mgd:-/nonexistent-managed}" PREFLIGHT_SANDBOX_OS="${_g_os:-Darwin}" PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_BOUNDARY_OPTOUT="${_g_decl:-@absent}" PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$1" --selftest-e2e $2 2>&1 ) || _br_rc=$?
+    }
+    _bnd_moves() {  # <script> -> _mv = yes iff bfail moves the exit in the current scenario (the plain rc differs from the advisory rc)
+      _bnd_run "$1" ""; _mv_plain=$_br_rc
+      _bnd_run "$1" "--boundary-advisory"; _mv_adv=$_br_rc
+      if [ "$_mv_plain" -ne "$_mv_adv" ]; then _mv=yes; else _mv=no; fi
+    }
+    # the mutants of the new controls: a sed mutation of a COPY must turn the scenario red (the ORIGINAL prints it, the mutant does not), and must apply and parse.
+    _bnd_kill() {  # <name> <sed expr> <flags> <has|moves|rc> <substring | the original's moves value | the original's rc>
+      _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"
+      if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
+      if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -rf "$_bk"; return 0; fi
+      if [ "$4" = moves ]; then
+        _bnd_moves "$_self"; _bk_a=$_mv; _bk_adv=$_mv_adv; _bnd_moves "$_bk/preflight.sh"; _bk_b=$_mv
+        if [ "$_bk_a" != "$5" ] && [ "$_bk_adv" -ne 0 ]; then
+          if [ -n "$_st_ci" ]; then echo "FAIL: mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory) and CI is set, so a weak result is a failure"; fail=1
+          else echo "PASS: (weak) mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory)"; fi
+        elif [ "$_bk_a" != "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original's bfail moves=$_bk_a, expected $5)"; fail=1
+        elif [ "$_bk_b" = "$5" ]; then echo "FAIL: mutant $1 survived (bfail still moves=$_bk_b)"; fail=1
+        else echo "PASS: mutant $1 is killed"; fi
+      elif [ "$4" = rc ]; then   # the original exits $5; the mutant must exit something else
+        _bnd_run "$_self" "$3"; _bk_ra=$_br_rc
+        _bnd_run "$_bk/preflight.sh" "$3"; _bk_rb=$_br_rc
+        if [ "$_bk_ra" -ne "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original exits $_bk_ra, expected $5)"; fail=1
+        elif [ "$_bk_rb" -eq "$5" ]; then echo "FAIL: mutant $1 survived (it still exits $5)"; fail=1
+        else echo "PASS: mutant $1 is killed (exit $_bk_rb, the original $_bk_ra)"; fi
+      else
+        _bnd_run "$_self" "$3"
+        case "$_br_out" in
+          *"$5"*) _bk_ok=1 ;;
+          *) _bk_ok=0 ;;
+        esac
+        _bnd_run "$_bk/preflight.sh" "$3"
+        case "$_br_out" in
+          *boundary*|*egress*) _bk_ran=1 ;;
+          *) _bk_ran=0 ;;
+        esac
+        case "$_br_out" in
+          *"$5"*) _bk_still=1 ;;
+          *) _bk_still=0 ;;
+        esac
+        if [ "$_bk_ok" -eq 0 ]; then echo "FAIL: mutant $1 scenario is vacuous (the original does not print '$5')"; fail=1
+        elif [ "$_bk_ran" -eq 0 ]; then echo "FAIL: mutant $1 never ran the boundary block (vacuous)"; fail=1
+        elif [ "$_bk_still" -eq 1 ]; then echo "FAIL: mutant $1 survived (it still prints '$5')"; fail=1
+        else echo "PASS: mutant $1 is killed"; fi
+      fi
+      rm -rf "$_bk"
+    }
+  }
+  # SWAS-358 / SWAS-468: a repository root entered through a case-variant spelling of its path (macOS is case-insensitive) is still its own root: owns_itself asks git
+  # (`--show-prefix`), it does not compare path strings. The cell needs a case-insensitive filesystem, detected here; it is skipped, with the reason, on a case-sensitive one.
+  # SWAS-487: self-contained. It builds its own minimal fixture (a bare origin and a work clone with one pushed commit and NO declaration, so an OFF part reads UNDECLARED),
+  # uses only the names _cvog/_cv*, sets only the _g_* globals listed below (restored on the way out) and removes only its own fixture. The full selftest keeps using _og afterwards.
+  st_case_variant() {
+    _cvog=$(mktemp -d); _cvgx='-c user.name=kit -c user.email=kit@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null'
+    git init -q --bare "$_cvog/origin.git"; git -C "$_cvog/origin.git" symbolic-ref HEAD refs/heads/main
+    git init -q "$_cvog/work"; git -C "$_cvog/work" symbolic-ref HEAD refs/heads/main; git -C "$_cvog/work" remote add origin "$_cvog/origin.git"
+    printf 'x\n' > "$_cvog/work/f"; git -C "$_cvog/work" add f
+    # shellcheck disable=SC2086  # $_cvgx is a fixed flag list
+    git -C "$_cvog/work" $_cvgx commit -q -m base; git -C "$_cvog/work" push -q origin main 2>/dev/null
+    _cvs_proj=$_g_proj; _cvs_user=$_g_user; _cvs_decl=$_g_decl; _cvs_env=$_g_env; _cvs_ci=$_g_ci; _cvs_dir=$_g_dir
+    _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=real; _g_env=""; _g_ci=""
+    _cv=$(printf '%s' "$_cvog/work" | tr 'a-z' 'A-Z')
+    if [ "$_cv" != "$_cvog/work" ] && [ -d "$_cv" ]; then
+      if ( CDPATH='' cd "$_cv" && owns_itself "$PWD" ); then echo "PASS: owns_itself [case-variant-cd] a repository root entered through a case-variant path is its own root"; else echo "FAIL: owns_itself [case-variant-cd] a case-variant path to the repository root was refused"; fail=1; fi
+      _g_dir="$_cv"
+      # SWAS-468: the mutant below is killable only if the `sh` it runs under KEEPS the case-variant spelling through `cd` + `pwd -P` (bash does; dash resolves to the stored
+      # spelling, which makes the string compare equivalent). Probe that shell instead of assuming it, and say so loudly: a SKIP line, never a PASS.
+      # Both spellings are resolved by the SAME probe shell (like with like), and an empty answer never counts as "equal": a probe that printed nothing runs the kill.
+      _cvo=$(sh -c 'cd "$1" && pwd -P; cd "$2" && pwd -P' _ "$_cv" "$_cvog/work" 2>/dev/null) || _cvo=""   # MUT-CVPROBE
+      _cvp=$(printf '%s\n' "$_cvo" | sed -n 1p); _cvc=$(printf '%s\n' "$_cvo" | sed -n 2p)
+      if [ -n "$_cvp" ] && [ "$_cvp" = "$_cvc" ]; then   # MUT-CVSKIP
+        # Counted and NOTEd at the end, but NOT gated under CI, unlike this file's other weak results: gating would turn a macOS CI whose sh is dash falsely red (SWAS-485),
+        # and Linux CI never reaches this branch (the cell runs only on a case-insensitive filesystem).
+        _pf_skips=$((${_pf_skips:-0} + 1))
+        echo "SKIP owns-itself-string-compare: this sh canonicalises case-variant pwd -P (dash); coverage WEAK here"
+      else
+        _bnd_kill owns-itself-string-compare '/MUT-OWNSROOT/s/\[ -z "\$_pfx" \]/[ "\$_own" = "\$_phys" ]/' "--boundary-only --boundary-advisory" has 'OFF and UNDECLARED'   # the fixture's origin holds no declaration, so a part that is OFF reads UNDECLARED in the original and UNVERIFIED (not the root) in the mutant
+      fi
+    else
+      echo "SKIP: owns_itself [case-variant-cd] this filesystem is case-sensitive (the upper-case spelling of the temp path does not resolve), so a case-variant path cannot reach the repository"
+    fi
+    _g_proj=$_cvs_proj; _g_user=$_cvs_user; _g_decl=$_cvs_decl; _g_env=$_cvs_env; _g_ci=$_cvs_ci; _g_dir=$_cvs_dir
+    rm -rf "$_cvog"
+  }
+  if [ -n "$SELFTEST_CELL" ]; then   # --selftest-cell: the one named cell alone, then the cell's own trailer (never the full selftest's, see below)
+    st_bnd_setup; st_case_variant   # MUT-CVSEL
+    rm -rf "$_bnd"
+    [ "${_pf_skips:-0}" -eq 0 ] || echo "NOTE: preflight selftest: ${_pf_skips} SKIP (coverage WEAK)"
+    # The trailer must NOT be the line the full selftest ends with: adopter-preflight-wired.sh requires exit 0 AND that exact whole line (grep -qx); keep it distinct.
+    [ "$fail" -eq 0 ] && { echo "OK: preflight cell case-variant (not the full selftest)"; exit 0; } || { echo "FAIL: preflight cell case-variant"; exit 1; }   # MUT-CVTRAILER
+  fi
   # The hermetic entry is load-bearing: the unscoped self-invocations below (kill-switch, git floor, node floor, go stack, sandbox) would otherwise run in CI mode on a runner
   # that exports CI (the sandbox cell's "cannot start" warning is skipped under CI). The check reads the line right after the selftest entry; a mutant that deletes it must go red.
   _hm_ok() {  # <script file>: rc 0 iff the first line of the selftest block unsets CI and GITHUB_ACTIONS
@@ -2275,7 +2394,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   #   1. `sh scripts/preflight.sh --selftest`, wired as a CI step at ci.yml:167;
   #   2. hand mutation-testing (this comment's own discipline);
   #   3. conformance/adopter-preflight-wired.sh:26 runs `sh "$PF" --selftest` and its :30 REQUIRES the
-  #      literal `OK: preflight selftest` — and that script is a `check control` row at verify.sh:99.
+  #      exit 0 AND the whole line `OK: preflight selftest` — and that script is a `check control` row at verify.sh:99.
   # Tooth 3 makes the blast radius conformance/verify.sh, which ADOPTERS run, not a single CI step.
   # HISTORICAL, CORRECTED (T2 fix-loop, finding J6): this paragraph used to say "while guard_tree_class's
   # body is `:`, this selftest exits 1, so verify.sh's `adopter-preflight` row is RED BY CONSTRUCTION
@@ -3869,11 +3988,10 @@ EOF
   # UNVERIFIED and never ON; strictAllowlist counts only at user or managed scope; the exit code does not move for a declared or unverified state;
   # under CI only the committed project block is read and the line says so ([declared], never [static]). SWAS-355 cells follow the 354 ones.
   # Every cell clears CI, GITHUB_ACTIONS and SANDBOX_RUNTIME first (a CI runner or an agent session would otherwise leak into the cell).
-  _bnd=$(mktemp -d)
+  st_bnd_setup   # creates $_bnd (once: every fixture below writes into it) and writes off.json; also sets _self, _sd, the _g_* globals and the _bnd_run/_bnd_moves/_bnd_kill helpers
   printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}},"permissions":{"deny":["WebFetch"]}}\n' > "$_bnd/full.json"
   printf '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude"]}}}\n' > "$_bnd/shortwrite.json"
   printf '{"sandbox":{"enabled":true,"filesystem":{"denyWrite":["./.claude","~/.claude/settings.json"]}}}\n' > "$_bnd/noread.json"
-  printf '{"sandbox":{"enabled":false}}\n' > "$_bnd/off.json"
   printf '{"permissions":{}}\n' > "$_bnd/noblock.json"
   printf '{"sandbox":{"enabled":true,"network":{"strictAllowlist":true},"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}}}\n' > "$_bnd/strictproj.json"
   printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"},"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_bnd/user-strict.json"
@@ -4212,21 +4330,7 @@ EOF
 
   # ---- the real body: does an UNDECLARED opt-out move the EXIT (and only it)? Differential: plain rc versus the same run under --boundary-advisory, so an ambient
   # failure (a missing tool) cannot fake or hide the effect. Globals _g_* describe the scenario; CI, GITHUB_ACTIONS and SANDBOX_RUNTIME are cleared first.
-  _self=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0"); _sd=$(dirname -- "$_self")
-  _g_proj=""; _g_user=""; _g_local=""; _g_mgd=""; _g_decl=""; _g_os=""; _g_env=""; _g_dir=""; _g_path=""; _g_home=""; _g_ci=""; _g_tty=""
-  _bnd_run() {  # <script> <flags> -> _br_out, _br_rc
-    _br_rc=0
-    # shellcheck disable=SC2086  # ${_g_env:-...} is one NAME=value word and $2 is a short flag list
-    _br_out=$( if [ -n "$_g_path" ]; then PATH="$_g_path:$PATH"; export PATH; fi
-      if [ -n "$_g_home" ]; then HOME="$_g_home"; else mkdir -p "$_bnd/emptyhome"; HOME="$_bnd/emptyhome"; fi   # N2: never the developer's real ~/.gitconfig
-      export HOME; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM
-      cd "${_g_dir:-.}" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_EXEC_PATH ${_g_env:-KIT_UNUSED=1} ${_g_ci:+CI=true} ${_g_tty:+PREFLIGHT_TTY_SEAM=$_g_tty} PREFLIGHT_SANDBOX_SETTINGS="$_g_proj" PREFLIGHT_SANDBOX_LOCAL="${_g_local:-/nonexistent-local}" PREFLIGHT_SANDBOX_USER="${_g_user:-/nonexistent-user}" PREFLIGHT_SANDBOX_MANAGED="${_g_mgd:-/nonexistent-managed}" PREFLIGHT_SANDBOX_OS="${_g_os:-Darwin}" PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 PREFLIGHT_BOUNDARY_OPTOUT="${_g_decl:-@absent}" PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$1" --selftest-e2e $2 2>&1 ) || _br_rc=$?
-  }
-  _bnd_moves() {  # <script> -> _mv = yes iff bfail moves the exit in the current scenario (the plain rc differs from the advisory rc)
-    _bnd_run "$1" ""; _mv_plain=$_br_rc
-    _bnd_run "$1" "--boundary-advisory"; _mv_adv=$_br_rc
-    if [ "$_mv_plain" -ne "$_mv_adv" ]; then _mv=yes; else _mv=no; fi
-  }
+  # (_self, _sd, the _g_* scenario globals and the helpers _bnd_run, _bnd_moves, _bnd_kill are set up by st_bnd_setup, top of the selftest block)
   _bnd_exit() {  # <label> <yes|no>: asserts that bfail does (yes) or does not (no) move the exit; weak PASS where the environment fails for another reason
     _bnd_moves "$_self"
     if [ "$2" = yes ] && [ "$_mv" = yes ] && [ "$_mv_plain" -eq 1 ]; then echo "PASS: boundary exit [$1] an UNDECLARED opt-out moves the exit to 1 (advisory exits $_mv_adv)"
@@ -4288,47 +4392,7 @@ EOF
   _bnd_run "$_self" "--boundary-only --boundary-advisory"
   if [ "$_br_rc" -eq 0 ]; then echo "PASS: boundary-only [advisory] --boundary-advisory keeps the exit at 0"; else echo "FAIL: boundary-only [advisory] exited $_br_rc"; fail=1; fi
   _g_env=""; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent
-  # the mutants of the new controls: a sed mutation of a COPY must turn the scenario red (the ORIGINAL prints it, the mutant does not), and must apply and parse.
-  _bnd_kill() {  # <name> <sed expr> <flags> <has|moves> <substring | the original's moves value>
-    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"
-    if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
-    if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -rf "$_bk"; return 0; fi
-    if [ "$4" = moves ]; then
-      _bnd_moves "$_self"; _bk_a=$_mv; _bk_adv=$_mv_adv; _bnd_moves "$_bk/preflight.sh"; _bk_b=$_mv
-      if [ "$_bk_a" != "$5" ] && [ "$_bk_adv" -ne 0 ]; then
-        if [ -n "$_st_ci" ]; then echo "FAIL: mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory) and CI is set, so a weak result is a failure"; fail=1
-        else echo "PASS: (weak) mutant $1 is not observable here (this environment exits $_bk_adv under --boundary-advisory)"; fi
-      elif [ "$_bk_a" != "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original's bfail moves=$_bk_a, expected $5)"; fail=1
-      elif [ "$_bk_b" = "$5" ]; then echo "FAIL: mutant $1 survived (bfail still moves=$_bk_b)"; fail=1
-      else echo "PASS: mutant $1 is killed"; fi
-    elif [ "$4" = rc ]; then   # the original exits $5; the mutant must exit something else
-      _bnd_run "$_self" "$3"; _bk_ra=$_br_rc
-      _bnd_run "$_bk/preflight.sh" "$3"; _bk_rb=$_br_rc
-      if [ "$_bk_ra" -ne "$5" ]; then echo "FAIL: mutant $1 scenario is vacuous (the original exits $_bk_ra, expected $5)"; fail=1
-      elif [ "$_bk_rb" -eq "$5" ]; then echo "FAIL: mutant $1 survived (it still exits $5)"; fail=1
-      else echo "PASS: mutant $1 is killed (exit $_bk_rb, the original $_bk_ra)"; fi
-    else
-      _bnd_run "$_self" "$3"
-      case "$_br_out" in
-        *"$5"*) _bk_ok=1 ;;
-        *) _bk_ok=0 ;;
-      esac
-      _bnd_run "$_bk/preflight.sh" "$3"
-      case "$_br_out" in
-        *boundary*|*egress*) _bk_ran=1 ;;
-        *) _bk_ran=0 ;;
-      esac
-      case "$_br_out" in
-        *"$5"*) _bk_still=1 ;;
-        *) _bk_still=0 ;;
-      esac
-      if [ "$_bk_ok" -eq 0 ]; then echo "FAIL: mutant $1 scenario is vacuous (the original does not print '$5')"; fail=1
-      elif [ "$_bk_ran" -eq 0 ]; then echo "FAIL: mutant $1 never ran the boundary block (vacuous)"; fail=1
-      elif [ "$_bk_still" -eq 1 ]; then echo "FAIL: mutant $1 survived (it still prints '$5')"; fail=1
-      else echo "PASS: mutant $1 is killed"; fi
-    fi
-    rm -rf "$_bk"
-  }
+  # (the mutant helper _bnd_kill is defined in st_bnd_setup, top of the selftest block)
   # Owner ruling (amends D-241023-2 4(c)): the declared opt-out line is WARN, and the kit's consequence sentence is not repeated when the repo's lost= equals it.
   _g_proj="$_bnd/off.json"; _g_user=""; _g_decl="$_bnd/d-all.conf"; _g_env=""
   _bnd_kill declared-line-prefix-reverted-to-fail '/MUT-DECLWARN/s/"  WARN /"  FAIL /' "--boundary-only --boundary-advisory" has 'WARN boundary: OFF [static] (opted out'
@@ -4471,16 +4535,8 @@ EOF
     *"declaration UNVERIFIED ("*"not the root of its own git repository"*"Remedy: run preflight from the repository root"*) echo "PASS: s27 [not-own-root --allow-nested] a nested directory reads UNVERIFIED with the run-from-the-root remedy" ;;
     *) echo "FAIL: s27 [not-own-root --allow-nested] ($_br_out)"; fail=1 ;;
   esac
-  # SWAS-358: a repository root entered through a case-variant spelling of its path (macOS is case-insensitive) is still its own root: owns_itself asks git
-  # (`--show-prefix`), it does not compare path strings. The cell needs a case-insensitive filesystem, detected here; it is skipped, with the reason, on a case-sensitive one.
-  _cv=$(printf '%s' "$_og/work" | tr 'a-z' 'A-Z')
-  if [ "$_cv" != "$_og/work" ] && [ -d "$_cv" ]; then
-    if ( CDPATH='' cd "$_cv" && owns_itself "$PWD" ); then echo "PASS: owns_itself [case-variant-cd] a repository root entered through a case-variant path is its own root"; else echo "FAIL: owns_itself [case-variant-cd] a case-variant path to the repository root was refused"; fail=1; fi
-    _g_dir="$_cv"; _g_decl=real
-    _bnd_kill owns-itself-string-compare '/MUT-OWNSROOT/s/\[ -z "\$_pfx" \]/[ "\$_own" = "\$_phys" ]/' "--boundary-only --boundary-advisory" has 'OFF and UNDECLARED'   # by here origin's default branch holds no declaration (the "gone" commit), so a part that is OFF reads UNDECLARED in the original and UNVERIFIED (not the root) in the mutant
-  else
-    echo "SKIP: owns_itself [case-variant-cd] this filesystem is case-sensitive (the upper-case spelling of the temp path does not resolve), so a case-variant path cannot reach the repository"
-  fi
+  # SWAS-358 / SWAS-487: the case-variant cell (st_case_variant, defined at the top of the selftest block) builds its own fixture, so the lane can run it alone.
+  st_case_variant   # MUT-CVFULL
   git init -q "$_og/noorigin"; _g_dir="$_og/noorigin"
   _bnd_run "$_self" "--boundary-only --boundary-advisory"
   case "$_br_out" in
@@ -5223,8 +5279,66 @@ EOF
   esac
   _bnd_kill seam-banner-dropped '/MUT-BANNER/s/echo "NOTE[^"]*"/:/' "--boundary-only --boundary-advisory" has 'NOTE: test seams live'
 
+  # ---- SWAS-487: the one-cell selector. `--selftest --selftest-cell case-variant` runs ONLY the case-variant cell (the lane's cell, N/A on Linux, runs it instead of the whole selftest
+  # five times). Graded here so Linux CI proves cell mode runs the cell, that its trailer cannot satisfy a consumer of the full selftest's, and that the selector is flag-only.
+  _cvx_full_ok() {  # <script file>: rc 0 iff exactly one `st_case_variant   # MUT-CVFULL` call line sits after the s27 not-own-root cell
+    awk '/s27 \[not-own-root --allow-nested\]/ { if (!m) m = NR } /^ *st_case_variant   # MUT-CVFULL$/ { n++; at = NR } END { exit !(n == 1 && m > 0 && at > m) }' "$1"
+  }
+  _cvx_init_ok() {  # <script file>: rc 0 iff the flag-init line holds SELFTEST_CELL="" (FLAG-NOT-ENV: an exported value must never reach the flag variable)
+    awk '/^STACK=""; SELFTEST=0;/ { if (index($0, "SELFTEST_CELL=\"\"")) ok = 1 } END { exit !ok }' "$1"
+  }
+  _cvx_sm() {  # <name> <sed expr> <check fn>: a COPY mutated by the expression must fail the structural check
+    _cvxm=$(mktemp -d); sed "$2" "$_self" > "$_cvxm/preflight.sh"
+    if cmp -s "$_self" "$_cvxm/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1
+    elif "$3" "$_cvxm/preflight.sh"; then echo "FAIL: mutant $1 survived"; fail=1
+    else echo "PASS: mutant $1 is killed"; fi
+    rm -rf "$_cvxm"
+  }
+  _cvx_cell() {  # <script> -> _cvx_out, _cvx_rc: the one-cell run
+    _cvx_rc=0; _cvx_out=$(sh "$1" --selftest --selftest-cell case-variant 2>&1) || _cvx_rc=$?
+  }
+  _cvx_trailer_ok() {  # <output>: rc 0 iff it holds none of the full selftest's trailer substring (adopter-preflight-wired.sh needs exit 0 and the whole line) and one cell trailer
+    [ "$(printf '%s\n' "$1" | grep -c 'OK: preflight selftest' || true)" -eq 0 ] && [ "$(printf '%s\n' "$1" | grep -c 'OK: preflight cell case-variant (not the full selftest)' || true)" -eq 1 ]
+  }
+  _cvx_rc2() {  # <label> <message substring> <args...>: the parser refuses with rc 2 and the flag's OWN message (the old parser also exits 2 for an unknown arg)
+    _cvx_l=$1; _cvx_w=$2; shift 2; _cvx_r=0; _cvx_o=$(sh "$_self" "$@" 2>&1) || _cvx_r=$?
+    case "$_cvx_o" in
+      *"$_cvx_w"*) if [ "$_cvx_r" -eq 2 ]; then echo "PASS: cell flag [$_cvx_l] exits 2 with its own message"; else echo "FAIL: cell flag [$_cvx_l] exited $_cvx_r, expected 2"; fail=1; fi ;;
+      *) echo "FAIL: cell flag [$_cvx_l] did not print '$_cvx_w' (rc $_cvx_r: $_cvx_o)"; fail=1 ;;
+    esac
+  }
+  _cvx_cell "$_self"
+  _cvx_n=$(printf '%s\n' "$_cvx_out" | grep -c 'owns_itself \[case-variant-cd\]' || true)
+  # No message below quotes the full selftest's trailer text or echoes the cell's output: this run's own output must hold that text only on its real final line (SWAS-487 I1).
+  if [ "$_cvx_rc" -eq 0 ] && [ "$_cvx_n" -eq 1 ]; then echo "PASS: cell mode [liveness] --selftest-cell case-variant exits 0 and prints exactly one owns_itself [case-variant-cd] line"; else echo "FAIL: cell mode [liveness] rc $_cvx_rc, $_cvx_n owns_itself line(s)"; fail=1; fi
+  if _cvx_trailer_ok "$_cvx_out"; then echo "PASS: cell mode [trailer] the output holds none of the full selftest's trailer text and one cell trailer"; else echo "FAIL: cell mode [trailer] the output holds the full selftest's trailer text or not exactly one cell trailer"; fail=1; fi
+  _cvxm=$(mktemp -d); sed '/# MUT-CVTRAILER$/s/OK: preflight cell case-variant (not the full selftest)/OK: preflight selftest/' "$_self" > "$_cvxm/preflight.sh"
+  if cmp -s "$_self" "$_cvxm/preflight.sh"; then echo "FAIL: mutant cvtrailer-is-the-full-trailer did not apply"; fail=1
+  elif ! sh -n "$_cvxm/preflight.sh" 2>/dev/null; then echo "FAIL: mutant cvtrailer-is-the-full-trailer does not parse"; fail=1
+  else
+    _cvx_cell "$_cvxm/preflight.sh"
+    if _cvx_trailer_ok "$_cvx_out"; then echo "FAIL: mutant cvtrailer-is-the-full-trailer survived"; fail=1; else echo "PASS: mutant cvtrailer-is-the-full-trailer is killed"; fi
+  fi
+  rm -rf "$_cvxm"
+  _cvx_rc2 missing-value "--selftest-cell requires a cell name" --selftest --selftest-cell
+  _cvx_rc2 empty-value "--selftest-cell requires a cell name" --selftest --selftest-cell ''
+  _cvx_rc2 flag-as-value "--selftest-cell requires a cell name" --selftest-cell --selftest
+  _cvx_rc2 unknown-name "--selftest-cell requires a cell name" --selftest --selftest-cell no-such-cell
+  _cvx_rc2 without-selftest "--selftest-cell requires --selftest" --selftest-cell case-variant
+  # an exported SELFTEST_CELL is ignored: --selftest would recurse without end, so this uses --selftest-e2e; a leak would hit the "without --selftest" refusal (rc 2)
+  _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent; _g_dir=""; _g_env=SELFTEST_CELL=case-variant
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  if [ "$_br_rc" -eq 0 ]; then echo "PASS: cell flag [env-inert] an exported SELFTEST_CELL does not reach the flag (exit 0)"; else echo "FAIL: cell flag [env-inert] exited $_br_rc ($_br_out)"; fail=1; fi
+  _bnd_kill cvinit-deleted '/^STACK=""; SELFTEST=0;/s/; SELFTEST_CELL=""//' "--boundary-only --boundary-advisory" rc 0
+  _g_env=""
+  if _cvx_init_ok "$_self"; then echo "PASS: cell flag [init] SELFTEST_CELL is initialised on the flag-init line"; else echo "FAIL: cell flag [init] the flag-init line does not initialise SELFTEST_CELL"; fail=1; fi
+  _cvx_sm cvinit-structural '/^STACK=""; SELFTEST=0;/s/; SELFTEST_CELL=""//' _cvx_init_ok
+  if _cvx_full_ok "$_self"; then echo "PASS: cell call [full-run] the full run calls st_case_variant exactly once, after the s27 not-own-root cell"; else echo "FAIL: cell call [full-run] not exactly one 'st_case_variant   # MUT-CVFULL' call after the s27 cell"; fail=1; fi
+  _cvx_sm cvfull-call-deleted '/^ *st_case_variant   # MUT-CVFULL$/d' _cvx_full_ok
+
   rm -rf "$_bnd"
 
+  [ "${_pf_skips:-0}" -eq 0 ] || echo "NOTE: preflight selftest: ${_pf_skips} SKIP (coverage WEAK)"
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 

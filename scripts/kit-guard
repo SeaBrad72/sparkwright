@@ -221,8 +221,9 @@ case "$cmd" in
     pol=${3:-$SELF_DIR/../.claude/mcp-policy.json}
     al=""; ov=""
     if [ -f "$pol" ] && command -v jq >/dev/null 2>&1; then
-      al=$(jq -r '.allow[]? // empty' "$pol" 2>/dev/null || printf '')
-      ov=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$pol" 2>/dev/null || printf '')
+      # A policy that cannot be read is a fault, never "no allowlist / no overrides" (the same rule as the adapter's).
+      al=$(jq -r '.allow[]? // empty' "$pol" 2>/dev/null) || _guard_fault mcp-policy
+      ov=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$pol" 2>/dev/null) || _guard_fault mcp-policy
     fi
     if reason=$(guard_check_mcp "$2" "$al" "$ov"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
   install-shims)

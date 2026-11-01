@@ -1081,6 +1081,7 @@ scripts/fixtures/scorecard/quality-drop-bot-3.json
 scripts/fixtures/scorecard/quality-drop-bot-4.json
 scripts/fixtures/scorecard/thin-bot-1.json
 scripts/incept.sh
+scripts/install-shellcheck.sh
 scripts/kit-guard
 scripts/kit-update.sh
 scripts/license-check.sh

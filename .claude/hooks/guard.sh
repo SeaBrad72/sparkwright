@@ -68,6 +68,9 @@ emit_ask() {
 allow() {
   [ -z "$_GUARD_FAULTED" ] || _guard_fault allow-after-fault
   [ "$(printf k)" = k ] || _guard_fault allow-probe
+  # The matcher answers a known question both ways before any verdict is allowed (a fault inside `_gmqn` faults on its own).
+  _gmqn allow-probe k -q k || _guard_fault allow-grep-probe
+  if _gmqn allow-probe k -q z; then _guard_fault allow-grep-probe; fi
   # A USR1 that arrived during the probe's own fork is handled at the next command boundary, i.e. here:
   [ -z "$_GUARD_FAULTED" ] || _guard_fault allow-after-fault
   _GUARD_DECIDED=yes; exit 0
@@ -172,8 +175,9 @@ case "$TOOL" in
     POL="$(dirname "$0")/../mcp-policy.json"
     AL=""; OV=""
     if [ -f "$POL" ]; then
-      AL=$(jq -r '.allow[]? // empty' "$POL" 2>/dev/null || printf '')
-      OV=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$POL" 2>/dev/null || printf '')
+      # A policy that cannot be read is a fault, never "no allowlist / no overrides".
+      AL=$(jq -r '.allow[]? // empty' "$POL" 2>/dev/null) || _guard_fault mcp-policy
+      OV=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$POL" 2>/dev/null) || _guard_fault mcp-policy
     fi
     if reason=$(guard_check_mcp "$TOOL" "$AL" "$OV"); then allow; else emit_deny "$reason"; fi ;;
   Skill)

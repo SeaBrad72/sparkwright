@@ -277,6 +277,9 @@ usage() {
   echo "        Operator-only by policy (the script does not detect CI or a subagent): never CI, never a subagent (D-240805-3)." >&2
   echo "  promotion-verify.sh trace --ref <sha> | --recent <n> [--from <trunk-ref>]" >&2
   echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
+  echo "        --recent also runs a DETECTIVE evidence leg (SWAS-537): with a forge credential, a trunk commit merged without a completed light-or-full CI run on its approved head prints a FLAG line and is counted (the exit code is unchanged); the FIRST failed forge read turns it off with ONE 'evidence leg: UNVERIFIED' line, a later failed read is that commit's own UNVERIFIED line (summary PARTIAL); outside the kit pipeline it prints one N/A line." >&2
+  echo "  promotion-verify.sh evidence --pr <n> --approved-sha <sha>" >&2
+  echo "        READ-ONLY: would land find exact-head CI evidence for that head now? Exit 0 yes, 1 refused (the token and the wait are printed), 2 usage." >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
   echo "  promotion-verify.sh actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
   echo "        --ref is the PR's head branch, fetched, and must equal <sha> (refused before any merge otherwise); a" >&2
@@ -1015,6 +1018,45 @@ do_trace() {
   git rev-parse -q --verify "$from^{commit}" >/dev/null 2>&1 || {
     echo "trace: --from '$from' is not a commit in this repository" >&2; return 2; }
   _tr_rc=0; _tr_n=0; _tr_miss=0; _tr_pre=0
+  # THE DETECTIVE EVIDENCE LEG (SWAS-537, ruling Q1: it prints and counts, and NEVER changes the rc). For each commit bound to a note,
+  # read the exact-head evidence of the PR the note names (the very reads `land` makes). A commit with none is FLAGGED: it reached
+  # the trunk without a completed light-or-full run on the head that was approved (an admin or UI merge in the SEC-2 window, or a
+  # merge outside `land`). The leg turns OFF only on proof of no credential: when the FIRST forge read in the window fails, trace
+  # probes `gh api rate_limit` (a credential-only GET); only if that probe ALSO fails (no credential, as in CI's loop-state, which
+  # drops it) is there ONE UNVERIFIED line, never a green and never a flag. With a working credential a failing per-PR read (a 404,
+  # an answer failure), first or later, is that commit's own UNVERIFIED line and the walk goes on; the summary counts FLAG, ok and
+  # UNVERIFIED commits and says PARTIAL when some were read first. A run from before the `gate` job existed is accepted as
+  # pre-gate. A layout that is not kit at both locations (see pv_ev_layout) prints its N/A line once (both adopter), or UNVERIFIED
+  # naming the token (layout-mismatch, kit-pipeline-half-present, forge-unreadable).
+  _tr_ev_on=1; _tr_ev_unver=0; _tr_ev_n=0; _tr_ev_flags=0; _tr_ev_pre=0; _tr_ev_unv_n=0
+  pv_ev_layout
+  case "$_pv_ev_layout" in
+    adopter) _tr_ev_on=0; pv_ev_na_line ;;
+    refuse)  _tr_ev_on=0; echo "evidence leg: UNVERIFIED ($_pv_ev_lay_reason: $_pv_ev_lay_note) - no commit was checked." ;;
+  esac
+  _tr_ev_one() { # <trunk commit> : reads the note trace_one just parsed in $_tn
+    [ "$_tr_ev_on" = 1 ] || return 0
+    _te_c="$(printf '%s' "$1" | cut -c1-12)"
+    _te_asha="$(printf '%s\n' "$_tn" | sed -n 's/^approved-sha: //p' | head -1)"; [ -n "$_te_asha" ] || _te_asha="$_ta"
+    _te_pr="$(pv_ev_pr_number "$(printf '%s\n' "$_tn" | sed -n 's/^scope: //p' | head -1)")" || {
+      _tr_ev_unv_n=$((_tr_ev_unv_n + 1))
+      echo "evidence leg: $_te_c UNVERIFIED (the note's scope is not a PR id, so no pull request can be read)"; return 0; }
+    pv_ev_read "$_te_pr" "$_te_asha"
+    case "$_pv_ev_verdict" in
+      unreadable) if [ "$_tr_ev_n" -eq 0 ] && ! gh api rate_limit >/dev/null 2>&1; then _tr_ev_on=0; _tr_ev_unver=1; return 0; fi
+                  _tr_ev_unv_n=$((_tr_ev_unv_n + 1)); echo "evidence leg: $_te_c UNVERIFIED (forge read failed)"; return 0 ;;
+      ok) _tr_ev_n=$((_tr_ev_n + 1))
+          case "$_pv_ev_gate" in
+            success) ;;
+            absent)  _tr_ev_pre=$((_tr_ev_pre + 1)); echo "evidence leg: $_te_c ok (pre-gate: run $_pv_ev_run predates the gate job)"; return 0 ;;
+            *)       _pv_ev_reason='no-gate-job'; _pv_ev_verdict=refused ;;
+          esac ;;
+      *) _tr_ev_n=$((_tr_ev_n + 1)) ;;
+    esac
+    [ "$_pv_ev_verdict" = refused ] || return 0
+    _tr_ev_flags=$((_tr_ev_flags + 1))
+    printf '%s\n' "FLAG admin-merge: $_te_c head $(printf '%s' "$_te_asha" | cut -c1-12) merged without exact-head light evidence ($(printf '%s' "$_pv_ev_reason" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80))"
+  }
   # OLDEST-FIRST, AND THE ORDER IS LOAD-BEARING FOR THE DEDUP ABOVE. `git rev-list` yields
   # newest-first; walking that way would let the EMPTY commit (the newer one) claim the note and red
   # the genuine commit that produced the tree — naming the victim instead of the borrower. Reversed,
@@ -1022,8 +1064,18 @@ do_trace() {
   # that tree is the one that reds. (`tac`/`tail -r` are not portable; awk is.)
   for _tr_c in $(git rev-list -n "$recent" "$from" | awk '{a[NR]=$0} END{for(i=NR;i>0;i--) print a[i]}'); do
     _tr_n=$((_tr_n + 1))
-    trace_one "$_tr_c" || { _tr_rc=1; _tr_miss=$((_tr_miss + 1)); }
+    if trace_one "$_tr_c"; then _tr_ev_one "$_tr_c"; else _tr_rc=1; _tr_miss=$((_tr_miss + 1)); fi
   done
+  _tr_ev_ok=$((_tr_ev_n - _tr_ev_flags - _tr_ev_pre))
+  if [ "$_tr_ev_unver" = 1 ]; then
+    echo "evidence leg: UNVERIFIED (the first forge read failed; the cause is not known: a missing credential, as in CI's loop-state, or no answer from the forge) - no commit was checked for exact-head CI evidence; this says nothing about them either way."
+  elif [ "$_tr_ev_n" -gt 0 ] && [ "$_tr_ev_unv_n" -gt 0 ]; then
+    echo "evidence leg: PARTIAL — $_tr_ev_flags FLAG(s), $_tr_ev_ok ok, $_tr_ev_pre pre-gate, $_tr_ev_unv_n UNVERIFIED over $_tr_ev_n commit(s) read; the UNVERIFIED commits were not checked either way; detective only, the exit code is unchanged."
+  elif [ "$_tr_ev_n" -gt 0 ]; then
+    echo "evidence leg: $_tr_ev_flags FLAG(s) over $_tr_ev_n commit(s) read ($_tr_ev_ok ok, $_tr_ev_pre pre-gate, 0 UNVERIFIED); detective only, the exit code is unchanged."
+  elif [ "$_tr_ev_unv_n" -gt 0 ]; then
+    echo "evidence leg: UNVERIFIED — no commit was read ($_tr_ev_unv_n UNVERIFIED: no pull request named, or the forge read failed); this says nothing about them either way."
+  fi
   # NON-VACUITY: an empty window is a FAIL, never a quiet pass. A green over zero commits would be
   # the exact shape this leg exists to prevent someone shipping.
   if [ "$_tr_n" -eq 0 ]; then
@@ -1962,6 +2014,212 @@ pv_solo_go_ok() {
   return 0
 }
 
+# ── EXACT-HEAD CI EVIDENCE (SWAS-537, slice S4 of SWAS-382; design 2026-10-16 §18.5 as revised by §19; closes S3-SEC-2) ──
+# A draft PR runs a CHEAP CI (the `changes` job skipped), and marking it ready starts a new run: in the seconds between, the
+# forge shows the old run's context state. So `land` and `actuate` merge only when a COMPLETED run of the CI workflow on the EXACT
+# approved head graded at least the light set. The predicate is conformance/ci-classify-changes.sh --head-evidence (the very one
+# main's push lane uses), run from the same checkout as the verb (main's, for `land`), not from the PR head. The reads are `gh api` GETs over the operator's own
+# credential, promoted only on rc 0 and a parseable page. It reads no environment variable and parses no flag.
+# SCOPE (H1): the leg belongs to the KIT pipeline. Two facts are read, each at TWO locations (this script's own checkout, and the
+# top level of the repository the verb operates on): the decider conformance/ci-gate-state.sh exists, and .github/workflows/ci.yml
+# carries a `gate:` job. BOTH locations kit: the leg runs. BOTH adopter: ONE N/A line and the verb proceeds. A DISAGREEMENT:
+# REFUSED `layout-mismatch`. EXACTLY ONE fact at either: REFUSED `kit-pipeline-half-present`, so deleting one fact never
+# silently disables the leg. CEILING: in the kit repo, a merged reviewed control-plane PR that deletes BOTH turns later lands to N/A.
+# HONEST CEILING: verb-scoped. A raw `gh pr merge`, or the forge's merge button, is outside it; `trace --recent` flags those after
+# the fact, and a CI context rename is the server-side layer (out of this slice). The workflow and the `gate` job live in the head.
+# TWO LOCATIONS (fix round 2, closes a fail-open): the two facts are read from BOTH the checkout that holds this script AND the
+# repository the verb operates on (the top level of the current working repository). A relocated copy or a symlink of the gate, or
+# `sh -s`, run from inside a kit-layout repository would otherwise read "adopter" from its own directory and merge a draft. Both
+# "kit": the leg runs. Both "adopter": ONE N/A line. ANY disagreement: REFUSED `layout-mismatch`. EITHER "half":
+# `kit-pipeline-half-present`. No git repository: `forge-unreadable`, never N/A. Every refusal names both layouts.
+# pv_ev_lay_of <root> -> stdout kit | adopter | half (the two facts above, read under that root).
+pv_ev_lay_of() {
+  _pl_dec=0; _pl_gate=0
+  if [ -f "$1/conformance/ci-gate-state.sh" ]; then _pl_dec=1; fi
+  if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _pl_gate=1; fi
+  case "$_pl_dec$_pl_gate" in
+    11) printf 'kit\n' ;;
+    00) printf 'adopter\n' ;;
+    *)  printf 'half\n' ;;
+  esac
+}
+# pv_ev_layout -> _pv_ev_layout = kit | adopter | refuse; on refuse _pv_ev_lay_reason names the token. _pv_ev_lay_note names both layouts.
+pv_ev_layout() {
+  _pl_own="$(pv_ev_lay_of "$(dirname -- "$0")/..")"; _pl_repo=none
+  _pl_top="$(git rev-parse --show-toplevel 2>/dev/null)" || _pl_top=""
+  if [ -n "$_pl_top" ]; then _pl_repo="$(pv_ev_lay_of "$_pl_top")"; fi
+  _pv_ev_lay_note="this script's checkout reads $_pl_own and the repository it operates on reads $_pl_repo"
+  _pv_ev_lay_reason=""
+  case "$_pl_own/$_pl_repo" in
+    kit/kit)         _pv_ev_layout=kit ;;
+    adopter/adopter) _pv_ev_layout=adopter ;;
+    */none)          _pv_ev_layout=refuse; _pv_ev_lay_reason='forge-unreadable' ;;
+    half/*|*/half)   _pv_ev_layout=refuse; _pv_ev_lay_reason='kit-pipeline-half-present' ;;
+    *)               _pv_ev_layout=refuse; _pv_ev_lay_reason=layout-mismatch ;;
+  esac
+}
+pv_ev_na_line() { echo "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)"; }
+# pv_ev_pr_number <scope> -> stdout the PR digits (PR #N, PR-N, #N or N); rc 1 when the scope is not a PR id.
+pv_ev_pr_number() {
+  case "$1" in
+    'PR #'*) _pen="${1#PR #}" ;;
+    'PR-'*)  _pen="${1#PR-}" ;;
+    '#'*)    _pen="${1#\#}" ;;
+    *)       _pen="$1" ;;
+  esac
+  case "$_pen" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$_pen"
+}
+
+# pv_ev_read_in <dir> <pr> <approved-sha> <classifier> : the reads. Sets _pv_ev_verdict (ok | refused | unreadable),
+# _pv_ev_reason, _pv_ev_run and _pv_ev_gate (success | absent | other). Any read that fails, pages partially or is not JSON is
+# `unreadable`: nothing proves the head was graded.
+pv_ev_read_in() {
+  _pe_d="$1"; _pe_n="$2"; _pe_a="$3"; _pe_c="$4"
+  _pe_meta="$(gh api "repos/{owner}/{repo}/pulls/$_pe_n" \
+      --jq '[(.draft | tostring), (.head.sha // ""), (.head.ref // ""), (.base.repo.full_name // ""), (.head.repo.full_name // "")] | @tsv' 2>/dev/null)" || return 0
+  _pe_draft="$(printf '%s' "$_pe_meta" | cut -f1)"; _pe_live="$(printf '%s' "$_pe_meta" | cut -f2)"
+  _pe_br="$(printf '%s' "$_pe_meta" | cut -f3)"; _pe_repo="$(printf '%s' "$_pe_meta" | cut -f4)"; _pe_hrepo="$(printf '%s' "$_pe_meta" | cut -f5)"
+  case "$_pe_draft" in
+    true)  _pv_ev_verdict=refused; _pv_ev_reason=draft; return 0 ;;
+    false) ;;
+    *)     return 0 ;;
+  esac
+  case "$_pe_live" in
+    ''|*[!0-9a-f]*) return 0 ;;
+  esac
+  { [ "${#_pe_live}" -eq 40 ] && [ -n "$_pe_br" ] && [ -n "$_pe_repo" ]; } || return 0
+  # A head in a FORK (or a deleted fork, whose repo reads empty) is not this repository's head: its CI is not the base's evidence.
+  if [ "$_pe_hrepo" != "$_pe_repo" ]; then _pv_ev_verdict=refused; _pv_ev_reason='fork-head'; return 0; fi
+  # actuate only: --ref must BE the PR's head branch (the shipped merge names it), else the PR read says nothing about the ref merged.
+  if [ -n "$_pv_ev_xref" ] && [ "$_pe_br" != "$_pv_ev_xref" ]; then
+    _pv_ev_verdict=refused; _pv_ev_reason='ref-mismatch'; return 0
+  fi
+  # The live head must BE the approved head: a prefix match, and only for a hex sha of 7 or more characters.
+  case "$_pe_a" in
+    ''|*[!0-9a-f]*) _pv_ev_verdict=refused; _pv_ev_reason='stale-head'; return 0 ;;
+  esac
+  if [ "${#_pe_a}" -lt 7 ]; then _pv_ev_verdict=refused; _pv_ev_reason='stale-head'; return 0; fi
+  case "$_pe_live" in
+    "$_pe_a"*) ;;
+    *) _pv_ev_verdict=refused; _pv_ev_reason='stale-head'; return 0 ;;
+  esac
+  gh api "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=$_pe_live&event=pull_request&per_page=100" \
+      --paginate --jq '.workflow_runs[]' >"$_pe_d/runs.nd" 2>/dev/null || return 0
+  jq -s '.' "$_pe_d/runs.nd" >"$_pe_d/runs.json" 2>/dev/null || return 0
+  # First pass with an EMPTY jobs listing: it settles every run-level answer, and reaches `no-jobs` only for a completed,
+  # successful run on this head, which is the one run whose jobs are worth reading.
+  printf '{"jobs":[]}\n' >"$_pe_d/nojobs.json"
+  _pe_v="$(sh "$_pe_c" --head-evidence "$_pe_d/runs.json" "$_pe_d/nojobs.json" "$_pe_live" "$_pe_br" "$_pe_repo")" || return 0
+  case "$_pe_v" in
+    "evidence=no reason=no-jobs run="*) ;;
+    "evidence=no reason="*) _pe_r="${_pe_v#evidence=no reason=}"; _pv_ev_verdict=refused; _pv_ev_reason="${_pe_r%% run=*}"
+                            case "$_pe_r" in
+                              *" run="*) _pv_ev_run="${_pe_r##* run=}" ;;
+                            esac
+                            return 0 ;;
+    *) return 0 ;;
+  esac
+  _pe_rid="${_pe_v##* run=}"
+  case "$_pe_rid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  gh api "repos/{owner}/{repo}/actions/runs/$_pe_rid/jobs?filter=latest&per_page=100" \
+      --paginate --jq '.jobs[]' >"$_pe_d/jobs.nd" 2>/dev/null || return 0
+  jq -s '.' "$_pe_d/jobs.nd" >"$_pe_d/jobs.json" 2>/dev/null || return 0
+  _pe_v="$(sh "$_pe_c" --head-evidence "$_pe_d/runs.json" "$_pe_d/jobs.json" "$_pe_live" "$_pe_br" "$_pe_repo")" || return 0
+  _pv_ev_gate="$(jq -r '[.[] | select(.name == "gate") | (.conclusion // "")] | if length == 0 then "absent" elif all(. == "success") then "success" else "other" end' "$_pe_d/jobs.json" 2>/dev/null)" || return 0
+  _pv_ev_run="$_pe_rid"
+  case "$_pe_v" in
+    "evidence=ok reason="*) _pv_ev_verdict=ok; _pv_ev_reason="${_pe_v#evidence=ok reason=}"; _pv_ev_reason="${_pv_ev_reason%% run=*}" ;;
+    "evidence=no reason="*) _pe_r="${_pe_v#evidence=no reason=}"; _pv_ev_verdict=refused; _pv_ev_reason="${_pe_r%% run=*}" ;;
+  esac
+}
+
+# pv_ev_read <pr> <approved-sha> [<head-branch>] : the verdict in _pv_ev_* (defaults: unreadable / forge-unreadable). Never exits the
+# caller. A head branch (actuate's --ref) must equal the PR's live head.ref.
+pv_ev_read() {
+  _pv_ev_verdict=unreadable; _pv_ev_reason='forge-unreadable'; _pv_ev_run=""; _pv_ev_gate=""; _pv_ev_xref="${3:-}"
+  _pr_c="$(dirname -- "$0")/../conformance/ci-classify-changes.sh"
+  { command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && [ -f "$_pr_c" ]; } || return 0
+  _pr_d="$(mktemp -d 2>/dev/null)" || return 0
+  pv_ev_read_in "$_pr_d" "$1" "$2" "$_pr_c"
+  rm -rf "$_pr_d"
+  return 0
+}
+
+# pv_ci_evidence <land|actuate|evidence> <pr> <approved-sha> <gate-required 0|1> [<head-branch>] : 0 when the head is evidenced (or
+# the checkout is not the kit pipeline: ONE N/A line, _pv_ev_na=1); else prints the refusal (the token, the run and what to wait
+# for) and returns 1. land also requires the `gate` job at success (a run from before the gate existed is not evidence for a
+# control-plane merge); actuate does not. actuate passes its --ref as the head branch, which must be the PR's live head.ref.
+pv_ci_evidence() {
+  _pc_verb="$(printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z')"; _pc_n="$2"; _pv_ev_na=0
+  pv_ev_layout
+  if [ "$_pv_ev_layout" = adopter ]; then _pv_ev_na=1; pv_ev_na_line; return 0; fi
+  if [ "$_pv_ev_layout" = refuse ]; then _pv_ev_verdict=refused; _pv_ev_reason="$_pv_ev_lay_reason"; _pv_ev_run=""
+  elif [ -z "$_pc_n" ]; then _pv_ev_verdict=refused; _pv_ev_reason='no-pr-scope'; _pv_ev_run=""
+  else
+    pv_ev_read "$_pc_n" "$3" "${5:-}"
+    if [ "$_pv_ev_verdict" = ok ] && [ "$4" = 1 ] && [ "$_pv_ev_gate" != success ]; then
+      _pv_ev_verdict=refused; _pv_ev_reason='no-gate-job'
+    fi
+  fi
+  [ "$_pv_ev_verdict" != ok ] || return 0
+  _pc_tok="$(printf '%s' "$_pv_ev_reason" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)"
+  _pc_run="${_pv_ev_run:-none selected}"
+  _pc_lay_tail=""
+  if [ -n "${_pv_ev_lay_reason:-}" ]; then _pc_lay_tail="; $_pv_ev_lay_note"; fi
+  case "$_pv_ev_reason" in
+    draft)            _pc_wait="PR #$_pc_n is a draft, and a draft runs only the cheap CI: mark it ready, wait for the run on that head to complete, then re-run" ;;
+    fork-head)        _pc_wait="PR #$_pc_n has its head in a fork, and a fork's CI run is not this repository's evidence: push the branch to this repository, open the PR from it, then re-run" ;;
+    ref-mismatch)     _pc_wait="--ref is not the head branch of PR #$_pc_n: pass the PR's own head branch (gh pr view $_pc_n --json headRefName), at the approved sha" ;;
+    kit-pipeline-half-present) _pc_wait="$_pv_ev_lay_note; a layout with only ONE of conformance/ci-gate-state.sh and a gate: job in .github/workflows/ci.yml cannot be told from an adopter's: restore the missing half (a reviewed control-plane change removes both or neither)" ;;
+    layout-mismatch)  _pc_wait="$_pv_ev_lay_note, and the leg trusts neither alone: run the gate that lives in the repository you are merging in (its own scripts/promotion-verify.sh), not a copy, a symlink or a piped script" ;;
+    stale-head)       _pc_wait="the PR head is no longer the approved sha $3: re-review the new head and re-record the GO" ;;
+    no-graded-run)    _pc_wait="no pull_request run of ci.yml exists on this head yet: wait for it to start, then re-run" ;;
+    run-not-completed) _pc_wait="run $_pc_run has not completed: wait for it to finish, then re-run" ;;
+    run-not-success)  _pc_wait="run $_pc_run did not succeed: fix it or re-run its failed jobs, then re-run" ;;
+    needed-job-not-success:*) _pc_wait="run $_pc_run did not grade the light set (a draft or cheap run skips it): mark the PR ready and wait for the full run on this head" ;;
+    no-gate-job)      _pc_wait="run $_pc_run carries no gate job at success: re-run CI on this head so it records one" ;;
+    no-pr-scope)      _pc_wait="the GO note's scope is not a PR id, so no pull request can be read: record the GO with --scope PR #<n>" ;;
+    forge-unreadable) _pc_wait="the forge could not be read here (no git repository, no gh credential, a failed or partial page, or a non-JSON answer): nothing proves this head was graded$_pc_lay_tail" ;;
+    *)                _pc_wait="run $_pc_run did not satisfy the exact-head predicate" ;;
+  esac
+  printf '%s\n' "$_pc_verb REFUSED (exact-head CI evidence): $_pc_tok on head $3 (run: $_pc_run). Wait: $_pc_wait." >&2
+  if [ "$1" = land ]; then echo "              No GO note was written and nothing was merged. A draft or cheap run never counts; this closes the mark-ready window." >&2
+  else echo "              Nothing was merged. A draft or cheap run never counts; this closes the mark-ready window." >&2; fi
+  return 1
+}
+
+# do_evidence — the READ-ONLY verb behind the leg (SWAS-537, D4): `evidence --pr <n> --approved-sha <sha>` prints whether `land` would find
+# exact-head CI evidence for that head right now, so an agent checks BEFORE a GO ask. Exit 0 = evidenced, 1 = refused (the token and
+# the wait are printed), 2 = usage. It writes nothing, records nothing and merges nothing. It asks `land`'s question, the gate job included.
+do_evidence() {
+  _ev_pr=""; _ev_sha=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)           [ $# -ge 2 ] || { echo "evidence: --pr needs a value" >&2; return 2; }
+                      _ev_pr="$2"; shift 2 ;;
+      --approved-sha) [ $# -ge 2 ] || { echo "evidence: --approved-sha needs a value" >&2; return 2; }
+                      _ev_sha="$2"; shift 2 ;;
+      *) echo "evidence: unknown arg '$1'" >&2; usage; return 2 ;;
+    esac
+  done
+  if [ -z "$_ev_pr" ] || [ -z "$_ev_sha" ]; then echo "evidence: --pr and --approved-sha are required" >&2; usage; return 2; fi
+  case "$_ev_pr" in
+    ''|*[!0-9]*) echo "evidence: --pr takes a PR number (digits only)" >&2; return 2 ;;
+  esac
+  case "$_ev_sha" in
+    ''|*[!0-9a-f]*) echo "evidence: --approved-sha takes a lowercase hex commit id" >&2; return 2 ;;
+  esac
+  _ev_full="$(git -C "$ROOT" rev-parse -q --verify "${_ev_sha}^{commit}" 2>/dev/null || true)"
+  pv_ci_evidence evidence "$_ev_pr" "${_ev_full:-$_ev_sha}" 1 || return 1
+  if [ "$_pv_ev_na" = 1 ]; then return 0; fi
+  echo "OK: exact-head CI evidence on ${_ev_full:-$_ev_sha} (PR #$_ev_pr): reason=$_pv_ev_reason run=$_pv_ev_run gate=$_pv_ev_gate - read-only, nothing was recorded or merged."
+}
+
 do_actuate() {
   ref=""; asha=""; merge_cmd=""
   while [ $# -gt 0 ]; do
@@ -2140,6 +2398,11 @@ do_actuate() {
     fi
   fi
   if ! pv_meter_gate "${_act_mrow_line#kit-row:}" actuate "$asha"; then return 1; fi
+
+  # 3c. EXACT-HEAD CI EVIDENCE (SWAS-537, S3-SEC-2): the PR is the one the note's scope names, and a completed run of the CI
+  #     workflow on the exact approved head must have graded at least the light set. Before the merge, so a refusal attempts none.
+  _act_pr="$(pv_ev_pr_number "$(printf '%s\n' "$note" | sed -n 's/^scope: //p' | head -1)")" || _act_pr=""
+  pv_ci_evidence actuate "$_act_pr" "$asha" 0 "$ref" || return 1
 
   # 4. Execute the (swappable) NORMAL merge. Non-zero -> loud failure, propagate the code.
   if eval "$merge_cmd"; then mrc=0; else mrc=$?; fi
@@ -2438,6 +2701,12 @@ do_land() {
     return 1
   fi
   fi   # closes the team arm of 0d(ii)
+
+  # 0e. EXACT-HEAD CI EVIDENCE (SWAS-537, S3-SEC-2): a completed run of the CI workflow on the exact approved head must have
+  #     graded at least the light set (and recorded a `gate` job). It sits AFTER the class gate, SoD, the meter gate and the
+  #     forge bar and BEFORE do_record, so a refusal writes NO note and merges nothing (the same property those have).
+  _land_full="$(git -C "$ROOT" rev-parse -q --verify "${asha}^{commit}" 2>/dev/null || true)"
+  pv_ci_evidence land "$_land_sn" "${_land_full:-$asha}" 1 || return 1
 
   # 1. RECORD FIRST — the whole point of the verb. do_record is a self-unwinding transaction (fetch,
   #    refuse on divergence, write, publish, unwind its own unpublished note on push reject); land
@@ -3362,6 +3631,7 @@ case "$cmd" in
   check)   if do_check   "$@"; then rc=0; else rc=$?; fi ;;
   actuate) if do_actuate "$@"; then rc=0; else rc=$?; fi ;;
   land)    if do_land    "$@"; then rc=0; else rc=$?; fi ;;
+  evidence) if do_evidence "$@"; then rc=0; else rc=$?; fi ;;
   -h|--help) usage; rc=2 ;;
   *) usage; rc=2 ;;
 esac

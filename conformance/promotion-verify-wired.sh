@@ -97,6 +97,44 @@ selftest() {
   # runs every leg of the producer under dash on any host (dash's `echo` expands \0NNN — the A5 class).
   VSH="${PROMOTION_VERIFY_SHELL:-sh}"
   case "$VSH" in sh|dash|bash) ;; *) echo "FAIL: PROMOTION_VERIFY_SHELL must be sh|dash|bash (got '$VSH')"; return 1 ;; esac
+  # SWAS-537 fix round 2: the evidence leg reads its layout at TWO locations (the gate's own checkout AND the repository it runs in), so a
+  # fixture repository that a gate in a kit layout runs in must carry the same two facts (conformance/ci-gate-state.sh, and a `gate:` job in
+  # .github/workflows/ci.yml); an adopter-looking one carries neither. Written untracked and listed in info/exclude: no cell sees a dirty tree.
+  fx_layout() {  # <repo dir> <decider 0|1> <gate-job 0|1>
+    mkdir -p "$1/conformance" "$1/.github/workflows"
+    rm -f "$1/conformance/ci-gate-state.sh"
+    if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
+    else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
+    _fx_ex="$(git -C "$1" rev-parse --git-path info/exclude)"
+    case "$_fx_ex" in /*) ;; *) _fx_ex="$1/$_fx_ex" ;; esac
+    mkdir -p "$(dirname "$_fx_ex")"
+    printf '/conformance/ci-gate-state.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
+  }
+  # SWAS-537 fix round 3: the general land/trace fixtures plant the layout of the gate copy UNDER TEST, never a fixed kit one. In the
+  # exported, adopter-shaped tree conformance/ci-gate-state.sh and the workflow are export-ignored, so the gate reads adopter at its own
+  # checkout; a repository planted kit would be a layout-mismatch and every land would refuse. Read the two facts the way the gate does
+  # (pv_ev_lay_of): <root> -> "<decider 0|1> <gate-job 0|1>". The cells that assert an evidence refusal or a FLAG only exist on a kit tree.
+  fx_facts() {
+    _ffd=0; _ffg=0
+    if [ -f "$1/conformance/ci-gate-state.sh" ]; then _ffd=1; fi
+    if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _ffg=1; fi
+    echo "$_ffd $_ffg"
+  }
+  FX_OWN="$(dirname "$VERIFY")/.."
+  fx_like_own() {  # <repo dir> [<gate checkout root> = the gate under test's own]
+    _fff="$(fx_facts "${2:-$FX_OWN}")"
+    fx_layout "$1" "${_fff% *}" "${_fff#* }"
+  }
+  case "$(fx_facts "$FX_OWN")" in
+    "1 1") FX_KIND=kit ;;
+    "0 0") FX_KIND=adopter ;;
+    *) FX_KIND=half ;;
+  esac
+  # Every skip is COUNTED and the count is printed on the final line, so a silent narrowing shows on the export lane (a kit tree says 0).
+  FX_SKIPS=0
+  fx_skip() { FX_SKIPS=$((FX_SKIPS + 1)); echo "selftest SKIP: $1 — not a kit tree (the evidence leg is N/A here)"; }
+  fx_skip_note() { echo "($1 SKIPPED: not a kit tree, counted per skip line above)"; }
   D="$(mktemp -d)"; R="$D/repo"
   build_fixture "$D" || true
   for _s in .BASE .APPROVED .SQUASH .EXTRA .RC .REVERT .SIDE .TRUNK; do
@@ -661,6 +699,7 @@ selftest() {
       git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
       printf 'a\n' > f.txt; git add f.txt; git commit -qm base
       git push -q origin HEAD:refs/heads/main )
+    fx_like_own "$LO/A"
     LOA="$LO/A"; LOSHA="$(git -C "$LOA" rev-parse HEAD)"
     LOTRUNK="$(git -C "$LOA" rev-parse --abbrev-ref HEAD)"
   }
@@ -673,8 +712,25 @@ selftest() {
   # jq dependency); the derivation itself is exercised against real jq in promotion-actuate-wired.sh.
   lgh() {
     _lgd="$(mktemp -d "$D/gh.XXXXXX")"
+    # SWAS-537: `land` and `trace` also read exact-head CI evidence. The optional 3rd argument shapes that forge: by default the PR is
+    # ready and its light run on <approved-sha> completed green with the gate job (the PR's head ref is `feat`); cheap (every shard
+    # skipped), nogate (a run from before the gate job), redrun (the run failed), norun (no run) and apierr (the forge refuses) are the
+    # TR cells' (the land cells about this evidence live in promotion-actuate-wired.sh).
+    _lgk="${3:-light}"; _lgc=success; [ "$_lgk" != cheap ] || _lgc=skipped
+    _lgr=success; [ "$_lgk" != redrun ] || _lgr=failure
+    printf '{"id":900,"path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"completed","conclusion":"%s","head_sha":"%s","head_branch":"feat","head_repository":{"full_name":"acme/kit"},"event":"pull_request"}\n' "$_lgr" "$1" > "$_lgd/evrun"
+    [ "$_lgk" != norun ] || : > "$_lgd/evrun"
+    for _lj in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam conformance-docs docs-links 'non-vacuity (1)'; do
+      printf '{"name":"%s","conclusion":"%s"}\n' "$_lj" "$_lgc"
+    done > "$_lgd/evjobs"
+    printf '{"name":"conformance","conclusion":"success"}\n' >> "$_lgd/evjobs"
+    [ "$_lgk" = nogate ] || printf '{"name":"gate","conclusion":"success"}\n' >> "$_lgd/evjobs"
     {
       printf '#!/bin/sh\ncase "$*" in\n'
+      if [ -n "${4:-}" ]; then printf '  *pulls/%s\\ *) exit 1 ;;\n' "$4"; fi   # the 4th argument: a PR number the forge answers 404 for
+      if [ "$_lgk" = apierr ]; then printf '  *draft*|*/actions/*|*rate_limit*) exit 1 ;;\n'; fi
+      if [ -n "${LGH_NORATE:-}" ]; then printf '  *rate_limit*) exit 1 ;;\n'; fi   # LGH_NORATE=1: the forge answers the reads but REFUSES the credential-only probe (`gh api rate_limit`)
+      printf '  *draft*) printf "false\\t%%s\\tfeat\\tacme/kit\\tacme/kit\\n" "%s" ;;\n  */actions/workflows/*) cat "%s/evrun" ;;\n  */actions/runs/*) cat "%s/evjobs" ;;\n' "$1" "$_lgd" "$_lgd"
       # LGH_NOREV=1 (SWAS-207b): the ONE-ACCOUNT forge — the reviews call answers NOTHING, so no approval can be derived
       if [ -n "${LGH_NOREV:-}" ]; then printf '  */reviews*) : ;;\n'
       else printf '  */reviews*) printf "APPROVED\\t%%s\\t%%s\\tUser\\n" "%s" "%s" ;;\n' "$1" "$2"; fi
@@ -707,6 +763,139 @@ selftest() {
   else
     echo "FAIL: land liveness: want rc=0 + merge + note-on-origin, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) onorigin=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
   fi
+
+  # =====================================================================================
+  # SWAS-537 TR1-TR4 — `trace --recent`'s DETECTIVE evidence leg (ruling Q1: it prints and counts, and the exit code NEVER moves). A trunk
+  # commit bound to a note naming PR 55 is read through the forge shim (lgh's 3rd argument shapes the forge). Every cell asserts the
+  # exit code beside the printed lines, because "rc unchanged" is the contract.
+  TRD="$D/tr537"; rm -rf "$TRD"; mkdir -p "$TRD"
+  ( set -e; cd "$TRD"; git init -q -b main; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+    printf 'a\n' > f.txt; git add f.txt; git commit -qm 'squash merge of PR 55'
+    _trc="$(git rev-parse HEAD)"
+    printf 'record: promotion GO (approve->execute->log)\napproved-sha: %s\napproved-tree: %s\ngate: promotion\nkit-row: TR-ROW\nscope: PR #55\n' "$_trc" "$(git rev-parse 'HEAD^{tree}')" \
+      | git notes --ref=promotions add -f -F - "$_trc" ) >/dev/null 2>&1 || { echo "FAIL: could not build the TR fixture"; st=1; }
+  TRC="$(git -C "$TRD" rev-parse HEAD)"; TRC12="$(printf '%s' "$TRC" | cut -c1-12)"
+  fx_like_own "$TRD"
+  tr_run() {   # <forge kind|NOCRED> -> _trx_rc, _trx_out (a window of exactly the one bound commit)
+    if [ "$1" = NOCRED ]; then _trg="$(mktemp -d "$D/gh.XXXXXX")"; printf '#!/bin/sh\nexit 1\n' > "$_trg/gh"; chmod +x "$_trg/gh"
+    else _trg="$(lgh "$TRC" x "$1")"; fi
+    if _trx_out="$( cd "$TRD" && PATH="$_trg:$PATH" $VSH "$VERIFY" trace --recent "${TRN:-1}" --from main 2>&1 )"; then _trx_rc=0; else _trx_rc=$?; fi
+  }
+  tr_cell() {  # <label> <forge kind> <expected rc> <needle> [must-not-contain]
+    tr_run "$2"
+    if [ "$_trx_rc" = "$3" ] && printf '%s' "$_trx_out" | grep -qF -e "$4" \
+       && { [ -z "${5:-}" ] || ! printf '%s' "$_trx_out" | grep -qF -e "$5"; }; then echo "PASS: $1 (rc $_trx_rc)"
+    else echo "FAIL: $1: want rc $3 + '$4'${5:+ and no '$5'}; got rc $_trx_rc; out=$_trx_out"; st=1; fi
+  }
+  if [ "$FX_KIND" = adopter ]; then fx_skip "TR1/TR2a-c/TR3/TR3b/TR3c/TR4"; else
+  tr_cell "TR1: exact-head light evidence -> no flag, 1 commit read" light 0 "evidence leg: 0 FLAG(s) over 1 commit(s) read" "FLAG admin-merge"
+  tr_cell "TR2a: a cheap run -> FLAG + count, rc unchanged" cheap 0 "FLAG admin-merge: $TRC12 head $TRC12 merged without exact-head light evidence (needed-job-not-success:changes)"
+  tr_cell "TR2a: the summary counts the flag" cheap 0 "evidence leg: 1 FLAG(s) over 1 commit(s) read"
+  tr_cell "TR2b: a red run -> FLAG run-not-success" redrun 0 "(run-not-success)"
+  tr_cell "TR2c: no run at all -> FLAG no-graded-run" norun 0 "(no-graded-run)"
+  tr_cell "TR3: no forge credential -> ONE UNVERIFIED line, no flag, rc unchanged" NOCRED 0 "evidence leg: UNVERIFIED (the first forge read failed" "FLAG admin-merge"
+  tr_cell "TR3b: a forge that refuses every read -> the same UNVERIFIED, never a flag and never an ok" apierr 0 "evidence leg: UNVERIFIED" "0 FLAG(s)"
+  tr_run NOCRED
+  if [ "$(printf '%s\n' "$_trx_out" | grep -c '^evidence leg: UNVERIFIED')" = 1 ]; then echo "PASS: TR3c: exactly one UNVERIFIED line"
+  else echo "FAIL: TR3c: want exactly one UNVERIFIED line; out=$_trx_out"; st=1; fi
+  tr_cell "TR4: a run from before the gate job -> accepted as pre-gate, no flag" nogate 0 "pre-gate" "FLAG admin-merge"
+  fi
+  # rc parity: with a recordless commit on top (rc 1 today) the evidence leg moves nothing, flagged, unverified or ok.
+  ( cd "$TRD" && printf 'b\n' >> f.txt && git commit -qam 'recordless merge' ) >/dev/null 2>&1
+  TRN=2
+  for _trk in light cheap NOCRED; do
+    tr_run "$_trk"
+    if [ "$_trx_rc" = 1 ] && printf '%s' "$_trx_out" | grep -qF -e 'has no promotion note'; then echo "PASS: TR-RC: a recordless commit in the window still reds (rc 1) with the evidence leg '$_trk'"
+    else echo "FAIL: TR-RC ($_trk): want rc 1; got $_trx_rc; out=$_trx_out"; st=1; fi
+  done
+  TRN=1
+
+  # =====================================================================================
+  # SWAS-537 FIX ROUND, the trace leg. M1: the leg turns OFF only on proof of no credential, the FIRST forge read in the window
+  # failing; after a successful read, a failing per-PR read prints a per-commit UNVERIFIED line and the walk goes on; the summary
+  # counts FLAG, ok and UNVERIFIED commits and says PARTIAL when some were read. H1: the leg is scoped to the kit pipeline (the
+  # decider beside the classifier AND a `gate:` job in that checkout's ci.yml): neither -> ONE N/A line; exactly one -> UNVERIFIED
+  # kit-pipeline-half-present. A cell with a trailing sed script is a MUTANT: it rewrites a throwaway COPY of the gate (never a
+  # switch in the shipped file) and passes only if the same assertion then FAILS. The window is two trunk commits: A (note PR #55,
+  # oldest, walked first) then B (note PR #56).
+  TR2D="$D/tr537b"; rm -rf "$TR2D"; mkdir -p "$TR2D"
+  ( set -e; cd "$TR2D"; git init -q -b main; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+    printf 'a\n' > f.txt; git add f.txt; git commit -qm 'squash merge of PR 55'
+    _ta1="$(git rev-parse HEAD)"; printf '%s\n' "$_ta1" > .ta1
+    printf 'record: promotion GO (approve->execute->log)\napproved-sha: %s\napproved-tree: %s\ngate: promotion\nkit-row: TR-ROW\nscope: PR #55\n' "$_ta1" "$(git rev-parse 'HEAD^{tree}')" \
+      | git notes --ref=promotions add -f -F - "$_ta1"
+    printf 'b\n' >> f.txt; git commit -qam 'squash merge of PR 56'
+    _ta2="$(git rev-parse HEAD)"
+    printf 'record: promotion GO (approve->execute->log)\napproved-sha: %s\napproved-tree: %s\ngate: promotion\nkit-row: TR-ROW\nscope: PR #56\n' "$_ta1" "$(git rev-parse 'HEAD^{tree}')" \
+      | git notes --ref=promotions add -f -F - "$_ta2" ) >/dev/null 2>&1 || { echo "FAIL: could not build the TR2 fixture"; st=1; }
+  TA1="$(cat "$TR2D/.ta1" 2>/dev/null || true)"; TA2="$(git -C "$TR2D" rev-parse HEAD)"; TA12="$(printf '%s' "$TA1" | cut -c1-12)"; TB12="$(printf '%s' "$TA2" | cut -c1-12)"
+  tr_copy() {  # <dir> <decider 0|1> <gate-job 0|1> : a COPY of the gate in a kit-or-adopter layout (the classifier is always beside it)
+    mkdir -p "$1/scripts" "$1/conformance" "$1/.github/workflows"
+    cp "$VERIFY" "$1/scripts/promotion-verify.sh"
+    cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$1/conformance/ci-classify-changes.sh"
+    if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
+    else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
+  }
+  # tr_lay <label> <decider> <gate-job> <forge kind> <404-pr|-> <rc> <needle> <must-not|-> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] — trace --recent 2 through a gate COPY
+  tr_lay() {
+    _tl_dir="$D/trlay"; rm -rf "$_tl_dir"; tr_copy "$_tl_dir" "$2" "$3"; _tl_mut=0
+    fx_layout "$TR2D" "${10:-$2}" "${11:-$3}"
+    if [ -n "${9:-}" ]; then
+      _tl_mut=1; cp "$_tl_dir/scripts/promotion-verify.sh" "$_tl_dir/orig.sh"; sed "$9" "$_tl_dir/orig.sh" > "$_tl_dir/scripts/promotion-verify.sh"
+      if cmp -s "$_tl_dir/orig.sh" "$_tl_dir/scripts/promotion-verify.sh"; then echo "FAIL: $1: the mutant script changed nothing (it no longer matches the gate)"; st=1; return 0; fi
+    fi
+    _trg="$(lgh "$TA1" x "$4" "$([ "$5" = - ] || printf '%s' "$5")")"
+    if _tl_out="$( cd "$TR2D" && PATH="$_trg:$PATH" $VSH "$_tl_dir/scripts/promotion-verify.sh" trace --recent "${TRW:-2}" --from main 2>&1 )"; then _tl_rc=0; else _tl_rc=$?; fi
+    if [ "$_tl_rc" = "$6" ] && printf '%s' "$_tl_out" | grep -qF -e "$7" && { [ "$8" = - ] || ! printf '%s' "$_tl_out" | grep -qF -e "$8"; }; then _tl_ok=0; else _tl_ok=1; fi
+    if [ "$_tl_mut" = 1 ]; then
+      if [ "$_tl_ok" = 0 ]; then echo "FAIL: $1: the mutant SURVIVED (the cell passed against the broken gate)"; st=1; else echo "PASS: $1: the mutant is killed (the cell fails against it)"; fi
+    elif [ "$_tl_ok" = 0 ]; then echo "PASS: $1 (rc $_tl_rc)"
+    else echo "FAIL: $1: want rc $6 + '$7'$([ "$8" = - ] || printf ' and no %s' "$8"); got rc $_tl_rc; out=$_tl_out"; st=1; fi
+  }
+  TRM1A="evidence leg: PARTIAL — 1 FLAG(s), 0 ok, 0 pre-gate, 1 UNVERIFIED over 1 commit(s) read"
+  tr_lay "M1a: a FLAG for the cheap commit read first, then the 404 PR -> its own UNVERIFIED line, the walk goes on" 1 1 cheap 56 0 "evidence leg: $TB12 UNVERIFIED (forge read failed)" -
+  tr_lay "M1a: ... and the FLAG line for the cheap one" 1 1 cheap 56 0 "FLAG admin-merge: $TA12 head $TA12 merged without exact-head light evidence (needed-job-not-success:changes)" -
+  tr_lay "M1a: ... and the summary says PARTIAL with the counts" 1 1 cheap 56 0 "$TRM1A" "no commit was checked"
+  # M1b (fix round 2): a failing FIRST read with a WORKING credential (the credential-only probe `gh api rate_limit` answers) is that commit's
+  # own UNVERIFIED line and the walk goes on, so the newer cheap commit B is still FLAGged. M1d: the probe fails too -> the single line.
+  tr_lay "M1b: a 404 on the OLDEST PR with a working credential -> that commit's own UNVERIFIED line" 1 1 cheap 55 0 "evidence leg: $TA12 UNVERIFIED (forge read failed)" "the first forge read failed"
+  tr_lay "M1b: ... and the newer cheap commit is still FLAGged" 1 1 cheap 55 0 "FLAG admin-merge: $TB12 head $TA12 merged without exact-head light evidence (needed-job-not-success:changes)" -
+  tr_lay "M1b: ... and the summary says PARTIAL with the counts" 1 1 cheap 55 0 "evidence leg: PARTIAL — 1 FLAG(s), 0 ok, 0 pre-gate, 1 UNVERIFIED over 1 commit(s) read" "no commit was checked"
+  LGH_NORATE=1
+  tr_lay "M1d: the FIRST read fails AND the credential probe fails -> the single UNVERIFIED line, no flag, no partial" 1 1 cheap 55 0 "evidence leg: UNVERIFIED (the first forge read failed" "PARTIAL"
+  tr_lay "M1d: ... and it never claims there is no credential" 1 1 cheap 55 0 "evidence leg: UNVERIFIED" "no forge credential"
+  tr_lay "M1d: ... and no per-commit line follows" 1 1 cheap 55 0 "evidence leg: UNVERIFIED" "FLAG admin-merge"
+  tr_lay "M1m2-mutant: the leg is never turned off (the failed probe is ignored)" 1 1 cheap 55 0 "evidence leg: UNVERIFIED (the first forge read failed" "PARTIAL" 's/if \[ "\$_tr_ev_n" -eq 0 \] && ! gh api rate_limit >\/dev\/null 2>&1; then _tr_ev_on=0/if false; then _tr_ev_on=0/'
+  tr_lay "M1m4-mutant: the probe verdict is inverted" 1 1 cheap 55 0 "evidence leg: UNVERIFIED (the first forge read failed" "PARTIAL" 's/&& ! gh api rate_limit/\&\& gh api rate_limit/'
+  LGH_NORATE=
+  tr_lay "M1c: every read ok -> the summary counts FLAG, ok and UNVERIFIED" 1 1 light - 0 "evidence leg: 0 FLAG(s) over 2 commit(s) read (2 ok, 0 pre-gate, 0 UNVERIFIED)" "PARTIAL"
+  tr_lay "M1m1-mutant: any failed read turns the leg off" 1 1 cheap 56 0 "$TRM1A" "no commit was checked" 's/if \[ "\$_tr_ev_n" -eq 0 \] && ! gh api rate_limit >\/dev\/null 2>&1; then _tr_ev_on=0/if true; then _tr_ev_on=0/'
+  tr_lay "M1m3-mutant: the probe is not made (a failing first read always turns the leg off)" 1 1 cheap 55 0 "evidence leg: $TA12 UNVERIFIED (forge read failed)" "the first forge read failed" 's/ && ! gh api rate_limit >\/dev\/null 2>&1; then _tr_ev_on=0/; then _tr_ev_on=0/'
+  tr_lay "H1-TR-a: an adopter layout -> the N/A line, once, no flag" 0 0 cheap - 0 "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)" "FLAG admin-merge"
+  tr_lay "H1-TR-b: a kit layout with a cheap run -> the FLAG" 1 1 cheap - 0 "FLAG admin-merge: $TA12" "N/A"
+  tr_lay "H1-TR-c: decider only -> UNVERIFIED kit-pipeline-half-present, no flag" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge"
+  tr_lay "H1-TR-d: gate job only -> UNVERIFIED kit-pipeline-half-present, no flag" 0 1 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge"
+  tr_lay "H1m-TR-1-mutant: the adopter branch runs the leg" 0 0 cheap - 0 "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)" "FLAG admin-merge" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
+  tr_lay "H1m-TR-2-mutant: the kit branch skips the leg" 1 1 cheap - 0 "FLAG admin-merge: $TA12" "N/A" 's/^    kit\/kit)         _pv_ev_layout=kit ;;/    kit\/kit)         _pv_ev_layout=adopter ;;/'
+  tr_lay "H1m-TR-3-mutant: the half branch skips the leg" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
+  # LM-TR (fix round 2): the layout is read at the gate's own checkout AND the repository trace runs in. A mismatch either way prints ONE
+  # UNVERIFIED line naming the token and both layouts, flags nothing, and leaves the exit code alone; a mutant per branch.
+  tr_lay "LM-TR-a: an adopter-looking gate copy in a kit-layout repository -> UNVERIFIED layout-mismatch naming both layouts, no flag" 0 0 cheap - 0 "evidence leg: UNVERIFIED (layout-mismatch: this script's checkout reads adopter and the repository it operates on reads kit)" "FLAG admin-merge" "" 1 1
+  tr_lay "LM-TR-b: a kit-layout gate copy in an adopter repository -> UNVERIFIED layout-mismatch naming both layouts, no flag" 1 1 cheap - 0 "evidence leg: UNVERIFIED (layout-mismatch: this script's checkout reads kit and the repository it operates on reads adopter)" "FLAG admin-merge" "" 0 0
+  tr_lay "LM-TR-c: the repository is half -> UNVERIFIED kit-pipeline-half-present naming both layouts" 1 1 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present: this script's checkout reads kit and the repository it operates on reads half)" "FLAG admin-merge" "" 1 0
+  tr_lay "LM-TR-m1-mutant: the mismatch branch fails open (adopter, the N/A line)" 0 0 cheap - 0 "evidence leg: UNVERIFIED (layout-mismatch" "N/A" 's/^    \*)               _pv_ev_layout=refuse; _pv_ev_lay_reason=layout-mismatch ;;/    *)               _pv_ev_layout=adopter ;;/' 1 1
+  tr_lay "LM-TR-m2-mutant: the repository location is never read" 0 0 cheap - 0 "evidence leg: UNVERIFIED (layout-mismatch" "N/A" 's/_pl_repo="\$(pv_ev_lay_of "\$_pl_top")"/_pl_repo="$_pl_own"/' 1 1
+  # no repository at all: the trace verb needs a repository to walk, so the no-git branch is proved by the evidence verb (promotion-actuate-wired.sh LM-d).
+  # L4: a third commit whose note is scoped to a branch names no PR; a window of just that commit prints the per-commit UNVERIFIED line.
+  ( cd "$TR2D" && printf 'c\n' >> f.txt && git commit -qam 'merge of branch x' && _tc3="$(git rev-parse HEAD)" \
+    && printf 'record: promotion GO (approve->execute->log)\napproved-sha: %s\napproved-tree: %s\ngate: promotion\nkit-row: TR-ROW\nscope: branch/x\n' "$_tc3" "$(git rev-parse 'HEAD^{tree}')" \
+      | git notes --ref=promotions add -f -F - "$_tc3" ) >/dev/null 2>&1 || { echo "FAIL: could not extend the TR2 fixture"; st=1; }
+  TRW=1
+  tr_lay "L4: a branch-scoped note prints a per-commit UNVERIFIED line, never a read, and the summary says none was read" 1 1 light - 0 "UNVERIFIED (the note's scope is not a PR id" "FLAG admin-merge"
+  tr_lay "L4: ... and no commit was read" 1 1 light - 0 "evidence leg: UNVERIFIED — no commit was read" "PARTIAL"
+  TRW=2
+  rm -rf "$D/trlay" 2>/dev/null || true
 
   # =====================================================================================
   # SWAS-207b — `land` in a SOLO-DECLARED repo. The base (origin's main) carries MERGE_RELATIONSHIP=solo, so the forge shim answers
@@ -1511,6 +1700,7 @@ EOF
   # head is $MG_ASHA. `docs`/`rename` change only a .md path / rename x.sh -> docs/x.md.
   mg_fx() {
     mkorigin "mg-$1"
+    fx_layout "$LOA" 0 0   # the gate runs from a kit-layout COPY with no gate-state facts (an adopter's reading), so the repository it runs in reads adopter too
     _mgdial="$2"; _mgrow="$3"; _mgkind="$4"; _mgwhere="${5:-feat}"
     (
       set -e; cd "$LOA"
@@ -1776,6 +1966,29 @@ EOF
   done
   VSH="$MG_VSH_SAVED"
 
+  # SWAS-537 fix round 3, FXL: the general land fixtures follow the layout of the gate under test, and this runs in EVERY kind of tree
+  # (the exported tree is adopter-shaped, so there the general cells above are the adopter/adopter reading; here an adopter-layout gate
+  # COPY proves it on a kit tree too, the H1a shape). a: the fixture planted like the copy's own checkout (adopter) -> the N/A line, the
+  # land proceeds. b: the OLD plant (both kit facts) against the same adopter copy -> REFUSED layout-mismatch, which is exactly what the
+  # exported tree hit; it is the discriminant partner of a. c: the facts are read from the gate checkout, so the adopter copy reads 0 0.
+  FXAD="$D/fxad"; mg_layout "$FXAD"
+  fxl_land() {   # <repo dir> -> _ldc, _ld_out: a land of the repository's head through the adopter-layout gate COPY
+    _fxsha="$(git -C "$1" rev-parse HEAD)"
+    if _ld_out="$( cd "$1" && PATH="$(lgh "$_fxsha" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$FXAD/scripts/promotion-verify.sh" land \
+          --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$_fxsha" --approved-by "solo maintainer" --go-by "the owner" \
+          --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land at $_fxsha" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+  }
+  if [ "$(fx_facts "$FXAD")" = "0 0" ]; then echo "PASS: FXL-c: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0)"
+  else echo "FAIL: FXL-c: an adopter-layout gate copy read '$(fx_facts "$FXAD")', not '0 0'"; st=1; fi
+  mkorigin fxla; fx_like_own "$LOA" "$FXAD"; rm -f "$LAND_MARK"; fxl_land "$LOA"
+  if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && onote "$LOSHA" && printf '%s' "$_ld_out" | grep -qF -e "exact-head CI evidence: N/A"; then
+    echo "PASS: FXL-a: an adopter-layout gate copy + a fixture planted like it -> the N/A line, the general land proceeds (merge + note on origin)"
+  else echo "FAIL: FXL-a: want rc=0 + merge + note on origin + the N/A line, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1; fi
+  mkorigin fxlb; fx_layout "$LOA" 1 1; rm -f "$LAND_MARK"; fxl_land "$LOA"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -qF -e "layout-mismatch"; then
+    echo "PASS: FXL-b: an adopter-layout gate copy + a kit-planted fixture (the old plant) -> REFUSED layout-mismatch, no merge"
+  else echo "FAIL: FXL-b: want a layout-mismatch refusal and no merge, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1; fi
+
   rm -rf "$D"/land-*
 
   # =====================================================================================
@@ -1824,7 +2037,7 @@ EOF
   # lrec <clone-dir> <approved-sha> <scope> [extra record args...] -> sets LRC and LOUT.
   lrec() {
     _cd="$1"; _cs="$2"; _cp="$3"; shift 3
-    if LOUT="$( cd "$_cd" && PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" record \
+    if LOUT="$( cd "$_cd" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" record \
           --approved-sha "$_cs" --approved-by "solo maintainer" --gate design --rung Design \
           --class control-plane --scope "$_cp" --token "GO: $_cp" \
           --basis docs/architecture/x-design.md "$@" 2>&1 )"; then
@@ -2102,7 +2315,7 @@ EOF
   # lsync <clone-dir> [args...] -> sets LRC and LOUT; also fails the run if a temp ref leaked.
   lsync() {
     _cd="$1"; shift
-    if LOUT="$( cd "$_cd" && PATH="${LSHIM_DIR:+$LSHIM_DIR:}$PATH" FAIL_GIT_SUB="${LSHIM_SUB:-}" PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" sync "$@" 2>&1 )"; then
+    if LOUT="$( cd "$_cd" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e PATH="${LSHIM_DIR:+$LSHIM_DIR:}$PATH" FAIL_GIT_SUB="${LSHIM_SUB:-}" PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" sync "$@" 2>&1 )"; then
       LRC=0; else LRC=$?; fi
     _leak="$(git -C "$_cd" for-each-ref 'refs/notes/kit-sync-*' 'refs/notes/refs/*' 'refs/kit/notes-remote-*' 2>/dev/null)$(git --git-dir="$LF/remote.git" for-each-ref 'refs/notes/kit-sync-*' 'refs/notes/refs/*' 'refs/kit/notes-remote-*' 2>/dev/null)"
     if [ -n "$_leak" ]; then echo "FAIL: sync leaked a temp notes ref: $_leak"; st=1; fi
@@ -3124,10 +3337,22 @@ EOF
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q "ambiguous"; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync A1(a'') (−): a prefix shared by a local-only and an origin-only note path -> refused as ambiguous" "rc=$LRC out=$LOUT"
 
+  # FXS: the skip count is load-bearing. A skip call raises it by exactly one, and the note carries the number (0 prints as "0 SKIPPED").
+  _fxs0="$FX_SKIPS"; fx_skip "FXS-probe" >/dev/null; _fxs1="$FX_SKIPS"; FX_SKIPS="$_fxs0"
+  if [ "$_fxs1" = "$((_fxs0 + 1))" ] && [ "$(fx_skip_note 3)" = "(3 SKIPPED: not a kit tree, counted per skip line above)" ] \
+     && fx_skip_note 0 | grep -qF "0 SKIPPED"; then echo "PASS: FXS: a skip is counted once and the summary note carries the count"
+  else echo "FAIL: FXS: skip count $_fxs0 -> $_fxs1, note '$(fx_skip_note 3)'"; st=1; fi
+  # FXS-kit: a kit tree never skips. The judge kills the mutant (a skip forced on a kit tree) and spares an adopter tree.
+  fx_skip_ok() { [ "$1" != "1 1" ] || [ "$2" = 0 ]; }
+  if fx_skip_ok "1 1" 0 && ! fx_skip_ok "1 1" 2 && fx_skip_ok "0 0" 2; then echo "PASS: FXS-kit: the judge kills a skip forced on a kit tree and allows an adopter tree's"
+  else echo "FAIL: FXS-kit: the judge does not separate a kit tree's skips from an adopter tree's"; st=1; fi
+  if fx_skip_ok "$(fx_facts "$FX_OWN")" "$FX_SKIPS"; then echo "PASS: FXS-kit: this tree skipped $FX_SKIPS cell group(s) and reads $FX_KIND"
+  else echo "FAIL: FXS-kit: a KIT tree skipped $FX_SKIPS cell group(s)"; st=1; fi
+
   if [ "$st" = 0 ]; then
-    echo "OK: promotion-verify-wired selftest [producer shell: $VSH] (fixture left in $D)"
+    echo "OK: promotion-verify-wired selftest [producer shell: $VSH] $(fx_skip_note "$FX_SKIPS") (fixture left in $D)"
   else
-    echo "FAIL: promotion-verify-wired selftest [producer shell: $VSH] (fixture left in $D)"
+    echo "FAIL: promotion-verify-wired selftest [producer shell: $VSH] $(fx_skip_note "$FX_SKIPS") (fixture left in $D)"
   fi
   return $st
 }
