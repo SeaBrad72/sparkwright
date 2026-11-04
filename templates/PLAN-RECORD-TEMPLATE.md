@@ -4,7 +4,7 @@
 is the ONE convention (`skills/plan/SKILL.md`), and the head commit of the PR names it in a
 `Kit-Plan:` trailer. `conformance/review-lane.sh` refuses a sensitive/control-plane PR, or an ordinary
 one whose row is Size M+ (or whose size it cannot read — unknown is owed), whose head carries no `Kit-Plan`
-pointing at a tracked, non-stub file. An ordinary docs-only PR and an XS/S ordinary PR owe none (`D-240930-1`).
+pointing at a tracked, non-stub file. An ordinary docs-only PR and an XS/S ordinary PR owe none.
 
 | Field | Value |
 |-------|-------|

@@ -17,7 +17,7 @@
 - Test: `[test command]` · Coverage: `[coverage command]` (≥80%, 100% critical)
 - Lint / type-check: `[commands]`
 - Build: `[build command]`
-- **CI troubleshooting:** `kit selftests not re-run: …` in the job summary is expected on a PR that touches no control-plane path. To force the full battery, run `sh conformance/verify.sh --require` (no `--changed`) or push to `main`; the weekly schedule also runs it in full.
+- **CI troubleshooting:** `kit selftests not re-run: …` in the job summary is expected on a PR that touches no control-plane path. To force the full battery, run `sh conformance/verify.sh --require` (no `--changed`); the weekly schedule also runs it in full, and the GitLab pipeline builds no changed-file list, so nothing in it asks for a skip.
 - **Test data:** [approach] *(data-handling projects — synthetic/masked/never-raw-prod; see `docs/operations/test-data-management.md`)*
 - **Data handling:** [classification · retention · deletion path] *(personal-data projects — `docs/enterprise/data-governance.md`)*
 

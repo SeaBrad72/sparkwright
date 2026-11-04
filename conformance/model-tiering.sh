@@ -285,8 +285,6 @@ selftest() {
     mt_cell "export: the real adopter tree passes the decision record" 0 decision_check "$base/export"
     # the whole verifier, run IN the exported tree: the floor proof harness-adapter.sh runs for model-tiering (line 68)
     mt_cell "export: model-tiering.sh exits 0 in the real adopter tree (harness-adapter's floor proof)" 0 sh "$base/export/conformance/model-tiering.sh"
-    # the claude-code NATIVE proof for model-tiering (adapters/claude-code/adapter.json) is model-map-binding.sh
-    mt_cell "export: model-map-binding.sh exits 0 in the real adopter tree (claude-code native proof)" 0 sh "$base/export/conformance/model-map-binding.sh"
   else
     echo "SKIP: the real-export cells need the kit tree with a git history (docs/ROADMAP-KIT.md and .git); not run here"
   fi

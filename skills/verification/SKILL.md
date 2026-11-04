@@ -40,14 +40,14 @@ The tagless-clone dry-run runs `verify.sh`, which does **not** parse `ci.yml` as
 A green local dry-run therefore does **not** guarantee a green CI — a handful of gates run
 only in CI and the local run is blind to them. Close the biggest gap explicitly:
 
-1. **When a slice touches any `.github/workflows/*.yml`, validate it parses as YAML before pushing:** `uvx --with pyyaml python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' <workflow>` — `verify.sh` does not YAML-parse `ci.yml`, so a malformed workflow otherwise passes the local dry-run and only CI catches it (cost KW24 a cycle).
+1. **When a slice touches any `.github/workflows/*.yml`, validate it parses as YAML before pushing:** `uvx --with pyyaml python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' <workflow>` — `verify.sh` does not YAML-parse `ci.yml`, so a malformed workflow otherwise passes the local dry-run and only CI catches it.
 
 **Dry-run parity list** — the CI-only gates the local dry-run cannot see, and the cheap local
 equivalent for each:
 
 | CI-only gate | Why the local dry-run misses it | Cheap local equivalent |
 |---|---|---|
-| Workflow YAML parse | `verify.sh` reads `ci.yml` as text, never parses it as YAML — a colon in a step name (which just bit KW24) passes locally and fails at 0s in CI | The YAML-parse step above (step 1) |
+| Workflow YAML parse | `verify.sh` reads `ci.yml` as text, never parses it as YAML — a colon in a step name passes locally and fails at 0s in CI | The YAML-parse step above (step 1) |
 | `adopter-export` | Exports the **committed HEAD**, not the working tree — a staged-not-committed fix won't show | Commit first, then run the export against HEAD (don't trust a staged tree) |
 | `doc-budget` | Runs only in CI | Run the doc-budget check locally before pushing |
 
@@ -73,8 +73,8 @@ A green check must *mean* something. Verification is also how you know the check
 - About to write "done", "passing", "green", "works", "ready" with no fresh command output in this turn.
 - Relaying a subagent's success without inspecting the diff or running the gate against the integrated tree.
 - "Should pass", "I believe", "it ought to" — belief is not evidence.
-- N "independent confirmations" that all inherit one measurement basis — a derivation is a claim; agreement proves nothing unless each re-measures fresh at the same basis (same commit/merge-base) (panel #40).
-- Asserting how git behaves from recall — run git on a throwaway repo instead; three different seats' plausible git assertions were each falsified by execution in one slice (panel #40).
+- N "independent confirmations" that all inherit one measurement basis — a derivation is a claim; agreement proves nothing unless each re-measures fresh at the same basis (same commit/merge-base).
+- Asserting how git behaves from recall — run git on a throwaway repo instead; three different seats' plausible git assertions were each falsified by execution in one slice.
 - A green check you have never watched fail (possibly drifted-green / vacuous).
 - A tag-reading check verified only on a tag-carrying clone.
 

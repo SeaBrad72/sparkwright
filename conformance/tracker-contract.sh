@@ -1732,7 +1732,7 @@ CSTUB
   } > "$_crd/security"
   chmod +x "$_crd/security"
   sed -e "s|^_TCR_SEC_BIN=.*|_TCR_SEC_BIN=$_crd/security|" "$_TC_ROOT/scripts/tracker-cred.sh" > "$fadir/scripts/tracker-cred.sh"
-  _pfcrd_once() { [ "$(wc -l < "$_crd/log" | tr -d ' ')" = 1 ] && ! grep -qF -- '-w' "$_crd/log"; }
+  _pfcrd_once() { [ "$(wc -l < "$_crd/log" | tr -d ' ')" = 1 ] && ! grep -qE -- '(^| )-w( |$)' "$_crd/log"; }
   printf '0' > "$_crd/rc"; : > "$_crd/log"
   pf_nocreds=1; _pfr pfstore --preflight --conf "$f7conf"
   _pfv store/present-goes-live-not-unverified [ "$_pfrc" != 2 ]

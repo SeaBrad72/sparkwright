@@ -13,7 +13,7 @@ adopter-owned on GitLab; this guide consolidates the wiring.
 
 ## What GitLab already has
 
-**GitLab is a declared reference for `typescript-node` only — 1 of 10 stacks ships a GitLab pipeline.** For that one stack, the 8 required CI gates are present and verified with zero adoption work; the other 9 stacks refuse GitLab at `incept.sh`, and parity across the full stack matrix is neither claimed nor scheduled (`D-240906-1`):
+**GitLab is a declared reference for `typescript-node` only — 1 of 10 stacks ships a GitLab pipeline.** For that one stack, the 8 required CI gates are present and verified with zero adoption work; the other 9 stacks refuse GitLab at `incept.sh`, and parity across the full stack matrix is neither claimed nor scheduled:
 - `profiles/typescript-node/ci.gitlab-ci.yml` expresses the gate-id contract as GitLab **job
   keys** (`gate-lint:`, `gate-type-check:`, …). Drop it in as `.gitlab-ci.yml` at the repo root
   (`incept.sh --ci gitlab` does this).
@@ -119,11 +119,9 @@ returns UNVERIFIED on GitLab rather than pretending it checked.
 The GitHub profile installs `profiles/adopter-gates.yml` at Inception (`.github/workflows/adopter-gates.yml`,
 every stack, unconditionally) — three merge-time gates on a gated PR, each a JOB keyed with its own
 required-context name: `backlog-presence` (a bound board row), `ceremony-binding` (a recorded design GO),
-and `loop-state` (the Entry-Declaration refusal floor, shipped ACTIVE in **observe** mode — the job runs
-the gate, prints the verdict and always exits 0; see the source file's header for the observe/enforce
-dial). They are ordinary jobs whose exit code is the verdict, so the port is closer than it used to be
-(GitLab has no `check-runs` API, and until 2026-08-27 these gates POSTED check-runs to render a WAITING
-state yellow — that mechanism is gone). What still does not port is the **required-context binding**:
+and `loop-state` (the Entry-Declaration refusal floor, shipped in **enforce** mode; see the source file's header for the observe/enforce
+dial). They are ordinary jobs whose exit code is the verdict, so the port is close
+(GitLab has no `check-runs` API, and these gates do not post one). What still does not port is the **required-context binding**:
 GitLab's approval/pipeline model is the equivalent, and a red pipeline blocks only if you require it.
 Wire the same obligations manually:
 
@@ -149,14 +147,13 @@ and fail the pipeline (not a check-run, but a red pipeline still blocks merge if
 `loop-state`'s ceiling (see `conformance/loop-state.sh`'s own header) is already "the trailers are
 present and parseable" — a structural, git-native property with no GitHub dependency. On GitLab, adopt a
 **commit message template** (`git config commit.template`) carrying the trailer scaffold. What the
-gate requires is **proportional to the derived change class**: an ordinary change owes `Kit-Row` +
-`Kit-Class`; a sensitive or control-plane change owes `Kit-Stage` and `Kit-Skill` as well, and any
-field you volunteer is validated either way — so a template carrying all four is a fine default.
+gate requires is the same for every class: `Kit-Row` + `Kit-Class`; a `Kit-Plan`, `Kit-Review` or `Kit-Scope` you carry is checked too, and any
+other `Kit-*` field is ignored — so a two-line template is the whole default.
 Optionally add a GitLab CI job that runs
 `sh conformance/loop-state.sh --head "$CI_COMMIT_SHA"` and fails the pipeline on a missing/invalid
 declaration — observe-first still applies HERE, and the reason is specific rather than habit: on
 GitHub the kit emits `.github/workflows/adopter-gates.yml` with a `LOOP_STATE_MODE` dial, which is
-why that surface could be flipped to `enforce` by default on 2026-08-30. **The kit emits no GitLab
+why that surface defaults to `enforce`. **The kit emits no GitLab
 pipeline, so there is no kit-shipped dial to flip here** — the job above is one you write, so you
 own its rollout: land it non-blocking first, flip to blocking once the team has adjusted.
 

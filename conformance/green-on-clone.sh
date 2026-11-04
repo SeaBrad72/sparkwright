@@ -357,12 +357,12 @@ EOF
     echo "PASS: census leg — a planted unclassified vacuous control row reds census_verdict"
   fi
 
-  # CLEAN — the identical row registered --kitself: census_verdict must stay green.
+  # CLEAN — the identical row registered --adopter (SWAS-607: a --kitself row may no longer ship in an export): census_verdict must stay green.
   d="$t/census-clean"
-  _census_fixture "$d" 'check control vacuousrow --kitself sh -c "echo N/A: classified skip; exit 0"'
+  _census_fixture "$d" 'check control vacuousrow --adopter sh -c "echo N/A: classified skip; exit 0"'
   if _cv2_out=$( (cd "$d" && sh conformance/verify.sh) 2>&1 ); then :; else :; fi
   if census_verdict "$d" "$_cv2_out" >/dev/null 2>&1; then
-    echo "PASS: census leg — the same row registered --kitself keeps census_verdict clean"
+    echo "PASS: census leg — the same row registered --adopter keeps census_verdict clean"
   else
     echo "FAIL: census leg — a classified N/A row still reds census_verdict"; st=1
   fi

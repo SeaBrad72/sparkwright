@@ -87,12 +87,13 @@ validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	subject-un
 #    ENGINEERING-PRINCIPLES.md (scripts/incept.sh), so both names are the deferral (SWAS-213).
 dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`(CLAUDE|ENGINEERING-PRINCIPLES)\.md`\*\*	dod-precedence: standards §12 defers to the authoritative checklist	any
 #
-# ── collected-not-gated (PREFLIGHT-DOCTOR-MERGE disposition, PR 9 / D-240828-4) — the three
-#    measurement instruments each carry a header disclosure stating plainly that they are exercised
-#    by selftests (agent-scorecard.sh: plus one golden-path run), that NO CI gate consumes their
-#    output, and that they are run deliberately. Removing a disclosure reds CI with that
-#    instrument's label, so the honesty is ENFORCED rather than merely declared. Scope `any`:
-#    `git archive HEAD` measured all three scripts SHIPPING to adopter trees (2026-08-31).
+# ── collected-not-gated (PREFLIGHT-DOCTOR-MERGE disposition, PR 9 / D-240828-4) — the one
+#    measurement instrument left (dora.sh) carries a header disclosure stating plainly that it is
+#    exercised by selftests, that NO CI gate consumes its output, and that it is run deliberately.
+#    (tier-value.sh and agent-scorecard.sh carried the same line until SWAS-619 removed them.)
+#    Removing the disclosure reds CI with that instrument's label, so the honesty is ENFORCED
+#    rather than merely declared. Scope `any`: `git archive HEAD` measured all three scripts
+#    SHIPPING to adopter trees (2026-08-31).
 #    The pattern is ANCHORED to `^# collected-not-gated:` — the bare token was satisfiable by ANY
 #    occurrence in the file (a mention in prose, a variable name), so the anchor is what makes the
 #    row assert the DISCLOSURE LINE rather than the word.
@@ -102,8 +103,6 @@ dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`(
 #    instruments (dora.sh on a non-GitHub host, say) gets a hard RED from a disclosure check that has
 #    no waiver arm. Deliberate: the alternative — latching to N/A on absence — is a check that fails
 #    open exactly when a file goes missing.
-collected-not-gated	scripts/tier-value.sh	^# collected-not-gated:	collected-not-gated: tier-value.sh disclosure line	any
-collected-not-gated	scripts/agent-scorecard.sh	^# collected-not-gated:	collected-not-gated: agent-scorecard.sh disclosure line	any
 collected-not-gated	scripts/dora.sh	^# collected-not-gated:	collected-not-gated: dora.sh disclosure line	any
 #
 # ── adopter-claims-honest (ADOPTER-CLAIMS-HONEST) — three of the five false adopter-facing claims

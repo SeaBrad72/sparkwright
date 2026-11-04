@@ -69,7 +69,7 @@ From then on `actuate` and `land` merge on your recorded GO. They print one line
 
 ## Forge-adapter seam — authenticated `approved-by` *(GitHub wired; other forges remain the seam)*
 
-The promotion record (`scripts/promotion-verify.sh record`, KW1 · S5a) binds a GO to the approved
+The promotion record (`scripts/promotion-verify.sh record`) binds a GO to the approved
 commit as a git note and labels **how** the approver's identity was established — the honest-ceiling
 principle applied to identity, so a label never claims more than the evidence:
 
@@ -80,16 +80,11 @@ principle applied to identity, so a label never claims more than the evidence:
 | git committer identity | `[committer]` | fallback (weak — `user.name` is self-set) |
 | typed string | `[self-asserted]` | last resort (what a one-account repo records when no review can be derived) |
 
-S5a built the **git-native** sources (`[signed: gpg]` → `[committer]` → `[self-asserted]`) in
-`scripts/promotion-verify.sh` and **defined this forge-review seam** without wiring it, on a
-`defer-build-ahead` reason: solo has no forge review, so a forge-review reader had no consumer.
-
-**That reason expired, and PR 11 wired GitHub as this seam's reference adapter.** What falsified it
-was measurement, not argument: on this repo a real `APPROVED` review by a second identity sat on the
-exact approved head of #605 and `record` never looked, recording `[committer]` — the review existed,
-so "no second reviewer exists" was simply false, and `actuate` stayed closed for every class while
-the kit's Tier-2 promise said otherwise. `record` now reads the PR's reviews through `gh api` and
-emits `[authenticated: github-review]` when — and only when — the **latest** review by the claimed
+`scripts/promotion-verify.sh` builds the **git-native** sources (`[signed: gpg]` → `[committer]` →
+`[self-asserted]`) and reads this forge-review seam through GitHub as its reference adapter. A forge
+review by a second identity can exist even where the git-native sources cannot see it, so ignoring it
+would record a weaker label than the evidence supports and keep `actuate` closed. `record` reads the
+PR's reviews through `gh api` and emits `[authenticated: github-review]` when — and only when — the **latest** review by the claimed
 approver is exactly `APPROVED`, is bound to the **resolved** approved sha, comes from a non-`Bot`
 login byte-equal to `--approved-by`, and that login differs (case-insensitively) from a PR author
 that itself resolved. Any gap keeps the git-native label and says why on stderr; the derivation only
@@ -112,19 +107,18 @@ git-native derivation. Hosts that cannot expose an approver identity fall back t
 labels (record it honestly; never fake the stronger label) — the same three-state honesty as
 `conformance/branch-protection.sh`.
 
-**The consumer — `scripts/promotion-verify.sh actuate` (S6).** This label is exactly what the S6
+**The consumer — `scripts/promotion-verify.sh actuate`.** This label is exactly what the
 control-plane actuation gate consumes as its **bar**: `actuate` fails closed unless the recorded GO's
 derived `approved-by:` label is `[authenticated: <forge>-review]` **and** that approver identity ≠
 the commit author (`builder ≠ ratifier`). `[self-asserted]` / `[committer]` / `[signed: gpg]`-alone
 all fall below the bar — so an adapter emitting this label is what turns a second-reviewer approval
-into a *normal, non-`--admin`* merge the agent may actuate. **Since PR 11 that bar is reachable on
+into a *normal, non-`--admin`* merge the agent may actuate. **That bar is reachable on
 GitHub**, and `actuate` therefore opens for **Ordinary and Sensitive** changes on an authenticated
 recorded GO. **Control-plane is not merged by `actuate`:** it is refused with a pointer at the exact
-`promotion-verify.sh land` command, in both relationships (the Tier-3 sitting that held it was closed
-by `D-241014-1` item 6), and `--admin` stays denied to the agent. In a **solo-declared** repo the
+`promotion-verify.sh land` command, in both relationships, and `--admin` stays denied to the agent. In a **solo-declared** repo the
 label bar and the author check give way to the owner's recorded GO, bound to the head sha (below).
 
-**Honest ceiling — and it did *not* improve when the seam was wired.** Authenticated approval is the
+**Honest ceiling — wiring the seam did not raise it.** Authenticated approval is the
 strongest identity signal the kit can carry, but it is only as strong as the forge's own
 authentication, and the *derivation* is only as strong as the local `gh` binary and its ambient
 credential: an agent that controls `PATH` can feed it fabricated reviews. That is no **new**

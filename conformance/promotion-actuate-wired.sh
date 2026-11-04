@@ -1851,11 +1851,12 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   # must be the PR's head branch) and no-pr-scope get cells too. A cell with a trailing sed script is a MUTANT: the script rewrites a
   # throwaway COPY of the gate (never a switch in the shipped file) and the cell passes only if the SAME assertion then FAILS.
   # =====================================================================================
-  _le_pvcopy() {  # <dir> <decider 0|1> <gate-job 0|1> : a gate COPY in a kit-or-adopter layout; the classifier is always beside it
+  _le_pvcopy() {  # <dir> <decider 0|1> <gate-job 0|1> [<marker 0|1> = the decider's] : a gate COPY in a kit-or-adopter layout; the classifier is always beside it
     mkdir -p "$1/scripts" "$1/conformance" "$1/.github/workflows"
     cp "$VERIFY" "$1/scripts/promotion-verify.sh"
     cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$1/conformance/ci-classify-changes.sh"
     if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "${4:-$2}" = 1 ]; then : > "$1/conformance/adopter-census.sh"; fi
     if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
     else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
   }
@@ -1885,11 +1886,11 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     elif [ "$3" = 0 ]; then pass "$1"
     else fail "$1: rc=$RC OUT=[$OUT]"; fi
   }
-  _le_lay() {  # <label> <decider 0|1> <gate-job 0|1> <forge-mode> <merge|refuse> <needle> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] : one land through a gate COPY
+  _le_lay() {  # <label> <decider 0|1> <gate-job 0|1> <forge-mode> <merge|refuse> <needle> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] [<copy marker> = the decider's] [<repo marker> = the repo decider's] : one land through a gate COPY
     _mkland_fx || { fail "$1: fixture build"; return 0; }
-    _fxlay "$LDR/c" "${8:-$2}" "${9:-$3}"
+    _fxlay "$LDR/c" "${8:-$2}" "${9:-$3}" "${11:-${8:-${10:-$2}}}"
     _lyv="$VERIFY"; _lym=0
-    _le_pvcopy "$LDR/pv" "$2" "$3"
+    _le_pvcopy "$LDR/pv" "$2" "$3" "${10:-$2}"
     if [ -n "${7:-}" ]; then
       _lym=1
       if ! _le_mutate "$LDR/pv/scripts/promotion-verify.sh" "$7"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$LDR" 2>/dev/null || true; return 0; fi
@@ -1923,34 +1924,43 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     _le_judge "$1" "$_axm" "$_axr"
     rm -rf "$D" 2>/dev/null || true
   }
-  _NA='exact-head CI evidence: N/A (this repository'"'"'s CI has no gate/changes jobs)'
+  _NA='exact-head CI evidence: N/A (not the kit'"'"'s own CI pipeline)'
   # H1: the four layouts, then one mutant per branch (and one per fact). Fix round 2: the layout is read at TWO locations (the copy's own
   # checkout, and the repository the verb runs in: _le_lay gives the land repository the copy's layout unless told otherwise), so the
   # cases are keyed `<script checkout>/<repository>`.
   _le_lay "H1a-adopter-layout-na" 0 0 cheap merge "$_NA"
   _le_lay "H1b-kit-layout-cheap-run-refused" 1 1 cheap refuse "needed-job-not-success:changes"
-  _le_lay "H1c-half-decider-only-refused" 1 0 light refuse "kit-pipeline-half-present"
-  _le_lay "H1d-half-gate-job-only-refused" 0 1 light refuse "kit-pipeline-half-present"
+  _le_lay "H1c-half-decider-only-refused" 1 0 light refuse "kit-pipeline-half-present" "" "" "" 0
+  # SWAS-641: a third, kit-only fact (the marker conformance/adopter-census.sh). An adopter's own `gate:` job (no decider, no marker)
+  # reads adopter and proceeds, against a CHEAP forge so a gate that wrongly ran the leg would refuse. Every other combination is half.
+  _le_lay "H1d-adopter-own-gate-job-no-decider-no-marker-na" 0 1 cheap merge "$_NA"
+  _le_lay "H1e-half-marker-only-refused" 0 0 light refuse "kit-pipeline-half-present" "" "" "" 1
+  _le_lay "H1f-half-decider-and-marker-no-gate-job-refused" 1 0 light refuse "kit-pipeline-half-present"
+  _le_lay "H1g-half-decider-and-gate-job-no-marker-refused" 1 1 light refuse "kit-pipeline-half-present" "" "" "" 0
+  _le_lay "H1h-half-marker-and-gate-job-no-decider-refused" 0 1 light refuse "kit-pipeline-half-present" "" "" "" 1
   _le_lay "H1m1-mutant-adopter-branch-runs-the-leg" 0 0 cheap merge "$_NA" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
   _le_lay "H1m2-mutant-kit-branch-skips-the-leg" 1 1 cheap refuse "needed-job-not-success:changes" 's/^    kit\/kit)         _pv_ev_layout=kit ;;/    kit\/kit)         _pv_ev_layout=adopter ;;/'
   _le_lay "H1m3-mutant-half-branch-skips-the-leg" 1 0 light refuse "kit-pipeline-half-present" 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
   _le_lay "H1m4-mutant-decider-fact-never-seen" 1 1 cheap refuse "needed-job-not-success:changes" 's#/conformance/ci-gate-state.sh"#/conformance/nope.sh"#'
   _le_lay "H1m5-mutant-gate-job-fact-never-seen" 1 1 cheap refuse "needed-job-not-success:changes" "s#grep -q '^  gate:#grep -q '^  nogate:#"
+  _le_lay "H1m6-mutant-marker-fact-never-seen" 1 1 cheap refuse "needed-job-not-success:changes" 's#/conformance/adopter-census.sh"#/conformance/nope2.sh"#'
+  _le_lay "H1m7-mutant-marker-dropped-from-the-case-key" 1 1 light refuse "kit-pipeline-half-present" 's/case "\$_pl_dec\$_pl_mark\$_pl_gate" in/case "${_pl_dec}1\$_pl_gate" in/' "" "" 0
+  _le_lay "H1m8-mutant-old-two-fact-reading-of-001-restored" 0 1 cheap merge "$_NA" 's/^    000|001) printf/    000) printf/'
   # LM (fix round 2, closes a fail-open): the layout is read at the script's own checkout AND in the repository the verb runs in, and ANY
   # disagreement refuses `layout-mismatch`. A copy or symlink of the gate run inside another repository used to read "adopter" from its own
   # directory (against a draft forge: N/A, rc 0, merged). Each cell runs actuate and the evidence verb through a gate COPY that lives
   # OUTSIDE the repository, against a DRAFT forge, so a gate that trusts either location alone merges (or says N/A) and the cell goes red.
-  _le_lname() { case "$1$2" in 11) printf kit ;; 00) printf adopter ;; *) printf half ;; esac; }
-  _le_lm2() {  # <label> <copy decider> <copy gate-job> <repo decider> <repo gate-job> <token> [<sed-script> = a mutant]
+  _le_lname() { case "$1$2$3" in 111) printf kit ;; 000|001) printf adopter ;; *) printf half ;; esac; }   # <decider> <marker> <gate-job>
+  _le_lm2() {  # <label> <copy decider> <copy gate-job> <repo decider> <repo gate-job> <token> [<sed-script> = a mutant] [<copy marker> = the copy's decider] [<repo marker> = the repo's decider]
     D="$(mkrepo)" || { fail "$1: fixture build"; return 0; }
     X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
-    _fxlay "$D" "$4" "$5"
-    _lmo="$(mktemp -d)"; _le_pvcopy "$_lmo" "$2" "$3"; _lmg="$_lmo/scripts/promotion-verify.sh"; _lmm=0
+    _fxlay "$D" "$4" "$5" "${9:-$4}"
+    _lmo="$(mktemp -d)"; _le_pvcopy "$_lmo" "$2" "$3" "${8:-$2}"; _lmg="$_lmo/scripts/promotion-verify.sh"; _lmm=0
     if [ -n "${7:-}" ]; then
       _lmm=1
       if ! _le_mutate "$_lmg" "$7"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$D" "$_lmo" 2>/dev/null || true; return 0; fi
     fi
-    _lmn="reads $(_le_lname "$2" "$3") and the repository it operates on reads $(_le_lname "$4" "$5")"
+    _lmn="reads $(_le_lname "$2" "${8:-$2}" "$3") and the repository it operates on reads $(_le_lname "$4" "${9:-$4}" "$5")"
     printf draft > "$EVD/mode"
     run_actuate "$_lmg" "$D" feat "$X" "$(_act_stub "$D" "$X")"
     if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "ACTUATE REFUSED (exact-head CI evidence): $6" && _has "$OUT" "$_lmn"; then _lmr=0; else _lmr=1; fi
@@ -1979,14 +1989,14 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   _le_lay "LM-b-land-kit-copy-in-adopter-repo" 1 1 draft refuse "layout-mismatch" "" 0 0
   _le_lm2 "LM-a-actuate-and-evidence-adopter-copy-in-kit-repo" 0 0 1 1 layout-mismatch
   _le_lm2 "LM-b-actuate-and-evidence-kit-copy-in-adopter-repo" 1 1 0 0 layout-mismatch
-  _le_lm2 "LM-c-actuate-and-evidence-repo-half" 1 1 0 1 kit-pipeline-half-present
+  _le_lm2 "LM-c-actuate-and-evidence-repo-half" 1 1 0 1 kit-pipeline-half-present "" "" 1
   _le_nogit "LM-d-evidence-outside-any-git-repository"
   # (d) both kit: the leg runs (H1b above, and a forge draft read through two kit locations); both adopter: N/A (H1a above, EV5 below).
   _le_lm2 "LM-m1-mutant-mismatch-branch-fails-open" 0 0 1 1 layout-mismatch 's/^    \*)               _pv_ev_layout=refuse; _pv_ev_lay_reason=layout-mismatch ;;/    *)               _pv_ev_layout=adopter ;;/'
   _le_lm2 "LM-m2-mutant-repository-location-never-read" 0 0 1 1 layout-mismatch 's/_pl_repo="\$(pv_ev_lay_of "\$_pl_top")"/_pl_repo="$_pl_own"/'
   _le_lm2 "LM-m3-mutant-script-location-always-kit" 0 0 1 1 layout-mismatch 's#^  _pl_own="\$(pv_ev_lay_of "\$(dirname -- "\$0")/..")"; _pl_repo=none#  _pl_own=kit; _pl_repo=none#'
   _le_lm2 "LM-m4-mutant-script-location-always-adopter" 1 1 0 0 layout-mismatch 's#^  _pl_own="\$(pv_ev_lay_of "\$(dirname -- "\$0")/..")"; _pl_repo=none#  _pl_own=adopter; _pl_repo=none#'
-  _le_lm2 "LM-m5-mutant-half-repository-reads-adopter" 1 1 0 1 kit-pipeline-half-present 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
+  _le_lm2 "LM-m5-mutant-half-repository-reads-adopter" 1 1 0 1 kit-pipeline-half-present 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/' "" 1
   _le_nogit "LM-m6-mutant-no-repository-reads-adopter" 's/^    \*\/none)          _pv_ev_layout=refuse;/    *\/none)          _pv_ev_layout=adopter;/'
   # L1: a head in a fork refuses with its own token, and the mutant (the compare removed) lets it through.
   _le_land "L1-land-fork-head" fork refuse "fork-head"
@@ -2044,8 +2054,8 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   # copy, the repository planted like it -> the N/A line, the merge proceeds, even against a CHEAP forge. b: the OLD plant (both kit facts)
   # against the same copy -> REFUSED layout-mismatch (what the exported tree hit): the discriminant partner of a. c: the land fixture.
   _fxo="$(mktemp -d)"; _le_pvcopy "$_fxo" 0 0
-  if [ "$(_fxfacts "$_fxo")" = "0 0" ]; then pass "FXL-d: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0)"
-  else fail "FXL-d: an adopter-layout gate copy read '$(_fxfacts "$_fxo")', not '0 0'"; fi
+  if [ "$(_fxfacts "$_fxo")" = "0 0 0" ]; then pass "FXL-d: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0 0)"
+  else fail "FXL-d: an adopter-layout gate copy read '$(_fxfacts "$_fxo")', not '0 0 0'"; fi
   D="$(mkrepo)" || { fail "FXL: fixture build"; return 1; }
   X="$(cat "$D/.X")"; write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _fxlike "$D" "$_fxo"; printf cheap > "$EVD/mode"
@@ -2071,8 +2081,8 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
      && _has "$(_fxskip_note 0)" "0 SKIPPED"; then pass "FXS: a skip is counted once and the summary note carries the count"
   else fail "FXS: skip count $_fxs0 -> $_fxs1, note '$(_fxskip_note 3)'"; fi
   # FXS-kit: a kit tree never skips. The judge kills the mutant (a skip forced on a kit tree) and spares an adopter tree's.
-  _fxskip_ok() { [ "$1" != "1 1" ] || [ "$2" = 0 ]; }
-  if _fxskip_ok "1 1" 0 && ! _fxskip_ok "1 1" 2 && _fxskip_ok "0 0" 2; then pass "FXS-kit: the judge kills a skip forced on a kit tree and allows an adopter tree's"
+  _fxskip_ok() { [ "$1" != "1 1 1" ] || [ "$2" = 0 ]; }
+  if _fxskip_ok "1 1 1" 0 && ! _fxskip_ok "1 1 1" 2 && _fxskip_ok "0 0 0" 2; then pass "FXS-kit: the judge kills a skip forced on a kit tree and allows an adopter tree's"
   else fail "FXS-kit: the judge does not separate a kit tree's skips from an adopter tree's"; fi
   if _fxskip_ok "$(_fxfacts "$(dirname "$VERIFY")/..")" "$_FXSKIPS"; then pass "FXS-kit: this tree skipped $_FXSKIPS cell group(s) and reads $(_fxkind)"
   else fail "FXS-kit: a KIT tree skipped $_FXSKIPS cell group(s)"; fi
@@ -2158,36 +2168,38 @@ _expect_wiring() {  # <v-omit> <g-omit> <r-omit> <expected-rc> <needle> <label>
 # checkout AND the repository it operates on), so a fixture repository that a gate in a kit layout runs in must carry the same two facts
 # (conformance/ci-gate-state.sh, and a `gate:` job in .github/workflows/ci.yml), and an adopter-looking one must carry neither. The files
 # are written untracked and listed in the repository's info/exclude, so no cell ever sees a dirty tree.
-_fxlay() {
+_fxlay() {  # <repo dir> <decider 0|1> <gate-job 0|1> [<marker 0|1> = the decider's: conformance/adopter-census.sh, the third fact, SWAS-641]
   mkdir -p "$1/conformance" "$1/.github/workflows"
-  rm -f "$1/conformance/ci-gate-state.sh"
+  rm -f "$1/conformance/ci-gate-state.sh" "$1/conformance/adopter-census.sh"
   if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+  if [ "${4:-$2}" = 1 ]; then : > "$1/conformance/adopter-census.sh"; fi
   if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
   else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
   if _fx_ex="$(git -C "$1" rev-parse --git-path info/exclude 2>/dev/null)"; then
     case "$_fx_ex" in /*) ;; *) _fx_ex="$1/$_fx_ex" ;; esac
     mkdir -p "$(dirname "$_fx_ex")"
-    printf '/conformance/ci-gate-state.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
+    printf '/conformance/ci-gate-state.sh\n/conformance/adopter-census.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
   fi
 }
 # SWAS-537 fix round 3: the GENERAL fixtures (mkrepo, _mkland_fx) plant the layout of the gate UNDER TEST, never a fixed kit one. In the
 # exported, adopter-shaped tree the decider and the workflow are export-ignored, so the gate reads adopter at its own checkout, and a
 # repository planted kit would be a layout-mismatch that refuses every merge. The two facts are read the way the gate reads them
 # (pv_ev_lay_of). The cells that assert an evidence refusal exist only on a kit tree and print a SKIP elsewhere.
-_fxfacts() {  # <root> -> "<decider 0|1> <gate-job 0|1>"
-  _xfd=0; _xfg=0
+_fxfacts() {  # <root> -> "<decider 0|1> <marker 0|1> <gate-job 0|1>"
+  _xfd=0; _xfm=0; _xfg=0
   if [ -f "$1/conformance/ci-gate-state.sh" ]; then _xfd=1; fi
+  if [ -f "$1/conformance/adopter-census.sh" ]; then _xfm=1; fi
   if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _xfg=1; fi
-  echo "$_xfd $_xfg"
+  echo "$_xfd $_xfm $_xfg"
 }
 _fxlike() {  # <repo dir> [<gate checkout root> = the gate under test's own]
-  _xff="$(_fxfacts "${2:-$(dirname "$VERIFY")/..}")"
-  _fxlay "$1" "${_xff% *}" "${_xff#* }"
+  set -- "$1" "$(_fxfacts "${2:-$(dirname "$VERIFY")/..}")"
+  _fxlay "$1" "${2%% *}" "${2##* }" "$(printf '%s' "$2" | cut -d' ' -f2)"
 }
 _fxkind() {
   case "$(_fxfacts "$(dirname "$VERIFY")/..")" in
-    "1 1") echo kit ;;
-    "0 0") echo adopter ;;
+    "1 1 1") echo kit ;;
+    "0 0 0"|"0 0 1") echo adopter ;;
     *) echo half ;;
   esac
 }

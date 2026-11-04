@@ -193,13 +193,18 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # mechanism (that incept ships the §13 gate for every stack), its real run N/As on an adopter tree, and
   # its --selftest drives real incept via `git archive` — which needs the kit's .git, absent in an export.
   # The kit still verifies ratification-parity in its own CI. The installed gate itself is unaffected.
+  # SWAS-607 (2b): conformance-ci-wired, doc-budget, conformance-mass-budget, incept-first-run-green, poster-parity and
+  # dial-state are carved because their verifier scripts are export-ignored (only the kit's own rows and ci.yml ran them): a claim whose
+  # verifier does not ship would FAIL in the adopter's claims-registry, so it is carved here, never dropped from the kit's own registry.
+  # SWAS-608 (the owner's named yes, errata E4): governing-docs-current, mirror-current and badge-version, for the same reason. badge-version is
+  # the FIRST id of REQUIRED_IDS (preceded by the opening quote, not a space), so the sed below has a second expression for that position.
   if _ae_is_kit_tree; then
     _ct="$_dest/conformance/claims.tsv"; _cr="$_dest/conformance/claims-registry.sh"
     if [ -f "$_ct" ] && [ -f "$_cr" ]; then
       _tab=$(printf '\t')
-      for _c in drift-watch golden-path adopter-export repo-ownership feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine ratification-parity adopter-gates-parity; do
+      for _c in drift-watch adopter-export repo-ownership orchestrator-loop escalation-seam conflict-safe-integration skill-spine ratification-parity adopter-gates-parity conformance-ci-wired doc-budget conformance-mass-budget incept-first-run-green poster-parity dial-state governing-docs-current mirror-current badge-version; do
         grep -v "^${_c}${_tab}" "$_ct" > "$_ct.$$.s3b" && mv "$_ct.$$.s3b" "$_ct"
-        sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
+        sed -e "s/ ${_c}\\([\"[:space:]]\\)/\\1/" -e "s/\"${_c} /\"/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
       done
     fi
   else
@@ -475,12 +480,18 @@ if [ "${1:-}" = "--selftest" ]; then
   # absence list when the one-router front door retired it. It is a KEPT-list veteran, so the move is
   # the only thing that proves the new export-ignore attribute actually took effect — a deletion from
   # the kept list alone would have shipped a botched .gitattributes entry green.
-  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt conformance/mass-release-baseline.txt WALKTHROUGH.md .publish-identifiers; do
+  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt conformance/mass-release-baseline.txt WALKTHROUGH.md .publish-identifiers conformance/aggregate-coverage.sh conformance/kit-base.sh scripts/ci-time-report.sh conformance/incept-manifests conformance/repo-ownership.sh; do
     [ -e "$_d/$p" ] && { echo "FAIL: export-ignored path present: $p"; fail=1; } || echo "PASS: absent $p"
   done
-  # kept → PRESENT (scripts/fixtures now SHIPS — the tier-advice/agent-scorecard selftests in the
-  # adopter ci.yml depend on scripts/fixtures/scorecard/)
-  for p in MAINTAINING.md conformance templates profiles/_TEMPLATE.md profiles/typescript-node scripts/fixtures/scorecard; do
+  # SWAS-608: one sample per area of the kit-only files hidden by name in .gitattributes (a conformance script, the
+  # kit-update family, a scripts/ file, a data directory) joined the absence list above: that is the proof the
+  # attribute took. conformance/kit-current.sh and scripts/publish-public.sh join the kept list below, because
+  # doctor.sh / kit-current.sh reach them behind a [ -f ] guard and a hidden file would read as a quiet N/A.
+  # conformance/shim-coverage.sh and conformance/boundary-redteam.sh join the kept list too (the security seat kept them
+  # shipped), so a later change cannot hide either with every gate green.
+  # kept → PRESENT (scripts/fixtures now SHIPS — otlp-export.sh --selftest on an adopter tree reads
+  # scripts/fixtures/otel-trace-sample.ndjson)
+  for p in MAINTAINING.md conformance templates profiles/_TEMPLATE.md profiles/typescript-node scripts/fixtures/otel-trace-sample.ndjson conformance/kit-current.sh scripts/publish-public.sh conformance/shim-coverage.sh conformance/boundary-redteam.sh; do
     [ -e "$_d/$p" ] && echo "PASS: present $p" || { echo "FAIL: kept path missing: $p"; fail=1; }
   done
   # STACK-SELECTION stubbed on --profile: exists + no link to a pruned profile (e.g. go)
@@ -497,8 +508,7 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "FAIL: exported CLAUDE.md still declares a Backlog backend (carve failed → adopter backlog-current FAILs)"; fail=1
   else echo "PASS: exported CLAUDE.md declares no Backlog backend (carve resolves undeclared → adopter N/As)"; fi
   # S3b: the maintainer-only claims are carved from the export's registry copies
-  # (feature-flags-wired is kit-self: it greps the export-ignored golden-path.yml — E2)
-  for p in drift-watch golden-path adopter-export feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine; do
+  for p in drift-watch adopter-export orchestrator-loop escalation-seam conflict-safe-integration skill-spine conformance-ci-wired doc-budget conformance-mass-budget incept-first-run-green poster-parity dial-state governing-docs-current mirror-current badge-version; do
     if grep -q "^$p$(printf '\t')" "$_d/conformance/claims.tsv"; then echo "FAIL: claim $p not carved from claims.tsv"; fail=1
     else echo "PASS: $p carved from claims.tsv"; fi
     if grep -qE '[" ]'"$p"'[ "]' "$_d/conformance/claims-registry.sh"; then echo "FAIL: $p not carved from REQUIRED_IDS"; fail=1

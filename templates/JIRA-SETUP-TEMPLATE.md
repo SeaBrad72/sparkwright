@@ -14,16 +14,16 @@ The model: you plus one agent account (`docs/operations/separation-of-duties.md`
 
 **Minimum day one** is rows 5, 6, 9 (Free variant), 10, 12, 13 and 15, or row 16 where row 15 cannot bind (a free-plan private repository), plus row 1 only if the site blocks API tokens. On the minimum, do rows 9 and 10 before row 5's verify. Row 3 is optional: the agent's `--preflight --as agent`, after row 10, is the setup preflight. Row 4 is drafted by the agent in a dev clone, and you check it at row 6. Rows 2, 7, 8 and 11 are the stricter posture (Standard), rows 14 and 16 are conditional, and row 17 is optional. A site that rejects the extended permission keys reads `unverified` and fails.
 
-**No second account?** Then the agent has no board credential and board writes stay yours. Never store your own admin token for the agent (§5b). Your own token as the CI reader is below the minimum: it puts your (often admin) token in the per-PR `pull_request_target` job (T9), is recorded `over-privileged`, binds per PR with a notice only, and fails the weekly live check. Create the agent account instead.
+**No second account?** Then the agent has no board credential and board writes stay yours. Never store your own admin token for the agent (§5b). Your own token as the CI reader is below the minimum: it puts your (often admin) token in the per-PR `pull_request_target` job, is recorded `over-privileged`, binds per PR with a notice only, and fails the weekly live check. Create the agent account instead.
 
 | # | act | who | where | success signal | needs |
 |---|-----|-----|-------|----------------|-------|
 | 1 | Clear an authentication policy that blocks API tokens on a claimed domain (N1) | org admin | Atlassian Administration → Security → Authentication policies | [§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1) `--preflight` `auth` line PASS (blocked: 401 at the site and at `api.atlassian.com`) | — |
 | 2 | Plan: Standard or above, to assign space roles and edit permission schemes (N2) | owner | Atlassian Administration → Billing | the space's People page offers roles beyond Administrator and Guest | — |
 | 3 | Your own credential for setup, set for the command only (`KIT_TRACKER_USER=<email> KIT_TRACKER_TOKEN="$T" sh conformance/tracker-contract.sh --preflight --base https://<site>.atlassian.net --project <KEY> --as dev`, T read silently as in N7), never exported in a shell that launches an agent; `unset T` after ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1)) | you | your terminal | `--preflight --as dev` PASS | — |
-| 4 | Fill `.kit/tracker.conf` locally: `base_url`, `project` and `flavour` ([§4](#4-kittrackerconf--the-pin-tbg-tracker-conf)). `incept` stamped the file; on a repository with a `main` already, 5g covers the route. The agent drafts it in a dev clone (§4, *Who may edit it*); the owner checks it at row 6 | owner | the repository | `sh scripts/tracker-conf.sh .kit/tracker.conf` exits 0 silently; `sh conformance/tracker-contract.sh --preflight` alone prints a first line that names your site (row 5 already sends a token to the conf's host) | — (incept stamped it) |
+| 4 | Fill `.kit/tracker.conf` locally: `base_url`, `project` and `flavour` ([§4](#4-kittrackerconf--the-pin)). `incept` stamped the file; on a repository with a `main` already, 5g covers the route. The agent drafts it in a dev clone (§4, *Who may edit it*); the owner checks it at row 6 | owner | the repository | `sh scripts/tracker-conf.sh .kit/tracker.conf` exits 0 silently; `sh conformance/tracker-contract.sh --preflight` alone prints a first line that names your site (row 5 already sends a token to the conf's host) | — (incept stamped it) |
 | 5 | Statuses (the six plus Blocked), required fields, and, optionally, a workflow that carries "only the assignee" (§1-§3); then map the field ids that `--fields` prints into the conf | Jira admin | Settings → Work items → Workflows (statuses alongside) | `sh conformance/tracker-contract.sh` ([§7](#7-verify)) | 4; and 10 (or 3) |
-| 6 | The bootstrap push, carrying the filled conf. First run `sh conformance/tracker-contract.sh --preflight` alone (it reads the filled conf) and confirm its first line names your site ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1)); a row-3 `--base` card names the typed host, not the conf's `base_url`, because the pushed `base_url` and `project` become the S-2 reference and the host the CI reader's secret goes to. On a greenfield repository, `git push --no-verify -u origin main` once (`START-HERE.md` §3); when `main` already exists, the conf lands through the admin-merged control-plane PR ([§4](#4-kittrackerconf--the-pin-tbg-tracker-conf), 5g). Every later conf edit needs that PR | owner | a real terminal | the card's first line names your site; `sh scripts/tracker-conf.sh .kit/tracker.conf` exits 0 silently; the conf is on `origin/main` | 4; and 10 (or 3); 5 is optional (field ids mapped later land by a control-plane PR) |
+| 6 | The bootstrap push, carrying the filled conf. First run `sh conformance/tracker-contract.sh --preflight` alone (it reads the filled conf) and confirm its first line names your site ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1)); a row-3 `--base` card names the typed host, not the conf's `base_url`, because the pushed `base_url` and `project` become the S-2 reference and the host the CI reader's secret goes to. On a greenfield repository, `git push --no-verify -u origin main` once (`START-HERE.md` §3); when `main` already exists, the conf lands through the admin-merged control-plane PR ([§4](#4-kittrackerconf--the-pin), 5g). Every later conf edit needs that PR | owner | a real terminal | the card's first line names your site; `sh scripts/tracker-conf.sh .kit/tracker.conf` exits 0 silently; the conf is on `origin/main` | 4; and 10 (or 3); 5 is optional (field ids mapped later land by a control-plane PR) |
 | 7 | Space roles Member and Viewer, created once at site level (N3) | Jira admin | Settings → System → Security: Space roles → Add Space roles | both roles are listed | 2 |
 | 8 | Copy the permission scheme. Remove every write grant held by any logged-in user (`applicationRole`), Anyone (public) or a site-wide group, and confirm nothing is granted to Anyone. Keeping any-logged-in "Browse projects" is a disclosure choice; remove it if the board is confidential. Grant Viewer: "Browse projects", so the CI reader does not depend on the broad grant. Grant Member: "Create issues", "Edit issues", "Transition issues", "Assign issues", "Assignable user", "Add comments", "Schedule issues", "Resolve issues" and "Close issues", with no "Delete issues" and no admin (N4, N5). Associate the copy with the space | Jira admin | Settings → Work items → Work item attributes: Permission Schemes; then Space settings → Permissions → Actions → Use a different scheme → Associate | the space's Permissions page names the copy; rows 9 and 11 prove the grants | 7 |
 | 9 | The agent account: a dedicated account (its own mailbox). **Free** (if `--preflight --as agent` passes on your Free site): invite it to the site as a user, with no site, product or space admin role; on Free no space role can be assigned, and every licensed user gets the default scheme's working set. If the preflight fails, the Free minimum is not available: take the Standard rows (2, 7, 8), or keep board writes yours (the fallback above). **Standard:** add it as Member | owner | the space's People page → Add people (the role list shows Member once row 7 is done) | `--preflight --as agent` PASS: `browse · create · transition · assign; no admin, no delete`. The probe does not test "Schedule issues"; the proof is the first `board rank` | Free: 4 · Standard: 4, 7, 8 |
@@ -103,7 +103,7 @@ Honest ceiling: nobody has yet assigned a copy to a space and confirmed that a n
 
 Success signal (read-only, an admin token, one-time — see §5h): `sh conformance/tracker-contract.sh --deep` reports the tier it measured.
 
-## 4. `.kit/tracker.conf` — the pin (TBG-TRACKER-CONF)
+## 4. `.kit/tracker.conf` — the pin
 `incept --backlog jira` stamped `.kit/tracker.conf`: a strict, fail-closed `key=value` file naming
 the host (`base_url=`, **https only** — the host is the pin, never override it from an environment
 variable), `flavour=cloud|datacenter`, `project=`, the `state.<kit-state>=<tracker-status>` /
@@ -131,7 +131,7 @@ Edit/Write in a **dev-clone** under the temp root (a `git clone` of the **forge 
 change is a control-plane PR, so it costs what `START-HERE.md`'s solo track says. On a greenfield
 repository the filled conf rides the bootstrap push instead (act-sheet row 6), and the owner carries an
 agent's dev-clone draft into that push. One gap is disclosed: a dev-clone carries no installed
-pre-push hook, so CI and the owner's review are the checks on that branch. (cold test 2, items 36, 42 and 78)
+pre-push hook, so CI and the owner's review are the checks on that branch.
 
 **Two modes:**
 - **Greenfield** (`incept --backlog jira`, no `--existing`): the conf ships with a full identity
@@ -179,7 +179,7 @@ repository secret, and the ceiling changes a verdict, not that exposure. The str
 project**, with an **expiring and rotated token**, and **separate from the agent account** (§5b).
 **If the reader is the agent account instead** (Free, the minimum identity model), that saves a seat; it does not reduce exposure. Against a separate reader it widens it, in three ways. (i) **Attribution:** a leaked `pull_request_target` secret writes the board **as the agent**, and those writes cannot be told apart from the sessions' own. (ii) **Coupled rotation:** revoking the CI secret's token revokes the agent's sessions too, because it is one token, so every rotation is two human stores: the login Keychain item (§5b) and the repository secret. (iii) **Self-excusing loop:** until the forge identity steps 0, 2 and 5 are done and step 7 proves it (`docs/operations/forge-identity-switch.md`), the agent could set its own ceiling variables or approve as your reviewing login; that is a capability it must not use (accepted means unenforced, not permitted). It is still narrower than the one-account alternative of putting your own, often admin, token in the per-PR job. Never use the reviewing persona as the reader (`docs/operations/separation-of-duties.md`). Give
 the token an expiry where your Jira offers one, and rotate it on a schedule. The scoped-token route
-is boarded as `TRACKER-JIRA-SCOPED-TOKEN-ROUTE`. Store the token as a **repository Actions secret**, never a
+is not covered. Store the token as a **repository Actions secret**, never a
 GitHub Environment secret unless you have added `environment:` to both jobs yourself (§5d).
 **HUMAN ACT — an agent stops and asks the owner:** adding a repository Actions secret needs repo-admin
 GitHub access.
@@ -217,12 +217,12 @@ If either required secret is missing, the job's own pre-check names it and nothi
 **5b. The developer's own credential — for the write verbs, never a CI secret.**
 `sparkwright board claim|release|move|create|comment|rank` (`scripts/board.sh`; `list` only reads) writes with **your own**
 `KIT_TRACKER_USER`/`KIT_TRACKER_TOKEN`, exported in your own shell — **never** the CI secret above
-(A5, `scripts/board.sh` header: "the developer's own KIT_TRACKER_USER/TOKEN, never a CI-scoped
+(`scripts/board.sh` header: "the developer's own KIT_TRACKER_USER/TOKEN, never a CI-scoped
 token"). The auth kind (`basic` or, for a Data Center PAT, `bearer`) comes from the `auth=` line of
 `.kit/tracker.conf` (default `basic`), so a bearer user exports nothing for it: `board.sh` and
 `board migrate` read it from the conf unless `KIT_TRACKER_AUTH` is already set in the environment.
 
-**Store it once in the macOS login Keychain, and export nothing (SECRETS-INJECTION-AT-LAUNCH).** The adapter
+**Store it once in the macOS login Keychain, and export nothing.** The adapter
 (`scripts/tracker-jira.sh`) looks for the credential in this order: first the environment (the four variables
 above, as a pair: if any of `KIT_TRACKER_USER`, `KIT_TRACKER_TOKEN`, `JIRA_EMAIL` or `JIRA_TOKEN` is set, the
 environment is used alone and the Keychain is never read, so an exported email is never paired with a stored token);
@@ -248,7 +248,7 @@ directory path containing a space breaks the store line (the keychain path is no
 environment path instead. Under a UTF-8 locale, bash may accept accented letters inside the `A-Za-z` ranges; the
 resolver's own charset guard refuses such a stored value later.
 
-**Name the account in the conf, and always in a remove (SWAS-196).** Add `as.agent=<the agent account's email>` to
+**Name the account in the conf, and always in a remove.** Add `as.agent=<the agent account's email>` to
 `.kit/tracker.conf` (§4): the resolver then asks the Keychain for that account's item and never takes whichever item the
 store lists first, and `--preflight --as agent` FAILs when an environment credential's account differs (a Keychain item for another account is
 never offered, so that run stops UNVERIFIED instead). A conf that is invalid refuses the Keychain read outright. To remove an item, in your own
@@ -348,7 +348,7 @@ job, so it may not pass `tracker-board-gates` on its own PR. When it does not pa
 it with the admin merge (the agent records the GO; the guard denies the agent `--admin`), and the new job's
 first real run is the next PR. **Team (`enforce_admins:true`):** untested. Expect the owner to lift
 `tracker-board-gates` from the required checks for that one merge and restore it afterwards; do not leave it
-lifted. (cold test 2, item 47)
+lifted.
 
 **5f. The forbid list — never:**
 - a human developer's own token as the CI secret (§5a always uses a dedicated service account; on Free under the minimum, the agent account declared under the ceiling, §5a);
@@ -387,7 +387,7 @@ around the refusal.
 on `main`, `hooks/pre-push` finds no `origin/main` or `origin/master` copy to compare against and,
 byte-for-byte (`hooks/pre-push:175`):
 `no origin pin to compare — token not sent (S-2); TOFU persistence is TRACKER-S2-TOFU-PIN-PERSIST, deferred`
-— the sentence says plainly that this does not exist yet today, as a boarded row. Cure: on a
+— the sentence says plainly that this does not exist yet today. Cure: on a
 greenfield repository, fill `.kit/tracker.conf` before the bootstrap push and it rides that push
 (act-sheet row 6); once `main` exists, every later conf edit lands through the ratified control-plane
 PR; then `git fetch` locally so `origin/main` carries the copy `tracker-read.sh` compares against.
@@ -430,7 +430,7 @@ classic branch protection (the read only sees `required_status_checks.contexts`,
 requirement reads as not-live); on a **private** repository, reading the base branch's protection is
 unmeasured (LS-D4) — if it returns nothing, the step-aside stays off, red, curable by the same
 waiver. See `docs/work-tracking/adapters.md` §Which gates bind for the full per-gate picture and
-cure per cell (`#708`).
+cure per cell.
 
 ## 7. Verify
 `sh conformance/tracker-contract.sh`

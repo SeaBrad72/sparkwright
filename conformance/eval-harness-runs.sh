@@ -2,10 +2,9 @@
 # Why this gate: sparkwright explain evals
 # eval-harness-runs.sh -- kit-self BEHAVIORAL lock for the reference eval harness (KW24).
 #
-# The RUNTIME complement to the STRUCTURAL eval-harness-wired.sh: that sibling greps the
-# reference harness for the eval-driven markers (a pluggable seam, pinned judge, independence,
-# offline-by-default, injection defense) as CODE STRUCTURE. This lock actually EXECUTES the
-# harness offline and asserts it behaves:
+# This lock EXECUTES the reference harness offline and asserts it behaves. The harness's own test
+# suite covers judge independence, the lazy import, the injection fence and the pinned default;
+# the judge's temperature=0 has no test at any layer and is carded as SWAS-647:
 #   1. the harness's own behavioral test suite passes (profiles/ml/evals/test_run.py) -- this is
 #      where threshold-fails-on-all-miss, fence-breakout-neutralization, and judge-independence
 #      RUN, not just exist;
@@ -214,7 +213,7 @@ fi
 
 # The harness is an offline PYTHON program; without an interpreter it cannot be executed.
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "eval-harness-runs: N/A -- python3 unavailable (offline harness needs an interpreter; the structural lock still runs)"
+  echo "eval-harness-runs: N/A -- python3 unavailable (the offline harness needs an interpreter; nothing else runs it here)"
   exit 0
 fi
 

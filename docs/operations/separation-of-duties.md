@@ -12,7 +12,7 @@ The critical constraint for agentic workflows is that the ratifying identity mus
 
 **This kit's own repo does not satisfy this principle in full, and says so rather than implying otherwise.** It runs a declared **ratification seat** — a second account belonging to the same human as the author (`.kit/ratification-seats.conf`). That seat satisfies the *agentic* half of the constraint exactly: it is an identity outside the build agent's reach, so `agent ≠ ratifier` binds by design, but only while no agent session can act as the seat's login or bypass the review requirement (an admin login with `enforce_admins: false` can merge past that requirement); until the forge identity switch is proven (agent sessions still run under the owner's login) it rests on convention plus the audit trail. It does **not** satisfy the *human* half: author and approver are one person, so **two-person review is declared ABSENT here**, not compensated for. Both halves are stated on every seat approval — the ratification check detects the seat **by login**
 (`scripts/sod-check.sh --seat-approvals`) and posts the disclosure itself as a notice, so nothing has to
-be typed into the approval box (the typed seat *sentence* was retired 2026-08-28) — and the arrangement retires the day a second human with write access joins (`D-240825-1`, revisit-condition D2). See [`review-lane.md`](review-lane.md#the-ratification-seat-solo) for the mechanics and the ceiling.
+be typed into the approval box — and the arrangement retires the day a second human with write access joins. See [`review-lane.md`](review-lane.md#the-ratification-seat-solo) for the mechanics and the ceiling.
 
 ---
 
@@ -46,7 +46,7 @@ The kit proves the neutral SoD logic in `scripts/sod-check.sh`. It is zero forge
 | `1` | FAIL — no qualifying approver, or the self-test failed. Also returned when inputs are absent/empty **and** the environment is `CI=true` or the `--require` flag is passed (fail-closed, anti-vacuity). |
 | `2` | UNVERIFIED — inputs absent/empty in a non-CI, non-`--require` context; cannot evaluate. |
 
-The fail-closed behaviour on missing inputs under CI is deliberate — the E4b red-team lesson: a gate that exits 0 when it cannot read its inputs silently vacuates itself.
+The fail-closed behaviour on missing inputs under CI is deliberate — a red-team lesson: a gate that exits 0 when it cannot read its inputs silently vacuates itself.
 
 **Identities must be stable machine identities** (GitHub logins, GitLab usernames, email addresses) — not display names, which are user-controlled and non-unique.
 
@@ -98,7 +98,7 @@ Apply the contract through your forge's equivalent mechanism: an approval rule t
 The kit's minimum is one human and one agent identity. The agent is a member of the team that works on the humans' behalf, under **its own limited identity on every system it touches** (the forge and the tracker), never a human's credentials. It holds no admin anywhere; approvals are meant to come from a human identity (a boundary only once no owner login is reachable from agent sessions, see the last bullet); CI uses its own token where the system offers one.
 
 - **One agent identity serves the whole team**: one extra seat in total, not one per person.
-- **On a free tier, the same agent account may also be the CI reader**, declared as a writer with a notice on every run (`JIRA-SETUP.md` §5a). That saves a seat; it does not reduce exposure (the residuals are in §5a and the threat model, T12). The reader is then **the agent, never the reviewing persona** of [the overlap, named](#forge-identity--agent-sessions-hold-no-admin): the reader and the reviewing login stay one persona only where the reader is a separate Viewer seat.
+- **On a free tier, the same agent account may also be the CI reader**, declared as a writer with a notice on every run (`JIRA-SETUP.md` §5a). That saves a seat; it does not reduce exposure (the residuals are in §5a and the threat model). The reader is then **the agent, never the reviewing persona** of [the overlap, named](#forge-identity--agent-sessions-hold-no-admin): the reader and the reviewing login stay one persona only where the reader is a separate Viewer seat.
 - **How to create the identity** is each system's own setup: the forge in [`forge-identity-switch.md`](forge-identity-switch.md) and `docs/adoption/vc-hosts.md`, the tracker in its setup sheet (`JIRA-SETUP.md`, or `docs/work-tracking/adapters.md` §The agent's identity on each tracker for the others).
 - **What it means for merging:** with its own forge account, the agent is not the approving identity, so the repository runs the **team** relationship, the default ([`docs/adoption/vc-hosts.md` §Solo or team](../adoption/vc-hosts.md#solo-or-team--pick-the-merge-relationship-declared-in-your-repo-the-default-is-team)). That holds as a boundary only once no owner login is reachable from agent sessions (forge-identity-switch steps 0, 2 and 5 close those paths, and step 7 proves it): until then the agent could approve as you, and team is a convention. Solo is for a repository where the agent works under the owner's one account.
 
@@ -151,7 +151,7 @@ The owner decides and the agent does the keystroke: the judgment is the control,
 
 ### The design GO after the switch
 
-A control-plane design GO is bound today by `[committer]`, which derives only when the approver matches the design commit's committer. That tier never authenticated the owner (the agent commits under whatever identity it holds), and after the switch the committer is the machine user. The design GO record stays required before a build and is stated as `[self-asserted]`; the authenticated binding moves onto the reviewing login's Approve on the forge, the same tier `land` already uses. That change to the ceremony tooling is its own card and lands **before** the switch.
+A control-plane design GO is bound today by `[committer]`, which derives only when the approver matches the design commit's committer. That tier never authenticated the owner (the agent commits under whatever identity it holds), and after the switch the committer is the machine user. The design GO record stays required before a build and is stated as `[self-asserted]`; the authenticated binding moves onto the reviewing login's Approve on the forge, the same tier `land` already uses. That change to the ceremony tooling lands **before** the switch.
 
 ### Neutrality
 

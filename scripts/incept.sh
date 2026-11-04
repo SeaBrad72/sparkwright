@@ -1141,18 +1141,18 @@ if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
   # FIRST-RUN TRUTH, PRINTED RATHER THAN ASSUMED. loop-state is now a live required context and it
   # ENFORCES, so the adopter's very first PR must carry an Entry Declaration or it will not merge.
   # There is no incept commit on their branch to carry one for them (this script writes a kit-base
-  # snapshot, not a branch commit), so the exact block they need is printed here — two lines, not
-  # four: since 2026-08-30 an ordinary change owes only the row and the class, and on a pristine
-  # board the row leg N/As, so this block is green on day one.
+  # snapshot, not a branch commit), so the exact block they need is printed here — two lines:
+  # since SWAS-614 every class owes only the row and the class, and on a pristine board the row leg
+  # N/As, so this block is green on day one.
   echo "note: loop-state is now a required context and it ENFORCES. Your first PR's FINAL commit must"
   echo "      end with this block as its LAST contiguous paragraph (a blank line inside it truncates it):"
   echo ""
   echo "        Kit-Row: <the row on your board this work satisfies>"
   echo "        Kit-Class: ordinary"
   echo ""
-  echo "      Ordinary work owes those two. A sensitive or control-plane change owes Kit-Stage and"
-  echo "      Kit-Skill as well — see CLAUDE.md section 1. To opt out entirely, set LOOP_STATE_MODE to"
-  echo "      observe in .github/workflows/adopter-gates.yml AND delete loop-state from REQUIRED-CHECKS.md."
+  echo "      Every class owes those two (set Kit-Class to the class your change derives to) — see"
+  echo "      CLAUDE.md section 1. To opt out entirely, set LOOP_STATE_MODE to observe in"
+  echo "      .github/workflows/adopter-gates.yml AND delete loop-state from REQUIRED-CHECKS.md."
   # TRACKER FACE ONLY (T3, RT3-Q2 fix): a second first-run truth, for the trusted board job's own
   # preconditions. `auth` is read from whatever .kit/tracker.conf is ALREADY ON DISK at this point in
   # the script — THIS BRANCH IS REACHABLE, not unconditionally absent: a brownfield tree can carry a

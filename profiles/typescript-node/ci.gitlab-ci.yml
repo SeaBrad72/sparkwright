@@ -65,33 +65,26 @@ gate-install:
 # ubuntu-24.04 the GitHub proof used; a check that goes UNVERIFIED on this image would FAIL the run
 # under --require. Tracked as CP7R5-GITLAB-UNEXECUTED — do not read this job's presence as a proof.
 #
-# ADOPTER-KIT-SELFTESTS-ON-CHANGE: in a MERGE-REQUEST pipeline whose diff touches no control-plane path,
-# verify.sh skips the kit's own selftests (they render N-A with a notice in the job log) because their
-# subject cannot have changed. The skip fires ONLY in merge-request pipelines (CI_PIPELINE_SOURCE ==
-# merge_request_event, with CI_MERGE_REQUEST_DIFF_BASE_SHA set); a project running branch pipelines only
-# gets the full battery every time (safe, just slower). Branch / default-branch pipelines, a failed or
-# empty diff, and any path containing a newline all run plain `verify.sh --require`. There is no
-# --summary-file on GitLab: the notice is in the job log only. For a WEEKLY full run, add a pipeline
-# schedule in the GitLab UI (CI/CD > Schedules, e.g. `23 5 * * 1`) - a schedule is not expressible in this
-# YAML; it catches runner / tool drift only and is yours to tune.
-# >>> kit:owned changed-listing
+# The GitLab pipeline builds no changed-file list, so nothing in it asks verify.sh to skip the kit's selftests.
+# That job has never been run on GitLab. Unlike the GitHub profiles, this file builds no changed-path
+# listing. The listing was left off because
+# whether a pipeline variable can override the predefined CI_* values it reads was not checked, and this
+# job has never been run. A listing can come back with a GitLab run and a reading of GitLab's docs
+# behind it; conformance/verify-enforced-wired.sh refuses one until then. For a WEEKLY run on top of
+# every pipeline, add a pipeline schedule in the GitLab UI (CI/CD > Schedules, e.g. `23 5 * * 1`); a schedule
+# is not expressible in this YAML, and it catches runner / tool drift and is yours to tune.
 conformance-aggregate:
   stage: verify
   needs: []
   variables:
-    GIT_DEPTH: "0"   # the base sha must be resolvable for the changed-path listing
-  before_script:
-    - |
-      # Merge requests INTO THE DEFAULT BRANCH only (security S2); the listing files are mktemp'd, never fixed /tmp names.
-      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" = "$CI_DEFAULT_BRANCH" ] \
-        && [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ] && kz=$(mktemp) && kl=$(mktemp) \
-        && git diff -z --name-only --no-renames "$CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD" > "$kz" \
-        && [ -s "$kz" ] && [ "$(tr -cd '\n' < "$kz" | wc -c)" -eq 0 ]; then
-        tr '\0' '\n' < "$kz" > "$kl" && export KIT_CHANGED="$kl"
-      fi
+    # Full history, as before: removing it would change what the job's history-reading rows see.
+    GIT_DEPTH: "0"
   script:
-    - sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}
-# <<< kit:owned changed-listing
+    # Only the kit's own workflow sets this variable; a value from a CI variable must not make the guard battery
+    # defer on this job. From recollection, not read: GitLab exports project and pipeline variables into the
+    # job and runs a job's script items in one shell, so the unset reaches the verify line below.
+    - unset KIT_GUARD_BATTERY_REF
+    - sh conformance/verify.sh --require
 
 gate-lint:
   stage: verify

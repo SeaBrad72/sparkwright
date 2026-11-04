@@ -424,7 +424,12 @@ TWINS_REL="conformance/prepush-twins.tsv"
 # shellcheck disable=SC2016  # the awk program is DATA: nothing in it may expand in the shell.
 TWPROG='
 BEGIN { FS="\t"; SQ=sprintf("%c",39); DQ=sprintf("%c",34); BT=sprintf("%c",96)
-        split("listing branch base-board head",PH," ") }
+        split("listing branch base-board head",PH," ")
+        # ENT: every conformance/*.sh entry of ANY kind. CIT: the CI file text. CIOK=0 (unreadable) never carves.
+        while ((getline ln < ENTRIES) > 0) ENT[ln]=1
+        while ((getline ln < HEADLS) > 0) HD[ln]=1      # HD: what HEAD tracks under conformance/
+        ln = ""; CIOK = (CIF != "" && (getline ln < CIF) >= 0); CIT = ""
+        if (CIOK) { CIT = ln; while ((getline ln < CIF) > 0) CIT = CIT "\n" ln } }
 # dupph — a token may carry a placeholder AT MOST ONCE. This is a CONSERVATIVE AUTHORING RESTRICTION,
 # not a correctness guard: ph_pass re-scans the remainder after each substitution, so a repeat would in
 # fact be substituted correctly. The restriction keeps the argv of a row READABLE AS WRITTEN — one
@@ -443,9 +448,9 @@ NR==FNR { SCR[$0]=1; next }
 /^#/ { next }
 {
   e=""; b=$1; k=$2; shp=$3; la=$4; xrc=$5; bs=$6; rsn=$7
+  miss = !(("conformance/" b ".sh") in SCR); cv = 0
   if (NF != 7) e="expected 7 tab-separated fields, got " NF
   else if (b !~ /^[a-z0-9-]+$/) e="basename outside [a-z0-9-]+: " b
-  else if (!(("conformance/" b ".sh") in SCR)) e="not a regular file under the repo root: conformance/" b ".sh"
   else if (k !~ /^(twin|exclude|heavy|env)$/) e="unknown kind: " k
   else if (xrc != "" && xrc !~ /^[0-9]+$/) e="expect-rc is not an integer: " xrc
   else if (k=="twin" && (shp=="" || la=="")) e="a twin row needs a ci-shape and a local-argv"
@@ -458,14 +463,36 @@ NR==FNR { SCR[$0]=1; next }
     gsub(/\{listing\}|\{branch\}|\{base-board\}|\{head\}/,"placeholder",t)
     if (index(t,"{") || index(t,"}") || index(t,"$") || index(t,SQ) || index(t,DQ) || index(t,BT) || index(t,"\\"))
       e="local-argv carries a forbidden character, or a placeholder outside {listing} {branch} {base-board} {head}: " la }
-  if (e != "") print FNR ": " e > ERR; else print $0 > OK
+  # THE CARVE, decided LAST: only a row that passed EVERY test above, off the kit tree, whose script is truly
+  # absent (no file, no symlink, no directory) and which the CI file of this tree never names. Anything else is an error.
+  if (e == "" && miss) {
+    if (OFFKIT && CIOK && !(("conformance/" b ".sh") in ENT) && !(("conformance/" b ".sh") in HD) && !index(CIT, "conformance/" b ".sh")) cv = 1
+    else e="not a regular file under the repo root: conformance/" b ".sh"
+  }
+  if (e != "") print FNR ": " e > ERR; else if (cv) print $0 > CARVED; else print $0 > OK
 }
 '
+# off_kit — THE one kit-marker test (census and the twin reader both call it): a tree carrying neither
+# marker is not the kit. Both markers are control-plane and export-ignored, so an adopter tree lacks both.
+off_kit() { [ ! -f docs/ROADMAP-KIT.md ] && [ ! -f .github/workflows/golden-path.yml ]; }
+# read_twins also CARVES (off the kit tree only): a row whose ONLY defect is a script this tree does not
+# carry goes to $WORK/twins.carved — counted and noted by the run, never to twins.ok, never executed.
+# read_twins [ci-file] — the CI file the lane derives from is DATA for the carve test; none given (census) = no carve.
 read_twins() {
-  : > "$WORK/twins.ok"; : > "$WORK/twins.err"
+  : > "$WORK/twins.ok"; : > "$WORK/twins.err"; : > "$WORK/twins.carved"
   [ -f "$TWINS_REL" ] || return 0
-  LC_ALL=C awk -v OK="$WORK/twins.ok" -v ERR="$WORK/twins.err" "$SENSFN$TWPROG" \
-    "$WORK/scripts" "$TWINS_REL"
+  _off=0; ! off_kit || _off=1
+  # FAIL CLOSED: if the working-tree listing or HEAD listing cannot be built, nothing carves.
+  find conformance -maxdepth 1 -name '*.sh' > "$WORK/twins.entries" 2>/dev/null || { : > "$WORK/twins.entries"; _off=0; }
+  git ls-tree --name-only HEAD conformance/ > "$WORK/twins.head" 2>/dev/null || { : > "$WORK/twins.head"; _off=0; }
+  LC_ALL=C awk -v OK="$WORK/twins.ok" -v ERR="$WORK/twins.err" -v CARVED="$WORK/twins.carved" -v OFFKIT="$_off" \
+    -v ENTRIES="$WORK/twins.entries" -v HEADLS="$WORK/twins.head" -v CIF="${1:-}" "$SENSFN$TWPROG" "$WORK/scripts" "$TWINS_REL"
+}
+# carved_note — one honest line when rows were carved: the count, never the rows.
+carved_note() {
+  [ -s "$WORK/twins.carved" ] || return 0
+  printf '# twin rows carved: %s (their scripts are kit-only and not in this tree)\n' \
+    "$(wc -l < "$WORK/twins.carved" | tr -d ' ')"
 }
 
 fld() { printf '%s\n' "$2" | cut -f"$1"; }
@@ -544,7 +571,7 @@ census() {
   _rel=$(ci_path "$1") || exit $?
   # KIT-SELF ONLY (C13) — the SAME two markers green-on-clone.sh reads, same OR-of-markers shape;
   # golden-path.yml is control-plane + export-ignored, so it cannot be spoofed.
-  if [ ! -f docs/ROADMAP-KIT.md ] && [ ! -f .github/workflows/golden-path.yml ]; then
+  if off_kit; then
     echo "N/A: census is kit-self (this tree carries neither kit marker: docs/ROADMAP-KIT.md, .github/workflows/golden-path.yml)"
     return 0
   fi
@@ -1873,9 +1900,12 @@ warranted_derive() {
       printf 'skipped: non-vacuity %s — basename outside the closed charset (expected %s)\n' "$_pb" "$ET_NONVAC" >> "$WORK/skipped"
       continue
     fi
+    _vkrows=conformance/verify.sh   # SWAS-607: the kit-self rows live in verify-kitself.rows on a kit tree; both are the registry
+    if [ -f conformance/verify-kitself.rows ]; then _vkrows="conformance/verify.sh conformance/verify-kitself.rows"; fi
+    # shellcheck disable=SC2086
     if awk -v t="conformance/$_b.sh" \
          '$1=="check"{for(i=2;i<=NF;i++) if($i==t) f=1} END{exit !f}' \
-         conformance/verify.sh 2>/dev/null
+         $_vkrows 2>/dev/null
     then printf 'warranted: non-vacuity %s.sh\n' "$_b" >> "$WORK/warranted"
     else printf 'skipped: non-vacuity %s — not a verify.sh check row (non-vacuity --only would exit 2) (expected %s)\n' "$_b" "$ET_NONVAC" >> "$WORK/skipped"
     fi
@@ -2408,7 +2438,7 @@ run_lane() {
   derive "$_ci" > "$WORK/derive.out" 2>&1 || { sed -n '/^#/p' "$WORK/derive.out"
                                                unv "unparseable ci.yml"; verdict; return $?; }
   sed -n '/^#/p' "$WORK/derive.out"
-  read_twins; twin_exec_check
+  read_twins "$_ci"; twin_exec_check; carved_note
   [ ! -s "$WORK/twins.err" ] || { sed 's/^/# TWIN-TABLE MALFORMED: /' "$WORK/twins.err"
                                   unv "the twin table is malformed — run --census"; }
   split_buckets
@@ -2501,7 +2531,7 @@ selftest() {
               heavy_rows twin_grammar injection scrub docs_only rename newline newline_charset base \
               ceiling budget \
               floor argv core_selftest local_defer heavy_needs_flag dash verdict shim no_fanout no_write \
-              no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced \
+              no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced twin_carve \
               cache_skip_same_tree cache_code_change cache_bookkeeping cache_heavy_bookkeeping \
               cache_dirty_bypass cache_skip_output_never \
               cache_fail_never cache_unusable_dir cache_state_dir_modes cache_opt_out \
@@ -2525,7 +2555,7 @@ selftest() {
               cache_filter_applied lock_kill_zero \
               tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv \
               orphan_ceiling orphan_unconfirmed orphan_trap orphan_leftover orphan_noperl orphan_guard orphan_parent orphan_leader orphan_reuse orphan_perl_env \
-              touched_failclosed touched_replay touched_budget touched_output touched_refresh \
+              touched_failclosed tr8_gate touched_replay touched_budget touched_output touched_refresh \
               preflight_case_variant crash
   do "selftest_$_leg"; done
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
@@ -3294,6 +3324,96 @@ selftest_twin_not_enforced() {
   want "twin-na/no-field: loop-state stays FAIL" "FAIL  twin  *loop-state"; wantnot "twin-na/no-field: no N/A" "^  N/A"
   TWARG=--warranted; twfx jira '' 1 3; TWARG=   # the --warranted variant with no cache skips
   sfx "twin-na/warranted: the OK carries the twin clause alone" "PARITY-CORE: OK (2 board-bound twin(s) NOT ENFORCED locally — CI binds them)" "$(lastline)"
+}
+
+# SWAS-714: off the kit tree a twin row whose script is absent is CARVED (counted, never run); every other defect, and the
+# same absent script ON the kit tree, stays MALFORMED. cvfx <off|kit> — two absent-script exclude rows that ci.yml never
+# names; `off` drops the kit marker. cvrow <name> <kind> — append one exclude-shaped row for conformance/<name>.sh.
+cvfx() {
+  one_step; cvrow ghost1 exclude; cvrow ghost2 exclude
+  [ "$1" != off ] || rm -f "$d/docs/ROADMAP-KIT.md"
+  commit_fx
+}
+cvrow() { tw "$1" "$2" "sh conformance/$1.sh" "$1.sh" '' '' 'fixture: kit-only'; }
+# cvoff — a fresh off-kit one-step fixture (the caller adds rows, then commit_fx).
+cvoff() { one_step; rm -f "$d/docs/ROADMAP-KIT.md"; }
+# cvmut <dir> <mutant-lane> — the MUTANT lane run on a cell's fixture; DVOUT/DVRC as rn.
+cvmut() { DVOUT=$( cd "$1" && sh "$2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?; }
+selftest_twin_carve() {
+  # C1 — adopter shape: carved, noted once with the count, nothing run, no UNVERIFIED
+  cvfx off; _c1=$d; rn "$d" --verbose
+  sfx "carve/C1: the run is rc 0" 0 "$DVRC"
+  want "carve/C1: the note counts the two carved rows" '^# twin rows carved: 2 (their scripts are kit-only and not in this tree)$'
+  wantnot "carve/C1: the table is not malformed" "TWIN-TABLE MALFORMED"
+  wantnot "carve/C1: and the verdict is not UNVERIFIED" "^PARITY-CORE: UNVERIFIED"
+  wantnot "carve/C1: neither carved basename appears anywhere in the run output (argv log, buckets)" 'ghost[12]'
+  # the work files are gone after a run, so read them from a direct call of the same two functions
+  _w=$( _cw=""; cd "$_c1" && _cw=$(mktemp -d "${TMPDIR:-/tmp}/cv-XXXXXX") && WORK=$_cw && find conformance -maxdepth 1 -type f -name '*.sh' > "$WORK/scripts" &&
+        read_twins "$CI_DEFAULT" && twin_exec_check && cat "$WORK/twins.ok" "$WORK/tg.yml" && printf 'carved=%s\n' "$(wc -l < "$WORK/twins.carved" | tr -d ' ')"
+        [ -z "$_cw" ] || rm -rf "$_cw" )
+  DVOUT=$_w
+  want "carve/C1: the direct read carved two rows" '^carved=2$'
+  wantnot "carve/C1: and neither reached twins.ok or the twin-exec synthetic workflow" 'ghost[12]'
+  # C2 — kit shape: today's red, kept
+  cvfx kit; _c2=$d; rn "$d"
+  want "carve/C2: on the kit tree an absent script is MALFORMED" "TWIN-TABLE MALFORMED: .*not a regular file under the repo root: conformance/ghost1\\.sh"
+  want "carve/C2: and the verdict is UNVERIFIED" '^PARITY-CORE: UNVERIFIED (the twin table is malformed'
+  wantnot "carve/C2: nothing is carved on the kit tree" "twin rows carved"
+  # C3 — off-kit, any other defect stays malformed (a 6-field row; a basename outside the charset)
+  cvoff; _c3=$d
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' ghost1 exclude 'sh conformance/ghost1.sh' '' '' 'six fields' >> "$d/conformance/prepush-twins.tsv"
+  tw Ghost_2 exclude 'sh conformance/ghost2.sh' '' '' '' 'bad basename'; commit_fx; rn "$d"
+  want "carve/C3: a 6-field row off-kit is MALFORMED" "TWIN-TABLE MALFORMED: .*expected 7 tab-separated fields, got 6"
+  want "carve/C3: a bad basename off-kit is MALFORMED" "TWIN-TABLE MALFORMED: .*basename outside"
+  want "carve/C3: and the verdict is UNVERIFIED" '^PARITY-CORE: UNVERIFIED (the twin table is malformed'
+  # C4 — carve ONLY the reason: an absent script AND an unknown kind is malformed, not carved
+  cvoff; _c4=$d; cvrow ghost1 bogus; commit_fx; rn "$d"
+  want "carve/C4: an absent script with an unknown kind is MALFORMED" "TWIN-TABLE MALFORMED: .*unknown kind: bogus"
+  wantnot "carve/C4: and it is not carved" "twin rows carved"
+  # C5 — a symlink is not absent: it stays MALFORMED
+  cvoff; _c5=$d; cvrow ghost1 exclude; commit_fx; ln -s alpha.sh "$d/conformance/ghost1.sh"; rn "$d"   # uncommitted: HEAD does not track it
+  want "carve/C5: a symlinked script off-kit is MALFORMED" "TWIN-TABLE MALFORMED: .*not a regular file under the repo root: conformance/ghost1\\.sh"
+  wantnot "carve/C5: and it is not carved" "twin rows carved"
+  # C6 — CI still runs it: an absent script this tree own ci.yml names stays MALFORMED
+  mkci1 'sh conformance/ghost1.sh'; rm -f "$d/docs/ROADMAP-KIT.md"; _c6=$d; cvrow ghost1 exclude; commit_fx; rn "$d"
+  want "carve/C6: an absent script the CI file names is MALFORMED" "TWIN-TABLE MALFORMED: .*not a regular file under the repo root: conformance/ghost1\\.sh"
+  wantnot "carve/C6: and it is not carved" "twin rows carved"
+  # C7 — committed in HEAD, then gone from the working tree (sparse checkout, skip-worktree, unstaged delete): NOT absent
+  cvoff; _c7=$d; mkchk ghost1 'exit 0'; cvrow ghost1 exclude; commit_fx; rm -f "$d/conformance/ghost1.sh"; rn "$d"
+  want "carve/C7: a script HEAD tracks but the working tree lacks is MALFORMED" "TWIN-TABLE MALFORMED: .*not a regular file under the repo root: conformance/ghost1\\.sh"
+  wantnot "carve/C7: and it is not carved" "twin rows carved"
+  # Each mutant must red its own cell AND still print the exact carved count, so a broken awk cannot pass as no-MALFORMED.
+  # M1 — the marker test dropped: the carve applies on the kit tree too (C2 reds)
+  trmut m1 -e 's/^off_kit() {.*/off_kit() { true; }/'
+  [ -z "$TRM" ] || { cvmut "$_c2" "$TRM"
+    wantnot "carve/M1 mutant: with the marker test dropped the kit tree no longer reads MALFORMED (C2 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M1 mutant: and it carved both rows" '^# twin rows carved: 2 (their'; }
+  # M2 — the carve widened to every reason: C3's malformed rows are carved away (C3 reds)
+  trmut m2 -e 's/^  if (e != "") print FNR ": " e > ERR; else if (cv) print/  if (e != "" \&\& !OFFKIT) print FNR ": " e > ERR; else if (cv || e != "") print/'
+  [ -z "$TRM" ] || { cvmut "$_c3" "$TRM"
+    wantnot "carve/M2 mutant: with the carve widened the malformed rows vanish (C3 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M2 mutant: and it carved both malformed rows" '^# twin rows carved: 2 (their'; }
+  # M3 — the carve returns before the later tests (C4 reds)
+  trmut m3 -e 's/^  if (e == "" && miss) {/  if (miss) {/' \
+           -e 's/^  if (e != "") print FNR ": " e > ERR; else if (cv) print \$0 > CARVED;/  if (cv) print $0 > CARVED; else if (e != "") print FNR ": " e > ERR;/'
+  [ -z "$TRM" ] || { cvmut "$_c4" "$TRM"
+    wantnot "carve/M3 mutant: carving before the later tests lets the unknown kind through (C4 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M3 mutant: and it carved the row" '^# twin rows carved: 1 (their'; }
+  # M4 — absence weakened to "not a regular file": the symlink is carved (C5 reds)
+  trmut m4 -e 's/in ENT) &&/in SCR) \&\&/'
+  [ -z "$TRM" ] || { cvmut "$_c5" "$TRM"
+    wantnot "carve/M4 mutant: a symlink read as absent is carved (C5 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M4 mutant: and it carved the row" '^# twin rows carved: 1 (their'; }
+  # M5 — the CI-mention test dropped: a script CI still names is carved (C6 reds)
+  trmut m5 -e 's/ \&\& !index(CIT, "conformance\/" b "\.sh")//'
+  [ -z "$TRM" ] || { cvmut "$_c6" "$TRM"
+    wantnot "carve/M5 mutant: a script the CI file names is carved (C6 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M5 mutant: and it carved the row" '^# twin rows carved: 1 (their'; }
+  # M6 — the HEAD test dropped: a script HEAD tracks but the working tree lacks is carved (C7 reds)
+  trmut m6 -e 's/ && !(("conformance\/" b "\.sh") in HD)//'
+  [ -z "$TRM" ] || { cvmut "$_c7" "$TRM"
+    wantnot "carve/M6 mutant: a HEAD-tracked script missing from the tree is carved (C7 is RED)" "TWIN-TABLE MALFORMED"
+    want "carve/M6 mutant: and it carved the row" '^# twin rows carved: 1 (their'; }
 }
 
 selftest_shim() {
@@ -4667,6 +4787,32 @@ selftest_touched_failclosed() {
     wantnot "TR9 mutant: the empty-derive guard removed -> no UNVERIFIED (the cell is RED)" '^PARITY-CORE: UNVERIFIED (touched-readers'; }
 }
 
+# tr8_gate <root> — prints kit | offkit | spoofed. The marker test is off_kit (it reads the CURRENT directory, so cd);
+# the anchor is the kit CI's own first line, the census liveness leg's test: no markers but the anchor present = spoofed.
+tr8_gate() {
+  _g=$1
+  if ! ( cd "$_g" && off_kit ); then echo kit; return 0; fi
+  if grep -q '^# Kit-own CI' "$_g/$CI_DEFAULT" 2>/dev/null; then echo spoofed; else echo offkit; fi
+}
+selftest_tr8_gate() {
+  _ga=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX"); _gk=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX"); _gs=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX")
+  for _r in "$_ga" "$_gk" "$_gs"; do mkdir -p "$_r/${CI_DEFAULT%/*}"; printf 'name: fx\n' > "$_r/$CI_DEFAULT"; done
+  mkdir -p "$_gk/docs"; : > "$_gk/docs/ROADMAP-KIT.md"
+  printf '# Kit-own CI - spoofed\nname: fx\n' > "$_gs/$CI_DEFAULT"
+  sfx "TR8 gate: no marker and no anchor reads offkit" offkit "$(tr8_gate "$_ga")"
+  sfx "TR8 gate: a kit marker reads kit" kit "$(tr8_gate "$_gk")"
+  sfx "TR8 gate: no marker but the kit CI anchor reads spoofed" spoofed "$(tr8_gate "$_gs")"
+  # MUTANTS: the mutated helper's own text is extracted from a lane copy and run.
+  trmut tr8ga -e 's/^  if ! ( cd .* off_kit ); then echo kit; return 0; fi$/  if false; then echo kit; return 0; fi/'
+  [ -z "$TRM" ] || { sed -n '/^tr8_gate() {$/,/^}$/p' "$TRM" > "$WORK/tr8gate-a.sh"
+    _res=$( . "$WORK/tr8gate-a.sh"; tr8_gate "$_gk" )
+    sfx "TR8 gate mutant M-TR8a: the marker test made false -> the kit fixture no longer reads kit (the cell is RED)" differs "$([ "$_res" = kit ] && echo same || echo differs)"; }
+  trmut tr8gb -e "s/^  if grep -q '^# Kit-own CI'.*\$/  echo offkit/"
+  [ -z "$TRM" ] || { sed -n '/^tr8_gate() {$/,/^}$/p' "$TRM" > "$WORK/tr8gate-b.sh"
+    _res=$( . "$WORK/tr8gate-b.sh"; tr8_gate "$_gs" )
+    sfx "TR8 gate mutant M-TR8b: the anchor test removed -> the spoofed fixture no longer reads spoofed (the cell is RED)" differs "$([ "$_res" = spoofed ] && echo same || echo differs)"; }
+}
+
 selftest_touched_replay() {
   [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
     { echo "PASS: TR8: N/A - not the kit tree"; return 0; }
@@ -4674,6 +4820,16 @@ selftest_touched_replay() {
   DVOUT=$( cd "$KROOT" && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
   sfx "TR8: the plan on the real tree is rc 0" 0 "$DVRC"
   echo "PASS: TR8: measured on this tree [M] — $(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: \([0-9]* candidate.*\) · budget.*$/\1/p')"
+  case $(tr8_gate "$KROOT") in
+    kit) ;;
+    offkit)   # rc 0 above is the twin-table assertion (a MALFORMED row makes --plan return 1); the greps are a belt
+      wantnot "TR8 off the kit tree: no malformed twin table" '^# TWIN-TABLE MALFORMED'
+      wantnot "TR8 off the kit tree: no UNVERIFIED parity verdict" '^PARITY-CORE: UNVERIFIED'
+      sfx "TR8 off the kit tree: the shipped twin table is present" yes "$([ -f "$KROOT/$TWINS_REL" ] && echo yes || echo no)"
+      echo "PASS: TR8 (a)-(c) and its mutant: N/A - not the kit tree (they plan kit-only CI steps: agent-autonomy --selftest, prepush-lane --census, citation-live)"
+      return 0 ;;
+    *) echo "FAIL: TR8: the kit markers are gone but the CI file is the kit's own (# Kit-own CI)"; SF=1; return 0 ;;
+  esac
   want "TR8 (a) under an EMPTY table: S7 in agent-autonomy --selftest runs" '^  PLAN  touched-readers  *agent-autonomy --selftest '
   want "TR8 (b) under an EMPTY table: the prepush-twins census runs" '^  PLAN  touched-readers  *prepush-lane --census '
   want "TR8 (c) under an EMPTY table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
@@ -5210,7 +5366,7 @@ selftest_orphan_perl_env() {
 # SWAS-468: scripts/preflight.sh's case-variant cell, run as a lane arm, must not depend on WHICH sh it runs under. The cell needs `pwd -P` to keep a
 # case-variant spelling, which bash does and dash (the lane's PATH shim) does not: on a case-insensitive filesystem the string-compare mutant is then equivalent.
 # The cell is N/A on a case-sensitive filesystem (preflight skips there too). SWAS-487: the arms run ONLY that cell (`--selftest --selftest-cell case-variant`), not the whole
-# selftest five times; the full selftest stays graded by CI's own step and by selftest-hermetic/adopter-preflight-wired. pf_arm <preflight root> runs the cell as a lane arm: $d/pf.out, $d/pf.rc.
+# selftest five times; the full selftest stays graded by CI's own step and by selftest-hermetic. pf_arm <preflight root> runs the cell as a lane arm: $d/pf.out, $d/pf.rc.
 pf_arm() {
   one_step; mkchk alpha "o=\$PWD; cd \"$1\" && sh scripts/preflight.sh --selftest --selftest-cell case-variant > \"\$o/pf.out\" 2>&1; echo \$? > \"\$o/pf.rc\""; commit_fx
   env_rn "$d" PREPUSH_CEILING_S 900 --warranted

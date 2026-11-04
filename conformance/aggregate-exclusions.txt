@@ -5,9 +5,10 @@
 #
 #   1. REGISTERED — named in conformance/verify.sh. The PORTABLE battery: adopters run it too, and
 #      every emitted pipeline now runs it (`verify.sh --require`).
-#   2. WORKFLOW   — named as a step in .github/workflows/*.yml. Enforced, but KIT-ONLY: these lock
-#      the kit's own control plane (its ci.yml shard matrix, its mirror, its release tags) and would
-#      correctly FAIL on an adopter tree, which has none of those things.
+#   2. WORKFLOW   — named as a step in .github/workflows/*.yml. Enforced by the kit's workflows.
+#      Not always kit-only (SWAS-608): a workflow-only check some adopter uses still ships (for example
+#      kit-current.sh, promotion-readiness.sh, green-on-clone.sh) and sits on the export-orphan baseline in
+#      aggregate-coverage.sh; only a path that passed the seven tests of SWAS-608 is export-ignored by name.
 #   3. LIBRARY    — listed below. Sourced, never executed; not a check and has no verdict.
 #
 # Only category 3 needs a hand-maintained list — 1 and 2 are derived from the files themselves, so

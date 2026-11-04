@@ -24,7 +24,7 @@ Good reports include: what you expected, what happened, the version (`VERSION`),
 
 ## How the kit is built (for deeper changes)
 
-Sparkwright is a versioned platform product built with the very loop it prescribes. If you're changing its **contracts, reference implementations, or conformance checks**, read **[`MAINTAINING.md`](MAINTAINING.md)** — it explains the contract → reference → conformance convention and the release process.
+Sparkwright is a versioned platform product built with the very loop it prescribes. If you're changing its **contracts, reference implementations, or conformance checks**, read **[`MAINTAINING.md`](MAINTAINING.md)** — it explains the contract → reference → conformance convention and how versions read. The kit's release steps do not ship.
 
 ## Ground rules
 

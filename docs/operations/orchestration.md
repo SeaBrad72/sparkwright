@@ -4,7 +4,7 @@
 
 ## What it is
 
-A founder hands the **Orchestrator** an epic. It slices the epic into disjoint, independently-testable increments, **fans out** an Engineer per slice (each in an isolated git worktree), **meters** every step through the runaway kill-switch, **integrates** the diffs, convenes **Reviewer + Security** on the merged result, and emits an OTel trace the operate-loop scorecard reads. The guardrails are what let you floor it: many agents at once *because* nothing escapes the rails.
+A founder hands the **Orchestrator** an epic. It slices the epic into disjoint, independently-testable increments, **fans out** an Engineer per slice (each in an isolated git worktree), **meters** every step through the runaway kill-switch, **integrates** the diffs, convenes **Reviewer + Security** on the merged result, and emits an OTel trace. The guardrails are what let you floor it: many agents at once *because* nothing escapes the rails.
 
 ## Who drives, what's mechanical
 
@@ -32,7 +32,7 @@ One **standing** Orchestrator; the specialists are **ephemeral** subagents — d
 
 - **Live (Claude):** dispatch the `orchestrator` subagent on an epic; it drives the loop, dispatching real `engineer` subagents.
 - **Mechanics directly:** `sh scripts/orchestrator-run.sh sliceA sliceB` drives the loop in the current repo (the Orchestrator's `ROLE_RUNNER` is a real engineer dispatch; the default is the deterministic fixture).
-- **Representative demo / CI:** `sh scripts/orchestrator-run.sh` runs a self-isolating demo (throwaway git repo) printing a trace path; `--selftest` runs the assertions. The golden-path `orchestrator-loop` job exercises both.
+- **Representative demo / CI:** `sh scripts/orchestrator-run.sh` runs a self-isolating demo (throwaway git repo) printing a trace path; `--selftest` runs the assertions. The golden-path `orchestrator-loop` job runs `--selftest`; no CI job runs the no-arg demo.
 
 ## Honest ceiling (the §10 containment status for E3a)
 

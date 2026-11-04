@@ -10,7 +10,8 @@
 # match the closed grammar (an uppercase/digit verb, `exec` without `sh`, different indentation) is not
 # derived as a route at all, and is caught only if its verb is advertised in the usage string.
 # ONE PLACE PER ROUTE (C9) still holds for route BEHAVIOUR — the
-# doctor / tier-advice / explain routes keep their own *-wired.sh checks; this file owns the router's
+# tier-advice / explain routes keep their own *-wired.sh checks (the doctor route's behaviour is held by
+# scripts/doctor.sh --selftest; its wired check was removed by SWAS-626); this file owns the router's
 # shape, so a new verb is covered without anyone remembering to add a lock.
 #
 #   sh conformance/sparkwright-verbs.sh [--selftest]

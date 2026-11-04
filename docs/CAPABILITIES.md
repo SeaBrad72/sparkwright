@@ -76,9 +76,9 @@ The kit reasons in **abstract tiers** — `apex > deep > fast > light` — never
 - **You bind the tiers to your provider's models** in one adopter-owned file (`.kit/model-map.conf`) — the
   kit ships it with every value `unset`, and each adopter maps the same tiers to their own provider's model
   ladder, as a recorded decision. Opinionated about *structure*, neutral about *which model*.
-- **Fan-out economics are measured, not asserted.** A value-analysis model prices each run in *relative
-  tier-weight units* ("deep-equivalents"), splitting the builder tier-discount from the orchestrator's
-  reassembly tax, so cheaper fan-out is only counted as a win *net of* the integration cost. In one recorded
+- **Fan-out economics were measured once, not asserted.** One recorded measurement
+  (`docs/operations/model-tiering-economics.md`) priced each run in *relative tier-weight units*
+  ("deep-equivalents"), splitting the builder tier-discount from the orchestrator's reassembly tax. In that
   experiment the mixed-tier run was **~52% cheaper** than an all-top-tier run for a small wall-clock cost —
   **directional only, not a benchmark**: a single mixed-vs-baseline run-pair across 4 disjoint slices, noisy
   wall-clock, relative units not dollars, conservative weights (so 52% is if anything understated). It shows
@@ -113,8 +113,7 @@ gate it gives you.
 
 The orchestrator fans engineers into **isolated git worktrees** (no cross-slice file contention), runs each
 under an independent review, integrates through a serial merge queue, and **meters the whole run with a
-runaway kill-switch** (token/agent ceilings per slice, steps off by default; raising one is a ratified act). It emits an OTel run trace
-that the value-analysis and agent-ops tooling read. *Scaling this further — parallel epics, a worker pool, a
+runaway kill-switch** (token/agent ceilings per slice, steps off by default; raising one is a ratified act). It emits an OTel run trace, which `scripts/otlp-export.sh` can forward. *Scaling this further — parallel epics, a worker pool, a
 merge queue at scale — is the roadmap's V2/Axis-B work; today's orchestration is proven at task-level fan-out,
 and the conductor (the serial review/integrate tail) is the measured bottleneck it will attack.*
 

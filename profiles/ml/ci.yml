@@ -14,8 +14,9 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Weekly FULL run of the kit's own selftests. A pull request that changes no control-plane path skips
-  # them (see the "Changed-path listing" step); this cron and every push to main still run them in full.
+  # Weekly FULL run of the kit's own selftests. A pull request or a push to main that changes no control-plane
+  # path skips them (see the "Changed-path listing" step); this cron, and any run the listing cannot vouch
+  # for, still run them in full.
   # It also carries this profile's ONLY all-branches secret sweep (the secret-scan step scans a PR's
   # own commits and main's history, and every ref on a schedule): removing the schedule removes that
   # sweep. Its cadence is yours to tune.
@@ -41,18 +42,31 @@ jobs:
           fetch-depth: 0
 
       # >>> kit:owned changed-listing
-      - name: Changed-path listing (pull_request only)
-        # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the PR's changed paths so verify.sh can skip the kit's own
-        # selftests when none of them is a control-plane path. The base sha is ENV-BOUND, never interpolated
-        # into the script. No listing (a failed diff, an empty diff, or a path containing a newline) means
-        # the aggregate below runs the FULL battery. Push and schedule runs never reach this step.
-        # Default-branch PRs only (security S2): a PR into any other base branch always runs the full battery.
-        if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch
+      - name: Changed-path listing (default-branch pull request or push)
+        # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the run's changed paths so verify.sh can skip the kit's own
+        # selftests when none of them is a control-plane path. A pull request into the default branch lists
+        # BASE...HEAD; a push to the default branch lists the TWO-dot BEFORE..SHA (two trees, so a force-push
+        # over-lists, the safe direction). Both shas are ENV-BOUND, never interpolated into the script, and
+        # must be 40 or 64 hex; an all-zero before (a first push) is refused. No listing (a refusal, a failed
+        # diff, an empty diff, or a path containing a newline) means the aggregate below runs the FULL battery.
+        # A schedule run, or any other event, never gets a listing: the weekly run stays the full battery.
+        # Default branch only (security S2): a PR into any other base branch, or a push to any other branch,
+        # always runs the full battery.
+        if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: |
           z="$RUNNER_TEMP/kit-changed.z"
-          if git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$z" \
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;
+            push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;
+            *) exit 0 ;;
+          esac
+          case "$base" in *[!0-9a-f]*|'') exit 0 ;; esac
+          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0
+          case "$base" in *[!0]*) : ;; *) exit 0 ;; esac
+          if git diff -z --name-only --no-renames "$range" > "$z" \
             && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
             tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
             echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
@@ -65,8 +79,9 @@ jobs:
         # unwritten RPO/RTO. Placed before toolchain setup because the aggregate is POSIX sh with
         # no toolchain dependency; identical placement across every emitted pipeline is what makes
         # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
-        # KIT_CHANGED is set only by the pull_request listing step above; empty on push / schedule, so those
-        # run plain `verify.sh --require` (the full battery). Keep this ONE line (verify-enforced-wired reads it).
+        # KIT_CHANGED is set only by the listing step above (a default-branch pull request or push); empty on
+        # a schedule or any unknown, so those run plain `verify.sh --require` (the full battery). Keep this
+        # ONE line (verify-enforced-wired reads it).
         run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
       # <<< kit:owned changed-listing
 

@@ -9,9 +9,9 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Renders {@link Telemetry#renderMetrics()} as Prometheus text exposition ({@code text/plain;
  * version=0.0.4}). The exact literal series names ({@code http_requests_total}, {@code
- * http_request_duration_seconds_total}) are load-bearing: {@code
- * conformance/metrics-endpoint-wired.sh} greps for them verbatim, which is why the hand-rolled
- * {@link Telemetry} exposition is used rather than Micrometer/Actuator's default naming scheme.
+ * http_request_duration_seconds_total}) are load-bearing: they are the kit's cross-stack metric
+ * names, which is why the hand-rolled {@link Telemetry} exposition is used rather than
+ * Micrometer/Actuator's default naming scheme.
  */
 @RestController
 public class MetricsController {

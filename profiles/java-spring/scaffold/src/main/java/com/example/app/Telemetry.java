@@ -31,10 +31,9 @@ import java.util.Set;
  * stdout; logs carry {@code SERVICE_NAME} (default {@code "reference-app"}).
  *
  * <p>The exact literal series names ({@code http_requests_total}, {@code
- * http_request_duration_seconds_total}) are load-bearing: {@code
- * conformance/metrics-endpoint-wired.sh} greps for them verbatim, so a Micrometer/Actuator default
- * naming scheme would not satisfy the kit's cross-stack parity contract without hand-rolling this
- * exact exposition — which is what this class does.
+ * http_request_duration_seconds_total}) are load-bearing: a Micrometer/Actuator default naming
+ * scheme would not satisfy the kit's cross-stack parity contract without hand-rolling this exact
+ * exposition — which is what this class does.
  */
 public final class Telemetry {
 

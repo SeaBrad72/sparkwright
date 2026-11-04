@@ -21,13 +21,10 @@ conformance/a11y-obligation.sh	UNCOVERED	no-idiom
 conformance/adopter-export-claims.sh	KILLED	-
 conformance/adopter-export-wired.sh	KILLED	-
 conformance/adopter-gates-parity.sh	KILLED	-
-conformance/adopter-preflight-wired.sh	KILLED	-
 conformance/adopter-told.sh	KILLED	-
 conformance/agent-autonomy.sh	KILLED	-
 conformance/agent-boundary.sh	KILLED	-
-conformance/agentops-sensor-wired.sh	KILLED	-
 conformance/agents-brief.sh	KILLED	-
-conformance/app-tracing-wired.sh	KILLED	-
 conformance/assurance-tiers.sh	KILLED	-
 conformance/author-not-approver-wired.sh	KILLED	-
 conformance/backlog-adapters.sh	EXCLUDED	no --selftest substring — no oracle to mutate
@@ -47,7 +44,6 @@ conformance/citation-live.sh	KILLED	-
 conformance/codeowners-export-clean.sh	KILLED	-
 conformance/conformance-mass-budget.sh	KILLED	-
 conformance/container-supply-chain.sh	EXCLUDED	no --selftest substring — no oracle to mutate
-conformance/containment-audit-wired.sh	KILLED	-
 conformance/control-plane-revert-drill.sh	KILLED	-
 conformance/decision-id-live.sh	KILLED	-
 conformance/decision-integrity.sh	KILLED	-
@@ -57,10 +53,7 @@ conformance/dial-state.sh	KILLED	-
 conformance/discovery-complete.sh	KILLED	-
 conformance/doc-budget.sh	KILLED	-
 conformance/doc-markers.sh	KILLED	-
-conformance/escalation-wired.sh	KILLED	-
 conformance/eval-harness-runs.sh	KILLED	-
-conformance/eval-harness-wired.sh	KILLED	-
-conformance/feature-flags-wired.sh	KILLED	-
 conformance/go-toolchain-coherent.sh	KILLED	-
 conformance/guard-wired.sh	KILLED	-
 conformance/hardlink-integrity.sh	KILLED	-
@@ -71,7 +64,6 @@ conformance/incept-first-run-green.sh	KILLED	-
 conformance/inception-bootstrap-documented.sh	KILLED	-
 conformance/inception-done.sh	KILLED	-
 conformance/loop-state.sh	KILLED	-
-conformance/metrics-endpoint-wired.sh	KILLED	-
 conformance/mode-enforcement-blind.sh	UNCOVERED	context/run-location
 conformance/model-tiering.sh	KILLED	-
 conformance/named-adapters.sh	KILLED	-
@@ -79,13 +71,11 @@ conformance/non-vacuity.sh	KILLED	-
 conformance/obligation-lib.sh	KILLED	-
 conformance/onboarding-complete.sh	KILLED	-
 conformance/orchestrator-loop-wired.sh	KILLED	-
-conformance/otlp-backend-wired.sh	KILLED	-
 conformance/owner-step-markers.sh	KILLED	-
 conformance/permission-surface-audit.sh	KILLED	-
 conformance/pipeline-origin.sh	KILLED	-
 conformance/poster-parity.sh	KILLED	-
 conformance/prepush-lane.sh	KILLED	-
-conformance/profile-parity.sh	KILLED	-
 conformance/promotion-actuate-wired.sh	KILLED	-
 conformance/promotion-contract-documented.sh	KILLED	-
 conformance/promotion-verify-wired.sh	UNCOVERED	CTL-only — selftest may not observe the check's exit code; manual review
@@ -98,7 +88,6 @@ conformance/roster-guard-wired.sh	KILLED	-
 conformance/runaway-killswitch-wired.sh	KILLED	-
 conformance/runbook-current.sh	KILLED	-
 conformance/runtime-floor-coherent.sh	KILLED	-
-conformance/runtime-security.sh	KILLED	-
 conformance/script-disclosure.sh	KILLED	-
 conformance/secret-scan-wired.sh	KILLED	-
 conformance/security-channel-live.sh	KILLED	-
@@ -106,12 +95,10 @@ conformance/selftest-hermetic.sh	KILLED	-
 conformance/shell-parse-lint.sh	KILLED	-
 conformance/shellcheck.sh	KILLED	-
 conformance/stack-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
-conformance/structured-logging-wired.sh	KILLED	-
 conformance/surface-lib-wired.sh	UNCOVERED	CTL-only — selftest may not observe the check's exit code; manual review
 conformance/threat-obligation.sh	UNCOVERED	no-idiom
 conformance/token-scope.sh	KILLED	-
 conformance/tool-coverage.sh	KILLED	-
-conformance/trace-query-wired.sh	KILLED	-
 conformance/uat-obligation.sh	UNCOVERED	no-idiom
 conformance/verify-enforced-wired.sh	KILLED	-
 conformance/version-tag-coherent.sh	KILLED	-

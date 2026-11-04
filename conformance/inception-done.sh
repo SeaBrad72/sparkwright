@@ -479,7 +479,7 @@ else
     # shell for full re-parsing, so a JSON fixture's unquoted `{...,...}` undergoes brace expansion
     # there (measured on this box's /bin/sh, bash-as-sh) and silently mangles the stub's own JSON.
     # Direct expansion evaluates the variable's value as an already-expanded word (split, not
-    # re-parsed), so the braces stay literal — the same reason adopter-preflight-wired.sh's identical
+    # re-parsed), so the braces stay literal — the same reason scripts/preflight.sh's identical
     # fixture shape works.
     # [reviewer Minor-5b + security LOW-2, fix round 1] INCEPTION_DONE_GH_CMD trust class: it is
     # honored ONLY from the invoker's OWN environment, by direct expansion — never re-parsed from

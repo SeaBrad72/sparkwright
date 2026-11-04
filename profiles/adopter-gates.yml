@@ -1,7 +1,7 @@
 # Reference ADOPTER-GATES workflow — the board/loop merge-time gates the kit uses on itself,
 # ported for an adopted project: `backlog-presence` (a gated PR binds a board row), `ceremony-binding`
 # (a gated PR carries a recorded design GO), and `loop-state` (the Entry-Declaration refusal floor —
-# shipped ACTIVE and ENFORCING since 2026-08-30; `observe` is the one-line opt-out, see the dial
+# shipped ACTIVE and ENFORCING; `observe` is the one-line opt-out, see the dial
 # below). THE SINGLE, STACK-NEUTRAL SOURCE — like
 # profiles/ratification.yml, this file runs no toolchain step, so it is identical for every stack and
 # lives here once (a shared, non-stack asset), NOT once per profile. scripts/incept.sh installs it for
@@ -12,7 +12,7 @@
 # equivalents live in .github/workflows/ci.yml — this file is not dogfooded as a second copy (see the
 # honest ceiling below).
 #
-# ⚠️ EVERY JOB KEY HERE IS A REQUIRED-CHECK NAME — DO NOT RENAME ONE (changed 2026-08-27).
+# ⚠️ EVERY JOB KEY HERE IS A REQUIRED-CHECK NAME — DO NOT RENAME ONE.
 # These gates used to compute a verdict and then POST it as a check-run through the API, from jobs
 # whose keys deliberately DIFFERED from the check name (`gate-backlog-presence` + a `post-*` twin).
 # That indirection existed to render a WAITING state YELLOW, which a workflow job cannot do. It broke:
@@ -48,36 +48,36 @@
 #     below. In enforce mode the gate's own rc is the job's exit, so a missing or invalid Entry
 #     Declaration BLOCKS the merge.
 #
-# ── THE loop-state OBSERVE/ENFORCE DIAL (Δ1, owner-ruled 2026-08-06; DEFAULT FLIPPED 2026-08-30) ──
+# ── THE loop-state OBSERVE/ENFORCE DIAL ──
 # Ported as-is, loop-state is a plain red ✗ on every adopter PR forever: no adopter commit carries
 # Kit-* trailers on day one, and the declaration legs have no N/A route. A commented-out block was
 # considered and rejected — the kit's own rollout doctrine is "observe-only first, then enforcing
-# behind a flag" (the exact shape Slice B1 shipped for its own tree), and a dead comment never gets
+# behind a flag" (the exact shape the kit shipped for its own tree), and a dead comment never gets
 # adopted. So this gate ships ACTIVE, gated on the single dial below:
 #
 #     LOOP_STATE_MODE: enforce   (DEFAULT — the gate's REAL verdict; can BLOCK the merge)
 #     LOOP_STATE_MODE: observe   (opt-out — a NUDGE, never a block; one line, at the top of this file)
 #
-# ⚠️ THE DEFAULT WAS `observe` UNTIL 2026-08-30 AND THE FLIP HAS A NAMED REASON — do not revert it
-# as tidying. `D-240811-2.1` held that no dial is left in bare observe: every observe state carries
+# ⚠️ THE DEFAULT USED TO BE `observe` AND THE FLIP HAS A NAMED REASON — do not revert it
+# as tidying. The kit's rule is that no dial is left in bare observe: every observe state carries
 # its named TRIGGER for flipping. loop-state's trigger was "the required trailer set is agent
 # self-attested" — Kit-Stage and Kit-Skill are checked only for resolvability, so an adopter was
-# being asked to block merges on fields nothing could verify. That trigger fired in the same PR
-# that flips this line: ENTRY-CONTRACT-CLASS-PROPORTIONAL cut the required set to the two fields
+# being asked to block merges on fields nothing could verify. That trigger fired in the same change
+# that flips this line: the required set was cut to the two fields
 # checked against an authority outside the author (Kit-Row against the board, Kit-Class against
-# the classifier). The amendment to `D-240811-2.1` is transcribed in docs/governance/DECISIONS.md
-# under 2026-08-30. What an adopter's first PR now owes is TWO trailers, and `Kit-Row` N/As on a
+# the classifier). What an adopter's first PR now owes is TWO trailers, and `Kit-Row` N/As on a
 # pristine board — so first-run-green survives (see scripts/incept.sh's first-green hint, which
-# prints the exact two-line block).
-# ⚠️ THE HOOK DEFAULTS ARE UNTOUCHED, and that is the other half of `D-240811-2.1`: flipping a
+# prints the exact two-line block). EVERY class now owes exactly those two:
+# the class no longer widens the set, and Kit-Stage / Kit-Skill are not read by the gate at all.
+# ⚠️ THE HOOK DEFAULTS ARE UNTOUCHED, and that is the other half of the same ruling: flipping a
 # shipped HOOK default would leak enforce at every hook re-copy. This is the EMITTED WORKFLOW
 # default — one line in the adopter's own tree, which they own and can edit.
 #
 # ⚠️⚠️ AND THAT EDITABILITY IS ALSO THE CEILING — SAY IT PLAINLY RATHER THAN LET A GREEN IMPLY MORE.
 # This workflow is read from the PR's own branch, so the dial is editable ON THE BRANCH THE GATE IS
 # JUDGING: a PR may set `LOOP_STATE_MODE: observe` in the same commit that would have failed the
-# gate, and the gate then passes itself. That is the SAME SELF-SERVICE CLASS as
-# `LOOP-STATE-NA-SELF-SERVICE` (where flipping the backlog backend N/As the row leg), and it is not
+# gate, and the gate then passes itself. That is the SAME SELF-SERVICE CLASS as a PR
+# flipping the backlog backend to N/A the row leg, and it is not
 # closed here. WHAT ACTUALLY HOLDS IT is `loop-state` being bound as a REQUIRED CONTEXT — which
 # scripts/incept.sh now declares in REQUIRED-CHECKS.md — because flipping to observe while the
 # context is bound re-creates the silent pass-through (an always-exit-0 job satisfying a required
@@ -115,7 +115,7 @@ env:
   #   EXIT CONDITION: flip to `enforce` when your record discipline is real — when every code PR in
   #   this repo carries a Kit-Plan and a Kit-Review trailer naming a graded plan and review record.
   #
-  # ⚠️ THE EXIT CONDITION CHANGED ON 2026-09-05 (`REVIEW-LANE-WAITING-IS-GREEN`). It used to be "a
+  # ⚠️ THE EXIT CONDITION HAS CHANGED. It used to be "a
   # SECOND FORGE IDENTITY exists on this repository", because the gate's last leg was an attestation
   # by a non-author approver and a solo adopter with one account could not produce one — the half was
   # UNAVAILABLE, not merely weaker. That leg is deleted: the forge-side attestation is branch
@@ -154,7 +154,7 @@ jobs:
       contents: read
       pull-requests: read  # the PR files-API listing below 403s without this (probe #500, measured)
     steps:
-      # base.sha, never head.sha (RT2-Q4): load-bearing for --base-dir "$GITHUB_WORKSPACE" below —
+      # base.sha, never head.sha: load-bearing for --base-dir "$GITHUB_WORKSPACE" below —
       # pinned by conformance/adopter-gates-parity.sh::assert_t2_base_checkout (a dedicated leg;
       # proportional-gate-wired.sh's generic taint scanner is scoped to ratification.yml/ci.yml and
       # allows either subject, so it does not pin THIS job's checkout).
@@ -255,7 +255,7 @@ jobs:
       - name: Board-presence merge-gate — the gate's rc is this job's exit
         env:
           PR: ${{ github.event.pull_request.number }}
-          # P1-CI: the BRANCH NAME exists BEFORE the PR is opened, so a row bound by branch can land
+          # The BRANCH NAME exists BEFORE the PR is opened, so a row bound by branch can land
           # in the PR-opening commit. Untrusted (attacker-influenceable) — env-bound, passed by
           # ARGUMENT, never interpolated into the shell line.
           HEAD_REF: ${{ github.head_ref }}
@@ -490,12 +490,12 @@ jobs:
         id: gate
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # The SECOND scope key (BRANCH-SCOPE-END-TO-END Δ1, MIRRORED from ci.yml): a design GO is
-          # recorded before the PR exists and carries `scope: branch/<name>` (D11), so matching that
+          # The SECOND scope key (MIRRORED from ci.yml): a design GO is
+          # recorded before the PR exists and carries `scope: branch/<name>`, so matching that
           # key is what removes the PR-creation re-record. github.head_ref is AUTHOR-CONTROLLED —
           # bound through env, passed as an ARGUMENT, never interpolated into the shell.
           HEAD_REF: ${{ github.head_ref }}
-          # Δ2 (fix round 1, MIRRORED from ci.yml) — the base the CONTAINMENT leg measures "already
+          # MIRRORED from ci.yml — the base the CONTAINMENT leg measures "already
           # integrated" against. Reachability alone does NOT close the reused-name class: once a
           # historic same-named branch is merged into the base its approved commit is on the
           # mainline and a new branch inherits it. Without this the gate discloses a reachable-only
@@ -517,20 +517,20 @@ jobs:
           esac
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           echo "ceremony-binding => rc=$rc (0 pass/N-A · 1 WAITING, red-but-not-a-failure · 2 anomaly, red)"
-      # B2 Δ4(ii) — the judgment-surface render, MIRRORED from ci.yml (reviewer I4: the gate shipped
+      # The judgment-surface render, MIRRORED from ci.yml (the gate once shipped
       # to adopters without the visibility half of the disposition, which is the mirror-divergence
-      # class B6 paid a Critical for). The GO record this merge rides on walks INTO the reviewer's
+      # class that once cost a Critical finding). The GO record this merge rides on walks INTO the reviewer's
       # field of view on the run page BEFORE the click; WAITING/anomaly render one line each.
       # Detection at the judgment surface, not prevention — a note BINDS, it does not AUTHENTICATE.
-      # ⚠️ THE RENDER'S BODY IS NO LONGER HERE — Δ3, BRANCH-SCOPE-END-TO-END (2026-08-11), MIRRORED
+      # ⚠️ THE RENDER'S BODY IS NO LONGER HERE — MIRRORED
       # from ci.yml. It lived in THREE places (this step, ci.yml's, and the gate script's matcher)
-      # and Δ1 adds a SECOND scope key; a copy left matching the PR key alone would render NOTHING
+      # and a SECOND scope key (the branch name) was added; a copy left matching the PR key alone would render NOTHING
       # on exactly the PRs the branch key enables — the gate green, the reviewer clicking with no
       # record in view. The behaviour is single-sourced into `ceremony-binding.sh --render` and this
-      # step INVOKES it. Every property is preserved IN THE SCRIPT: ALL matches (B7 rider), bodies
+      # step INVOKES it. Every property is preserved IN THE SCRIPT: ALL matches, bodies
       # VERBATIM inside ONE GROWN FENCE (untrusted ledger content — a forged field closed a code
-      # span and emitted `<br>` to render a second, stronger `approved-by` line, measured B2 sec
-      # H2), and an 8 KB bound TOTAL across records with the cut ANNOUNCED (GitHub drops a whole
+      # span and emitted `<br>` to render a second, stronger `approved-by` line, measured in a
+      # security review), and an 8 KB bound TOTAL across records with the cut ANNOUNCED (GitHub drops a whole
       # >1 MiB summary). DO NOT RE-INLINE ANY OF IT — conformance/adopter-gates-parity.sh refuses a
       # leg that regrows a copy or drops this invocation.
       # Nothing is `${{ }}`-interpolated into the script and the only sink is $GITHUB_STEP_SUMMARY
@@ -611,7 +611,7 @@ jobs:
           # THE EXIT STAYS ON ITS OWN LINE — the kit's parity locks anchor this exact literal per job.
           [ "$rc" = 0 ] || exit 1
 
-  # ── loop-state (Δ1: ACTIVE, observe-mode dial) ─────────────────────────────────────────────────
+  # ── loop-state (ACTIVE, observe-mode dial) ─────────────────────────────────────────────────
   # The universal Entry-Declaration refusal floor — see the workflow header for the observe/enforce
   # dial. ONE JOB, keyed `loop-state`, holding no token: loop-state.sh reads the PR HEAD's commit
   # trailers (and, via promotion-readiness.sh --class, executes conformance/*.sh FROM THAT TREE), so
@@ -631,8 +631,8 @@ jobs:
           # credential drops at checkout, before the PR-controlled loop-state.sh (and, via
           # promotion-readiness.sh --class, PR-tree conformance/*.sh) runs.
           persist-credentials: false
-      # LOOP-STATE-TRACKER-STEP-ASIDE T2 — a SECOND, base checkout, added AFTER the head checkout
-      # above so base content wins (LS-D2): a head-carried, non-repo `.kit-base/` directory is wiped
+      # A SECOND, base checkout, added AFTER the head checkout
+      # above so base content wins: a head-carried, non-repo `.kit-base/` directory is wiped
       # by actions/checkout's own `prepareExistingDirectory` step before this checkout writes into
       # it (NOT `clean: true`, which acts on an existing git repo, not a bare/absent one). A
       # symlink- or file-shaped `.kit-base` makes this checkout fail (red) or resolve to base
@@ -645,7 +645,7 @@ jobs:
           path: .kit-base
           fetch-depth: 1
           persist-credentials: false
-      # Trunk-name tag tripwire (SWAS-247). Git resolves a short name such as `origin/main` with
+      # Trunk-name tag tripwire. Git resolves a short name such as `origin/main` with
       # refs/tags/ ahead of refs/remotes/, so a pushed tag of that name becomes "the trunk" for the
       # class derivation in this job (promotion-readiness.sh --class). This job's own checkout fetched the
       # tags, so a decoy tag plus a rerun of this one job would derive a narrow class: the step reds the job
@@ -704,15 +704,15 @@ jobs:
               if (bad) exit 1
               print "trunk-tag-tripwire: OK - no tag shadows the trunk or a branch (" (remote == 1 ? "local and remote" : "local only") ")."
             }' "$L"
-      # A3 — NO TOKEN AND NO API CALL ON AN `md` ADOPTER. This step runs ONLY when the base branch
+      # NO TOKEN AND NO API CALL ON AN `md` ADOPTER. This step runs ONLY when the base branch
       # declares a hosted tracker (.kit/tracker.conf present in the base checkout above); on `md`
       # the file is absent, the `if:` short-circuits, and the step (its token included) never runs.
       # The `gh api` command is byte-identical to the backlog-presence job's own copy
-      # (profiles/adopter-gates.yml:251) — same target, jq filter and env: shape, so the two gates
+      # (its step of the same name) — same target, jq filter and env: shape, so the two gates
       # can never silently diverge on the same predicate. The fallback echo differs by design (it
       # names `loop-state`, not `backlog-presence`), so the reader knows which gate logged it. The
-      # `GH_TOKEN` here is HYGIENE, NOT ISOLATION (adopter-tracker-gates.yml:
-      # 49-52): `${{ github.token }}` is reachable by any head through the workflow file, and it is
+      # `GH_TOKEN` here is HYGIENE, NOT ISOLATION (see adopter-tracker-gates.yml):
+      # `${{ github.token }}` is reachable by any head through the workflow file, and it is
       # confined to this one step's env:, which runs no head code, so nothing downstream inherits it.
       - name: Fetch the base branch's LIVE required contexts (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T2)
         if: hashFiles('.kit-base/.kit/tracker.conf') != ''
@@ -722,7 +722,7 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           gh api "repos/${REPO}/branches/${BASE_REF}" --jq 'select(.name == env.BASE_REF) | .protection.required_status_checks.contexts[]?' > /tmp/live-contexts 2>/tmp/live-contexts.err || { rm -f /tmp/live-contexts; echo "loop-state: could not read the base branch's required contexts — the tracker step-aside stays off"; }
-      - name: Entry Declaration on the PR head commit (row · stage · class · skill)
+      - name: Entry Declaration on the PR head commit (row · class)
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -787,7 +787,7 @@ jobs:
           if [ "$rc" != 0 ]; then
             case "$rc" in
               1) _title='loop-state: BLOCKING — no valid Entry Declaration on the head commit'
-                 _msg='To proceed: add the entry trailers as the LAST contiguous paragraph of the head commit message and push. What is required depends on the change class: an ORDINARY change owes Kit-Row + Kit-Class; a SENSITIVE or CONTROL-PLANE change owes those two plus Kit-Stage + Kit-Skill. A field you volunteer is validated either way. LOOP_STATE_MODE is enforce (the shipped default) so this blocks the merge; set it to observe at the top of this workflow to opt out.' ;;
+                 _msg='To proceed: add the entry trailers as the LAST contiguous paragraph of the head commit message and push. Every change owes Kit-Row + Kit-Class, whatever its class. A Kit-Plan, Kit-Review or Kit-Scope you carry is checked too; any other Kit-* field is ignored. LOOP_STATE_MODE is enforce (the shipped default) so this blocks the merge; set it to observe at the top of this workflow to opt out.' ;;
               *) _title='loop-state: GATE ERROR — could not evaluate the head commit'
                  _msg=$(printf '%s' "$summary" | tr '\n\r\t' '   ' | cut -c1-400) ;;
             esac
@@ -797,10 +797,10 @@ jobs:
           [ "$rc" = 0 ] || exit 1
 
   # ── review-lane ─────────────────────────────────────────────────────────────────────────────────
-  # LOOP-STAGE-ARTIFACT-GATE: a sensitive/control-plane PR (and any non-docs-only ordinary one) must
+  # A sensitive/control-plane PR (and any non-docs-only ordinary one) must
   # name a plan file and a review record on its head commit, both graded.
   #
-  # ⚠️ STRUCTURAL ONLY since `REVIEW-LANE-WAITING-IS-GREEN` (2026-09-05). This job used to end on a leg
+  # ⚠️ STRUCTURAL ONLY. This job used to end on a leg
   # that read the forge's review list and returned WAITING — a value a job cannot render as anything
   # but RED, cleared only by a manual re-run after the Approve. It is deleted. The forge-side
   # attestation is branch protection's own review requirement (`required_approving_review_count >= 1` +
@@ -826,7 +826,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-      # Trunk-name tag tripwire (SWAS-247). Git resolves a short name such as `origin/main` with
+      # Trunk-name tag tripwire. Git resolves a short name such as `origin/main` with
       # refs/tags/ ahead of refs/remotes/, and this job's checkout is the BASE tree at fetch-depth 0, so
       # the tags are here and the grader's `rl_base` tries a short name (`origin/<base_ref>`) before the
       # full ref. A decoy tag plus a rerun of this one job would grade against the wrong base: the step

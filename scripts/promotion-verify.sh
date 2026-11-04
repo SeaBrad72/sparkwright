@@ -2020,27 +2020,32 @@ pv_solo_go_ok() {
 # approved head graded at least the light set. The predicate is conformance/ci-classify-changes.sh --head-evidence (the very one
 # main's push lane uses), run from the same checkout as the verb (main's, for `land`), not from the PR head. The reads are `gh api` GETs over the operator's own
 # credential, promoted only on rc 0 and a parseable page. It reads no environment variable and parses no flag.
-# SCOPE (H1): the leg belongs to the KIT pipeline. Two facts are read, each at TWO locations (this script's own checkout, and the
-# top level of the repository the verb operates on): the decider conformance/ci-gate-state.sh exists, and .github/workflows/ci.yml
-# carries a `gate:` job. BOTH locations kit: the leg runs. BOTH adopter: ONE N/A line and the verb proceeds. A DISAGREEMENT:
-# REFUSED `layout-mismatch`. EXACTLY ONE fact at either: REFUSED `kit-pipeline-half-present`, so deleting one fact never
-# silently disables the leg. CEILING: in the kit repo, a merged reviewed control-plane PR that deletes BOTH turns later lands to N/A.
+# SCOPE (H1): the leg belongs to the KIT pipeline. Three facts are read, each at TWO locations (this script's own checkout, and the
+# top level of the repository the verb operates on): the decider conformance/ci-gate-state.sh exists, the kit-only marker
+# conformance/adopter-census.sh exists, and .github/workflows/ci.yml carries a `gate:` job. BOTH locations kit (all three): the leg
+# runs. BOTH adopter (no decider, no marker): ONE N/A line and the verb proceeds. A DISAGREEMENT:
+# REFUSED `layout-mismatch`. ANY OTHER combination at either: REFUSED `kit-pipeline-half-present`, so deleting one fact never
+# silently disables the leg. CEILING: in the kit repo, a merged reviewed control-plane PR that deletes both the decider and the marker turns later lands to N/A.
 # HONEST CEILING: verb-scoped. A raw `gh pr merge`, or the forge's merge button, is outside it; `trace --recent` flags those after
 # the fact, and a CI context rename is the server-side layer (out of this slice). The workflow and the `gate` job live in the head.
-# TWO LOCATIONS (fix round 2, closes a fail-open): the two facts are read from BOTH the checkout that holds this script AND the
+# TWO LOCATIONS (fix round 2, closes a fail-open): the three facts are read from BOTH the checkout that holds this script AND the
 # repository the verb operates on (the top level of the current working repository). A relocated copy or a symlink of the gate, or
 # `sh -s`, run from inside a kit-layout repository would otherwise read "adopter" from its own directory and merge a draft. Both
 # "kit": the leg runs. Both "adopter": ONE N/A line. ANY disagreement: REFUSED `layout-mismatch`. EITHER "half":
 # `kit-pipeline-half-present`. No git repository: `forge-unreadable`, never N/A. Every refusal names both layouts.
-# pv_ev_lay_of <root> -> stdout kit | adopter | half (the two facts above, read under that root).
+# pv_ev_lay_of <root> -> stdout kit | adopter | half (the three facts above, read under that root).
 pv_ev_lay_of() {
-  _pl_dec=0; _pl_gate=0
+  # Three facts: the decider, the kit-only marker (conformance/adopter-census.sh, export-ignored and control-plane, so no adopter tree
+  # carries it) and the gate job. kit = all three; adopter = neither decider nor marker (an adopter's own `gate:` job cannot change
+  # the answer); half = every other combination.
+  _pl_dec=0; _pl_mark=0; _pl_gate=0
   if [ -f "$1/conformance/ci-gate-state.sh" ]; then _pl_dec=1; fi
+  if [ -f "$1/conformance/adopter-census.sh" ]; then _pl_mark=1; fi
   if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _pl_gate=1; fi
-  case "$_pl_dec$_pl_gate" in
-    11) printf 'kit\n' ;;
-    00) printf 'adopter\n' ;;
-    *)  printf 'half\n' ;;
+  case "$_pl_dec$_pl_mark$_pl_gate" in
+    111)     printf 'kit\n' ;;
+    000|001) printf 'adopter\n' ;;
+    *)       printf 'half\n' ;;
   esac
 }
 # pv_ev_layout -> _pv_ev_layout = kit | adopter | refuse; on refuse _pv_ev_lay_reason names the token. _pv_ev_lay_note names both layouts.
@@ -2058,7 +2063,7 @@ pv_ev_layout() {
     *)               _pv_ev_layout=refuse; _pv_ev_lay_reason=layout-mismatch ;;
   esac
 }
-pv_ev_na_line() { echo "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)"; }
+pv_ev_na_line() { echo "exact-head CI evidence: N/A (not the kit's own CI pipeline)"; }
 # pv_ev_pr_number <scope> -> stdout the PR digits (PR #N, PR-N, #N or N); rc 1 when the scope is not a PR id.
 pv_ev_pr_number() {
   case "$1" in
@@ -2175,7 +2180,7 @@ pv_ci_evidence() {
     draft)            _pc_wait="PR #$_pc_n is a draft, and a draft runs only the cheap CI: mark it ready, wait for the run on that head to complete, then re-run" ;;
     fork-head)        _pc_wait="PR #$_pc_n has its head in a fork, and a fork's CI run is not this repository's evidence: push the branch to this repository, open the PR from it, then re-run" ;;
     ref-mismatch)     _pc_wait="--ref is not the head branch of PR #$_pc_n: pass the PR's own head branch (gh pr view $_pc_n --json headRefName), at the approved sha" ;;
-    kit-pipeline-half-present) _pc_wait="$_pv_ev_lay_note; a layout with only ONE of conformance/ci-gate-state.sh and a gate: job in .github/workflows/ci.yml cannot be told from an adopter's: restore the missing half (a reviewed control-plane change removes both or neither)" ;;
+    kit-pipeline-half-present) _pc_wait="$_pv_ev_lay_note; a kit layout carries all three of conformance/ci-gate-state.sh, conformance/adopter-census.sh and a gate: job in .github/workflows/ci.yml, and an adopter tree has neither the decider nor the marker; this one has some but not all: restore the missing kit fact (conformance/ci-gate-state.sh, conformance/adopter-census.sh, or the gate: job in .github/workflows/ci.yml); removing kit facts is a reviewed control-plane change" ;;
     layout-mismatch)  _pc_wait="$_pv_ev_lay_note, and the leg trusts neither alone: run the gate that lives in the repository you are merging in (its own scripts/promotion-verify.sh), not a copy, a symlink or a piped script" ;;
     stale-head)       _pc_wait="the PR head is no longer the approved sha $3: re-review the new head and re-record the GO" ;;
     no-graded-run)    _pc_wait="no pull_request run of ci.yml exists on this head yet: wait for it to start, then re-run" ;;

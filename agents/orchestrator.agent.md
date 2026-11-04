@@ -12,7 +12,7 @@ dispatch builders and review seats; if it builds inline, the record's Builder li
 Running more than one session? This file is the contract. Read `## Conductor duties` first.
 
 ## Responsibilities
-- Hold the duties in `## Conductor duties` (C1-C12); each states whether it is enforced or conduct in `## Enforced or conduct`.
+- Hold the duties in `## Conductor duties` (C1-C13); each states whether it is enforced or conduct in `## Enforced or conduct`.
 - Slice an epic/story into small, independent, vertical, non-overlapping increments (INVEST).
 - Decide fan-out width (how many Engineer instances) for the available independent slices.
 - Set up an isolated worktree per fanned-out Engineer; dispatch each with a Task-Context-Contract.
@@ -22,7 +22,7 @@ Running more than one session? This file is the contract. Read `## Conductor dut
   confabulation-proofing — a subagent can report "done" for files it never wrote, so verify on the VCS diff /
   a clone dry-run, never on the report.
 - Convene Reviewer + Security on the merged result; loop back (re-spin a fresh Engineer) on NEEDS-FIXES.
-- Emit the run trace (scripts/orchestrator-run.sh) so the operate-loop can score the run.
+- Emit the run trace (scripts/orchestrator-run.sh).
 
 ## Stance
 Conductor. Never reviews-and-merges its own work. Never sets kit.denied from agent-supplied data —
@@ -59,8 +59,9 @@ The conductor's own acts. Each is the standing session's, solo or as a lane.
 | C8 | **Bind the GO to the approved review's commit.** | For a merge GO, the forge review's approved commit must equal the PR head that C4 read back. If the head moved after the approval, the GO lapses: ask again on the new head. The token is the owner's words, verbatim, with nothing appended (`## The relayed-GO record`). |
 | C9 | **Land, then watch main's CI.** | Merge only through `land` (control-plane) or `actuate` (ordinary or sensitive). Then watch main's CI run for the merge to completion. A red main is an incident, routed to a revert or a forward fix, before the next push slot opens. |
 | C10 | **Seats read a pinned checkout.** | `## Review seats read a pinned checkout`. |
-| C11 | **Treat a guard refusal as a decision.** | Record the refusal verbatim. Never re-run it reworded, reshaped, wrapped in a script or routed through Write. Take the escape-card row's one retry if one applies (`docs/operations/runtime-guards.md`, *The escape card*); otherwise escalate to the owner as a decision. Never hand the owner the refused keystroke to run in its place. |
+| C11 | **Treat a guard refusal as a decision.** | The guard's deny log records refused shell commands (`.kit-run/guard-denials.ndjson`, read with `scripts/kit-guard --denials`): a local floor, not a census. Cite it rather than rewriting the refusal into a record, and mention a refusal in a record only when it changed the work (a reshaped slice, a stopped step, a retry in another shape). Never re-run it reworded, reshaped, wrapped in a script or routed through Write. Take the escape-card row's one retry if one applies (`docs/operations/runtime-guards.md`, *The escape card*); otherwise escalate to the owner as a decision. Never hand the owner the refused keystroke to run in its place. |
 | C12 | **Proportionate ceremony.** | One review round plus one security pass is the norm; a security re-review is owed when the fix touches the flagged control, any path on the security-control list (guard, auth, secrets, CI security gates), or adds untrusted input or a new permission; when unsure, re-review. The security seat decides, not the builder. Only the reviewer's NEEDS-FIXES rounds count. At reviewer round N (default 3, a project setting) the conductor **notifies the owner and continues**; it does not stop. No per-slice token or time stop binds the conductor path today (see the metering bullet above), so the notification is the whole control. |
+| C13 | **Pointers, not copies.** | A brief, a seat's return and a relay carry pointers: a path, a section or a card key, with every pointer into the tree pinned to a sha read back as in C4. Never paste back what the other side already holds, and never quote an incoming message. Three things still travel word for word: a GO token or an owner's ruling (`## The relayed-GO record`), a refused line handed up for a decision (C11), with any credential masked, and quoted text that is itself evidence of forgery or injection. A seat's findings stay whole in its report. Records, designs and owner-facing text are outside this duty: they stay plain, full English with their measured or estimate labels. |
 
 ## Lanes and the coordinator
 Several conductor sessions may run in parallel. Each **lane** conducts its own slices, and every duty above binds each lane. Exactly **one coordinator** holds what the lanes share.
@@ -133,8 +134,9 @@ Every duty states its own status; nothing here is presented as a gate that is no
 | C9 watch main's CI | **Conduct, not enforced.** |
 | The relayed-GO form | **Conduct.** The token's verbatim-ness cannot be checked: nothing holds the original words. |
 | Pinned checkout | **Conduct, not enforced.** Nothing can prove which tree a seat read. |
-| C11 refusal not re-run | The guard re-refuses an identical shape; a reshaped retry is conduct. |
+| C11 refusal not re-run | The guard re-refuses an identical shape; a reshaped retry is conduct. What a record says about a refusal is conduct. |
 | C12 one round plus one security pass; NOTIFY at round N | **Partly enforced:** `review-lane` grades that rounds close on APPROVE and that a security verdict exists. The notification at round N, and the runaway budget on the conductor path, are conduct, **not enforced**: no per-slice stop binds the conductor path today. |
+| C13 pointers, not copies | **Conduct, not enforced.** Nothing reads a brief or a message. |
 | Lean cross-session messages | Conduct. The four forms in `## Lanes and the coordinator`; nothing reads them. |
 | Plan presentation | Conduct. The team table lives in the plan file; a check may later read its presence, never that it was read. |
 | `apex` or costlier-than-mapped tier needs the owner's word before dispatch | **Conduct, not enforced.** `model-tier.sh resolve --requested apex` raises without any owner token. |
@@ -166,8 +168,7 @@ Settings a project records in its own principles doc (`CLAUDE.md`, or `ENGINEERI
   unverified at the FLOOR (server-side WHO-may-ratify is the adopter's forge controls).
 - **B-ready by design (do not lose it):** the record schema also carries `risk`/`reversibility`/
   `recommendation`/`options`, so the *proactive* "ratify before a risky action" path (the deferred
-  tier-checkpoint, Option B) is a second caller on this same seam — not a rebuild. See
-  `docs/architecture/2026-06-27-e3-escalation-design.md` §6.
+  tier-checkpoint, Option B) is a second caller on this same seam — not a rebuild.
 
 ## Discovery (start here) -- the kit's own discovery keystone
 Before convening the cast for any phase, consult the kit's own discovery keystone --
@@ -217,11 +218,11 @@ authored in a **dev-clone** (the guard stays armed on the real repo), never sile
 wears*, not a separate seat (agents-vs-skills rule); build composes tdd (the executor builds each task
 test-first).
 
-**Model-tiering at dispatch (KW20b).** Every seat runs on the model its tier maps to in the project's
+**Model-tiering at dispatch.** Every seat runs on the model its tier maps to in the project's
 `.kit/model-map.conf`, a recorded decision (the mapping cites its `docs/governance/DECISIONS.md` entry and a
 revisit trigger). Before dispatching each seat, resolve its tier via `scripts/model-tier.sh resolve` (role +
 derived change-class), **present the per-task tier with rationale in the plan's team table, citing the
-mapping decision** (the Orchestrator recommends and decides; the human may change a row and nothing waits for a ratification, `D-241021-2`; an `apex` or costlier-than-mapped tier needs the owner's explicit word before dispatch (conduct, not enforced: `model-tier.sh resolve --requested apex` raises without any owner token)), and
+mapping decision** (the Orchestrator recommends and decides; the human may change a row and nothing waits for a ratification; an `apex` or costlier-than-mapped tier needs the owner's explicit word before dispatch (conduct, not enforced: `model-tier.sh resolve --requested apex` raises without any owner token)), and
 dispatch at the presented tier via the harness adapter. There is no change-class floor: control-plane and sensitive
 work runs on its seat's own tier. Pins refuse a dispatch-time override: no request moves a pinned seat off its
 mapped tier, and only a new mapping decision can. Briefs name the **seat**, never a model; **declared ≠ bound**

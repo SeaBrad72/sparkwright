@@ -37,9 +37,17 @@ carrying a tag for the version you happen to be on — it only needs the *curren
 ## What it contains
 
 Exactly the paths listed in **`.kit-manifest`** — the file list the exporter wrote at export time — and
-nothing else. In particular it contains **none of your own files**, even if you adopted the kit into an
-existing repository. That is deliberate: if one of your files were in the base, a later comparison would
-read it as *"the kit deleted this"*, and an update could propose **deleting your own work**.
+nothing else. The base is scoped to the manifest, so it holds none of your *other* files, even if you adopted the kit
+into an existing repository. That is deliberate: if your files were in the base, a later comparison would read them
+as *"the kit deleted this"*, and an update could propose **deleting your own work**.
+
+One case the scoping cannot exclude: if your repository **already had its own file at a path the kit ships**, the
+snapshot copies that file from your tree (inception stages the base from the tree it runs in), so your bytes sit in
+the first base commit as the kit's. If a later release stops shipping that path, `--from` would read your file as
+pristine. The release's own `kit-update` therefore checks each removed path against the exporter's record
+(`.kit-digests`, as the base commit that decided it holds it): a path it cannot prove is the kit's is **kept out of the
+patch** and reported as "kept, not proven the kit's". An older installed `kit-update` has no such check and can offer
+your file for deletion; run the release's own script for the first update that removes files.
 
 It is the tree **before** inception — the raw export, not the incepted result. That keeps a kit-to-kit
 comparison free of your project's stamps and renames.
@@ -122,7 +130,7 @@ forces.
 
 ### My base over-claims
 
-An advance made **before** this change recorded a whole release as taken even when your `HEAD` took only part of it:
+An advance made by an older `kit-update`, before per-path recording, recorded a whole release as taken even when your `HEAD` took only part of it:
 files you never took read as "upstream did not change it" and are classed untouched, so the update offers nothing
 and hides the remainder. **The tool cannot detect this**: such a commit carries no `Kit-Behind` trailer, and it is
 indistinguishable from a complete advance. If a release you know you only partly took is not being offered, repair it:
@@ -166,7 +174,7 @@ suggestion. Once a tree has taken an update that carries `.kit-source`, plain `-
 > kit's pre-push hook grades only `refs/heads/*`, and the ref sits outside branch protection, so **anyone with push
 > access to the repository can write it**. Every `--from` rebuilds BASE by running the chain commits' own
 > `scripts/incept.sh`, so a chain commit someone else wrote is code your teammates would run. **The control is the
-> import verification below**, not the ref. Whether a forge ruleset can protect `refs/kit/*` is **unmeasured**: GitHub's ruleset API lists only `branch`, `tag` and `push` targets and does not say a non-branch namespace can be matched, and no ruleset has been tried (row `KIT-BASE-REF-RULESET-MEASURE`). Treat the ref as unprotected.
+> import verification below**, not the ref. Whether a forge ruleset can protect `refs/kit/*` is **unmeasured**: GitHub's ruleset API lists only `branch`, `tag` and `push` targets and does not say a non-branch namespace can be matched, and no ruleset has been tried. Treat the ref as unprotected.
 
 `incept` does **not** push the base. Whoever holds it runs `sh scripts/kit-update.sh --publish-base` once (after the
 first push; incept's next steps say so), and `--advance-base` re-publishes after every advance. A teammate's fresh
@@ -183,8 +191,7 @@ with the local `kit-base`, and:
 
 **Honest ceiling of the next check:** it is a HEURISTIC that catches the remote-branch DWIM route only. Removing the tracking
 config, a forged chain under another remote branch name, or checkout-then-history-move are not caught; a LOCAL `kit-base`
-is otherwise trusted as your own history. Verifying the local chain when this machine did not write its tip is the
-follow-up row `KIT-BASE-LOCAL-CHAIN-VERIFY`.
+is otherwise trusted as your own history. Verifying the local chain when this machine did not write its tip is not covered.
 
 A local `kit-base` that **came from a remote branch** (`git checkout kit-base` of `origin/kit-base`, which configures
 `branch.kit-base.remote`, or a branch equal to a remote-tracking `kit-base`) was never verified, so `kit-update` refuses
@@ -230,9 +237,9 @@ verb (the full list, and what remains, is `docs/operations/runtime-guards.md` R2
 
 ## A base that is not this export's (foreign base)
 
-Running `incept` a second time over a directory that already holds a `kit-base` used to keep that base without
+Running `incept` a second time over a directory that already holds a `kit-base` could keep that base without
 comment, even when it came from another stack's trial (a typescript-node trial, then a python export in the same
-directory). `incept` now compares, **before it changes anything**: it builds the tree it would record from this export
+directory). `incept` therefore compares, **before it changes anything**: it builds the tree it would record from this export
 (scoped by `.kit-manifest`, pruned to `--stack`) and compares it with the tree of the `kit-base` already there. The test
 is **tree identity**, not a list of paths, so a base from an older release of the same stack, with the same file list
 and different bytes, is just as foreign.
@@ -242,7 +249,7 @@ and different bytes, is just as foreign.
   `kit-update --from <new kit>`, not a second `incept`. Then come the existing base's profiles against your `--stack`,
   counts of what would differ, and the two exits. Which exit to take is the **owner's** decision; an agent reports the
   refusal and does not pick one.
-- **`--kit-base-keep`**: keep the existing base (today's behaviour, now explicit). `kit-update` refuses the
+- **`--kit-base-keep`**: keep the existing base (the explicit form of keeping it). `kit-update` refuses the
   project with `FOREIGN BASE` (naming the base's profiles and your stamped stack, before it runs the base's own `incept`) only when the
   kept base came from another stack; a kept older or different export of the same stack is used as the base.
 - **`--kit-base-replace`**: record this export as the base. The old branch is **renamed aside** to
@@ -281,8 +288,6 @@ Re-export from a current kit to get one.
 
 ## The upstream operand — how `kit-update` handles a profile-pruned adopter
 
-*(The contract P1.2-pre-b fixes so that P1.2 has a defined operand. Stated here; implemented by the updater.)*
-
 An update needs **two** trees: **yours** (`kit-base` — what you received) and **upstream** (the current
 release on the public mirror). But *"the kit at version X"* is **not a single tree**:
 
@@ -303,10 +308,6 @@ nothing downstream can infer it.
 release to that shape *before* diffing.** A profile-pruned adopter is therefore never offered profiles they
 pruned, and never told the kit "added" something they chose not to take.
 
-> **Not built here, deliberately.** P1.2-pre-b establishes the *contract*; the updater implements it.
-> Building the updater's engine inside its own prerequisite is build-ahead — infrastructure for a need that
-> does not exist yet.
-
 ---
 
 ## Honest ceiling
@@ -318,17 +319,17 @@ pruned, and never told the kit "added" something they chose not to take.
   imports it, verified, on `--from`. **`refs/kit/base` has no forge protection** (anyone with push access can write
   it); import verification is the control, and its residuals are in *Share it*. Hosts other than GitHub are
   **unmeasured** for a non-branch `refs/kit/*` ref. Whether a forge ruleset can protect `refs/kit/*` is
-  unmeasured (row `KIT-BASE-REF-RULESET-MEASURE`). Verification needs the `Kit-Source` release in `--from`'s history: an adopter who incepted
+  unmeasured. Verification needs the `Kit-Source` release in `--from`'s history: an adopter who incepted
   from a dev tag and updates from the public mirror gets "not in the history of `--from`" and must point `--from` at
-  the source they adopted from. A base hand-fetched before this shipped is not verified after the fact: delete it and
+  the source they adopted from. A base fetched by hand is not verified after the fact: delete it and
   let `--from` import it.
-- It cannot detect a base that over-claims because it was advanced before per-path recording (see *My base
+- It cannot detect a base that over-claims because an older `kit-update` advanced it before per-path recording (see *My base
   over-claims*).
 - It is *necessary but not sufficient* for a full update: it tells a tool which files the **exporter**
   shipped, not what **inception** then did to them (the `CLAUDE.md` → `ENGINEERING-PRINCIPLES.md` rename,
   the scaffold copies, the stamps). Handling those is the updater's job.
 - Brownfield adoption is not yet exercised end-to-end. What *is* proven is that your files
-  **cannot leak into the base** (`conformance/kit-base.sh`).
+  **cannot leak into the base** (the kit's own `kit-base` check, kit-only).
 - A kit file you deleted that an *older* release you took did not have (absent == absent there) is offered
   again, marked `(re-add)`; decline by not applying that hunk. One present at every release you took reads
   as yours (CONFLICT if the kit changed it).

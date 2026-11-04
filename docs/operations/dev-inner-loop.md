@@ -19,110 +19,35 @@ One command, no arguments, before the branch's one push:
 sparkwright prepush            # = sh conformance/prepush-lane.sh
 ```
 
-**What it runs is not a hand-curated list — it is derived from `ci.yml` at run time.** The lane parses
-`.github/workflows/ci.yml` through a closed grammar (a step is derivable only if it is a plain
-`sh conformance/<check>.sh` invocation with a bounded argv; anything else — a conditional step, a
-`matrix`, a `container`, a shell fragment inside a block scalar — is *context* and is named, not
-guessed at), and runs what it derived **serially**, **under `dash`** (CI's `/bin/sh`, resolved through
-a PATH shim so children that re-invoke `sh` get dash too) and in a **scrubbed environment** (no
-`GH_*`/`GIT_*`/`KIT_*`, an empty `HOME`, `LC_ALL=C`) inside one temp work root. It writes nothing in
-the repo. A hand-curated battery is always an incomplete subset of `ci.yml`; this one cannot be,
-because a second lock — a tokenizer-independent **census** (`sparkwright prepush --census`) — reds when
-a `conformance/` mention in `ci.yml` is neither derived nor explained by a row in
-`conformance/prepush-twins.tsv`.
+What it runs is derived from `ci.yml` at run time, not hand-curated: the lane runs what it derived serially, under `dash` (CI's `/bin/sh`), in a scrubbed environment (`GH_*`/`GIT_*`/`KIT_*` unset, an empty `HOME`, `LC_ALL=C`), and writes nothing in the repo. A tokenizer-independent census (`sparkwright prepush --census`) reds when a `conformance/` mention in `ci.yml` is neither derived nor explained by a row in `conformance/prepush-twins.tsv`.
 
-**What the default runs, and what it leaves to `--warranted` and CI** (PREPUSH-CORE-DEFAULT, 2026-09-30). The default
-proves the change's *own surface*, not CI parity:
+**What the default runs.** The default proves the change's *own surface*, not CI parity:
 - scoped lint: `shellcheck.sh --listed` on the listing's shell files (the full shellcheck lock stays in CI and `--warranted`);
+- the secret scan of the branch's range (`core-secretscan`, the scan CI runs); a missing `gitleaks` is UNVERIFIED and blocks, never a skip;
 - the touched selftests (`selftest-hermetic.sh --touched`);
 - the board gates, when `BACKLOG.md` is touched;
-- the twins.
+- the scoped parse-lint arm (`core-parselint`);
+- the twins, among them `review-lane --pre-push` and `loop-state --head`;
+- the touched-readers arm: it fills a time budget with the CI-derived checks, red-history checks first and then by measured time (they are not selected by your change), and prints the rest as a `CI-ONLY (paste into the PR):` block with each line's red cost.
 
-The ~81-86 CI-derived `core-live` checks no longer run by default; one note line says how many, and that
-`--warranted` and CI run them.
+The rest of the ~81-86 CI-derived `core-live` checks no longer run by default; one note line says how many, and that `--warranted` and CI run them.
 
-**The recipe is one command: run `sparkwright prepush` (the default, core) once on the final head, push once, and CI is
-the net** (`D-241003-2`). Core already covers the scoped `shellcheck` on your touched shell files, the touched files'
-own selftests (`selftest-hermetic.sh --touched`), the `review-lane --pre-push` and `loop-state --head` twins, and the
-board gates (including `backlog-current`) when `BACKLOG.md` is touched, so do not re-run those by hand. It runs under
-`dash` on your machine; BSD-versus-GNU divergence (macOS vs Linux) is CI's to catch. If CI goes red and the cause is
-understood, fix and push again.
+**The recipe is one command: run `sparkwright prepush` (the default) once on the final head, push once, and CI is the net**. Do not re-run by hand what the default already covers. It runs under `dash` on your machine; BSD-versus-GNU divergence (macOS vs Linux) is CI's to catch. If CI goes red and the cause is understood, fix and push again.
 
-**`--warranted` stays available and is optional.** Recommended only when a CI red is expensive to redo: CI takes longer
-than ~30 min, or the change edits a shared library many checks read (for example `conformance/backlog-lib.sh`,
-`conformance/version-helpers.sh`, `.claude/hooks/guard-core.sh`). When in doubt, don't, but a change to the guard or secret-scan is never a case for doubt: run `--warranted`. The measurement behind this
-(Architect, 2026-10-03, every `--warranted` line in the 2026-09-27 to 2026-10-02 review records):
+**`--warranted` is optional.** Recommended only when a CI red is expensive to redo: CI takes longer than ~30 min, or the change edits a shared library many checks read (for example `conformance/backlog-lib.sh`, `conformance/version-helpers.sh`, `.claude/hooks/guard-core.sh`). When in doubt, don't, but a change to the guard or secret-scan is never a case for doubt: run `--warranted`. The measurement behind this (2026-10-03, every `--warranted` line in the preceding week's review records): about 15 slices at 45-75 min per run; 2 real catches (a mass-budget overrun; a green-on-clone red plus mass budget and backlog presence), both also red in CI; one run wasted 78 min with no verdict; a CI round is about 25-40 min, plus re-binding review and GO records to the new SHA. On that evidence `--warranted` breaks even at best.
 
-| | |
-|---|---|
-| runs measured | ~15 slices; 45-75 min per run |
-| real catches | 2 (a mass-budget overrun, #711; a green-on-clone red plus mass budget and backlog presence, #727), both reproduced by CI |
-| wasted | #714: 78 min and no verdict |
-| a CI round | ~25-40 min, plus re-binding review and GO records to the new SHA |
+**What it recommends.** The expensive arms (`--green-on-clone`, `--exports`, `--non-vacuity <check>`, `--slow`) never run without a flag. The default ends with a recommendation block that names the arms this delta warrants and never runs one; a docs-only delta warrants nothing.
 
-On that evidence `--warranted` breaks even at best. After an arm passes, `--warranted` records it under `$HOME/.local/state/sparkwright/prepush/<root-commit>/`; a
-later `--warranted` on an unchanged tree prints `SKIP … passed at <sha> on this tree`. There are two keys: the
-`core-live` arms are keyed on the **full tree** (several grade `BACKLOG.md`, `CHANGELOG.md` and `docs/`, so a bookkeeping
-commit re-runs them); the heavy arms (claims, non-vacuity, green-on-clone) exclude bookkeeping paths (`BACKLOG.md`,
-`CHANGELOG.md`, `docs/reviews/`, `docs/plans/`, `docs/architecture/`), and their SKIP line says
-`(bookkeeping paths not compared; CI grades them)`. Any uncommitted change, untracked files included, means no cache
-that run. A FAIL is never recorded, nor is a tool-absent `SKIP`; the board gates are never cached;
-`PREPUSH_NO_CACHE=1` disables it. The cache is a local convenience, never evidence, and CI never reads it.
-
-Measured on macOS, on this slice's own diff (12 files, M): the default took **268 s (4.5 min)**, was 12.5 min
-(core-shellcheck 5 s, touched selftests 153 s for 3 targets, board gates ~90 s, twins ~17 s). The board gate
-(`backlog-current.sh .`, 350 rows) fell from 320 s to 75-81 s; the design's 30 s board target was not met (the Done
-pass forks per row; boarded as `BOARD-GATE-DONE-PASS-BATCH`).
-
-**What it recommends, and the one flag that runs it.** The expensive faces are **Tier 2**:
-`--green-on-clone`, `--exports`, `--non-vacuity <check>` and `--slow`, each behind a free-memory floor. With no
-flag the lane never runs one. It ends with a *recommendation block*:
-- a `warranted:` line for each arm this delta can red: `claims`, `non-vacuity <check>.sh` for each edited
-  registered check, and `green-on-clone`;
-- a `skipped: <arm> — <why> (expected ~<t>)` line for every other arm;
-- today's `--exports`/`--slow`/container lines.
-
-**`--warranted`** (PREPUSH-BATTERY-CHANGE-SCOPED; security C11 amended to *one flag per invocation*) runs
-exactly the warranted set, serially:
-- it re-reads the memory floor before each arm;
-- it refuses an arm while another kit heavy arm is running on the machine (an enclosing one counts);
-- `--exports`/`--slow` stay single-arm flags and are never in the warranted set.
-
-A docs-only delta runs the core and warrants nothing.
-
-**The heavy-arm lock** (SWAS-278b). Two pre-push runs on one machine, in two clones, no longer overlap their heavy phase.
-- A run takes one kernel lock, `$HOME/.local/state/sparkwright/heavy-arm.lock`, before its first heavy unit (`core-selftest` in the
-  default run; `core-live` and the Tier-2 arms under `--warranted`) and holds it until its last. The light units run unlocked.
-- A second run waits: it polls every 15 s, prints who holds the lock every 5 minutes, and gives up after one 5400 s budget per run.
-  Every remaining heavy unit is then `UNVERIFIED`, never `OK`. There is no knob for the budget.
-- The lock comes from `flock(1)` (Linux) or the system `/usr/bin/perl` (macOS). With neither, with a symlinked or foreign-owned lock
-  file, or with a world-writable state directory, the heavy units are `UNVERIFIED`. The lock file is never deleted; the kernel frees the
-  lock when its holder dies. The holder note beside it (`heavy-arm.holder`) is display only.
-- `heavy_busy` stays as a second check for heavy work started outside a lane, and the memory floor is re-read after a wait.
-- The pass cache now records the tree that produced a pass, and a run honours only its own tree's records (a pass the lane records in a clone never
-  skips an arm in the main checkout; the producer column is provenance, not authentication, since any process of the same user can write it). The `SKIP` line names the producer. The cache is off when `git ls-files -v` shows a tag other
-  than `H`, `core.sparseCheckout` is on, or a configured `clean`/`smudge`/`process` filter is applied to a tracked path (a filter configured
-  but applied by no path, such as a globally installed git-lfs, leaves the cache on).
-
-**The board-gate arm** (PREPUSH-BOARD-GATES-PARITY): when the push's listing contains `BACKLOG.md`, the core also
-runs the live board gates CI reaches only through `verify.sh --require` (the `backlog-*`/`board-*`/`roadmap-current` `check control`
-rows without `--selftest`, derived from `conformance/verify.sh`) as `core-board` rows, and a red one fails
-`PARITY-CORE`; otherwise it prints `skipped: board gates — BACKLOG.md not in the diff`. It closes the board-gate gap
-only, not general `verify.sh` parity.
+**Heavy work is serialised.** A second run on the same machine waits for the heavy-arm lock; if it cannot take the lock, its heavy units are UNVERIFIED, never OK, and the memory floor is re-read after a wait. The holder note beside the lock is display only. The `--warranted` pass cache is a local convenience, never evidence, and CI never reads it. The board-gate arm closes the board-gate gap only, not general `verify.sh` parity.
 
 **The verdict is the last line**, always, and never imitates `verify.sh`'s `RESULT:`:
-`PARITY-CORE: OK` · `PARITY-CORE: FAIL` · `PARITY-CORE: UNVERIFIED (<reason>)`. A bare `OK` means `--warranted` with everything executed; the default run prints `PARITY-CORE: OK (own surface — N CI-derived core-live check(s) not run; --warranted and CI run them)`; `--warranted` with cache skips prints `PARITY-CORE: OK (K arm(s) from cache, not executed this run)`; on a hosted-tracker tree each `loop-state` / `backlog-presence` twin whose only failure is NOT ENFORCED reads `N/A` and the OK gains the clause `TN board-bound twin(s) NOT ENFORCED locally — CI binds them` (after a `; ` inside the existing parentheses, or alone as `OK (TN …)` when no other scope clause prints). Strict is the default
-(`--require` is the explicit spelling of it); `--best-effort` moves the exit code to 0 and leaves the
-verdict line reading what it reads.
+`PARITY-CORE: OK` · `PARITY-CORE: FAIL` · `PARITY-CORE: UNVERIFIED (<reason>)`. A bare `OK` means `--warranted` with everything executed; the default run prints `PARITY-CORE: OK (own surface — N CI-derived core-live check(s) not run; --warranted and CI run them)`; `--warranted` with cache skips prints `PARITY-CORE: OK (K arm(s) from cache, not executed this run)`; on a hosted-tracker tree each `loop-state` / `backlog-presence` twin whose only failure is NOT ENFORCED reads `N/A` and the OK gains the clause `TN board-bound twin(s) NOT ENFORCED locally — CI binds them`. Strict is the default (`--require` is the explicit spelling of it); `--best-effort` moves the exit code to 0 and leaves the verdict line reading what it reads.
 
-**When CI is red (owner rule, 2026-09-30).** CI must be green to merge. A failure does not by itself stop the run;
-once its root cause is understood, stopping the run, fixing, and re-running is the operator's judgment — until CI
-succeeds.
+**When CI is red.** CI must be green to merge. A failure does not by itself stop the run; once its root cause is understood, stopping the run, fixing, and re-running is the operator's judgment — until CI succeeds.
 
-**The honest ceiling, in one sentence:** a `--warranted` green with no cache skips proves that *what the lane derived
-from `ci.yml` ran green under `dash`, scrubbed, on this machine*; the default run's green (`PARITY-CORE: OK (own
-surface — …)`) covers the change's own surface only; an arm served from cache was not executed this run — not parity with the runner's kernel, CPU count or
-timing, not the untouched selftests, not the heavy arms you skipped, and never a skipped reviewer.
+**The honest ceiling, in one sentence:** a `--warranted` green with no cache skips proves that *what the lane derived from `ci.yml` ran green under `dash`, scrubbed, on this machine*; the default run's green (`PARITY-CORE: OK (own surface — …)`) covers the change's own surface only; an arm served from cache was not executed this run — not parity with the runner's kernel, CPU count or timing, not the untouched selftests, not the heavy arms you skipped, and never a skipped reviewer.
+
+The mechanics (the lock, the cache keys, the board arm, the touched-readers budget) are in the header of `conformance/prepush-lane.sh` and its `--help`.
 
 ## Why it matters for agentic work
 An agent's inner loop is the same loop. A fast pre-commit means an agent (or human) gets format/lint/type errors back in seconds instead of waiting on a CI round-trip — **more iterations per minute, fewer broken commits, less wasted CI**. It also keeps the commit history clean (no "fix lint" follow-up commits).

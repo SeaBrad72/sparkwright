@@ -47,7 +47,7 @@ The point is uniformity, not the exact column names: pick a field set, then appl
 
 ## 3. Standing up an anti-bias gate — checklist
 
-To make a new axis enforceable, stand up a `decision-integrity`-style gate. As of KW9-B the gate is a **config row in the shared engine** (`conformance/decision-integrity.sh`, see §5) — read `conformance/harness-decision-integrity.sh` (a two-line shim over the engine) plus the engine's `stack`/`deploy`/`harness` axis config before you start; you are adding a config, not cloning a script.
+To make a new axis enforceable, stand up a `decision-integrity`-style gate. The gate is a **config row in the shared engine** (`conformance/decision-integrity.sh`, see §5) — read `conformance/harness-decision-integrity.sh` (a two-line shim over the engine) plus the engine's `stack`/`deploy`/`harness` axis config before you start; you are adding a config, not cloning a script.
 
 1. **Pick the decision artifact + its target heading + heading/stop level.** Choose *which* file records the decision (e.g. an ADR, an adapter doc) and the exact heading whose body carries the fit rationale (e.g. `## Fit rationale`). Fix the heading level and the stop level (the next heading level that ends the scanned block) so the gate reads exactly the intended region.
 2. **Author the fit-dimension vocabulary.** Define the set of allowed fit tokens for this axis (the dimensions a valid choice may cite). This vocabulary is the gate's positive signal — the artifact must cite at least one.
@@ -68,17 +68,17 @@ The gate left-anchors tokens generically (it matches token boundaries, not naive
 
 This has bitten three times; record it so the fourth author doesn't repeat it:
 
-- `gc` ⊂ "logic" — caught in **KW4-L1**.
-- `edge` ⊂ "acknowledge" — caught in **KW5**.
-- `ml` ⊂ "html" — a latent false-PASS, closed in **KW19**.
+- `gc` ⊂ "logic".
+- `edge` ⊂ "acknowledge".
+- `ml` ⊂ "html" — a latent false-PASS.
 
 When picking vocabulary for a new axis, scan the candidate tokens against the words the artifact naturally uses and reject any that collide.
 
 ---
 
-## 5. The `decision-integrity` engine (KW9-B) — built
+## 5. The `decision-integrity` engine
 
-Originally each axis shipped its own copy of the gate (`stack-decision-integrity.sh`, `deploy-decision-integrity.sh`) — behavior-identical, config-different. **KW9-B builds the shared, config-driven `decision-integrity` engine** (`conformance/decision-integrity.sh`): stack and deploy-target are migrated onto it **behavior-preserving** (their existing fixtures stay GREEN/RED/N/A exactly as before), and **harness is added as neutrality instance #3.** The engine takes a small per-axis config:
+Each axis once shipped its own copy of the gate (`stack-decision-integrity.sh`, `deploy-decision-integrity.sh`) — behavior-identical, config-different. They now share one **config-driven `decision-integrity` engine** (`conformance/decision-integrity.sh`): stack and deploy-target run on it **behavior-preserving** (their fixtures stay GREEN/RED/N/A exactly as before), and **harness is neutrality instance #3.** The engine takes a small per-axis config:
 
 - **target heading** — which heading's body carries the rationale.
 - **heading / stop level** — where the scanned block begins and ends.
@@ -86,13 +86,13 @@ Originally each axis shipped its own copy of the gate (`stack-decision-integrity
 - **vocabulary** — the axis's fit-dimension token set.
 - **default path** — the decision artifact's location.
 
-Each axis is now a **config row**, not a copy: `stack-decision-integrity.sh` and `deploy-decision-integrity.sh` are thin shims that call the engine, and `harness-decision-integrity.sh` is the new shim over the `harness` config. Adding the next axis is a config extraction, not a rewrite — this checklist is precisely what the engine parameterizes.
+Each axis is a **config row**, not a copy: `stack-decision-integrity.sh` and `deploy-decision-integrity.sh` are thin shims that call the engine, and `harness-decision-integrity.sh` is the new shim over the `harness` config. Adding the next axis is a config extraction, not a rewrite — this checklist is precisely what the engine parameterizes.
 
 ### Model — axis #4 (per seat, recorded, revisit-triggered, non-monotonic)
 
-The model **is** its own axis (SWAS-303a, `D-241018-2`; it was "subsumed by harness" before). A harness's model-family is still one of its fit dimensions, but which model serves which seat is a separate decision, because it changes with every model release and no model name orders quality for all time.
+The model **is** its own axis, not a part of the harness axis. A harness's model-family is still one of its fit dimensions, but which model serves which seat is a separate decision, because it changes with every model release and no model name orders quality for all time.
 
-- **The kit names seats and what they need; the project names models.** The seats are the conductor, builder, reviewer, security, design and explorer. Their needs are the tiers in `.kit/model-tiers.conf`, which are unordered labels, not a quality ladder: no policy compares them, and two may map to the same model. (Until 303b the resolver script still orders them; that is a known issue.) The mapping is one adopter-owned file, `.kit/model-map.conf`, whose values the kit never interprets.
+- **The kit names seats and what they need; the project names models.** The seats are the conductor, builder, reviewer, security, design and explorer. Their needs are the tiers in `.kit/model-tiers.conf`, which are unordered labels, not a quality ladder: no policy compares them, and two may map to the same model. (The resolver script still orders them; that is a known issue.) The mapping is one adopter-owned file, `.kit/model-map.conf`, whose values the kit never interprets.
 - **The decision is recorded.** The map cites a `docs/governance/DECISIONS.md` entry (`decision=`), the date it was recorded, and a `revisit-by` date. `conformance/model-tiering.sh` checks the entry resolves; a bound map with no `decision=` line warns for one release and then fails.
 - **The reason is gated.** `#### Model fit rationale` in the project `CLAUDE.md`, read by `conformance/decision-integrity.sh model`: N/A while every map value is `unset` (the honest single-model case), a FAIL once a model is bound and the rationale is missing, bias-only or unfilled.
 - **The kit ships no vendor default.** The kit's own map is export-ignored; `incept` stamps an all-`unset` template. `conformance/model-tiering.sh` holds vendor model names out of every kit-shipped seat-binding surface and keeps agent definitions model-free (a `model:` key may only be `inherit`).

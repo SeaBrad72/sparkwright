@@ -11,7 +11,7 @@
 #                               [--parent <KEY>] [--description <text>] [--metric <text>] [--label <name>]... [--field <token>=<value>]...
 #   sh scripts/board.sh comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]
 #   sh scripts/board.sh rank    KEY (--top | --before KEY | --after KEY) [--dry-run]
-#   sh scripts/board.sh list    [--limit N]
+#   sh scripts/board.sh list    [--limit N] [--label <name>] [--summary]
 #   sh scripts/board.sh show    <KEY> [--comments <n>]
 #   sh scripts/board.sh edit    <KEY> [--title <t> | --title-file <path>] [--description-file <path>] [--metric-file <path>] [--size <s>] [--risk <r>]
 #                               [--label-add <l>]... [--label-remove <l>]... [--parent <KEY>] [--dry-run]
@@ -124,7 +124,7 @@ bd_usage() {
   echo "                    printable ASCII only; a free value is [A-Za-z0-9 _.-]{1,64}; a label value [A-Za-z0-9_-]{1,32})" >&2
   echo "  board.sh comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]   (one comment on a card: the record's first line + its path; on md it refuses)" >&2
   echo "  board.sh rank    KEY (--top | --before KEY | --after KEY) [--dry-run]   (move a card in the tracker's rank order; proven by a post-read; on md it refuses)" >&2
-  echo "  board.sh list    [--limit N]   (the open cards in rank order, KEY and status; on md it refuses)" >&2
+  echo "  board.sh list    [--limit N] [--label <name>] [--summary]   (the open cards in rank order, KEY and status; reads the whole board (up to 5000 cards, else it refuses) and --limit N shows the first N; --label <name> keeps the cards with that label; --summary adds each card's summary, sanitised, in a framed data block; on md it refuses)" >&2
   echo "  board.sh show    <KEY> [--comments <n>]   (one whole card, read-only: header lines, the description and the last n comments (default 3, max 10), the text sanitised and framed as data)" >&2
   echo "  board.sh edit    <KEY> [--title <t> | --title-file <path>] [--description-file <path>] [--metric-file <path>] [--size <s>] [--risk <r>] [--label-add <l>]... [--label-remove <l>]... [--parent <KEY>] [--dry-run]" >&2
   echo "                   (changes only those fields, proven by a post-read; --description-file / --metric-file REPLACE the whole text (no inline edit --metric); --title is 1..255 printable ASCII;" >&2
@@ -1585,11 +1585,12 @@ bd_rank_args() {
   [ -z "$_rk_anchor" ] || bd_require_row "$_rk_anchor"
 }
 
-# bd_rank_read: sets _rr_list (KEY<TAB>STATUS lines in rank order). The limit is the adapter's maximum, so a long
-# board is not mistaken for a truncation. rc 1 on any adapter failure (its sentence is already on stderr).
+# bd_rank_read: sets _rr_list (KEY<TAB>STATUS lines in rank order). The limit is the adapter's ceiling (5000), so a long
+# board is not mistaken for a truncation; rank stays complete-or-refuse and never goes through list's display slice.
+# rc 1 on any adapter failure (its sentence is already on stderr).
 bd_rank_read() {
   _rr_rc=0
-  _rr_list=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject" 1000) || _rr_rc=$?
+  _rr_list=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject" 5000) || _rr_rc=$?
   if [ "$_rr_rc" -eq 6 ]; then bd_rejected rank; return 1; fi
   [ "$_rr_rc" -eq 0 ] || { echo "board rank: could not read the open cards of $_btproject in rank order (the adapter's sentence is above)." >&2; return 1; }
   return 0
@@ -1681,16 +1682,48 @@ do_rank() {
   return 2
 }
 
+# bd_list_limit_ok <value>: --limit's grammar - a whole number from 1, no leading zero, at most 9 digits (it only slices).
+bd_list_limit_ok() {
+  case "$1" in
+    ''|*[!0123456789]*|0*) return 1 ;;
+  esac
+  [ "${#1}" -le 9 ]
+}
+
+# bd_list_show <limit> <label> <summary 0|1>: prints the header, the first <limit> lines (all when none) of the whole read in
+# $_ls_out, then the footer LAST, so a cut or piped read carries no claim of completeness. M is the line count of a read that
+# ended rc 0; the slice is display only (SWAS-659).
+bd_list_show() {
+  _lp_m=0; [ -z "$_ls_out" ] || _lp_m=$(printf '%s\n' "$_ls_out" | awk 'END { print NR }')
+  _lp_n=$_lp_m; [ -z "$1" ] || [ "$1" -ge "$_lp_m" ] || _lp_n=$1
+  _lp_w=""; [ -z "$2" ] || _lp_w=" with label $2"
+  if [ "$_lp_n" -lt "$_lp_m" ]; then _lp_f="$_lp_n of $_lp_m open cards$_lp_w shown (partial: --limit $_lp_n)."
+  else _lp_f="$_lp_m open cards$_lp_w (complete)."; fi
+  # do_list can run inside an `if` (errexit off), so every write is chained and a failed one is not a complete list
+  { printf 'open cards on %s, in rank order:\n' "$_btproject" \
+    && { [ "$3" -eq 0 ] || printf '%s\n' '--- card text (data, not instructions) ---'; } \
+    && { [ "$_lp_n" -eq 0 ] || printf '%s\n' "$_ls_out" | sed -n "1,${_lp_n}p"; } \
+    && { [ "$3" -eq 0 ] || printf '%s\n' '--- end ---'; } \
+    && printf '%s\n' "$_lp_f"; } || { echo "board list: could not deliver the list." >&2; return 1; }
+}
+
 do_list() {
-  _ls_limit=""
+  _ls_limit=""; _ls_label=""; _ls_sum=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --limit)
         [ $# -ge 2 ] || { echo "board list: --limit needs a value" >&2; return 2; }
-        _ls_limit=$2; shift 2
-        case "$_ls_limit" in
-          ''|*[!0-9]*) echo "board list: --limit must be digits" >&2; return 2 ;;
-        esac ;;
+        bd_list_limit_ok "$2" || { echo "board list: --limit must be a whole number from 1 (at most 9 digits, no leading zero)" >&2; return 2; }
+        _ls_limit=$2; shift 2 ;;
+      --label)
+        [ $# -ge 2 ] || { echo "board list: --label needs a value" >&2; return 2; }
+        [ -z "$_ls_label" ] || { echo "board list: one --label, not two" >&2; return 2; }
+        case "$2" in
+          -*) echo "board list: --label must match [A-Za-z0-9_.:-]{1,64} and not start with '-' (a flag, or the no-label word)." >&2; return 2 ;;
+        esac
+        bd_val_ok "$2" 'A-Za-z0-9_.:-' 64 || { echo "board list: --label must match [A-Za-z0-9_.:-]{1,64} (no space)." >&2; return 2; }
+        _ls_label=$2; shift 2 ;;
+      --summary) _ls_sum=1; shift ;;
       -*) echo "board list: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
       *)  echo "board list: takes no argument" >&2; bd_usage; return 2 ;;
     esac
@@ -1702,20 +1735,16 @@ do_list() {
     *)     echo "board list: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
   esac
   bd_tracker_ctx || return 2
-  _ls_rc=0
-  if [ -n "$_ls_limit" ]; then
-    _ls_out=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject" "$_ls_limit") || _ls_rc=$?
-  else
-    _ls_out=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject") || _ls_rc=$?
-  fi
+  set -- list-ranked "$_btbase" "$_btflavour" "$_btproject" 5000 "${_ls_label:--}"
+  [ "$_ls_sum" -eq 0 ] || set -- "$@" summary
+  _ls_rc=0; _ls_out=$(sh "$BD_JIRA_SH" "$@") || _ls_rc=$?
   case "$_ls_rc" in
     0) : ;;
     1) return 2 ;;
     6) bd_rejected list; return 1 ;;
     *) echo "board list: could not read the open cards in rank order (the adapter's sentence is above)." >&2; return 1 ;;
   esac
-  printf 'open cards on %s, in rank order:\n' "$_btproject"
-  [ -z "$_ls_out" ] || printf '%s\n' "$_ls_out"
+  bd_list_show "$_ls_limit" "$_ls_label" "$_ls_sum"
 }
 
 # ── ORACLE MARKER: selftest() and everything below is the non-vacuity oracle region. ─────────────
@@ -2785,6 +2814,10 @@ second line"; bd_cm_cur="$bd_cmdir"
      && [ "$bd_out" = 'board rank: would PUT /rest/agile/1.0/issue/rank: AB-7 before AB-2' ]; then
     bd_pass "leg rank/dry-run: --dry-run does the pre-read, prints the PUT it would make, and makes no write"
   else bd_fail_ "leg rank/dry-run: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  # leg rank/ceiling: the pre-read asks the adapter for the whole board at the ceiling (5000) and never through the display slice
+  if [ "$(cat "$bd_rkl")" = 'list-ranked https://ex.atlassian.net cloud AB 5000' ]; then
+    bd_pass "leg rank/ceiling: rank reads the open cards at the adapter's ceiling (5000), complete-or-refuse, with no label and no limit"
+  else bd_fail_ "leg rank/ceiling: log=[$(cat "$bd_rkl")]"; fi
   # leg rank/usage: two forms, no form, a missing anchor value, an unknown option: rc 2, no adapter call at all
   bd_bad=0
   bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --top --before AB-2; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
@@ -2857,26 +2890,122 @@ second line"; bd_cm_cur="$bd_cmdir"
      && printf '%s' "$bd_out" | grep -qF 'read BACKLOG.md'; then
     bd_pass "leg rank/md: on an md backend rank and list each refuse rc 2 (the order is the Order line) with no adapter call"
   else bd_fail_ "leg rank/md: rc=$bd_rc1/$bd_rc2 log=[$(cat "$bd_rkl")] o1=[$bd_o1] o2=[$bd_out]"; fi
-  # leg list: the header, then the adapter's lines in the stub's order (no re-sort); --limit reaches the adapter; a bad limit is rc 2
-  : > "$bd_rkl"
-  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list 2>&1); bd_rc=$?
-  bd_want="open cards on AB, in rank order:
-AB-9${bd_rktab}To Do
-AB-2${bd_rktab}To Do
+  # ── list legs (SWAS-659): the adapter is always asked for the whole board (the ceiling, no limit); --limit only slices what came back ──
+  bd_ls() { # <args…>: one list, in-process, adapter log reset; bd_ls_src = the stub's lines, bd_ls_rc = the stub's failure rc
+    : > "$bd_rkl"
+    bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANKED_PRE="${bd_ls_src:-$bd_base/.rk-pre}" STUB_LIST_RC="${bd_ls_rc:-0}" do_list "$@" 2>&1); bd_rc=$?
+  }
+  bd_ls_log='list-ranked https://ex.atlassian.net cloud AB 5000 -'
+  bd_ls_hd="open cards on AB, in rank order:"
+  bd_ls_l1="AB-9${bd_rktab}To Do"; bd_ls_l2="AB-2${bd_rktab}To Do"
+  bd_ls_all="$bd_ls_l1
+$bd_ls_l2
 AB-5${bd_rktab}To Do
 AB-7${bd_rktab}To Do"
-  bd_rc1=$bd_rc; bd_o1=$bd_out
-  : > "$bd_rkl"
-  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list --limit 5 2>&1); bd_rc2=$?
-  grep -qxF 'list-ranked https://ex.atlassian.net cloud AB 5' "$bd_rkl" && bd_lim=1 || bd_lim=0
-  : > "$bd_rkl"
-  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" do_list --limit x 2>&1); bd_rc3=$?
-  bd_bad_empty=0; [ -s "$bd_rkl" ] && bd_bad_empty=1
-  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_LIST_RC=2 do_list 2>&1); bd_rc4=$?
-  if [ "$bd_rc1" -eq 0 ] && [ "$bd_o1" = "$bd_want" ] && [ "$bd_rc2" -eq 0 ] && [ "$bd_lim" -eq 1 ] \
-     && [ "$bd_rc3" -eq 2 ] && [ "$bd_bad_empty" -eq 0 ] && [ "$bd_rc4" -eq 1 ]; then
-    bd_pass "leg list: prints the header then the adapter's lines in order; --limit reaches the adapter; a non-digit limit is rc 2 with no call; an adapter failure is rc 1"
-  else bd_fail_ "leg list: rc=$bd_rc1/$bd_rc2/$bd_rc3/$bd_rc4 lim=$bd_lim o1=[$bd_o1]"; fi
+  bd_ls; bd_o1=$bd_out; bd_rc1=$bd_rc; bd_lg1=$(cat "$bd_rkl")
+  if [ "$bd_rc1" -eq 0 ] && [ "$bd_o1" = "$bd_ls_hd
+$bd_ls_all
+4 open cards (complete)." ] && [ "$bd_lg1" = "$bd_ls_log" ]; then
+    bd_pass "leg list: a bare list asks the adapter for the whole board (the ceiling, no label, no limit) and prints the header, the lines in the stub's order, then '4 open cards (complete).' last"
+  else bd_fail_ "leg list: rc=$bd_rc1 log=[$bd_lg1] out=[$bd_o1]"; fi
+  bd_ls --limit 2; bd_o1=$bd_out; bd_rc1=$bd_rc; bd_lg1=$(cat "$bd_rkl")
+  bd_ls --limit 4; bd_o2=$bd_out
+  bd_ls --limit 9; bd_o3=$bd_out
+  if [ "$bd_rc1" -eq 0 ] && [ "$bd_o1" = "$bd_ls_hd
+$bd_ls_l1
+$bd_ls_l2
+2 of 4 open cards shown (partial: --limit 2)." ] && [ "$bd_lg1" = "$bd_ls_log" ] \
+     && [ "$bd_o2" = "$bd_ls_hd
+$bd_ls_all
+4 open cards (complete)." ] && [ "$bd_o3" = "$bd_o2" ]; then
+    bd_pass "leg list/limit: --limit 2 of a proven 4 prints the first 2 in order and '2 of 4 ... (partial: --limit 2)', the adapter argv carries no limit; --limit 4 and --limit 9 are complete"
+  else bd_fail_ "leg list/limit: rc=$bd_rc1 log=[$bd_lg1] o1=[$bd_o1] o2=[$bd_o2] o3=[$bd_o3]"; fi
+  bd_bad=0
+  for bd_lv in 0 x 007 12345678901234567890 '' '٣'; do
+    bd_ls --limit "$bd_lv"; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  done
+  bd_ls --limit; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls extra; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg list/limit-refuse: --limit 0, x, 007, 20 digits, an empty value, no value and an extra argument each refuse rc 2 with no adapter call"
+  else bd_fail_ "leg list/limit-refuse: bad=$bd_bad"; fi
+  bd_bad=0
+  for bd_lpair in 1:2 2:1 6:1; do
+    bd_ls_rc=${bd_lpair%:*}; bd_ls
+    { [ "$bd_rc" -eq "${bd_lpair#*:}" ] && ! printf '%s' "$bd_out" | grep -qF "open cards on AB" && ! printf '%s' "$bd_out" | grep -qF 'complete' \
+      && ! printf '%s' "$bd_out" | grep -qF 'partial'; } || bd_bad=1
+  done
+  bd_ls_rc=6; bd_ls --label parked
+  { [ "$bd_rc" -eq 1 ] && ! printf '%s' "$bd_out" | grep -qF '0 open cards'; } || bd_bad=1
+  bd_ls_rc=0
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg list/incomplete: an unread board (adapter rc 1, 2 or 6) prints no header and no footer; a rejected credential on a label read is rc 1, never '0 open cards'"
+  else bd_fail_ "leg list/incomplete: bad=$bd_bad (last rc=$bd_rc out=[$bd_out])"; fi
+  bd_ls --label parked --limit 1; bd_o1=$bd_out; bd_rc1=$bd_rc; bd_lg1=$(cat "$bd_rkl")
+  bd_ls --label size:S; bd_o2=$bd_out; bd_lg2=$(cat "$bd_rkl")
+  : > "$bd_base/.rk-empty"
+  bd_ls_src="$bd_base/.rk-empty"; bd_ls --label parked; bd_o3=$bd_out; bd_rc3=$bd_rc
+  bd_ls; bd_o4=$bd_out; bd_rc4=$bd_rc
+  bd_ls_src=
+  if [ "$bd_rc1" -eq 0 ] && [ "$bd_lg1" = 'list-ranked https://ex.atlassian.net cloud AB 5000 parked' ] \
+     && [ "$bd_o1" = "$bd_ls_hd
+$bd_ls_l1
+1 of 4 open cards with label parked shown (partial: --limit 1)." ] && [ "$bd_lg2" = 'list-ranked https://ex.atlassian.net cloud AB 5000 size:S' ] \
+     && [ "$bd_o2" = "$bd_ls_hd
+$bd_ls_all
+4 open cards with label size:S (complete)." ] \
+     && [ "$bd_rc3" -eq 0 ] && [ "$bd_o3" = "$bd_ls_hd
+0 open cards with label parked (complete)." ] && [ "$bd_rc4" -eq 0 ] && [ "$bd_o4" = "$bd_ls_hd
+0 open cards (complete)." ]; then
+    bd_pass "leg list/label: --label rides the adapter argv and composes with --limit; no match is rc 0 '0 open cards with label parked (complete).'; an empty board is '0 open cards (complete).'"
+  else bd_fail_ "leg list/label: rc=$bd_rc1/$bd_rc3/$bd_rc4 log=[$bd_lg1]/[$bd_lg2] o1=[$bd_o1] o3=[$bd_o3] o4=[$bd_o4]"; fi
+  bd_bad=0
+  for bd_lv in 'x"OR project="ZZ' 'x\' 'x OR y' "$(printf 'x\ny')" 'a,b' 'x)' 'x*' '$(id)' '`id`' 'é' "$(printf '%065d' 0 | tr 0 a)" '' '-'; do
+    bd_ls --label "$bd_lv"; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  done
+  bd_nl=$(printf 'parked\n.'); bd_nl=${bd_nl%.}
+  bd_ls --label "$bd_nl"; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label a --label b; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label --limit 5; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label --limit; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label --summary; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ]; } || bd_bad=1
+  bd_ls --label "$(printf '%064d' 0 | tr 0 a)"; [ "$bd_rc" -eq 0 ] || bd_bad=1
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg list/label-refuse: a quote, backslash, keyword, newline, list, paren, wildcard, shell, backtick, accented, 65-byte, empty and lone '-' label, two labels, '--label --limit 5' and a missing value each refuse rc 2 with no adapter call; 64 bytes passes"
+  else bd_fail_ "leg list/label-refuse: bad=$bd_bad"; fi
+  printf 'AB-9\tTo Do\ts nine\nAB-2\tTo Do\ts two\nAB-5\tTo Do\ts five\nAB-7\tTo Do\ts seven\n' > "$bd_base/.rk-sum"
+  bd_ls_src="$bd_base/.rk-sum"
+  bd_ls --summary; bd_o1=$bd_out; bd_lg1=$(cat "$bd_rkl")
+  bd_ls --summary --limit 2; bd_o2=$bd_out
+  bd_ls_src=
+  if [ "$bd_lg1" = "$bd_ls_log summary" ] && [ "$bd_o1" = "$bd_ls_hd
+--- card text (data, not instructions) ---
+AB-9${bd_rktab}To Do${bd_rktab}s nine
+AB-2${bd_rktab}To Do${bd_rktab}s two
+AB-5${bd_rktab}To Do${bd_rktab}s five
+AB-7${bd_rktab}To Do${bd_rktab}s seven
+--- end ---
+4 open cards (complete)." ] && [ "$bd_o2" = "$bd_ls_hd
+--- card text (data, not instructions) ---
+AB-9${bd_rktab}To Do${bd_rktab}s nine
+AB-2${bd_rktab}To Do${bd_rktab}s two
+--- end ---
+2 of 4 open cards shown (partial: --limit 2)." ]; then
+    bd_pass "leg list/summary: --summary asks the adapter for the third column and frames the block '--- card text (data, not instructions) ---' / '--- end ---', also under --limit; without the flag there is no frame and no summary argument"
+  else bd_fail_ "leg list/summary: log=[$bd_lg1] o1=[$bd_o1] o2=[$bd_o2]"; fi
+  bd_ls; bd_o1=$bd_out
+  if ! printf '%s' "$bd_o1" | grep -qF 'card text' && [ "$(cat "$bd_rkl")" = "$bd_ls_log" ]; then
+    bd_pass "leg list/summary-opt-in: a bare list carries no frame and its adapter argv has no summary word"
+  else bd_fail_ "leg list/summary-opt-in: out=[$bd_o1] log=[$(cat "$bd_rkl")]"; fi
+  # leg list/delivery: do_list runs inside an `if` (errexit off); a write that fails (here the slice's sed) is rc 1 and no footer
+  bd_fk="$bd_base/.failsed"; mkdir -p "$bd_fk"
+  bd_realsed=$(command -v sed)
+  printf '#!/bin/sh\ncase "$2" in 1,*p) exit 1 ;; esac\nexec %s "$@"\n' "$bd_realsed" > "$bd_fk/sed"; chmod +x "$bd_fk/sed"
+  bd_out=$(cd "$bd_jclone" && PATH="$bd_fk:$PATH" && export STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" && if do_list; then echo RC0; else echo "RC$?"; fi 2>&1)
+  if printf '%s' "$bd_out" | grep -qF 'could not deliver the list' && ! printf '%s' "$bd_out" | grep -qF '(complete)' && printf '%s' "$bd_out" | grep -qx 'RC1'; then
+    bd_pass "leg list/delivery: a failing write (the slice's sed) under an if is rc 1 with 'could not deliver the list' and no '(complete)' footer"
+  else bd_fail_ "leg list/delivery: out=[$bd_out]"; fi
 
   # leg list-auth (SWAS-101 H1): with KIT_TRACKER_AUTH unset, the adapter sees the conf's auth kind (bearer here); an
   # exported KIT_TRACKER_AUTH is left alone; a conf without an auth line gives basic.

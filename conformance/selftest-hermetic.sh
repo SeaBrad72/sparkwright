@@ -328,6 +328,24 @@ hf_crashed() {
   esac
   return 1
 }
+# hf_scan_fail - SWAS-604: does a face that exited 0 hold a line STARTING with FAIL in its captured output $_o? Sets _hf_fl: 0 yes, 1 no, 2 the scan could not run (a grep rc above 1, or a signal: never read as clean). Line start only: a FAIL quoted mid-line or indented is not a verdict. Called only for a face with rc 0.
+hf_scan_fail() {
+  _sf_r=0
+  LC_ALL=C grep -q -e '^FAIL' "$_o" 2>/dev/null || _sf_r=$?   # HFFL
+  case $_sf_r in
+    0) _hf_fl=0 ;;
+    1) _hf_fl=1 ;;
+    *) _hf_fl=2 ;;
+  esac
+}
+# hf_fl_red <face label> - SWAS-604: report a face with rc 0 that printed a FAIL line, as the rc-not-0 branch reports its red: the cause, the load, the FAIL lines, the output tail.
+hf_fl_red() {
+  echo "FAIL: $1 — $_rel rc 0, but it printed a FAIL line ($_el s) battery: $_bs."
+  echo "  A selftest that prints a FAIL line must exit non-zero; an rc 0 beside one is a false green."
+  hf_load
+  first_fails "$_o"
+  sed 's/^/    /' "$_o" | tail -30
+}
 # hf_load — printed beside a face red: the per-user process limit and the user's live process count, so the "grep could not spawn" inference (SWAS-577 design section 1) is measured the next time. A reading that cannot be made says so.
 hf_load() {
   # shellcheck disable=SC3045  # ulimit -u/-p are non-POSIX by design: dash has only -p, bash's -p is the pipe size; both are tried with a fallback to 'unreadable'
@@ -359,6 +377,7 @@ hf_face_a() {
   hf_run hf_body_a
   _fa=$_hf_rc
   _el=$(( $(date +%s) - _t0 )); _bs=$(battery_state "$_o")
+  _hf_fl=1; if [ "$_fa" = 0 ]; then hf_scan_fail; fi
   _fchg=$(hf_diff "$_fp0" "$(hf_fp "$_top")")   # HFCMP
   rm -rf "$_ta"
   if [ -e "$_hf_sent" ]; then
@@ -374,6 +393,14 @@ hf_face_a() {
     hf_notes "face (a)"
     if [ -n "$_fchg" ]; then hf_moved "$_fchg"; fi
     return 1
+  elif [ "$_hf_fl" = 0 ]; then
+    hf_fl_red "face (a) stripped-env"
+    hf_notes "face (a)"
+    if [ -n "$_fchg" ]; then hf_moved "$_fchg"; fi
+    return 1
+  elif [ "$_hf_fl" = 2 ]; then
+    echo "  UNVERIFIED (face (a): the FAIL-line scan could not run: no verdict is claimed)"; _rv=1
+    if [ -n "$_fchg" ]; then hf_moved "$_fchg"; fi   # HFFLMV
   elif [ -n "$_fchg" ]; then
     hf_moved "$_fchg"
   else
@@ -395,6 +422,7 @@ hf_face_b() {
   hf_run hf_body_b
   _fb=$_hf_rc
   _el=$(( $(date +%s) - _t0 )); _bs=$(battery_state "$_o")
+  _hf_fl=1; if [ "$_fb" = 0 ]; then hf_scan_fail; fi
   rm -rf "$_c" "$_tb"
   if [ -e "$_hf_sent" ]; then
     hf_nogroup "face (b)"
@@ -408,6 +436,12 @@ hf_face_b() {
     sed 's/^/    /' "$_o" | tail -30
     hf_notes "face (b)"
     return 1
+  elif [ "$_hf_fl" = 0 ]; then
+    hf_fl_red "face (b) clone"
+    hf_notes "face (b)"
+    return 1
+  elif [ "$_hf_fl" = 2 ]; then
+    echo "  UNVERIFIED (face (b): the FAIL-line scan could not run: no verdict is claimed)"; _rv=1
   else
     echo "  PASS: face (b) clone — $_rel$_tag ($_el s) battery: $_bs"
   fi
@@ -971,6 +1005,45 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     else echo "FAIL: selftest — H10m the compare-skipping copy still exited $rc"; sfail=1; fi
   fi
 
+  # FL1-FL4 (SWAS-604) — a face with rc 0 whose output has a line STARTING with FAIL is a FAIL ("rc 0, but it printed a FAIL line"); a FAIL quoted mid-line or indented is not; a scan that cannot run is UNVERIFIED
+  st_repo "$st/ffl"
+  for _k in failrc0 failquote; do st_fix "$st/ffl/conformance/$_k-check.sh" "$_k"; done
+  st_commit "$st/ffl"
+  rc=0; out=$( cd "$st/ffl" && sh "$_self" conformance/failrc0-check.sh 2>&1 ) || rc=$?
+  st_expect "FL1 a face with rc 0 that printed a FAIL line: the lane exits 1" 1 "$rc"
+  st_has "FL1 face (a) names the cause" "$out" 'FAIL: face (a) stripped-env — conformance/failrc0-check.sh rc 0, but it printed a FAIL line'
+  st_has "FL1 the face output is printed, so the reader sees the line" "$out" 'FAIL: planted stub'
+  st_lacks "FL1 face (a) is not a PASS" "$out" 'PASS: face (a)'
+  rc=0; out=$( cd "$st/ffl" && sh "$_self" conformance/failquote-check.sh 2>&1 ) || rc=$?
+  st_expect "FL2 a FAIL quoted mid-line, or indented, is not a FAIL line: the lane exits 0" 0 "$rc"
+  st_has "FL2 face (b) passed too" "$out" 'PASS: face (b)'
+  st_fix "$st/ffl/conformance/failb-check.sh" failb; st_commit "$st/ffl"; : > "$st/ffl/fbmark"
+  rc=0; out=$( cd "$st/ffl" && sh "$_self" conformance/failb-check.sh 2>&1 ) || rc=$?
+  st_expect "FL3 a face (b) with rc 0 that printed a FAIL line: the lane exits 1" 1 "$rc"
+  st_has "FL3 face (a) passed" "$out" 'PASS: face (a)'
+  st_has "FL3 face (b) names the cause" "$out" 'FAIL: face (b) clone — conformance/failb-check.sh rc 0, but it printed a FAIL line'
+  sed '/# HFFL$/s/^\( *\).*/\1_sf_r=1/' "$_self" > "$WORK/fl1m.sh"
+  if cmp -s "$_self" "$WORK/fl1m.sh"; then echo "FAIL: selftest — FL1m the scan-removed copy changed nothing (the HFFL tag is gone)"; sfail=1
+  else
+    rc=0; ( cd "$st/ffl" && sh "$WORK/fl1m.sh" conformance/failrc0-check.sh ) >/dev/null 2>&1 || rc=$?
+    st_expect "FL1m with the FAIL-line scan removed the same fixture passes (rc 0), so FL1 has teeth" 0 "$rc"
+  fi
+  mkdir -p "$WORK/fl/bin"
+  printf '#!/bin/sh\nfor _a in "$@"; do\n  [ "$_a" != "^FAIL" ] || exit 2\ndone\nexec %s "$@"\n' "$(command -v grep)" > "$WORK/fl/bin/grep"; chmod +x "$WORK/fl/bin/grep"
+  rc=0; out=$( cd "$st/ft" && PATH="$WORK/fl/bin:$PATH" sh "$_self" conformance/hermetic-check.sh 2>&1 ) || rc=$?
+  st_expect "FL4 a FAIL-line scan that cannot run (grep rc 2) is not a PASS: the lane exits 1" 1 "$rc"
+  st_has "FL4 face (a) reads UNVERIFIED" "$out" 'UNVERIFIED (face (a): the FAIL-line scan could not run'
+  st_lacks "FL4 face (a) is not a PASS" "$out" 'PASS: face (a)'
+  rc=0; out=$( cd "$st/fzcommit" && PATH="$WORK/fl/bin:$PATH" sh "$_self" conformance/commit-check.sh 2>&1 ) || rc=$?
+  st_has "FL4m a moved tree is still reported when the scan cannot run" "$out" 'UNVERIFIED (live tree changed during face (a): HEAD)'
+  sed '/# HFFLMV$/d' "$_self" > "$WORK/fl4mm.sh"
+  if cmp -s "$_self" "$WORK/fl4mm.sh"; then echo "FAIL: selftest — FL4mm the moved-report-dropping copy changed nothing (the HFFLMV tag is gone)"; sfail=1
+  else
+    rc=0; out=$( cd "$st/fzcommit" && PATH="$WORK/fl/bin:$PATH" sh "$WORK/fl4mm.sh" conformance/commit-check.sh 2>&1 ) || rc=$?
+    st_has "FL4mm the mutant run reached the scan-failed branch (it did not crash)" "$out" 'UNVERIFIED (face (a): the FAIL-line scan could not run: no verdict is claimed)'
+    st_lacks "FL4mm with the moved-tree report dropped from the scan-failed branch it is not printed, so FL4m has teeth" "$out" 'UNVERIFIED (live tree changed during face (a): HEAD)'
+  fi
+
   # C3-C5, C10 and C7 (SWAS-600; errata E3) - the crash cells run as one group into a file, the file is printed, and the same file is rescanned: a crash cell's own PASS output must hold no crash line
   _cq=$WORK/crash.cells
   crash_cells_h > "$_cq" 2>&1 || :
@@ -1038,6 +1111,9 @@ st_fix() { # <path> <kind: fail1|nofail|passshape|fail15|sentinel|probe*|sleep2>
     edit)       _b='echo x >> tracked.txt; echo OK' ;;
     touchstat)  _b='touch tracked.txt; git status >/dev/null 2>&1; echo OK' ;;
     hang)       _b='echo "$$" >> "$HF_LEFT"; sleep 120 & echo "$!" >> "$HF_LEFT"; sleep 120 & echo "$!" >> "$HF_LEFT"; wait' ;;
+    failrc0)    _b='echo "PASS: selftest — leg 1"; echo "FAIL: planted stub"; echo OK' ;;
+    failquote)  _b='echo "PASS: selftest — a gate said FAIL, as required"; echo "selftest FAIL: not at the line start"; echo "  FAIL: an indented relay"; echo OK' ;;
+    failb)      _b='if [ ! -e fbmark ]; then echo "FAIL: planted in the clone"; fi; echo OK' ;;
     crash)      _b='if [ -e crashmark ]; then kill -s SEGV $$; fi; echo OK' ;;
     crashnest)  _b='if [ -e crashmark ]; then sh -c "kill -s SEGV \$\$"; fi; echo OK' ;;
     crashb)     _b='if [ ! -e crashmark ]; then kill -s SEGV $$; fi; echo OK' ;;

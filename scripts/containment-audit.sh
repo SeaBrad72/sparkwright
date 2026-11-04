@@ -58,7 +58,7 @@ echo "containment-audit: building the agent sandbox in $DIR ..."
 ( cd "$DIR" && docker compose --profile agent build agent ) || { echo "FAIL: agent sandbox build failed."; exit 1; }
 
 # The in-container probe matrix. Prints one marker line per probe; exits non-zero on any breach.
-# Markers are load-bearing (containment-audit-wired.sh greps them): POS/NEG <control>.
+# Markers are load-bearing (the anti-vacuous check below greps each PASS marker): POS/NEG <control>.
 PROBE='
 fail=0
 # POSITIVE liveness anchor (env-independent): write to the tmpfs. A dead/broken container cannot

@@ -56,7 +56,12 @@
 #   * BEHIND is a fact, not a verdict. It never fails a build. Whether to move is the adopter's call.
 #
 # What it changes: nothing — read-only. Reads refs in the repo, and (only when it gets that far) runs
-#                  `git ls-remote` against the release source. No clone, no fetch, no write, no forge API.
+#                  `git ls-remote` against the release source, from `/`, outside any repository (SWAS-680): this
+#                  checkout's .git/config does not apply to that read. That authenticates nothing: a global git rule,
+#                  an edited kit-base or scripts/publish-public.sh can still forge the answer. The one local read of the
+#                  adopted VERSION runs with no network transport (GIT_ALLOW_PROTOCOL=none) and no lazy fetch. If / is itself a
+#                  git repository, git -C / reads its config (not guarded here). A credential inside the source URL sits in argv
+#                  while the read runs. No clone, no fetch, no write, no forge API.
 # Guardrails: ADVISORY — never gates. Fails CLOSED to UNVERIFIED (2) rather than guessing a remote or
 #             reading an unreachable source as "current". The N/A path (3) requires no network. POSIX sh;
 #             dash-clean.
@@ -88,8 +93,11 @@ remote_default() {
 # latest_release <src> — the newest release version tagged at <src>, via ls-remote (git protocol, NOT a
 # forge API). Strips the peel suffix and the leading 'v'; ignores anything that is not a release tag (the
 # adopter's own `kit-base/v*` tags, rc tags, branches). Empty output = nothing usable.
+#   The read runs from `/` (no repository, so ./.git/config does not apply: a planted core.sshCommand, url.*.insteadOf or credential helper cannot run or redirect it), with the
+#   checkout's GIT_DIR family unset, no ext:: helper, and `--` before the source. It stays a pipeline that ends rc 0 and empty on failure: a `return 1` here would exit the caller's `set -eu` as rc 1, BEHIND.
+_kc_git() { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR GIT_TERMINAL_PROMPT=0 git -C / -c protocol.ext.allow=never "$@"; }
 latest_release() {
-  git ls-remote --tags -- "$1" 2>/dev/null \
+  _kc_git ls-remote --tags -- "$1" 2>/dev/null \
     | sed 's|.*refs/tags/||; s|\^{}$||' \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
     | sed 's/^v//' \
@@ -137,7 +145,9 @@ check() {
   fi
 
   # The version this project ADOPTED. It is a FACT, recorded at inception — never inferred.
-  _old=$(git -C "$_repo" show kit-base:VERSION 2>/dev/null | tr -d '[:space:]') || _old=''
+  # SWAS-680: refs/heads/kit-base, the branch the gate above checked (a TAG named kit-base would win a bare name); GIT_ALLOW_PROTOCOL=none because a git without GIT_NO_LAZY_FETCH (Apple 2.39.5 honours it [M]; which releases lack it is unmeasured) would
+  # lazy-fetch this blob of a planted partial clone over the checkout's own transport config (ssh, ext::, include.path); a healthy tree holds the blob locally and reads it.
+  _old=$(GIT_ALLOW_PROTOCOL=none GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 git -C "$_repo" show refs/heads/kit-base:VERSION 2>/dev/null | tr -d '[:space:]') || _old=''
   if [ -z "$_old" ]; then
     echo "kit-current: UNVERIFIED — 'kit-base' exists but carries no readable VERSION."
     echo "  reason: the base cannot say which release it is. Refusing to guess: a wrong OLD would produce a"
@@ -152,6 +162,17 @@ check() {
       echo "  you adopted v$_old. Whether a newer release exists is UNKNOWN — it is NOT reported as 'up to date'."
       return 2
     }
+  else
+    # A --from is classified before the read: a helper form (or one that starts with `-`) is UNVERIFIED rc 2, never BEHIND (the default URL needs none: remote_default holds it to https://github.com/*/*.git).
+    _kind=$(sh "$HERE/scripts/preflight.sh" --url-kind "$_src" 2>/dev/null) || _kind=''
+    if [ "$_kind" != remote ] && [ "$_kind" != local ]; then
+      echo "kit-current: UNVERIFIED — the release source is not a form this reads (a remote-helper, an option-shaped value, or scripts/preflight.sh is not here to say)."
+      echo "  reason: the source is read from outside this checkout and only as a network URL or a local path. Refusing to guess: it is NOT reported as 'up to date'."
+      echo "  you adopted v$_old."
+      return 2
+    fi
+    # The read runs from `/`, so a relative local path is made absolute first.
+    if [ "$_kind" = local ] && [ -d "$_src" ]; then _src=$(CDPATH='' cd "$_src" && pwd -P) || _src=$2; fi
   fi
 
   _new=$(latest_release "$_src")
@@ -191,6 +212,7 @@ check() {
 # ══ ORACLE — below the ^selftest() marker, so the mutation harness never neuters it. ══════════════════
 selftest() {
   st=0
+  unset GIT_SSH_COMMAND   # hermetic: an exported ssh command of the developer's shell must not move a cell (the cells that need one set it themselves)
   t=$(mktemp -d) || return 2
 
   # A RELEASE SOURCE: a local git repo carrying release tags. `git ls-remote` reads a local path exactly
@@ -328,6 +350,168 @@ selftest() {
   else
     echo "FAIL: selftest — the resolver rejected a VALID remote (the negatives above are vacuous)"; st=1
   fi
+
+  # ── SWAS-680: the release read runs from `/`, so this checkout's own config cannot run or redirect it ──
+  # Method: the real check() from inside a planted repository; a plant script that appends to a canary; a POSITIVE CONTROL per cell (plain git fires the plant in that repo,
+  # else the cell proves nothing); rc 2 asserted (the read was reached and failed), so a cell that exits early cannot pass on a zero canary. Config is set per cell, in a
+  # hermetic HOME with no global or system config. The credential-helper cell is a stand-in (git credential fill), not ls-remote against a 401 listener.
+  _kn=$t/canary; : > "$_kn"
+  printf '#!/bin/sh\necho x >> "%s"\nexit 1\n' "$_kn" > "$t/plant.sh"; chmod 755 "$t/plant.sh"
+  printf '#!/bin/sh\n[ "$1" = -G ] && exit 1\nshift\nPATH="$(git --exec-path):$PATH"; export PATH\nexec sh -c "$*"\n' > "$t/ssh-shim.sh"; chmod 755 "$t/ssh-shim.sh"
+  _kh() { env -i PATH="$PATH" HOME="$t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git "$@"; }
+  _kc_n() { if [ -f "$_kn" ]; then wc -l < "$_kn" | tr -d ' '; else echo 0; fi; }
+  _kx_env=:
+  _kc_in() {  # <cwd> <repo> <src>: check() from <cwd>, hermetic HOME, plus the assignments in $_kx_env; sets _got
+    _got=0
+    ( cd "$1" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && eval "$_kx_env" && check "$2" "$3" ) >/dev/null 2>&1 || _got=$?
+  }
+  _kc_plant() {  # <label> <from> <key> <value> [<key> <value>]: a fresh planted adopter; the control must fire, then check() must not
+    _kp_l=$1; _kp_from=$2; shift 2
+    mk_adopter "$t/p-$_kp_l" 3.130.0
+    while [ $# -ge 2 ]; do _kh -C "$t/p-$_kp_l" config "$1" "$2"; shift 2; done
+    : > "$_kn"; ( cd "$t/p-$_kp_l" && _kh ls-remote --tags -- "$_kp_from" ) >/dev/null 2>&1 || true
+    if [ "$(_kc_n)" -lt 1 ]; then echo "FAIL: selftest — plant $_kp_l: plain git did not fire the plant (the cell proves nothing)"; st=1; return 0; fi
+    : > "$_kn"; _kc_in "$t/p-$_kp_l" "$t/p-$_kp_l" "$_kp_from"
+    if [ "$(_kc_n)" = 0 ] && [ "$_got" -eq 2 ]; then echo "PASS: selftest — plant $_kp_l: the release read ran no planted program (canary 0, rc 2)"
+    else echo "FAIL: selftest — plant $_kp_l: canary $(_kc_n), rc $_got (wanted canary 0 and rc 2)"; st=1; fi
+  }
+  _kc_plant sshcommand ssh://127.0.0.1:1/x core.sshCommand "$t/plant.sh"
+  _kc_plant gitproxy git://127.0.0.1:1/x core.gitProxy "$t/plant.sh"
+  _kc_plant ext "ext::$t/plant.sh" protocol.ext.allow always
+  _kc_plant insteadof-ext http://127.0.0.1:1/ "url.ext::$t/plant.sh.insteadOf" http://127.0.0.1:1/ protocol.ext.allow always
+  # the decoy rule: the checkout rewrites a closed-port URL to a repository holding the ADOPTED version's tag, so the planted read says "OK, up to date" (SWAS-679 measured rc 0 with the plant, rc 2 without)
+  mkdir -p "$t/decoyd"; mk_release "$t/decoyd/k.git" v3.130.0
+  mk_adopter "$t/p-decoy" 3.130.0; _kh -C "$t/p-decoy" config "url.$t/decoyd/.insteadOf" http://127.0.0.1:1/
+  if [ "$( cd "$t/p-decoy" && _kh ls-remote --tags -- http://127.0.0.1:1/k.git 2>/dev/null | grep -c 'refs/tags/v3.130.0' )" -ge 1 ]; then
+    _kc_in "$t/p-decoy" "$t/p-decoy" http://127.0.0.1:1/k.git
+    if [ "$_got" -eq 2 ]; then echo "PASS: selftest — a url.*.insteadOf decoy in the checkout cannot yield 'OK, up to date' (rc 2)"
+    else echo "FAIL: selftest — the decoy rule moved the verdict (rc $_got, wanted 2)"; st=1; fi
+  else echo "FAIL: selftest — the decoy rule did not redirect plain git (the decoy cell proves nothing)"; st=1; fi
+  # no-network: the real default URL, rewritten by plain git in a planted repo, comes back untouched through the shared helper
+  _kc_real=$(remote_default 2>/dev/null) || _kc_real=https://github.com/a/b.git
+  mk_adopter "$t/p-url" 3.130.0; _kh -C "$t/p-url" config "url.$t/decoyd/.insteadOf" "$_kc_real"
+  _kc_ctl=$( cd "$t/p-url" && _kh ls-remote --get-url "$_kc_real" 2>/dev/null ) || _kc_ctl=''
+  _kc_got=$( cd "$t/p-url" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && _kc_git ls-remote --get-url "$_kc_real" 2>/dev/null ) || _kc_got=''
+  if [ "$_kc_ctl" = "$t/decoyd/" ] && [ "$_kc_got" = "$_kc_real" ]; then echo "PASS: selftest — a rule on the default URL rewrites it for plain git and not for the release read (no network)"
+  else echo "FAIL: selftest — default-URL rewrite: control '$_kc_ctl', helper '$_kc_got'"; st=1; fi
+  # a person's own GIT_DIR pointing at a planted repository is ignored by the read
+  : > "$_kn"
+  ( cd "$t" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_DIR=$t/p-sshcommand/.git && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_DIR && git ls-remote --tags -- ssh://127.0.0.1:1/x ) >/dev/null 2>&1 || true
+  _kc_ctl=$(_kc_n); : > "$_kn"
+  _kx_env="export GIT_DIR=$t/p-sshcommand/.git"; _kc_in "$t" "$t/p-sshcommand" ssh://127.0.0.1:1/x; _kx_env=:
+  if [ "$_kc_ctl" -ge 1 ] && [ "$(_kc_n)" = 0 ] && [ "$_got" -eq 2 ]; then echo "PASS: selftest — a GIT_DIR in the environment does not send the release read into that repository"
+  else echo "FAIL: selftest — GIT_DIR: control $_kc_ctl, canary $(_kc_n), rc $_got"; st=1; fi
+  # the environment still applies: an ssh shim through GIT_SSH_COMMAND, and a GIT_CONFIG_COUNT rule (the sandbox's route), each read the release source
+  _kx_env="export GIT_SSH_COMMAND=$t/ssh-shim.sh"; _kc_in "$t" "$t/behind" "ssh://fixture$t/rel"
+  if [ "$_got" -eq 1 ]; then echo "PASS: selftest — GIT_SSH_COMMAND still applies (the read answered over ssh: BEHIND rc 1)"; else echo "FAIL: selftest — the ssh shim read gave rc $_got, wanted 1"; st=1; fi
+  _kx_env="export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.$t/rel.insteadOf GIT_CONFIG_VALUE_0=http://127.0.0.1:1/x"; _kc_in "$t" "$t/behind" http://127.0.0.1:1/x; _kx_env=:
+  if [ "$_got" -eq 1 ]; then echo "PASS: selftest — a GIT_CONFIG_COUNT rule still applies (BEHIND rc 1)"; else echo "FAIL: selftest — the GIT_CONFIG_COUNT read gave rc $_got, wanted 1"; st=1; fi
+  # --from is classified first: a helper form or an option-shaped value is UNVERIFIED rc 2 (never BEHIND rc 1), and runs nothing
+  : > "$_kn"
+  _case "a remote-helper --from -> rc 2, not BEHIND" 2 "$t/behind" "ext::$t/plant.sh"
+  _case "an option-shaped --from (--upload-pack) -> rc 2, not BEHIND" 2 "$t/behind" "--upload-pack=$t/plant.sh;:y"
+  [ "$(_kc_n)" = 0 ] && echo "PASS: selftest — an option-shaped --from ran nothing (canary 0)" || { echo "FAIL: selftest — an option-shaped --from ran the plant"; st=1; }
+  if [ "$(sh "$HERE/scripts/preflight.sh" --url-kind "--upload-pack=x;:y" 2>/dev/null)" = helper ] && [ "$(sh "$HERE/scripts/preflight.sh" --url-kind https://github.com/a/b.git 2>/dev/null)" = remote ]; then
+    echo "PASS: selftest — preflight --url-kind says helper for a leading '-' and remote for https"; else echo "FAIL: selftest — preflight --url-kind"; st=1; fi
+  _got=0; ( HERE="$t/nopub"; check "$t/behind" "$t/rel" >/dev/null 2>&1 ) || _got=$?
+  if [ "$_got" -eq 2 ]; then echo "PASS: selftest — no scripts/preflight.sh to classify with -> rc 2 UNVERIFIED, not a read"; else echo "FAIL: selftest — a missing classifier gave rc $_got, wanted 2"; st=1; fi
+  # a relative local --from is made absolute (the read runs from `/`)
+  _got=0; ( cd "$t" && check "$t/behind" rel >/dev/null 2>&1 ) || _got=$?
+  if [ "$_got" -eq 1 ]; then echo "PASS: selftest — a relative local --from still reads (BEHIND rc 1)"; else echo "FAIL: selftest — a relative --from gave rc $_got, wanted 1"; st=1; fi
+  # the plants are LIVE through the real script: with the `-C /` cut from the shared read (a rewritten copy), the ssh plant fires and the decoy yields rc 0
+  mkdir -p "$t/mut/conformance" "$t/mut/scripts"
+  sed 's#git -C / -c#git -c#' "$0" > "$t/mut/conformance/kit-current.sh"
+  if [ -f "$HERE/scripts/preflight.sh" ] && ! cmp -s "$0" "$t/mut/conformance/kit-current.sh"; then
+    cp "$HERE/scripts/preflight.sh" "$t/mut/scripts/preflight.sh"
+    : > "$_kn"; ( cd "$t/p-sshcommand" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && sh "$t/mut/conformance/kit-current.sh" --repo "$t/p-sshcommand" --from ssh://127.0.0.1:1/x ) >/dev/null 2>&1 || true
+    if [ "$(_kc_n)" -ge 1 ]; then echo "PASS: selftest — mutant (read inside the checkout) fires the ssh plant: the plant is live"; else echo "FAIL: selftest — the mutant did not fire the ssh plant (the sshcommand cell is vacuous)"; st=1; fi
+    _got=0; ( cd "$t/p-decoy" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && sh "$t/mut/conformance/kit-current.sh" --repo "$t/p-decoy" --from http://127.0.0.1:1/k.git ) >/dev/null 2>&1 || _got=$?
+    if [ "$_got" -eq 0 ]; then echo "PASS: selftest — mutant (read inside the checkout) yields 'OK, up to date' from the decoy: the decoy is live"; else echo "FAIL: selftest — the mutant gave rc $_got on the decoy, wanted 0"; st=1; fi
+  else echo "FAIL: selftest — the SWAS-680 mutant did not apply (no preflight here, or the sed matched nothing)"; st=1; fi
+
+  # ── the local read of the adopted VERSION (round 1 of the review): no transport, no lazy fetch, no replace refs, and the BRANCH kit-base ──
+  _kc_mut() {  # <name> <sed expr>: a rewritten COPY of this script (with the real preflight beside it) at $t/mut-<name>; rc 1 when the edit changed nothing
+    mkdir -p "$t/mut-$1/conformance" "$t/mut-$1/scripts"; sed "$2" "$0" > "$t/mut-$1/conformance/kit-current.sh"
+    cp "$HERE/scripts/preflight.sh" "$t/mut-$1/scripts/preflight.sh" 2>/dev/null || return 1
+    ! cmp -s "$0" "$t/mut-$1/conformance/kit-current.sh"
+  }
+  _kc_runmut() {  # <name> <repo> <PATH or empty> [<--from src>]: the copy, in <repo>, hermetic; its rc in _got
+    _got=0
+    ( cd "$2" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && if [ -n "$3" ]; then PATH=$3; export PATH; fi && sh "$t/mut-$1/conformance/kit-current.sh" --repo "$2" ${4:+--from "$4"} ) >/dev/null 2>&1 || _got=$?
+  }
+  mkdir -p "$t/oldbin"; _kc_real=$(command -v git)
+  printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$_kc_real" > "$t/oldbin/git"; chmod 755 "$t/oldbin/git"
+  _kc_oldpath="$t/oldbin:$(dirname "$_kc_real"):/usr/bin:/bin"
+  # F1: a planted partial clone whose adopted-VERSION blob is absent locally. A read of it lazy-fetches over the checkout's own transport config (ext:: here) unless GIT_NO_LAZY_FETCH holds. A stand-in git
+  # drops the variable (a git without it); a real /usr/bin/git row follows, gated on its own measured control. Apple 2.39.5 honours the variable [M]; which releases lack it is unmeasured.
+  mk_adopter "$t/p-pc" 3.130.0
+  _kc_oid=$(_kh -C "$t/p-pc" rev-parse refs/heads/kit-base:VERSION)
+  rm -f "$t/p-pc/.git/objects/$(printf '%s' "$_kc_oid" | cut -c1-2)/$(printf '%s' "$_kc_oid" | cut -c3-)"
+  _kh -C "$t/p-pc" config core.repositoryformatversion 1; _kh -C "$t/p-pc" config extensions.partialClone pl; _kh -C "$t/p-pc" config remote.pl.url "ext::$t/plant.sh"
+  _kh -C "$t/p-pc" config remote.pl.promisor true; _kh -C "$t/p-pc" config remote.pl.partialclonefilter blob:none; _kh -C "$t/p-pc" config protocol.ext.allow always
+  : > "$_kn"; ( cd "$t/p-pc" && _kh show refs/heads/kit-base:VERSION ) >/dev/null 2>&1 || true
+  if [ "$(_kc_n)" -ge 1 ]; then
+    : > "$_kn"; _kc_in "$t/p-pc" "$t/p-pc" ""; _kc_a=$_got; _kc_an=$(_kc_n)
+    : > "$_kn"; _kx_env="export PATH=$_kc_oldpath"; _kc_in "$t/p-pc" "$t/p-pc" ""; _kx_env=:; _kc_b=$_got; _kc_bn=$(_kc_n)
+    if [ "$_kc_an" = 0 ] && [ "$_kc_bn" = 0 ] && [ "$_kc_a" -eq 2 ] && [ "$_kc_b" -eq 2 ]; then echo "PASS: selftest — a planted partial clone with the VERSION blob absent fires nothing, on this git and on a stand-in git without GIT_NO_LAZY_FETCH (canary 0, rc 2)"
+    else echo "FAIL: selftest — partial clone: canary $_kc_an/$_kc_bn, rc $_kc_a/$_kc_b (wanted 0/0 and 2/2)"; st=1; fi
+    if _kc_mut noproto '/^  _old=/s/GIT_ALLOW_PROTOCOL=none //'; then
+      : > "$_kn"; _kc_runmut noproto "$t/p-pc" "$_kc_oldpath"
+      if [ "$(_kc_n)" -ge 1 ]; then echo "PASS: selftest — mutant (no GIT_ALLOW_PROTOCOL) on a stand-in git without the lazy-fetch belt fires the plant: the protocol belt is load-bearing"; else echo "FAIL: selftest — the no-protocol mutant did not fire the plant"; st=1; fi
+    else echo "FAIL: selftest — the no-protocol mutant did not apply"; st=1; fi
+    if _kc_mut nobelts '/^  _old=/s/GIT_ALLOW_PROTOCOL=none GIT_NO_LAZY_FETCH=1 //'; then
+      : > "$_kn"; _kc_runmut nobelts "$t/p-pc" ""
+      if [ "$(_kc_n)" -ge 1 ]; then echo "PASS: selftest — mutant (neither belt) fires the plant on this git: the plant is live through kit-current"; else echo "FAIL: selftest — the no-belt mutant did not fire the plant"; st=1; fi
+    else echo "FAIL: selftest — the no-belt mutant did not apply"; st=1; fi
+    # the REAL /usr/bin/git, when it is another git than the one above and runnable (a Mac without command-line tools gets a stub that opens an installer: not touched). Gated on the measured control, not a version.
+    if [ "$_kc_real" != /usr/bin/git ] && [ -x /usr/bin/git ] && { [ "$(uname -s)" != Darwin ] || xcode-select -p >/dev/null 2>&1; }; then
+      _kr='/usr/bin:/bin'; _krv=$(/usr/bin/git --version 2>/dev/null) || _krv=''
+      : > "$_kn"; ( cd "$t/p-pc" && env -i PATH="$_kr" HOME="$t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git show refs/heads/kit-base:VERSION ) >/dev/null 2>&1 || true; _kr0=$(_kc_n)
+      : > "$_kn"; ( cd "$t/p-pc" && env -i PATH="$_kr" HOME="$t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 git show refs/heads/kit-base:VERSION ) >/dev/null 2>&1 || true; _krb=$(_kc_n)
+      if [ "$_kr0" -ge 1 ]; then
+        : > "$_kn"; _kx_env="export PATH=$_kr"; _kc_in "$t/p-pc" "$t/p-pc" ""; _kx_env=:
+        if [ "$(_kc_n)" = 0 ] && [ "$_got" -eq 2 ]; then echo "PASS: selftest — real /usr/bin/git ($_krv): a planted partial clone with the VERSION blob absent fires nothing (canary 0, rc 2)"; else echo "FAIL: selftest — real /usr/bin/git: canary $(_kc_n), rc $_got (wanted 0 and 2)"; st=1; fi
+        : > "$_kn"; _kc_runmut noproto "$t/p-pc" "$_kr"
+        if [ "$_krb" -ge 1 ]; then
+          if [ "$(_kc_n)" -ge 1 ]; then echo "PASS: selftest — real /usr/bin/git ignores GIT_NO_LAZY_FETCH: the no-protocol mutant fires the plant (the protocol belt is load-bearing there)"; else echo "FAIL: selftest — real /usr/bin/git ignores the variable, yet the no-protocol mutant did not fire"; st=1; fi
+        else
+          if [ "$(_kc_n)" = 0 ]; then echo "PASS: selftest — real /usr/bin/git honours GIT_NO_LAZY_FETCH [M]: the no-protocol mutant fires nothing (the lazy-fetch belt holds there)"; else echo "FAIL: selftest — real /usr/bin/git honours the variable, yet the no-protocol mutant fired"; st=1; fi
+        fi
+        : > "$_kn"; _kc_runmut nobelts "$t/p-pc" "$_kr"
+        if [ "$(_kc_n)" -ge 1 ]; then echo "PASS: selftest — real /usr/bin/git: the mutant with neither belt fires the plant (the plant is live on this git)"; else echo "FAIL: selftest — real /usr/bin/git: the no-belt mutant did not fire"; st=1; fi
+      else echo "NOTE: selftest — real /usr/bin/git ($_krv): the plain read did not lazy-fetch, so its row is unrun"; fi
+    else echo "NOTE: selftest — no separate runnable /usr/bin/git: the real-git row is unrun"; fi
+  else echo "FAIL: selftest — plain git did not lazy-fetch the absent VERSION blob (the partial-clone cell proves nothing)"; st=1; fi
+  # F3: a TAG named kit-base beats the bare name kit-base:VERSION; the gate above checks the branch, so the read must too
+  mk_adopter "$t/p-tag" 3.130.0; mk_adopter "$t/tagsrc" 9.9.9
+  _kh -C "$t/p-tag" fetch -q "$t/tagsrc" refs/heads/kit-base:refs/tags/kit-base >/dev/null 2>&1 || true
+  if [ "$(_kh -C "$t/p-tag" show kit-base:VERSION 2>/dev/null | tr -d '[:space:]')" = 9.9.9 ]; then
+    _kc_in "$t" "$t/p-tag" "$t/rel"
+    if [ "$_got" -eq 1 ]; then echo "PASS: selftest — a tag named kit-base does not replace the branch's VERSION (BEHIND rc 1, not AHEAD)"; else echo "FAIL: selftest — a kit-base tag moved the verdict (rc $_got, wanted 1)"; st=1; fi
+    if _kc_mut tagwins '/^  _old=/s#refs/heads/kit-base:VERSION#kit-base:VERSION#'; then
+      _kc_runmut tagwins "$t/p-tag" "" "$t/rel"
+      if [ "$_got" -eq 0 ]; then echo "PASS: selftest — mutant (bare kit-base name) lets the tag win: AHEAD rc 0, so the cell is live"; else echo "FAIL: selftest — the bare-name mutant gave rc $_got, wanted 0"; st=1; fi
+    else echo "FAIL: selftest — the bare-name mutant did not apply"; st=1; fi
+  else echo "FAIL: selftest — the fixture tag did not shadow the branch for plain git (the tag cell proves nothing)"; st=1; fi
+  # F4: a replace ref on the VERSION blob must not change the adopted version
+  mk_adopter "$t/p-rep" 3.130.0
+  _kc_oid=$(_kh -C "$t/p-rep" rev-parse refs/heads/kit-base:VERSION); _kc_new=$(printf '9.9.9\n' | _kh -C "$t/p-rep" hash-object -w --stdin)
+  _kh -C "$t/p-rep" replace "$_kc_oid" "$_kc_new" >/dev/null 2>&1 || true
+  if [ "$(_kh -C "$t/p-rep" show refs/heads/kit-base:VERSION 2>/dev/null | tr -d '[:space:]')" = 9.9.9 ]; then
+    _kc_in "$t" "$t/p-rep" "$t/rel"
+    if [ "$_got" -eq 1 ]; then echo "PASS: selftest — a replace ref on the VERSION blob is not honoured (BEHIND rc 1)"; else echo "FAIL: selftest — a replace ref moved the verdict (rc $_got, wanted 1)"; st=1; fi
+    if _kc_mut norepl '/^  _old=/s/GIT_NO_REPLACE_OBJECTS=1 //'; then
+      _kc_runmut norepl "$t/p-rep" "" "$t/rel"
+      if [ "$_got" -eq 0 ]; then echo "PASS: selftest — mutant (no GIT_NO_REPLACE_OBJECTS) honours the replace ref: AHEAD rc 0, so the cell is live"; else echo "FAIL: selftest — the replace mutant gave rc $_got, wanted 0"; st=1; fi
+    else echo "FAIL: selftest — the replace mutant did not apply"; st=1; fi
+  else echo "FAIL: selftest — the fixture replace ref did not change plain git's VERSION (the replace cell proves nothing)"; st=1; fi
+  # the credential helper: a stand-in for the 401 a real ls-remote would meet (no listener here), `git credential fill` with no prompt. Plain git in the planted repo runs the helper; the release read's own git (from `/`) does not.
+  mk_adopter "$t/p-cred" 3.130.0; _kh -C "$t/p-cred" config credential.helper "!$t/plant.sh"
+  : > "$_kn"; ( cd "$t/p-cred" && printf 'protocol=https\nhost=x\n\n' | env -i PATH="$PATH" HOME="$t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 git credential fill ) >/dev/null 2>&1 || true
+  _kc_ctl=$(_kc_n); : > "$_kn"
+  ( cd "$t/p-cred" && HOME=$t GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null && export HOME GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL && printf 'protocol=https\nhost=x\n\n' | _kc_git credential fill ) >/dev/null 2>&1 || true
+  if [ "$_kc_ctl" -ge 1 ] && [ "$(_kc_n)" = 0 ]; then echo "PASS: selftest — a planted credential.helper runs for plain git in the checkout and not through the release read's git (a stand-in for ls-remote, which needs a 401 listener)"
+  else echo "FAIL: selftest — credential helper: control $_kc_ctl, through the helper git $(_kc_n)"; st=1; fi
 
   rm -rf "$t" 2>/dev/null || true
   if [ "$st" = 0 ]; then echo "kit-current --selftest: OK"; else echo "kit-current --selftest: FAIL" >&2; fi

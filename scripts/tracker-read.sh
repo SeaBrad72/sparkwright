@@ -1151,7 +1151,7 @@ CSTUB
   printf '0' > "$_crd/rc"; : > "$_crd/log"; : > "$record"
   rc=0
   (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; _TCR_SEC_BIN="$_crd/security"; KIT_TRF_MODE=good tr_read "$conf" "-" "$record" AB-1 "$_h40") >/dev/null 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ] && grep -q '^verdict bound$' "$record" 2>/dev/null && [ "$(wc -l < "$_crd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_crd/log"; then
+  if [ "$rc" -eq 0 ] && grep -q '^verdict bound$' "$record" 2>/dev/null && [ "$(wc -l < "$_crd/log" | tr -d ' ')" = "1" ] && ! grep -qE -- '(^| )-w( |$)' "$_crd/log"; then
     echo "PASS: selftest — a stored credential (empty env) lets the read proceed; the reader made one attribute-only store call, no -w (SWAS-101)"
   else
     echo "FAIL: selftest — the stored-credential path (rc=$rc, store log: $(cat "$_crd/log" 2>/dev/null))"; sfail=1

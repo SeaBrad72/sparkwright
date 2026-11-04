@@ -1,6 +1,6 @@
 #!/bin/sh
 # What it changes: nothing directly — a pure router that dispatches (via exec) to the named
-# subcommand's script (doctor/postmortem/tier-advice/explain/status/resume/start/board/prepush);
+# subcommand's script (doctor/postmortem/explain/status/resume/start/board/prepush);
 # every effect belongs to that subcommand. `status` is board-claim.sh's read-only who-holds-what
 # view; `resume` is slice-resume.sh, which is read-only by contract; `start` is start.sh, the
 # one-command loop entry (classify · claim · print the trailer block) — its only writes are
@@ -15,13 +15,12 @@ here=$(dirname "$0")
 case "${1:-}" in
   doctor) shift; exec sh "$here/doctor.sh" "$@" ;;
   postmortem) shift; exec sh "$here/postmortem.sh" "$@" ;;
-  tier-advice) shift; exec sh "$here/tier-advice.sh" "$@" ;;
   explain) shift; exec sh "$here/explain.sh" "$@" ;;
   status) shift; exec sh "$here/board-claim.sh" status "$@" ;;
   resume) shift; exec sh "$here/slice-resume.sh" "$@" ;;
   start) shift; exec sh "$here/start.sh" "$@" ;;
   board) shift; exec sh "$here/board.sh" "$@" ;;
   prepush) shift; exec sh "$here/../conformance/prepush-lane.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
 esac

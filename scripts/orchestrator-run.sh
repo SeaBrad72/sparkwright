@@ -7,7 +7,7 @@
 #   (fixture ROLE_RUNNER) and runs as a CI selftest; it did not itself drive a real fan-out.
 # Fans a work-list of disjoint slices to ROLE_RUNNER (the Engineer seam), each in an
 # isolated git worktree, meters each step through runaway-guard.sh, integrates the diffs,
-# and emits the OTel span tree scripts/otel-to-scorecard.sh reads. Replaces the E5-thin
+# and emits the OTel span tree (scripts/otlp-export.sh can forward it). Replaces the E5-thin
 # stand-in (orchestrator-trace-demo.sh). Live: ROLE_RUNNER dispatches an LLM subagent.
 # CI/selftest: scripts/fixtures/engineer-fixture.sh. kit.denied is set ONLY from the
 # guard's exit code here (trusted) — never from agent data. sh + jq + git. Not a gate.
@@ -69,8 +69,8 @@ run() {
     e_end=$(now)
     rc=0; sh "$here/runaway-guard.sh" step --row "$KIT_RUN_ROW" --tokens "${STEP_TOKENS:-1000}" --agents 1 >/dev/null || rc=$?
     # Legibility (Slice 3): resolve this builder's MODEL tier fail-safe (any error -> deep, the safe
-    # high floor) and stamp it on the span so otel-to-scorecard.sh -> the scorecard can render it.
-    # tokens seeds the value-analysis cost axis in the demo; a real Workflow run overwrites with actuals.
+    # high floor) and stamp it on the span so a reader of the trace can see it.
+    # tokens is a demo placeholder on the span; a real Workflow run overwrites with actuals.
     mt=$(sh "$here/model-tier.sh" resolve --role engineer --change-class ordinary 2>/dev/null || echo deep)
     case "$rc" in
       0) span --trace "$tid" --parent "$root" --name "agent:engineer" --status OK \
@@ -280,8 +280,6 @@ selftest() {
   br=$(_iso_q "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=2" -- one two three)
   [ "$(jq -s '[.[]|select(.attributes["kit.denied"]=="true")]|length' "$br")" = "1" ] || { echo "FAIL: breach run not exactly 1 denied span"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["agent.id"]=="engineer")]|length' "$br")" = "2" ] || { echo "FAIL: breach run expected 2 child spans (1 ok engineer + 1 denied), halt not honored"; fail=1; }
-  # the denied span feeds the scorecard adapter to a denied step
-  [ "$(sh "$here/otel-to-scorecard.sh" "$br" | jq '[.[]|select(.steps[].outcome=="denied")]|length')" -ge 1 ] || { echo "FAIL: denied not mapped to scorecard"; fail=1; }
   rm -f "$br"
   # E3-escalation (fail-closed pause): breach with NO verdict written -> loop stops here,
   # gate span carries kit.escalated=pending + kit.denied; engineer#3 does NOT run. The resume
@@ -636,7 +634,7 @@ HKRUN
   [ ! -e "$hsand/marker" ] || { echo "FAIL: a slice-installed post-merge hook RAN inside the orchestrator's merge (core.hooksPath not disabled)"; fail=1; }
   rm -rf "$hsand"; rm -f "$hout" "$hrun"
   [ "$fail" -eq 0 ] || { echo "orchestrator-run --selftest: FAIL" >&2; return 1; }
-  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume(two runs)+no-RAISE halt, KIT_RUN_ROW required, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename, integration atomic on floor-trip, control-plane slice refused before any merge)"; return 0
+  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, escalation pause+resume(two runs)+no-RAISE halt, KIT_RUN_ROW required, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename, integration atomic on floor-trip, control-plane slice refused before any merge)"; return 0
 }
 
 case "${1:-}" in

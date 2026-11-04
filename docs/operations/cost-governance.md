@@ -22,9 +22,9 @@ posture is **declared + attested**; it does **not** verify spend was capped.
 
 ## The monitor (already shipping)
 `docs/operations/agentic-ops.md` already records `tokens.in` · `tokens.out` · `cost` per run (extracted
-by `scripts/agent-trace.sh`; `scripts/agent-scorecard.sh` consumes those traces) — that is the
+by `scripts/agent-trace.sh`) — that is the
 **measurement** the budget compares against. Cost
-governance closes the loop: **measure (agent-scorecard) → compare to the declared budget → stop /
+governance closes the loop: **measure (the trace's `tokens` and `cost`) → compare to the declared budget → stop /
 escalate**, with the platform cap as the backstop.
 
 ## How to attest (what the check reads)

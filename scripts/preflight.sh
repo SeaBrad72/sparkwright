@@ -24,14 +24,13 @@ bfail=0; bunv=0   # SWAS-355: bfail = an UNDECLARED opt-out or a malformed decla
 # accumulator: `fail` is set by the leg, never read back off stdout, so no line a fixture can produce
 # moves it. Sweeping ~140 verdict lines would be diff without teeth.
 # THIS SENTENCE USED TO CLAIM MORE THAN THAT — "the `fail` accumulator AND the literal
-# `OK: preflight selftest` trailer that conformance/adopter-preflight-wired.sh requires" — and the
-# trailer half was wrong (security re-review, finding INFO-3). READ THAT CONSUMER: it USED to run the
-# selftest with `|| true`, discarding the exit code, and grep stdout for the literal trailer; it NOW
-# requires exit code 0 AND the exact whole line (`grep -qx`), so a forged line alone no longer satisfies it.
+# `OK: preflight selftest` trailer that a wiring lock requires" — and the
+# trailer half was wrong (security re-review, finding INFO-3). That lock (removed by SWAS-626) USED to run the
+# selftest with `|| true`, discarding the exit code, and grep stdout for the literal trailer; before it was
+# removed it required exit code 0 AND the exact whole line (`grep -qx`), so a forged line alone no longer satisfied it.
 # (`fail` is also gated by the OTHER route: the dedicated CI step in .github/workflows/ci.yml
 # that runs `sh scripts/preflight.sh --selftest` bare reads its exit code. Cited by its command rather
-# than by a line number, for the reason stated at the k11_run block. Both consumers now read rc; the
-# sentence above said so before the lock did.) NOT EXPLOITABLE, and that is a property of the INPUTS rather than
+# than by a line number, for the reason stated at the k11_run block.) NOT EXPLOITABLE, and that is a property of the INPUTS rather than
 # of the output rule: every fixture path is `mktemp -d` under TMPDIR plus a suffix this script chooses,
 # and TMPDIR is the operator's or the runner's. The correction is recorded rather than quietly deleted
 # because a rationale that reads stronger than it is becomes the reason a later reviewer skips the
@@ -407,6 +406,20 @@ boundary_url_show() {  # <url or text holding one>: THE one redaction every prin
   printf '%s' "$_bs_in" | tr -cd '[:print:]' | sed -e "s#://git@\([^/@]*\)/#://${_bs_mk}\1/#" -e "s#://git@\([^/@]*\)\$#://${_bs_mk}\1#" -e "s#^git@\([^@]*\)\$#${_bs_m2}\1#" -e 's#\(://\)[^/]*@#\1***@#g' -e 's#^[^/@]*:[^/@]*@#***@#' -e 's#^[^/@:][^/@:]*@#***@#' -e "s#://${_bs_mk}#://git@#" -e "s#^${_bs_m2}#git@#"   # MUT-REDACT
 }
 _bo_nonforge='origin must be a network forge URL (https or ssh); this check can'"'"'t verify a local or unrecognised origin'
+boundary_url_kind() {  # <url>: prints remote | local | helper. The ONE classifier: boundary_origin_fetch refuses on it and --url-kind (doctor, kit-current) reads it. No git runs here.
+  case "$1" in
+    *::*) printf '%s\n' helper ;;
+    ssh://*|git+ssh://*|https://*|http://*|git://*) printf '%s\n' remote ;;
+    file:*|/*|.*|'~'*) printf '%s\n' local ;;
+    *://*) printf '%s\n' helper ;;
+    *:*)
+      case "${1%%:*}" in
+        */*) printf '%s\n' local ;;
+        *) printf '%s\n' remote ;;
+      esac ;;
+    *) printf '%s\n' local ;;
+  esac
+}
 boundary_origin_fetch() {  # <outfile>: rc 0 written | 1 absent | 2 not a regular file | 3 unreadable (BD_WHY says why) | 4 UNTRUSTED (BD_WHY, BD_REMEDY). Two ls-remote calls, no fetch.
   BD_REMEDY=""; BD_MOVED=""; _gt_common=""; _gt_kind=""; _bo_retry=0  # _bo_retry=1 marks a failure worth ONE automatic retry (a network blip), never an integrity or structural refusal
   # A redirected git environment or a nested tree would read a repository this directory does not own: preflight refuses both, but only a few lines after this call.
@@ -432,13 +445,9 @@ boundary_origin_fetch() {  # <outfile>: rc 0 written | 1 absent | 2 not a regula
   # S13: default-deny. Only ssh://, git+ssh://, https://, http://, git:// and scp-like [user@]host:path (no slash in the host part, no "::") are remotes; a "::" form
   # (a remote helper such as ext::) or any other scheme is refused before ls-remote can run it.
   _bo_lp=0; _bo_hx=0
-  case "$_bo_eff" in
-    *::*) _bo_hx=1 ;;
-    ssh://*|git+ssh://*|https://*|http://*|git://*) ;;
-    file:*|/*|.*|'~'*) _bo_lp=1 ;;
-    *://*) _bo_hx=1 ;;
-    *:*) case "${_bo_eff%%:*}" in */*) _bo_lp=1 ;; esac ;;
-    *) _bo_lp=1 ;;
+  case "$(boundary_url_kind "$_bo_eff")" in
+    helper) _bo_hx=1 ;;
+    local) _bo_lp=1 ;;
   esac
   if [ "$_bo_hx" -eq 1 ]; then boundary_refuse helper-origin "the effective origin is a remote-helper or unrecognised URL form, so it is not a remote this declaration can be trusted from" "$_bo_nonforge"; return $?; fi   # MUT-HELPER
   if [ "$_bo_lp" -eq 1 ] && { [ "${SEAMS:-0}" -eq 0 ] || [ -n "${PREFLIGHT_BOUNDARY_REFUSE_LOCAL:-}" ]; }; then boundary_refuse local-origin "the effective origin is a local path or a file:// URL, so it is not a remote this declaration can be trusted from" "$_bo_nonforge"; return $?; fi   # MUT-LOCALPATH
@@ -1773,9 +1782,338 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
   fi
 }
 
+# --- C1: git's redirect files in THIS checkout, reported after the fact --------------------------------------
+# PARSE-ONLY. A nested `.git` entry, `./.git/commondir`, a worktree or submodule entry that points elsewhere, an exec key in a git config, a bare layout, a pending rebase `exec`
+# line and a `core.hooksPath` inside the checkout are all places where git runs something the person did not write. C1 reads the files themselves and runs no git in a nested
+# directory, ever. `./.git` is judged FIRST: a gitfile, a symlink or a `commondir` is reported and then NO git runs at all, and no config is read. Files are read only when they
+# are regular files and not links (`[ -f ] && [ ! -L ]`, so a FIFO named .git is reported and never opened), 4096 bytes at most. Config is read by `git config --file <f> --name-only
+# --list` under `env -i`, run from `/` with no repository context and `--no-includes` (gp_cfgread), so git's early config read cannot follow an include in the unvetted file: key NAMES only, never a value (the one value read is core.hooksPath, to see whether it lies inside the checkout, and it is never printed). The index read carries
+# `--git-dir=./.git`, so git never DISCOVERS a repository: a ./.git it rejects reads UNVERIFIED, and a bare layout at the root is never entered. When ./.git/config or
+# config.worktree names an exec key, or a file git would open is a link or special, NO index read is made (gp_nogit). The one index read, for the registered-submodule list, is
+# `gp_git ls-files --stage`; it is never `status`.
+# EVERY printed name is checked first (Rule 2, Rule 3), under LC_ALL=C: a name with a non-printable or non-ASCII byte (a newline, an escape, a bidi mark) or the text `##[` is reported without
+# its name, so a planted name cannot forge a line or drive a terminal. NEVER MOVES AN EXIT: it prints `warn`, `info` and `unverified` lines and returns 0, and touches none of miss, rec, bfail or bunv.
+# TIMING, stated plainly: it runs when preflight or doctor runs; git run before that (Claude Code's own start-up git, the person's own commands) may already have run a plant, so it REPORTS,
+# it does not prevent. CEILINGS: an agent can edit this script before the person runs it; the records git keeps (a worktree's gitdir file and back-link) are files an agent can forge too (see boundary_gitdir_trusted),
+# so they are NOT read: a nested gitfile naming ./.git/worktrees/<one name> (by shape, never by its path name) prints an info and its own `unverified git-plants:` line (a linked worktree or a plant: this check cannot tell which), and the run never reads ok; a nested gitfile
+# naming a recursive submodule's git directory prints its own `unverified` line too (its parent's index is not read); an `unverified` line prints whatever else was found; an absolute core.hooksPath is judged by a plain PREFIX against the checkout root, so one that reaches the checkout through a symlink, or
+# through a case variant of the path, is missed (a value with .., //, /./ or under /proc counts as inside); the walks are unbounded (a huge tree is slow, and a permission error reads UNVERIFIED); and a file can change between the check in gp_one and the read that follows it (a same-user race, not closed).
+# THE KEY LIST'S CEILING, stated: gp_exec_key is an allow-list written from memory of git's documented program-running and redirecting keys, not enumerated from git's source; a key it does not
+# name is not reported, and a git newer than the list may add one. `ok` therefore means "nothing found among the keys it knows". Every file read below is read WHOLE and refused unless it is one
+# plain line (gp_one), because git parses the whole file, not its first line.
+gp_warn=0; gp_nogit=0; gp_unv=0; gp_cant=0; gp_recur=0; gp_root=""; gp_rootp=""; gp_out=""; gp_links=""; gp_lkfail=0; gp_hit=""; gp_1v=""
+gp_nlc=$(printf '\nx'); gp_nlc=${gp_nlc%x}; gp_crc=$(printf '\r')
+gp_one() {  # <file>: sets gp_1v to the file's whole content; rc 1 unless it is a regular file of at most 4096 bytes holding no NUL and exactly one non-empty line with no CR
+  gp_1v=""
+  { [ -f "$1" ] && [ ! -L "$1" ]; } || return 1
+  gp_sz=$(wc -c < "$1" 2>/dev/null | tr -d ' ') || return 1
+  case "$gp_sz" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$gp_sz" -le 4096 ] || return 1
+  [ "$(LC_ALL=C tr -d '\000' < "$1" 2>/dev/null | wc -c | tr -d ' ')" = "$gp_sz" ] || return 1   # a NUL: the shell drops it, git stops at it, so the two would read different paths   # MUT-GPNUL
+  gp_raw=$(cat "$1" 2>/dev/null; printf x) || return 1
+  gp_raw=${gp_raw%x}; gp_raw=${gp_raw%"$gp_nlc"}
+  case "$gp_raw" in ""|*"$gp_nlc"*|*"$gp_crc"*) return 1 ;; esac
+  gp_1v=$gp_raw
+}
+gp_w() { gp_warn=$((gp_warn + 1)); printf '%s\n' "  warn git-plants: $1"; }   # Rule 3
+gp_i() { printf '%s\n' "  info git-plants: $1"; }   # Rule 3
+gp_safe() { case "$1" in *[![:print:]]*|*'##['*) return 1 ;; esac; return 0; }
+gp_show() { if gp_safe "$1"; then printf '%s' "$1"; else printf '%s' '<a name it withholds (unprintable, or shaped like a credential), not shown>'; fi; }
+gp_git() {  # the only git C1 runs: an explicit git directory (no discovery, so a rejected ./.git is an error and a bare layout at the root is never entered), no config but the repository's own, never a monitor, a hook, a pager, a lazy fetch or an ext:: transport
+  env -i PATH="$PATH" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 git --git-dir=./.git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c protocol.ext.allow=never "$@"   # MUT-GPGITDIR
+}
+gp_cfgread() {  # <absolute config file> <git config args...>: reads ONE file from `/` with no repository context (so git's early config read cannot follow an include in the unvetted ./.git/config) and no includes; the only config reader for a candidate file
+  gp_cf=$1; shift
+  ( cd / && env -i PATH="$PATH" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 git -c core.fsmonitor=false -c core.hooksPath=/dev/null config --no-includes --file "$gp_cf" "$@" )   # MUT-GPCFGCD
+}
+gp_find() {  # <find predicates...>: the names found, one per line; a name with an unprintable byte is the word UNSAFE (never printed), so no name can add a line
+  find -P "$@" -exec sh -c 'for gp_p; do case "$gp_p" in *[![:print:]]*|*"##["*|*:*@*) echo UNSAFE ;; *) printf "%s\n" "$gp_p" ;; esac; done' gp {} + 2>/dev/null   # MUT-GPFIND
+}
+gp_exec_key() {  # <lower-case key name> -> 0 when the key can run a program or pull in another file (core.hooksPath has its own check)
+  case "$1" in
+    core.fsmonitor|core.sshcommand|core.pager|core.editor|core.gitproxy|core.askpass|core.alternaterefscommand|core.worktree|extensions.worktreeconfig|extensions.partialclone|credential.helper|credential.*.helper|include.path|includeif.*.path|alias.*|pager.*|interactive.difffilter|diff.external|diff.*.textconv|diff.*.command|filter.*.clean|filter.*.smudge|filter.*.process|merge.*.driver|mergetool.*.cmd|mergetool.*.path|difftool.*.cmd|difftool.*.path|gpg.program|gpg.*.program|gpg.ssh.defaultkeycommand|sequence.editor|tar.*.command|sendemail.*cmd|sendemail.smtpserver|browser.*.cmd|browser.*.path|man.*.cmd|man.*.path|guitool.*.cmd|trailer.*.command|trailer.*.cmd|hook.*.command|uploadpack.packobjectshook|remote.*.vcs|remote.*.uploadpack|remote.*.receivepack|remote.*.promisor|protocol.allow|protocol.*.allow|submodule.*.update|url.*.insteadof) return 0 ;;   # MUT-GPKEY
+  esac
+  return 1
+}
+gp_cfg() {  # <absolute config file> <label> [module|wt|nested]: warn once, naming the exec keys that file sets. Without a kind it is ./.git/config or config.worktree, and a finding there stops the index read (gp_nogit). An absent file is nothing to read; a link or special file is reported, never opened; a git that fails reads UNVERIFIED
+  [ "$gp_nogit" -eq 0 ] || return 0
+  { [ -e "$1" ] || [ -L "$1" ]; } || return 0
+  if ! { [ -f "$1" ] && [ ! -L "$1" ]; }; then gp_w "$2 is a link or not a regular file: it was not read"; return 0; fi
+  gp_hit=""
+  if ! gp_ck=$(gp_cfgread "$1" --name-only --list 2>/dev/null); then gp_unv=1; [ -n "${3:-}" ] || gp_nogit=1; return 0; fi   # a config git cannot parse is not vetted, and the index read would open it (and follow its includes): MUT-GPCFGFAIL
+  gp_ck=$(printf '%s\n' "$gp_ck" | tr 'A-Z' 'a-z')
+  while IFS= read -r gp_k; do
+    [ -n "$gp_k" ] || continue
+    if [ "$gp_k" = core.hookspath ] && [ -n "${3:-}" ]; then :   # git sets no hooksPath in a module, worktree-entry or nested config: any is a finding
+    else gp_exec_key "$gp_k" || continue
+    fi
+    [ "$gp_k:${3:-}" != core.worktree:module ] || continue   # git itself sets core.worktree in every submodule's config
+    case "${gp_k#*.}" in *.*) gp_k="${gp_k%%.*}.*.${gp_k##*.}" ;; esac   # a subsection can hold a credential (url.https://user:token@host/.insteadof): print section.*.variable, never the subsection (SWAS-662)   # MUT-GPMASK
+    gp_safe "$gp_k" || gp_k='<unprintable key>'
+    gp_hit="$gp_hit [$gp_k]"
+  done <<GPEOF
+$gp_ck
+GPEOF
+  [ -z "$gp_hit" ] && return 0
+  gp_w "$2 sets key(s) that run a program or pull in another file:$gp_hit (names only; values are never read)"
+  [ -n "${3:-}" ] || gp_nogit=1   # an exec key in the repository's own config: no further git, so no index read   # MUT-GPCFGSTOP
+}
+gp_guard_files() {  # git opens ./.git/config, config.worktree, HEAD and the index: a FIFO or a link there would hang or redirect it, so no git runs (HEAD may be a symlink: that is git's own legacy form)
+  for gp_f in ./.git/config ./.git/config.worktree ./.git/index ./.git/HEAD; do
+    { [ -e "$gp_f" ] || [ -L "$gp_f" ]; } || continue
+    if [ "$gp_f" = ./.git/HEAD ] && [ -L "$gp_f" ]; then continue; fi
+    if [ -f "$gp_f" ] && [ ! -L "$gp_f" ]; then continue; fi
+    gp_w "$gp_f is a link or not a regular file: git would open it, so no git was run and no config was read"; gp_nogit=1
+  done
+}
+gp_top() {  # ./.git first
+  if git_env_redirected; then gp_i "a git environment variable redirects git (GIT_DIR or GIT_WORK_TREE): no git was run and no config was read"; gp_nogit=1; fi
+  if [ -L ./.git ]; then
+    gp_w "./.git is a symlink (P2): git follows it to a repository this directory does not own. No git was run and no config was read"; gp_nogit=1   # MUT-GPNOGIT
+  elif [ -f ./.git ]; then
+    gp_i "./.git is a gitfile (P9): this session is a linked worktree or a submodule, or a plant; this check cannot tell which. It ran no git and read no config, and nothing nested is classified"; gp_nogit=1
+  elif [ -d ./.git ]; then
+    if [ -e ./.git/commondir ] || [ -L ./.git/commondir ]; then
+      gp_w "./.git/commondir exists (P6): git reads it for any git directory and takes objects and refs from the directory it names. No git was run and no config was read"; gp_nogit=1   # MUT-GPNOGIT
+    fi
+    gp_guard_files   # MUT-GPGUARD
+    if [ "$gp_nogit" -eq 0 ] && ! { { [ -f ./.git/HEAD ] || [ -L ./.git/HEAD ]; } && [ -d ./.git/objects ] && [ -d ./.git/refs ]; }; then   # MUT-GPREPO
+      gp_w "./.git lacks HEAD, objects or refs, so it is not a git repository and git would discover one upward. No git was run and no config was read"; gp_nogit=1
+    fi
+  else
+    gp_w "./.git is a special file, not a directory or a gitfile: it was not opened. No git was run and no config was read"; gp_nogit=1   # MUT-GPNOGIT
+  fi
+}
+gp_hookin() {  # <core.hooksPath value> -> 0 when it lies inside this checkout: relative, ~ expanded with the real HOME, or an absolute path with $gp_root or $gp_rootp as a PREFIX; a value with .., // or /./ in it, one under /proc, or one that cannot be expanded, counts as inside. CEILING: nothing else is resolved, so an absolute value that reaches the checkout through a symlink or a case variant of its path is missed. Leaves the expanded value in gp_hq
+  gp_hq=$1
+  # shellcheck disable=SC2088  # the quoted ~ patterns match git's own literal tilde in a config VALUE (git expands it itself); the shell must not
+  case "$gp_hq" in
+    '~') gp_hq=${HOME:-} ;;
+    '~/'*) gp_hq=${HOME:-}/${gp_hq#'~/'} ;;
+    '~'*) return 0 ;;
+  esac
+  case "$gp_hq" in /*) : ;; *) return 0 ;; esac   # MUT-GPHOOKS
+  case "$gp_hq" in *..*|*//*|*/./*|*/.|/proc|/proc/*) return 0 ;; esac
+  case "$gp_hq" in "$gp_root"|"$gp_root"/*|"$gp_rootp"|"$gp_rootp"/*) return 0 ;; esac
+  return 1
+}
+gp_hookspath() {  # P13: core.hooksPath set to a place inside the checkout, in ./.git/config or ./.git/config.worktree (the value is read, never printed)
+  for gp_hf in "$gp_root/.git/config" "$gp_root/.git/config.worktree"; do
+    { [ -f "$gp_hf" ] && [ ! -L "$gp_hf" ]; } || continue
+    if ! gp_hv=$(gp_cfgread "$gp_hf" --get core.hooksPath 2>/dev/null); then gp_hv=""; fi
+    [ -n "$gp_hv" ] || continue
+    if gp_hookin "$gp_hv"; then
+      gp_w "core.hooksPath in ./${gp_hf#"$gp_root"/} points inside this checkout (P13): a script an agent edits there runs on your next commit before you review it (the value is not printed)"
+    else
+      case "$gp_hq" in /tmp|/tmp/*|/private/tmp|/private/tmp/*|/var/tmp|/var/tmp/*|/private/var/tmp|/private/var/tmp/*|/var/folders|/var/folders/*|/private/var/folders|/private/var/folders/*|/dev/shm|/dev/shm/*) gp_w "core.hooksPath in ./${gp_hf#"$gp_root"/} points under a temp directory, where a sandboxed agent can write (P13; the value is not printed)" ;; esac
+    fi
+  done
+}
+gp_todo_read() {  # <file> -> 0 when it holds an exec line, 1 when it does not; any other grep result (no grep, an error) reads UNVERIFIED, never clean
+  gp_tr=0; grep -Eq '^[[:space:]]*(exec|x)([[:space:]]|$)' "$1" 2>/dev/null || gp_tr=$?
+  case "$gp_tr" in 0) return 0 ;; 1) return 1 ;; esac
+  gp_unv=1; return 1   # MUT-GPTODO
+}
+gp_each() {  # <find output> <handler> <text for an unprintable name> [unv]: calls the handler with each printable name; GPERR (a failed walk) reads UNVERIFIED; the name behind UNSAFE is never shown (with a 4th word it reads UNVERIFIED too)
+  while IFS= read -r gp_e; do
+    case "$gp_e" in
+      "") continue ;;
+      GPERR) gp_unv=1 ;;
+      UNSAFE) gp_w "$3"; [ -z "${4:-}" ] || gp_unv=1 ;;   # MUT-GPEACH
+      *) "$2" "$gp_e" ;;
+    esac
+  done <<GPEOF
+$1
+GPEOF
+}
+gp_todo_one() {  # <path>: the walk lists the objects directories it prunes; they are skipped
+  if [ "${1%/objects}" != "$1" ]; then return 0; fi
+  if ! { [ -f "$1" ] && [ ! -L "$1" ]; }; then gp_w "$1 is a link or not a regular file (P10): it was not read"; return 0; fi
+  if gp_todo_read "$1"; then gp_w "$1 holds an exec line (P10): it runs on the next 'git rebase --continue' (the line is not printed)"; fi
+}
+gp_todos() {  # P10: a pending rebase or sequencer todo in ./.git, in a worktree entry (./.git/worktrees/*/) or in a submodule git directory (./.git/modules/**/); the objects directories are not entered
+  gp_out=$(gp_find ./.git '(' -name objects -prune -o -name git-rebase-todo -o -path '*/sequencer/todo' ')' || printf 'GPERR\n')
+  gp_each "$gp_out" gp_todo_one "a rebase or sequencer todo has a path it withholds (unprintable, or shaped like a credential) (P10); the name is not shown"
+}
+gp_dotgit_files() {  # the plain files inside a real ./.git
+  { [ -d ./.git ] && [ ! -L ./.git ]; } || return 0
+  [ "$gp_nogit" -eq 0 ] || return 0
+  gp_hookspath
+  gp_cfg "$gp_root/.git/config" "./.git/config"
+  gp_cfg "$gp_root/.git/config.worktree" "./.git/config.worktree"
+  gp_todos
+  if [ -e ./.git/info/exclude ] || [ -L ./.git/info/exclude ]; then
+    if ! { [ -f ./.git/info/exclude ] && [ ! -L ./.git/info/exclude ]; }; then gp_w "./.git/info/exclude is a link or not a regular file: it was not read"
+    else
+      gp_n=$(grep -Evc '^[[:space:]]*(#|$)' ./.git/info/exclude 2>/dev/null || true)
+      [ "${gp_n:-0}" = 0 ] || gp_i "./.git/info/exclude holds $gp_n pattern line(s) (P11): they hide files from git status. Count only; open it yourself to read them"
+    fi
+  fi
+}
+gp_one_wt() {  # <./.git/worktrees/NAME>: its commondir must be the plain ../.. (P5); its gitdir file and the back-link are NOT read (an agent can forge both); its config and config.worktree are scanned
+  gp_wn=$(gp_show "$1")
+  if [ -L "$1" ] || [ ! -d "$1" ]; then gp_w "$gp_wn is a symlink or not a directory (P5)"; return 0; fi
+  if ! { [ -L "$1/HEAD" ] || [ -f "$1/HEAD" ]; }; then gp_w "$gp_wn/HEAD is not a regular file or a symlink (P5): a FIFO there can block the dirty check's git status"; fi   # MUT-GPWTHEAD
+  if ! gp_one "$1/commondir"; then gp_w "$gp_wn has no regular one-line commondir (P5): git then reads the entry as a self-contained git directory with its own config"   # MUT-GPCOMMON
+  elif [ "$gp_1v" != ../.. ]; then gp_w "$gp_wn commondir is not ../.. (P5): git would take this worktree's objects and refs from another directory"
+  fi
+  gp_cfg "$gp_root/${1#./}/config" "$gp_wn/config" wt
+  gp_cfg "$gp_root/${1#./}/config.worktree" "$gp_wn/config.worktree" wt
+}
+gp_worktrees() {
+  if [ -L ./.git/worktrees ] || { [ -e ./.git/worktrees ] && [ ! -d ./.git/worktrees ]; }; then gp_w "./.git/worktrees is a link or not a directory: its entries were not walked"; return 0; fi
+  [ -d ./.git/worktrees ] || return 0
+  gp_out=$(gp_find ./.git/worktrees -mindepth 1 -maxdepth 1 || printf 'GPERR\n')
+  gp_each "$gp_out" gp_one_wt "a worktree entry has a name it withholds (unprintable, or shaped like a credential) (P5); the name is not shown"
+}
+gp_mod_cd() {  # <a commondir under ./.git/modules>
+  case "$1" in
+    */worktrees/?*/commondir) if gp_one "$1" && [ "$gp_1v" = ../.. ]; then :   # a real submodule linked worktree's entry
+      else gp_w "$1 is not the plain ../.. a submodule worktree entry holds (P7): git would take objects and refs from where it points"; fi ;;
+    *) gp_w "$1 exists (P7): git reads a commondir for any git directory, including a submodule's or its worktree entry" ;;
+  esac
+}
+gp_mod_hook() { gp_w "$1 is a hook file in a submodule git directory (P7): git runs it on that submodule's operations"; }
+gp_mod_head() {  # <a HEAD under ./.git/modules>: its directory is a module git directory when it has objects or a commondir (logs/HEAD and refs/remotes/origin/HEAD have neither)
+  gp_md=${1%/*}
+  { [ -d "$gp_md/objects" ] || [ -e "$gp_md/commondir" ] || [ -L "$gp_md/commondir" ]; } || return 0
+  gp_cfg "$gp_root/${gp_md#./}/config" "$gp_md/config" module
+  if [ -L "$gp_md/hooks" ]; then
+    gp_w "$gp_md/hooks is a link (P7): git runs hooks from where it points"
+  elif [ -d "$gp_md/hooks" ]; then
+    gp_hk=$(gp_find "$gp_md/hooks" -mindepth 1 '(' -type f -o -type l ')' ! -name '*.sample' || printf 'GPERR\n')
+    gp_each "$gp_hk" gp_mod_hook "a hook file under $gp_md/hooks has a name it withholds (unprintable, or shaped like a credential) (P7); the name is not shown"
+  fi
+}
+gp_modules() {
+  if [ -L ./.git/modules ] || { [ -e ./.git/modules ] && [ ! -d ./.git/modules ]; }; then gp_w "./.git/modules is a link or not a directory: its submodule git directories were not walked"; return 0; fi
+  [ -d ./.git/modules ] || return 0
+  gp_out=$(gp_find ./.git/modules -iname commondir || printf 'GPERR\n')
+  gp_each "$gp_out" gp_mod_cd "a commondir under ./.git/modules has a name it withholds (unprintable, or shaped like a credential) (P7); the name is not shown"
+  gp_out=$(gp_find ./.git/modules -iname HEAD '(' -type f -o -type l ')' || printf 'GPERR\n')   # every module git directory, found by its HEAD (not by its config, which may be missing or a link)
+  gp_each "$gp_out" gp_mod_head "a module config has a path it withholds (unprintable, or shaped like a credential) (P7); the name is not shown"
+}
+gp_registered() {  # <./path/.git> -> 0 when the index registers that path as a submodule
+  case "
+$gp_links
+" in *"
+$1
+"*) return 0 ;; esac
+  return 1
+}
+gp_gt() {  # <gitfile> -> 0 and gp_xp = the physical directory a one-line "gitdir: <path>" gitfile names (a relative path resolves against the gitfile's directory); 1 otherwise
+  gp_xp=""
+  gp_one "$1" || return 1
+  case "$gp_1v" in "gitdir: "?*) : ;; *) return 1 ;; esac
+  gp_xt=${gp_1v#gitdir: }
+  case "$gp_xt" in /*) : ;; *) gp_xt=${1%/*}/$gp_xt ;; esac
+  gp_xp=$(CDPATH='' cd -P "$gp_xt" 2>/dev/null && pwd -P) || { gp_xp=""; return 1; }
+}
+gp_one_nested() {  # <./path/.git> (a printable name found below the checkout root)
+  gp_reg=0   # MUT-GPNEST
+  gp_registered "$1" && gp_reg=1
+  gp_nm=$(gp_show "$1")
+  if [ -L "$1" ]; then
+    if [ "$gp_reg" -eq 1 ]; then gp_w "$gp_nm: a registered submodule's .git is a symlink (P12)"; else gp_w "$gp_nm: unregistered .git symlink (P2): git follows it to a repository this directory does not own"; fi
+  elif [ -d "$1" ]; then
+    if [ "$gp_reg" -eq 1 ]; then gp_w "$gp_nm: a registered submodule's .git is a directory (P12)"; else gp_w "$gp_nm: unregistered .git directory (P3): git reads its config and hooks"; fi
+    gp_cfg "$gp_root/${1#./}/config" "$gp_nm/config" nested
+  elif [ -f "$1" ]; then   # MUT-GPFIFO
+    gp_nested_file "$1"
+  else
+    gp_w "$gp_nm: a special file named .git: it was not opened"
+  fi
+}
+gp_nested_file() {  # <gitfile>
+  if [ "$gp_nogit" -ne 0 ]; then
+    gp_w "$gp_nm: a nested .git file that cannot be classified (no git was run, so the registered submodules are unknown)"; return 0
+  fi
+  gp_gt "$1" || gp_xp=""
+  if [ "$gp_reg" -eq 1 ]; then
+    case "$gp_xp" in
+      "$gp_rootp"/.git/modules/?*) : ;;   # MUT-GPSUB
+      *) gp_w "$gp_nm: a registered submodule's gitfile is not one plain line naming a directory under ./.git/modules (P12): git would follow it to another directory"; return 0 ;;
+    esac
+    case "$1" in *[!A-Za-z0-9._/-]*) : ;; *) gp_i "to refuse a rewrite of $gp_nm add, in .claude/settings.local.json (a person's act): denyWrite \"$1\" and permissions.deny \"Edit($1)\"" ;; esac   # MUT-GPROW
+    return 0
+  fi
+  gp_wk=${gp_xp#"$gp_rootp"/.git/worktrees/}
+  if [ "$gp_wk" != "$gp_xp" ] && [ -n "$gp_wk" ] && [ "${gp_wk#*/}" = "$gp_wk" ]; then
+    gp_i "$gp_nm: names ./.git/worktrees/<one name>. It is a linked worktree of this repository or a plant, and this check cannot tell which (the records git keeps for a worktree are files an agent can forge)"; gp_cant=1; return 0   # MUT-GPWT
+  fi
+  case "$gp_xp" in   # a recursive submodule: its gitfile names ./.git/modules/<a>/modules/<b>, but only its parent's index lists it, and that index is not read
+    "$gp_rootp"/.git/modules/?*/modules/?*) gp_i "$gp_nm: names a recursive submodule's git directory under ./.git/modules. Its parent submodule's index is not read, so this check cannot tell it from a plant of that shape"; gp_recur=1; return 0 ;;   # MUT-GPRECUR
+  esac
+  gp_w "$gp_nm: unregistered .git file (P1, P4): git follows it to the directory it names (its content is not printed)"
+}
+gp_nested() {
+  gp_links=""; gp_lkfail=0
+  if [ "$gp_nogit" -eq 0 ]; then
+    gp_ls=$(gp_git ls-files --stage 2>/dev/null) || gp_lkfail=1
+    gp_tab=$(printf '\t')
+    while IFS= read -r gp_l; do
+      case "$gp_l" in
+        "160000 "*) gp_pp=${gp_l#*"$gp_tab"}; case "$gp_pp" in '"'*) gp_w "a submodule with an unusual name is not classified (the index lists it quoted, so it is not matched to its .git)" ;; *) gp_links="$gp_links
+./$gp_pp/.git" ;; esac ;;
+      esac
+    done <<GPEOF
+$gp_ls
+GPEOF
+    [ "$gp_lkfail" -eq 0 ] || gp_w "UNVERIFIED: git did not read the index (no cause is claimed: an index or ./.git git rejects, or no git on the PATH), so the registered submodules are unknown and each nested .git is reported"
+  fi
+  # ONE walk, three kinds of entry: a .git (pruned), a HEAD file or link (a bare layout, P8), and a symlink (a link to a directory hides what is inside it, M3)
+  gp_out=$(gp_find . '(' -iname .git -prune -o -iname HEAD '(' -type f -o -type l ')' -o -type l ')' || printf 'GPERR\n')
+  gp_each "$gp_out" gp_nest_one "a .git, HEAD or link entry sits below a name it withholds (unprintable, or shaped like a credential); the name is not shown (it could not be classified)" unv
+}
+gp_nest_one() {  # <a path from the one walk>
+  case "$1" in
+    ./.git) return 0 ;;   # MUT-GPWALK2
+    */.[Gg][Ii][Tt]) gp_one_nested "$1" ;;
+    */[Hh][Ee][Aa][Dd]) gp_bare "${1%/*}" ;;
+    *) gp_linkdir "$1" ;;
+  esac
+}
+gp_layout() {  # <directory> -> 0 when git would take it as a git directory (HEAD plus objects and refs, or a commondir)
+  { [ -d "$1/objects" ] && [ -d "$1/refs" ]; } || [ -e "$1/commondir" ] || [ -L "$1/commondir" ]   # MUT-GPLAYOUT
+}
+gp_bare() {  # <dir holding a HEAD> P8: a bare-layout directory (the root itself included) below or at the checkout root
+  [ ! -L "$1" ] || return 0
+  gp_layout "$1" || return 0
+  gp_w "$(gp_show "$1") is a bare repository layout (P8): git enters it implicitly and reads its config. A person's act closes it for their own git: git config --global safe.bareRepository explicit (git 2.38+; it affects tools that enter a bare repository without --git-dir)"
+}
+gp_linkdir() {  # <symlink> M3: a link to a directory that holds a .git or a git directory layout hides a plant from the walk (it is not followed); one level is checked, nothing from the target is printed
+  [ -d "$1" ] || return 0   # MUT-GPLINK
+  { [ -e "$1/.git" ] || [ -L "$1/.git" ] || { { [ -e "$1/HEAD" ] || [ -L "$1/HEAD" ]; } && gp_layout "$1"; }; } || return 0
+  gp_w "$(gp_show "$1") is a link to a directory that holds a .git or a git directory layout: the walk does not follow links, and git does"
+}
+check_git_plants() { ( LC_ALL=C; export LC_ALL; gp_main ); }   # C locale: [:print:] refuses every non-ASCII byte, so a bidi mark or a lookalike cannot dress a printed name; the subshell keeps the locale and the gp_ state out of the caller
+gp_main() {
+  gp_warn=0; gp_nogit=0; gp_unv=0; gp_cant=0; gp_recur=0
+  if [ ! -e ./.git ] && [ ! -L ./.git ]; then
+    printf '%s\n' "  skip git-plants — no ./.git here (not a repository root, or run from a subfolder): nothing was read"; return 0
+  fi
+  gp_root=$(pwd) || gp_root=""
+  gp_rootp=$(pwd -P) || gp_rootp=""
+  gp_top
+  gp_dotgit_files
+  gp_worktrees
+  gp_modules
+  gp_nested
+  [ "$gp_unv" -eq 0 ] || gp_w "UNVERIFIED: some paths could not be read (a permission error stopped part of the walk), so the checkout is not cleared"
+  # the unverified lines print whatever else was found (a warning beside one must not hide it); doctor exempts only the worktree-shaped one (gp_cant) from its dirty-check gate
+  [ "$gp_nogit" -eq 0 ] || printf '%s\n' "  unverified git-plants: no git was run and no config was read here, so this checkout is not cleared (a report never says clean about what it did not read)"   # MUT-GPUNV
+  [ "$gp_cant" -eq 0 ] || printf '%s\n' "  unverified git-plants: a nested .git file names a worktree entry of this repository: a linked worktree or a plant, and this check cannot tell which, so this checkout is not cleared (see the info above)"   # MUT-GPCANT
+  [ "$gp_recur" -eq 0 ] || printf '%s\n' "  unverified git-plants: a nested .git file names a recursive submodule's git directory, whose parent index is not read, so this checkout is not cleared (see the info above)"
+  if [ "$gp_warn" -eq 0 ] && [ "$gp_nogit" -eq 0 ] && [ "$gp_cant" -eq 0 ] && [ "$gp_recur" -eq 0 ]; then
+    printf '%s\n' "  ok   git-plants: nothing found in this checkout (known keys only: the list of exec keys is not git's whole set; this reports, it does not certify)"
+  fi
+  gp_i "this reports after the fact: git run before preflight or doctor (Claude Code's own start-up git included) may already have run a plant"   # MUT-GPSTATUS
+  return 0
+}
+
 # SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
 # on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
-STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0; SELFTEST_CELL=""
+STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0; SELFTEST_CELL=""; GIT_PLANTS_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stack) [ $# -ge 2 ] || { echo "preflight: --stack requires a value" >&2; exit 2; }; STACK=$2; shift 2 ;;
@@ -1787,6 +2125,8 @@ while [ $# -gt 0 ]; do
     # --boundary-offline (S20, owner ruling "355a: B revised"): a TYPED flag, never an environment variable. A human who is offline (or cannot reach origin) says so: an
     # unreadable declaration is then a loud WARN instead of a FAIL. It never relaxes UNTRUSTED, UNDECLARED or MALFORMED.
     --boundary-offline) BOUNDARY_OFFLINE=1; shift ;;
+    # --git-plants-only (SWAS-473 C1): print only the checkout-git report (parse-only, never moves the exit) and exit 0; `sparkwright doctor` runs it.
+    --git-plants-only) GIT_PLANTS_ONLY=1; shift ;;
     --selftest)SELFTEST=1; SEAMS=1; shift ;;
     # --selftest-e2e: internal. Runs the REAL body with the injection seams live, so --selftest can prove
     # the git-floor check is WIRED end-to-end (a defined-but-uncalled check is decorative) without an
@@ -1802,10 +2142,15 @@ while [ $# -gt 0 ]; do
         *) echo "preflight: --selftest-cell requires a cell name (case-variant)" >&2; exit 2 ;;
       esac ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
+    # --url-kind <url> (SWAS-680): read-only, runs no git and exits before anything else. Prints remote | local | helper, the one classifier above; a value starting with `-` is `helper`, so a caller never hands git an option. Doctor and kit-current read it.
+    --url-kind)
+      [ $# -ge 2 ] || { echo "preflight: --url-kind requires a url" >&2; exit 2; }
+      case "$2" in -*) printf '%s\n' helper ;; *) boundary_url_kind "$2" ;; esac
+      exit 0 ;;
     # --allow-runtime-mismatch: the NAMED escape from the stack's runtime floor. It proceeds on an
     # unsupported runtime, loudly, and suppresses the clean green — see the runtime-floor block above.
     --allow-runtime-mismatch) ALLOW_RUNTIME_MISMATCH=1; shift ;;
-    -h|--help) echo "usage: preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest] [--allow-nested] [--boundary-only] [--boundary-advisory] [--boundary-offline]"; exit 0 ;;
+    -h|--help) echo "usage: preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest] [--allow-nested] [--boundary-only] [--boundary-advisory] [--boundary-offline] [--git-plants-only] [--url-kind <url>]"; exit 0 ;;
     *) printf '%s\n' "preflight: unknown arg: $1" >&2; exit 2 ;;   # Rule 3 — $1 is raw argv
   esac
 done
@@ -1925,7 +2270,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     st_bnd_setup; st_case_variant   # MUT-CVSEL
     rm -rf "$_bnd"
     [ "${_pf_skips:-0}" -eq 0 ] || echo "NOTE: preflight selftest: ${_pf_skips} SKIP (coverage WEAK)"
-    # The trailer must NOT be the line the full selftest ends with: adopter-preflight-wired.sh requires exit 0 AND that exact whole line (grep -qx); keep it distinct.
+    # The trailer must NOT be the line the full selftest ends with: a consumer that greps the full selftest's trailer must not read this cell's output as a full run (SWAS-487); keep it distinct.
     [ "$fail" -eq 0 ] && { echo "OK: preflight cell case-variant (not the full selftest)"; exit 0; } || { echo "FAIL: preflight cell case-variant"; exit 1; }   # MUT-CVTRAILER
   fi
   # The hermetic entry is load-bearing: the unscoped self-invocations below (kill-switch, git floor, node floor, go stack, sandbox) would otherwise run in CI mode on a runner
@@ -2385,25 +2730,20 @@ if [ "$SELFTEST" -eq 1 ]; then
   #
   # SECOND CEILING — nothing MUTATES these automatically. conformance/non-vacuity.sh does not reach them:
   # its target set is the `^check control` rows of conformance/verify.sh (non-vacuity.sh:282), and
-  # scripts/preflight.sh is not one of them (only conformance/adopter-preflight-wired.sh is —
-  # verify.sh:99). So every assertion below must carry its OWN kill decision; "the sweep would have
+  # scripts/preflight.sh is not one of them (a wiring lock for it was, until SWAS-626 removed it). So every assertion below must carry its OWN kill decision; "the sweep would have
   # caught it" is not available here.
   #
-  # But the legs themselves have THREE teeth, not two, and the third is the strongest — measured, not
-  # assumed (2026-07-21):
-  #   1. `sh scripts/preflight.sh --selftest`, wired as a CI step at ci.yml:167;
-  #   2. hand mutation-testing (this comment's own discipline);
-  #   3. conformance/adopter-preflight-wired.sh:26 runs `sh "$PF" --selftest` and its :30 REQUIRES the
-  #      exit 0 AND the whole line `OK: preflight selftest` — and that script is a `check control` row at verify.sh:99.
-  # Tooth 3 makes the blast radius conformance/verify.sh, which ADOPTERS run, not a single CI step.
+  # But the legs themselves have TWO teeth, measured, not assumed (2026-07-21; a third, a verify.sh row, was removed by SWAS-626):
+  #   1. `sh scripts/preflight.sh --selftest`, wired as a CI step in .github/workflows/ci.yml;
+  #   2. hand mutation-testing (this comment's own discipline).
   # HISTORICAL, CORRECTED (T2 fix-loop, finding J6): this paragraph used to say "while guard_tree_class's
   # body is `:`, this selftest exits 1, so verify.sh's `adopter-preflight` row is RED BY CONSTRUCTION
   # until the owner writes that predicate" — the deliberate red state of the T1 slice. The owner wrote
   # that predicate; the body is no longer `:` and the row is green. The sentence stayed true only
   # VACUOUSLY, as a conditional whose premise had ended, which is the same class of stale comment this
   # very file keeps paying for. The durable half is the reason it was written: a comment that understates
-  # which gates a leg binds is "a comment standing in for execution", so tooth 3 is stated, not the
-  # obsolete red state.
+  # which gates a leg binds is "a comment standing in for execution", so the teeth are stated, not the
+  # obsolete red state. (A third tooth, stated when this was written, was the verify.sh row; SWAS-626 removed it, and the two teeth above remain.)
   #
   # Each leg runs the check in a SUBSHELL with cwd = the fixture, because `git rev-parse --git-path` reads
   # the cwd. cd-ing in THIS shell instead would leave the relative `sh "$0"` re-invocations above
@@ -2725,8 +3065,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # that fails only for the K11 fixtures): an UNGUARDED `d=$(k11_fx …)` under `set -eu` kills the whole
   # selftest at the FIRST fixture with a bare `mktemp: …No space left on device`, printing ZERO verdict
   # lines. That is precisely the silence R0 exists to convert into a real FAIL, reached by a different
-  # door — and it silences conformance/adopter-preflight-wired.sh with it, since that script requires the
-  # literal `OK: preflight selftest`. Guarding k11_run alone left the louder half open.
+  # door — and it silences the trailer line `OK: preflight selftest` with it. Guarding k11_run alone left the louder half open.
   # THE SENTINEL IS DELIBERATE, not a placeholder. On the unbuildable path `d` is set to a path UNDER
   # /dev/null, which is a character device: every operation the legs perform on `$d` — mkdir -p, cd,
   # rm -rf, chmod, grep, -d/-f — fails ENOTDIR for EVERY user including root (measured), so no leg can
@@ -3289,7 +3628,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # INITIALIZED BEFORE THE RUN THAT SETS IT (finding J8): MP3 reads this variable and the two legs are
   # coupled across ~20 lines, so under `set -u` a future reordering (MP3 first) aborted the WHOLE
   # selftest with an unbound-variable error — no verdict line, which silences
-  # conformance/adopter-preflight-wired.sh with it — instead of failing one leg. `unset` is a value MP3's
+  # the trailer line with it — instead of failing one leg. `unset` is a value MP3's
   # numeric comparison can never match, so a genuinely unset baseline FAILS MP3 loudly rather than
   # passing by accident. QUOTED because `unset` is also a shell builtin and the bare form trips
   # SC2209 ("use var=$(command) to assign output, or quote to assign string") — this is a string.
@@ -5080,7 +5419,7 @@ EOF
   if [ "$_bn_off" -ge 1 ] && [ "$_bn_mutl" -ge 1 ] && [ "$_bn_muth" -eq 0 ]; then echo "PASS: mutant strict-host-key-dropped is killed (the original carries it on $_bn_off ls-remote calls, the mutant ran $_bn_mutl and none carries it)"; else echo "FAIL: mutant strict-host-key-dropped survived or never reached ls-remote ($_bn_mutl calls, $_bn_muth carrying it)"; fail=1; fi
   # S13 belt: every ls-remote carries protocol.ext.allow=never (the file belt applies only outside the seam, so it is not asserted here)
   if [ "$_bn_off" -ge 1 ] && [ "$_bn_ext" -eq "$_bn_off" ]; then echo "PASS: ext-belt every ls-remote carried -c protocol.ext.allow=never"; else echo "FAIL: ext-belt $_bn_ext of $_bn_off ls-remote calls carried protocol.ext.allow=never"; fail=1; fi
-  _bn_mutrun ext-belt-dropped "/MUT-BELT/s/_bo_belt='-c protocol.ext.allow=never'/_bo_belt=''/" 'protocol.ext.allow=never'
+  _bn_mutrun ext-belt-dropped "/MUT-BELT/s/_bo_belt='-c protocol.ext.allow=never'/_bo_belt=''/" 'protocol.ext.allow=never .*ls-remote'   # (C1's own logged git calls carry the same flag, so the pattern is the ls-remote lines)
   if [ "$_bn_mutl" -ge 1 ] && [ "$_bn_muth" -eq 0 ]; then echo "PASS: mutant ext-belt-dropped is killed (the mutant ran $_bn_mutl ls-remote calls, none with the belt)"; else echo "FAIL: mutant ext-belt-dropped survived or never reached ls-remote ($_bn_mutl calls, $_bn_muth with the belt)"; fail=1; fi
   _g_path=""; _g_dir=""; _g_decl=""; _g_proj="$_bnd/off.json"; _g_user=""
 
@@ -5297,7 +5636,7 @@ EOF
   _cvx_cell() {  # <script> -> _cvx_out, _cvx_rc: the one-cell run
     _cvx_rc=0; _cvx_out=$(sh "$1" --selftest --selftest-cell case-variant 2>&1) || _cvx_rc=$?
   }
-  _cvx_trailer_ok() {  # <output>: rc 0 iff it holds none of the full selftest's trailer substring (adopter-preflight-wired.sh needs exit 0 and the whole line) and one cell trailer
+  _cvx_trailer_ok() {  # <output>: rc 0 iff it holds none of the full selftest's trailer substring (a consumer needs exit 0 and the whole line) and one cell trailer
     [ "$(printf '%s\n' "$1" | grep -c 'OK: preflight selftest' || true)" -eq 0 ] && [ "$(printf '%s\n' "$1" | grep -c 'OK: preflight cell case-variant (not the full selftest)' || true)" -eq 1 ]
   }
   _cvx_rc2() {  # <label> <message substring> <args...>: the parser refuses with rc 2 and the flag's OWN message (the old parser also exits 2 for an unknown arg)
@@ -5336,10 +5675,404 @@ EOF
   if _cvx_full_ok "$_self"; then echo "PASS: cell call [full-run] the full run calls st_case_variant exactly once, after the s27 not-own-root cell"; else echo "FAIL: cell call [full-run] not exactly one 'st_case_variant   # MUT-CVFULL' call after the s27 cell"; fail=1; fi
   _cvx_sm cvfull-call-deleted '/^ *st_case_variant   # MUT-CVFULL$/d' _cvx_full_ok
 
+  # ---- SWAS-473 C1 (check_git_plants): GP1-GP50 (numbers are labels, not a sequence). One negative per attack shape on fixture trees under a private temp dir; every host git act carries the safety flags and a fixture HOME;
+  # each starred cell carries a mutant (a sed cut of a COPY of this script, never an environment switch). C1 itself is run through `--git-plants-only`.
+  _gp_t=$(mktemp -d)
+  _gp_g() { env -i PATH="$PATH" HOME="$_gp_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
+  _gp_repo() {  # <name>: a fresh repository root with one commit (echoed through _gp_d)
+    _gp_d="$_gp_t/$1"; rm -rf "$_gp_d"; mkdir -p "$_gp_d"; printf a > "$_gp_d/f"
+    _gp_g -C "$_gp_d" init -q . >/dev/null 2>&1; _gp_g -C "$_gp_d" add f >/dev/null 2>&1; _gp_g -C "$_gp_d" commit -q -m s >/dev/null 2>&1
+  }
+  _gp_run() {  # <dir> [script] [path prefix]: C1 in <dir>; sets _gp_o and _gp_rc
+    _gp_rc=0
+    _gp_o=$( cd "$1" && env PATH="${3:+$3:}$PATH" sh "${2:-$_self}" --git-plants-only 2>&1 ) || _gp_rc=$?
+  }
+  _gp_tr() {  # <dir> <script>: C1 under a 12 s watchdog (a FIFO named .git must never be opened); sets _gp_o and _gp_hung
+    _gp_f="$_gp_t/tr.out"; _gp_hung=0
+    ( cd "$1" && exec sh "$2" --git-plants-only ) >"$_gp_f" 2>&1 &
+    _gp_pid=$!; _gp_n=0
+    while kill -0 "$_gp_pid" 2>/dev/null; do
+      if [ "$_gp_n" -ge 12 ]; then kill "$_gp_pid" 2>/dev/null; _gp_hung=1; break; fi
+      sleep 1; _gp_n=$((_gp_n + 1))
+    done
+    wait "$_gp_pid" 2>/dev/null || :
+    _gp_ff=${3:-$1/d1/.git}
+    if [ "$_gp_hung" -eq 1 ] && [ -p "$_gp_ff" ]; then ( exec 3<>"$_gp_ff" ) 2>/dev/null || :; fi   # release the orphaned reader
+    _gp_o=$(cat "$_gp_f")
+  }
+  _gp_has() { case "$_gp_o" in *"$2"*) echo "PASS: git-plants [$1] $3" ;; *) echo "FAIL: git-plants [$1] the report lacks '$2' ($_gp_o)"; fail=1 ;; esac; }
+  _gp_no() { case "$_gp_o" in *"$2"*) echo "FAIL: git-plants [$1] the report holds '$2' ($_gp_o)"; fail=1 ;; *) echo "PASS: git-plants [$1] $3" ;; esac; }
+  _gp_kill() {  # <name> <sed expr> <dir> <needle> [appears]: the mutant's report must lose the needle (or, with 'appears', gain it)
+    _gk=$(mktemp -d); sed "$2" "$_self" > "$_gk/preflight.sh"
+    if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1
+    elif ! sh -n "$_gk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse"; fail=1
+    else
+      _gp_tr "$3" "$_gk/preflight.sh" "${6:-}"
+      case "$_gp_o:${5:-lost}" in
+        *"$4"*:lost) echo "FAIL: mutant $1 survived (the report still holds the finding)"; fail=1 ;;
+        *"$4"*:appears) echo "PASS: mutant $1 is killed (the forged text reached the report)" ;;
+        *:appears) echo "FAIL: mutant $1 survived (nothing forged reached the report)"; fail=1 ;;
+        *) echo "PASS: mutant $1 is killed" ;;
+      esac
+    fi
+    rm -rf "$_gk"
+  }
+  mkdir -p "$_gp_t/stub"; printf '#!/bin/sh\nprintf x > "%s/GITRAN"\nexit 0\n' "$_gp_t" > "$_gp_t/stub/git"; chmod 755 "$_gp_t/stub/git"
+  # GP1-GP4: an unregistered .git (a gitfile at depths 1 and 2, a symlink, a directory with an exec key, the upper-case spelling)
+  _gp_repo gp1; mkdir -p "$_gp_d/d1/d2"; printf 'gitdir: %s/elsewhere\n' "$_gp_t" > "$_gp_d/d1/.git"; printf 'gitdir: %s/elsewhere\n' "$_gp_t" > "$_gp_d/d1/d2/.git"
+  _gp_run "$_gp_d"; _gp_has GP1 "warn git-plants: ./d1/.git: unregistered .git file" "a gitfile at depth 1 is reported"
+  _gp_has GP1b "warn git-plants: ./d1/d2/.git: unregistered .git file" "a gitfile at depth 2 is reported"
+  _gp_no GP1c "$_gp_t/elsewhere" "the gitfile's content (its target) is never printed"
+  _gp_gp1=$_gp_d; _gp_gp1rc=$_gp_rc
+  _gp_kill GP1-nest-accept-all '/# MUT-GPNEST$/s/.*/  return 0/' "$_gp_gp1" "unregistered .git file"
+  _gp_repo gp2; mkdir -p "$_gp_d/d1"; ln -s "$_gp_t/elsewhere" "$_gp_d/d1/.git"
+  _gp_run "$_gp_d"; _gp_has GP2 "./d1/.git: unregistered .git symlink" "a .git symlink is reported"
+  _gp_repo gp3; mkdir -p "$_gp_d/d1/.git"; printf '[core]\n\tfsmonitor = /bin/true\n' > "$_gp_d/d1/.git/config"
+  _gp_run "$_gp_d"; _gp_has GP3 "./d1/.git: unregistered .git directory" "a .git directory is reported"
+  _gp_has GP3b "[core.fsmonitor]" "its exec key is named"
+  _gp_no GP3c "/bin/true" "its value is never printed"
+  _gp_repo gp4; mkdir -p "$_gp_d/d1"; printf 'gitdir: x\n' > "$_gp_d/d1/.GIT"
+  _gp_run "$_gp_d"; _gp_has GP4 "./d1/.GIT: unregistered .git file" "the upper-case spelling is walked (-iname)"
+  # GP17 and GP5: a registered submodule is silent and prints the exact row (Q4); its rewritten gitfile is reported
+  _gp_repo gp5src; _gp_src=$_gp_d
+  _gp_repo gp5; _gp_g -C "$_gp_d" -c protocol.file.allow=always submodule add -q "$_gp_src" sub >/dev/null 2>&1; _gp_g -C "$_gp_d" commit -q -m sub >/dev/null 2>&1
+  _gp_run "$_gp_d"; _gp_no GP17 "warn git-plants" "a registered submodule raises no warning"
+  _gp_has GP17b 'denyWrite "./sub/.git" and permissions.deny "Edit(./sub/.git)"' "its exact row is printed (the measured row, Q4)"
+  _gp_gp17=$_gp_d
+  _gp_kill GP17-row-trailing-slash '/# MUT-GPROW$/s#denyWrite \\"\$1\\"#denyWrite \\"\$1/\\"#' "$_gp_gp17" 'denyWrite "./sub/.git"'
+  printf 'gitdir: %s/elsewhere\n' "$_gp_t" > "$_gp_d/sub/.git"
+  _gp_run "$_gp_d"; _gp_has GP5 "registered submodule's gitfile is not one plain line naming a directory under ./.git/modules" "a registered gitfile naming another directory is reported"
+  _gp_gp5=$_gp_d
+  _gp_kill GP5-sub-accept-any '/# MUT-GPSUB$/s#"\$gp_rootp"/\.git/modules/?\*)#*)#' "$_gp_gp5" "naming a directory under ./.git/modules"
+  printf 'gitdir: ../.git/modules/sub\nsecond line\n' > "$_gp_d/sub/.git"
+  _gp_run "$_gp_d"; _gp_has GP5b "naming a directory under ./.git/modules" "a registered gitfile of two lines is refused whole (git parses the whole file)"
+  printf 'gitdir: ../.git/modules/sub/../../../elsewhere\n' > "$_gp_d/sub/.git"
+  _gp_run "$_gp_d"; _gp_has GP5c "naming a directory under ./.git/modules" "a registered gitfile that string-matches ../.git/modules/ but resolves elsewhere is refused"
+  # GP6: ./.git/commondir is reported and then NO git runs at all (a stub git on PATH records any call)
+  _gp_repo gp6; printf '%s\n' "$_gp_t/elsewhere" > "$_gp_d/.git/commondir"; rm -f "$_gp_t/GITRAN"
+  _gp_run "$_gp_d" "$_self" "$_gp_t/stub"; _gp_has GP6 "./.git/commondir exists (P6)" "a main-repository commondir is reported"
+  if [ ! -e "$_gp_t/GITRAN" ]; then echo "PASS: git-plants [GP6b] no git ran after the commondir finding"; else echo "FAIL: git-plants [GP6b] git ran after the commondir finding"; fail=1; fi
+  _gp_gp6=$_gp_d
+  _gk=$(mktemp -d); sed '/# MUT-GPNOGIT$/s/gp_nogit=1/gp_nogit=0/' "$_self" > "$_gk/preflight.sh"
+  if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant GP6-nogit-dropped did not apply"; fail=1
+  else
+    rm -f "$_gp_t/GITRAN"; _gp_run "$_gp_gp6" "$_gk/preflight.sh" "$_gp_t/stub"
+    if [ -e "$_gp_t/GITRAN" ]; then echo "PASS: mutant GP6-nogit-dropped is killed (git ran after the commondir finding)"; else echo "FAIL: mutant GP6-nogit-dropped survived"; fail=1; fi
+  fi
+  rm -rf "$_gk"
+  # GP18, GP7b, GP8: a nested gitfile naming ./.git/worktrees/<one name> is an info and the run reads unverified, never ok (the back-link is not read: an agent can forge it); a commondir that is not ../.. and a config.worktree exec key are reported
+  _gp_repo gp18; mkdir -p "$_gp_d/.claude"; _gp_g -C "$_gp_d" worktree add -q .claude/worktrees/w -b w >/dev/null 2>&1
+  _gp_run "$_gp_d"; _gp_has GP18 "info git-plants: ./.claude/worktrees/w/.git: names ./.git/worktrees/<one name>" "a worktree gitfile is an info line that says it cannot tell a worktree from a plant"
+  _gp_no GP18b "warn git-plants" "and raises no warning"
+  _gp_has GP18c "unverified git-plants: a nested .git file names a worktree entry" "and the run prints its own unverified line (the one line doctor's gate exempts)"
+  _gp_no GP18d "ok   git-plants" "and never reads as nothing found"
+  _gp_gp18=$_gp_d
+  _gp_kill GP18-info-dropped '/# MUT-GPWT$/s/gp_i "/: "/' "$_gp_gp18" "names ./.git/worktrees/<one name>"
+  _gp_kill GP18-unverified-dropped '/# MUT-GPWT$/s/gp_cant=1/:/' "$_gp_gp18" "unverified git-plants: a nested .git file names a worktree entry"
+  _gp_repo gp7b; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; printf '../x\n' > "$_gp_d/.git/worktrees/wt/commondir"
+  _gp_run "$_gp_d"; _gp_has GP7b "commondir is not ../.." "a worktree commondir that is not ../.. is reported"
+  _gp_repo gp8; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; printf '[core]\n\tfsmonitor = x\n' > "$_gp_d/.git/worktrees/wt/config.worktree"
+  _gp_run "$_gp_d"; _gp_has GP8 "config.worktree sets key(s) that run a program" "a config.worktree exec key is reported"
+  # GP9: submodule git directories (a commondir, an exec key in a module config)
+  _gp_repo gp9; mkdir -p "$_gp_d/.git/modules/m" "$_gp_d/.git/modules/n/objects"
+  printf x > "$_gp_d/.git/modules/m/commondir"; printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/n/HEAD"; printf '[core]\n\tfsmonitor = x\n' > "$_gp_d/.git/modules/n/config"
+  _gp_run "$_gp_d"; _gp_has GP9 "./.git/modules/m/commondir exists (P7)" "a module commondir is reported"
+  _gp_has GP9b "./.git/modules/n/config sets key(s)" "a module config exec key is reported"
+  # GP10-GP13: a bare layout, a gitfile ./.git, a pending exec line, info/exclude
+  _gp_repo gp10; mkdir -p "$_gp_d/bare1/objects" "$_gp_d/bare1/refs"; printf 'ref: refs/heads/main\n' > "$_gp_d/bare1/HEAD"
+  _gp_run "$_gp_d"; _gp_has GP10 "./bare1 is a bare repository layout (P8)" "a bare layout is reported"
+  _gp_has GP10b "safe.bareRepository explicit" "with the C2 advice"
+  rm -rf "$_gp_t/gp11"; mkdir -p "$_gp_t/gp11"; printf 'gitdir: ../elsewhere\n' > "$_gp_t/gp11/.git"
+  _gp_run "$_gp_t/gp11"; _gp_has GP11 "info git-plants: ./.git is a gitfile (P9)" "a gitfile ./.git is an info line"
+  _gp_no GP11b "warn git-plants" "and raises no warning"
+  _gp_has GP11c "unverified git-plants" "and says UNVERIFIED, a distinct verdict"
+  _gp_no GP11d "ok   git-plants" "and never claims nothing was found"
+  _gp_gp11=$_gp_t/gp11
+  _gp_kill GP11-unv-dropped '/# MUT-GPUNV$/s/printf .%s\\n. "  unverified/: "  unverified/' "$_gp_gp11" "unverified git-plants"
+  _gp_repo gp12; mkdir -p "$_gp_d/.git/rebase-merge"; printf 'pick abc\nexec echo KITSECRETLINE\n' > "$_gp_d/.git/rebase-merge/git-rebase-todo"
+  _gp_run "$_gp_d"; _gp_has GP12 "git-rebase-todo holds an exec line (P10)" "a pending exec line is reported by file name"
+  _gp_no GP12b "KITSECRETLINE" "and the line is never printed"
+  _gp_repo gp13; printf '*.log\nsecret/\n' >> "$_gp_d/.git/info/exclude"
+  _gp_run "$_gp_d"; _gp_has GP13 "info git-plants: ./.git/info/exclude holds 2 pattern line(s)" "info/exclude is an info line with a count"
+  # GP14, GP15: core.hooksPath inside the checkout; an exec key in ./.git/config
+  _gp_repo gp14; _gp_g -C "$_gp_d" config core.hooksPath .husky
+  _gp_run "$_gp_d"; _gp_has GP14 "core.hooksPath in ./.git/config points inside this checkout (P13)" "a hooksPath inside the checkout is reported"
+  _gp_gp14=$_gp_d
+  _gp_kill GP14-hookspath-outside '/# MUT-GPHOOKS$/s/\*) return 0 ;; esac/*) return 1 ;; esac/' "$_gp_gp14" "points inside this checkout"
+  _gp_g -C "$_gp_d" config core.hooksPath '~nosuchuser/hooks'
+  _gp_run "$_gp_d"; _gp_has GP14c "points inside this checkout" "a ~user value that cannot be resolved counts as inside"
+  _gp_g -C "$_gp_d" config core.hooksPath "$_gp_d/hooks-abs"
+  _gp_run "$_gp_d"; _gp_has GP14d "points inside this checkout" "an absolute path under the checkout (a prefix of its root) is inside"
+  _gp_g -C "$_gp_d" config core.hooksPath "/nonexistent-kit-hooks/../x"
+  _gp_run "$_gp_d"; _gp_has GP14f "points inside this checkout" "an absolute value with .. in it counts as inside (it is not resolved)"
+  for _gp_hv in /nonexistent-kit//hooks /nonexistent-kit/./hooks /proc/self/hooks; do
+    _gp_g -C "$_gp_d" config core.hooksPath "$_gp_hv"
+    _gp_run "$_gp_d"; _gp_has GP14g "points inside this checkout" "the value $_gp_hv (a // or /./ segment, or under /proc) counts as inside"
+  done
+  _gp_g -C "$_gp_d" config --unset core.hooksPath; printf '[core]\n\thooksPath = .husky\n' > "$_gp_d/.git/config.worktree"
+  _gp_run "$_gp_d"; _gp_has GP14e "./.git/config.worktree points inside this checkout" "a hooksPath in config.worktree is read too"; rm -f "$_gp_d/.git/config.worktree"
+  _gp_g -C "$_gp_d" config core.hooksPath /nonexistent-kit-hooks
+  _gp_run "$_gp_d"; _gp_no GP14b "core.hooksPath" "a hooksPath outside the checkout is not reported"
+  _gp_repo gp15; _gp_g -C "$_gp_d" config core.fsmonitor /bin/true
+  _gp_run "$_gp_d"; _gp_has GP15 "[core.fsmonitor]" "an fsmonitor key in ./.git/config is reported by name"
+  _gp_no GP15b "/bin/true" "and its value is never printed"
+  _gp_gp15=$_gp_d
+  _gp_kill GP15-key-list-cut '/# MUT-GPKEY$/s/core\.fsmonitor|//' "$_gp_gp15" "[core.fsmonitor]"
+  # GP16: a clean tree is silent
+  _gp_repo gp16; _gp_run "$_gp_d"
+  _gp_no GP16 "warn git-plants" "a clean tree raises no warning"
+  _gp_has GP16b "ok   git-plants: nothing found" "and says so"
+  _gp_gp16=$_gp_d; _gp_gp16rc=$_gp_rc
+  _gp_kill GP16-walk-reports-dotgit '/# MUT-GPWALK2$/d' "$_gp_gp16" "nothing found"
+  # GP19: a newline in a path forges no line (the name is withheld)
+  _gp_repo gp19; _gp_bad="$_gp_d/nl
+  warn git-plants: FORGEDLINE"; mkdir -p "$_gp_bad"; printf 'gitdir: x\n' > "$_gp_bad/.git"
+  _gp_run "$_gp_d"; _gp_has GP19 "or shaped like a credential); the name is not shown" "a path with a newline is reported without its name"
+  _gp_no GP19b "FORGEDLINE" "and forges no line"
+  _gp_gp19=$_gp_d
+  _gp_kill GP19-each-unsafe-dropped '/# MUT-GPEACH$/s/gp_w "\$3"; //' "$_gp_gp19" "or shaped like a credential); the name is not shown"
+  _gp_kill GP19-names-printed-raw '/# MUT-GPFIND$/s/\*\[!\[:print:\]\]\*|\*"##\["\*|\*:\*@\*) echo UNSAFE/*NEVERMATCHES*) echo UNSAFE/' "$_gp_gp19" "FORGEDLINE" appears
+  # GP20: a FIFO named .git is reported and never opened (no hang)
+  _gp_repo gp20; mkdir -p "$_gp_d/d1"; mkfifo "$_gp_d/d1/.git"
+  _gp_tr "$_gp_d" "$_self"; _gp_has GP20 "a special file named .git: it was not opened" "a FIFO named .git is reported"
+  if [ "$_gp_hung" -eq 0 ]; then echo "PASS: git-plants [GP20b] it did not hang"; else echo "FAIL: git-plants [GP20b] C1 hung on a FIFO named .git"; fail=1; fi
+  _gp_gp20=$_gp_d
+  _gp_kill GP20-fifo-opened '/# MUT-GPFIFO$/s/\[ -f "\$1" \]/[ -e "$1" ]/' "$_gp_gp20" "a special file named .git: it was not opened"
+  # GP23-GP29: the review's shapes. A worktree entry with no commondir (a self-contained git dir with its own config); a FIFO at ./.git/config; links at modules, worktrees and a todo file;
+  # an indented exec line; a bare layout with a variant-case symlinked HEAD; an unprintable name in the bare scan
+  _gp_repo gp23; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; rm -f "$_gp_d/.git/worktrees/wt/commondir"; printf '[core]\n\tfsmonitor = x\n' > "$_gp_d/.git/worktrees/wt/config"
+  _gp_run "$_gp_d"; _gp_has GP23 "has no regular one-line commondir (P5)" "a worktree entry with no commondir is reported"
+  _gp_has GP23b "worktrees/wt/config sets key(s)" "and its own config is scanned"
+  _gp_gp23=$_gp_d
+  _gp_kill GP23-nocommondir-ignored '/# MUT-GPCOMMON$/s/if ! gp_one/if gp_one/' "$_gp_gp23" "has no regular one-line commondir"
+  _gp_repo gp24; rm -f "$_gp_d/.git/config"; mkfifo "$_gp_d/.git/config"
+  _gp_tr "$_gp_d" "$_self" "$_gp_d/.git/config"; _gp_has GP24 "./.git/config is a link or not a regular file: git would open it" "a FIFO at ./.git/config is reported and git never runs"
+  if [ "$_gp_hung" -eq 0 ]; then echo "PASS: git-plants [GP24b] it did not hang"; else echo "FAIL: git-plants [GP24b] C1 hung on a FIFO at ./.git/config"; fail=1; fi
+  _gp_gp24=$_gp_d
+  _gp_kill GP24-guard-dropped '/# MUT-GPGUARD$/d' "$_gp_gp24" "git would open it" lost "$_gp_d/.git/config"
+  _gp_repo gp25; mkdir -p "$_gp_d/.git/modules" "$_gp_d/.git/sequencer"; mv "$_gp_d/.git/modules" "$_gp_d/modules-real"; ln -s ../modules-real "$_gp_d/.git/modules"
+  mkdir -p "$_gp_d/wts-real"; ln -s ../wts-real "$_gp_d/.git/worktrees"; ln -s /nonexistent-kit-todo "$_gp_d/.git/sequencer/todo"
+  _gp_run "$_gp_d"; _gp_has GP25 "./.git/modules is a link or not a directory" "a symlinked modules directory is reported, not skipped"
+  _gp_has GP25b "./.git/worktrees is a link or not a directory" "a symlinked worktrees directory is reported"
+  _gp_has GP25c "./.git/sequencer/todo is a link or not a regular file (P10)" "a symlinked todo file is reported"
+  _gp_no GP25d "ok   git-plants" "and none of them reads as nothing found"
+  _gp_repo gp26; mkdir -p "$_gp_d/.git/rebase-merge"; printf '  exec echo KITSECRETLINE\n' > "$_gp_d/.git/rebase-merge/git-rebase-todo"
+  _gp_run "$_gp_d"; _gp_has GP26 "git-rebase-todo holds an exec line (P10)" "an indented exec line is reported (git's parser skips leading whitespace)"
+  _gp_repo gp27; mkdir -p "$_gp_d/bare2/objects" "$_gp_d/bare2/refs"; ln -s refs/heads/main "$_gp_d/bare2/Head"
+  _gp_run "$_gp_d"; _gp_has GP27 "./bare2 is a bare repository layout (P8)" "a variant-case symlinked HEAD makes a bare layout too"
+  _gp_repo gp28; _gp_bad="$_gp_d/nl
+x"; mkdir -p "$_gp_bad"; printf 'ref: refs/heads/main\n' > "$_gp_bad/HEAD"
+  _gp_run "$_gp_d"; _gp_has GP28 "UNVERIFIED: some paths could not be read" "an unprintable name in the bare scan is UNVERIFIED, not silent"
+  # GP29: a ./.git that is not a repository (no HEAD, objects or refs) is reported and no git runs (git would discover upward); GP30: core.hooksPath in a module, worktree-entry or nested config is a finding
+  rm -rf "$_gp_t/gp29"; mkdir -p "$_gp_t/gp29/.git"; rm -f "$_gp_t/GITRAN"
+  _gp_run "$_gp_t/gp29" "$_self" "$_gp_t/stub"; _gp_has GP29 "./.git lacks HEAD, objects or refs" "an incomplete ./.git is reported, not cleared"
+  _gp_no GP29b "ok   git-plants" "and never reads as nothing found"
+  if [ ! -e "$_gp_t/GITRAN" ]; then echo "PASS: git-plants [GP29c] no git ran in it"; else echo "FAIL: git-plants [GP29c] git ran in an incomplete ./.git"; fail=1; fi
+  _gp_kill GP29-repo-check-dropped '/# MUT-GPREPO$/s/-eq 0 \]/-eq 99 ]/' "$_gp_t/gp29" "lacks HEAD, objects or refs"
+  _gp_repo gp30; mkdir -p "$_gp_d/.git/modules/m/objects" "$_gp_d/d1/.git"; printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/m/HEAD"
+  printf '[core]\n\thooksPath = h\n' > "$_gp_d/.git/modules/m/config"; printf '[core]\n\thooksPath = h\n' > "$_gp_d/d1/.git/config"
+  _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; printf '[core]\n\thooksPath = h\n' > "$_gp_d/.git/worktrees/wt/config"
+  _gp_run "$_gp_d"; _gp_has GP30 "./.git/modules/m/config sets key(s) that run a program or pull in another file: [core.hookspath]" "a hooksPath in a module config is a finding"
+  _gp_has GP30b "./d1/.git/config sets key(s) that run a program or pull in another file: [core.hookspath]" "a hooksPath in a nested .git directory config is a finding"
+  _gp_has GP30c "worktrees/wt/config sets key(s) that run a program or pull in another file: [core.hookspath]" "a hooksPath in a worktree entry's config is a finding"
+  # GP31: a hook file in a deep module git directory is reported, a .sample file is not (the "three or more segments" warn was cut: its config and hooks are still walked)
+  _gp_repo gp31; mkdir -p "$_gp_d/.git/modules/c/modules/d/modules/e/hooks" "$_gp_d/.git/modules/c/modules/d/modules/e/objects"
+  printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/c/modules/d/modules/e/HEAD"; printf '[core]\n\tbare = false\n' > "$_gp_d/.git/modules/c/modules/d/modules/e/config"
+  printf '#!/bin/sh\n' > "$_gp_d/.git/modules/c/modules/d/modules/e/hooks/post-checkout"; printf '#!/bin/sh\n' > "$_gp_d/.git/modules/c/modules/d/modules/e/hooks/pre-commit.sample"
+  _gp_run "$_gp_d"
+  _gp_has GP31c "post-checkout is a hook file in a submodule git directory (P7)" "a hook file in a module git directory is reported"
+  _gp_no GP31d "pre-commit.sample is a hook file" "and a .sample file is not"
+  # GP32: git is given an explicit --git-dir=./.git, so it never discovers: a ./.git that git rejects (garbage HEAD) inside a parent repository fails the index read and reads UNVERIFIED instead of listing the parent's gitlinks
+  _gp_repo gp32; mkdir -p "$_gp_d/child/.git/objects" "$_gp_d/child/.git/refs"; printf 'garbage\n' > "$_gp_d/child/.git/HEAD"
+  _gp_run "$_gp_d/child"; _gp_has GP32 "UNVERIFIED: git did not read the index" "a rejected ./.git inside a parent repository reads UNVERIFIED, not the parent's index"
+  _gp_kill GP32-gitdir-dropped '/# MUT-GPGITDIR$/s# git --git-dir=\./\.git # git #' "$_gp_d/child" "UNVERIFIED: git did not read the index"
+  # GP33: module git directories are enumerated by HEAD, not by config: one with no config and a hook file, one with a symlinked config
+  _gp_repo gp33; mkdir -p "$_gp_d/.git/modules/h/objects" "$_gp_d/.git/modules/h/hooks" "$_gp_d/.git/modules/l/objects"
+  printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/h/HEAD"; printf '#!/bin/sh\n' > "$_gp_d/.git/modules/h/hooks/pre-push"
+  printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/l/HEAD"; ln -s /nonexistent-kit-config "$_gp_d/.git/modules/l/config"
+  _gp_run "$_gp_d"; _gp_has GP33 "pre-push is a hook file in a submodule git directory (P7)" "a module with no config file still has its hooks checked"
+  _gp_has GP33b "./.git/modules/l/config is a link or not a regular file" "a symlinked module config is reported"
+  # GP34: a colon in a parent directory's name no longer matters (no ceiling is needed: git is given an explicit --git-dir)
+  _gp_repo "co:lon/r"; _gp_run "$_gp_d"
+  _gp_has GP34 "ok   git-plants: nothing found" "a colon in the parent path reads like any other tree"
+  _gp_has GP34b "known keys only" "and the ok line says it rests on the keys it knows"
+  # GP35-GP37 (H1, H2): a NUL in a gitfile (the shell drops it, git stops at it); the root itself as a bare layout; a nested layout made of HEAD and commondir
+  _gp_repo gp35; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; printf 'gitdir: %s/.git/worktrees/wt\000\n' "$_gp_d" > "$_gp_d/wt/.git"
+  _gp_run "$_gp_d"; _gp_has GP35 "./wt/.git: unregistered .git file" "a registered worktree's gitfile that holds a NUL is refused, not read as the plain line the shell sees"
+  _gp_gp35=$_gp_d
+  _gp_kill GP35-nul-allowed '/# MUT-GPNUL$/d' "$_gp_gp35" "unregistered .git file"
+  # GP50: git applies `..` physically. A gitfile naming <root>/sym/../.git/worktrees/wt, where sym links elsewhere, leads git to the directory beside sym's target, not to the worktree entry: it is an unregistered .git file, never the exempted worktree line
+  _gp_repo gp50; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; mkdir -p "$_gp_t/gp50-away/real"; ln -s "$_gp_t/gp50-away/real" "$_gp_d/sym"
+  printf 'gitdir: %s/sym/../.git/worktrees/wt\n' "$_gp_d" > "$_gp_d/wt/.git"
+  _gp_run "$_gp_d"; _gp_has GP50 "./wt/.git: unregistered .git file" "a gitfile whose .. passes through a symlink is judged by where git goes (physical), so it is unregistered"
+  _gp_no GP50b "names ./.git/worktrees/<one name>" "and is not the worktree-shaped line doctor exempts"
+  _gp_gp50=$_gp_d
+  _gp_kill GP50-logical-dotdot '/gp_xp=\$(CDPATH/s/ cd -P / cd /' "$_gp_gp50" "unregistered .git file"
+  _gp_repo gp35b; _gp_g -C "$_gp_d" -c protocol.file.allow=always submodule add -q "$_gp_src" sub >/dev/null 2>&1; _gp_g -C "$_gp_d" commit -q -m sub >/dev/null 2>&1; printf 'gitdir: ../.git/modules/sub\000\n' > "$_gp_d/sub/.git"
+  _gp_run "$_gp_d"; _gp_has GP35b "registered submodule's gitfile is not one plain line" "a registered submodule's gitfile that holds a NUL is refused"
+  _gp_repo gp36; printf 'garbage\n' > "$_gp_d/.git/HEAD"; printf 'ref: refs/heads/main\n' > "$_gp_d/HEAD"; printf '.git\n' > "$_gp_d/commondir"; printf 'dirty\n' > "$_gp_d/index"
+  _gp_run "$_gp_d"; _gp_has GP36 ". is a bare repository layout (P8)" "the root as a bare layout (HEAD, commondir, a dirty index) is reported"
+  _gp_no GP36b "ok   git-plants" "and never reads as nothing found"
+  _gp_has GP36c "UNVERIFIED: git did not read the index" "and a garbage ./.git/HEAD reads UNVERIFIED (no discovery of the bare root)"
+  _gp_gp36=$_gp_d
+  _gp_kill GP36-commondir-layout-dropped '/# MUT-GPLAYOUT$/s/ || \[ -e .*$/   # MUT-GPLAYOUT/' "$_gp_gp36" ". is a bare repository layout"
+  _gp_repo gp37; mkdir -p "$_gp_d/nb"; printf 'ref: refs/heads/main\n' > "$_gp_d/nb/HEAD"; printf '../x\n' > "$_gp_d/nb/commondir"
+  _gp_run "$_gp_d"; _gp_has GP37 "./nb is a bare repository layout (P8)" "a nested HEAD plus commondir (no objects or refs) is a layout too"
+  # GP38: an exec key in ./.git/config stops the index read. A logging git on the PATH proves no ls-files ran after the finding (the config reads before it are the only calls)
+  _gp_real=$(command -v git); mkdir -p "$_gp_t/lg"; printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/GITLOG"\nexec "%s" "$@"\n' "$_gp_t" "$_gp_real" > "$_gp_t/lg/git"; chmod 755 "$_gp_t/lg/git"
+  _gp_repo gp38; _gp_g -C "$_gp_d" config core.fsmonitor /bin/true; rm -f "$_gp_t/GITLOG"
+  _gp_run "$_gp_d" "$_self" "$_gp_t/lg"; _gp_has GP38 "[core.fsmonitor]" "an exec key in ./.git/config is reported"
+  if [ -s "$_gp_t/GITLOG" ] && ! grep -q 'ls-files' "$_gp_t/GITLOG"; then echo "PASS: git-plants [GP38b] git ran (the config read) but no ls-files after the finding"; else echo "FAIL: git-plants [GP38b] the index was read after an exec-key finding, or no git ran at all"; fail=1; fi
+  _gp_gp38=$_gp_d
+  _gk=$(mktemp -d); sed '/# MUT-GPCFGSTOP$/s/gp_nogit=1/:/' "$_self" > "$_gk/preflight.sh"
+  if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant GP38-nogit-not-set did not apply"; fail=1
+  else
+    rm -f "$_gp_t/GITLOG"; _gp_run "$_gp_gp38" "$_gk/preflight.sh" "$_gp_t/lg"
+    if grep -q 'ls-files' "$_gp_t/GITLOG" 2>/dev/null; then echo "PASS: mutant GP38-nogit-not-set is killed (ls-files ran after the finding)"; else echo "FAIL: mutant GP38-nogit-not-set survived"; fail=1; fi
+  fi
+  rm -rf "$_gk"
+  _gp_repo gp38b; printf '[include]\n\tpath = x\n' >> "$_gp_d/.git/config"
+  _gp_run "$_gp_d"; _gp_has GP38c "[include.path]" "an include.path in ./.git/config is reported (ls-files would follow it)"
+  for _gp_kv in 'hook.x.command|true' 'protocol.allow|always' 'extensions.partialclone|origin' 'submodule.x.update|!true' 'url.x.insteadof|y' 'trailer.x.cmd|true'; do
+    _gp_repo gp39; _gp_g -C "$_gp_d" config "${_gp_kv%%|*}" "${_gp_kv#*|}"
+    _gp_mk=${_gp_kv%%|*}; case "${_gp_mk#*.}" in *.*) _gp_mk="${_gp_mk%%.*}.*.${_gp_mk##*.}" ;; esac   # the report withholds a subsection (SWAS-662): hook.x.command prints as hook.*.command
+    _gp_run "$_gp_d"; _gp_has GP39 "[$_gp_mk]" "the exec key ${_gp_kv%%|*} is reported by name, its subsection withheld"
+  done
+  # GP51 (SWAS-662): a key NAME can hold a credential (url.https://user:token@host/.insteadof, credential.https://u:tok@h.helper): the report prints the section and the variable, the subsection withheld,
+  # and a value (an http extraheader) is never read. The marker is built here and lower case (names print lower-cased).
+  _gp_lk="kitleak""p$$"
+  _gp_repo gp51; _gp_g -C "$_gp_d" config 'includeif.gitdir:/x/.git/worktrees/*.path' /nonexistent
+  _gp_g -C "$_gp_d" config "url.https://x:${_gp_lk}@h/.insteadof" y; _gp_g -C "$_gp_d" config "credential.https://u:${_gp_lk}@h.helper" y
+  _gp_g -C "$_gp_d" config 'http.https://github.com/.extraheader' "AUTHORIZATION: basic ${_gp_lk}v"
+  _gp_run "$_gp_d"; _gp_has GP51 "[includeif.*.path] [url.*.insteadof] [credential.*.helper]" "the three keys print as section.*.variable"
+  _gp_no GP51b "$_gp_lk" "and the marker (in two key names and in a header value) appears nowhere, on stdout or stderr"
+  _gp_gp51=$_gp_d
+  _gp_kill GP51-key-printed-whole '/# MUT-GPMASK$/s/\*\.\*) gp_k=/*.*) gp_kx=/' "$_gp_gp51" "[url.*.insteadof]"
+  # GP52: a found name that holds a credential shape (a colon, then an @: user:token@host, or the https://token@host form through the scheme's colon) is withheld like an unprintable one; a bare @ (a pnpm tree) is not
+  _gp_repo gp52; mkdir -p "$_gp_d/u:${_gp_lk}@h"; printf 'gitdir: x\n' > "$_gp_d/u:${_gp_lk}@h/.git"
+  _gp_run "$_gp_d"; _gp_has GP52 "or shaped like a credential); the name is not shown" "a directory name with an @ is withheld"
+  _gp_no GP52b "$_gp_lk" "and the name is printed nowhere"
+  _gp_repo gp52m; mkdir -p "$_gp_d/u:${_gp_lk}@h"; printf 'gitdir: x\n' > "$_gp_d/u:${_gp_lk}@h/.git"
+  _gp_kill GP52-at-name-printed '/# MUT-GPFIND$/s/|\*:\*@\*//' "$_gp_d" "or shaped like a credential); the name is not shown"
+  # GP53: a pnpm tree (a bare @ in node_modules/.pnpm/@scope+x@1.0.0/) raises nothing: no warn from the name, no unverified
+  _gp_repo gp53; mkdir -p "$_gp_d/node_modules/.pnpm/@s+x@1.0.0/node_modules/x"; ln -s x "$_gp_d/node_modules/.pnpm/@s+x@1.0.0/node_modules/y"
+  _gp_run "$_gp_d"; _gp_no GP53 "warn git-plants" "a pnpm-shaped symlink under node_modules/.pnpm/@s+x@1.0.0/ raises no warning"
+  _gp_no GP53b "unverified git-plants" "and no unverified line"
+  _gp_has GP53c "ok   git-plants: nothing found" "and the run reads clean"
+  _gp_gp53=$_gp_d
+  _gp_kill GP53-bare-at-withheld '/# MUT-GPFIND$/s/\*:\*@\*/*@*/' "$_gp_gp53" "or shaped like a credential); the name is not shown" appears
+  # GP54: the https://TOKEN@github.com/ form (caught through the scheme's colon) is withheld, the marker nowhere
+  _gp_repo gp54; mkdir -p "$_gp_d/https:/${_gp_lk}@github.com"; printf 'gitdir: x\n' > "$_gp_d/https:/${_gp_lk}@github.com/.git"
+  _gp_run "$_gp_d"; _gp_has GP54 "or shaped like a credential); the name is not shown" "a https:/TOKEN@github.com/ directory holding a .git is withheld"
+  _gp_no GP54b "$_gp_lk" "and the marker is printed nowhere, on stdout or stderr"
+  _gp_gp54=$_gp_d
+  _gp_kill GP54-token-name-printed '/# MUT-GPFIND$/s/|\*:\*@\*//' "$_gp_gp54" "or shaped like a credential); the name is not shown"
+  _gp_repo gp39b; _gp_g -C "$_gp_d" config remote.origin.url https://example.invalid/r.git
+  _gp_run "$_gp_d"; _gp_no GP39b "warn git-plants" "an ordinary remote url (every clone has one) is not a finding"
+  # GP40: a link to a directory outside the checkout that holds a .git hides a plant from the walk; a link to an empty directory raises nothing
+  _gp_repo gp40; mkdir -p "$_gp_t/gp40out" "$_gp_t/gp40empty"; printf 'gitdir: x\n' > "$_gp_t/gp40out/.git"; ln -s "$_gp_t/gp40out" "$_gp_d/lnk"; ln -s "$_gp_t/gp40empty" "$_gp_d/okl"
+  _gp_run "$_gp_d"; _gp_has GP40 "./lnk is a link to a directory that holds a .git or a git directory layout" "a link to a directory holding a .git is reported"
+  _gp_no GP40b "./okl" "and a link to an empty directory is not"
+  _gp_gp40=$_gp_d
+  _gp_kill GP40-link-ignored '/# MUT-GPLINK$/s/.*/  return 0/' "$_gp_gp40" "is a link to a directory that holds a .git"
+  # GP41 (L3): a name with a bidi mark, or with the text ## [ , is withheld
+  _gp_repo gp41; _gp_bidi=$(printf 'd\342\200\256x'); mkdir -p "$_gp_d/$_gp_bidi" "$_gp_d/a##[x"; printf 'gitdir: x\n' > "$_gp_d/$_gp_bidi/.git"; printf 'gitdir: x\n' > "$_gp_d/a##[x/.git"
+  _gp_run "$_gp_d"; _gp_has GP41 "or shaped like a credential); the name is not shown" "a name with a bidi mark or with ##[ is withheld"
+  _gp_no GP41b "a##[x" "and the ##[ text is never printed"
+  _gp_no GP41c "$_gp_bidi" "nor the bidi name"
+  _gp_repo gp41m; mkdir -p "$_gp_d/a##[x"; printf 'gitdir: x\n' > "$_gp_d/a##[x/.git"
+  _gp_kill GP41-hashbracket-printed '/# MUT-GPFIND$/s/|\*"##\["\*//' "$_gp_d" "or shaped like a credential); the name is not shown"
+  # GP42 (L4): a pending exec line under a worktree entry or a submodule git directory; a grep that fails reads UNVERIFIED, never clean (L5: a hooksPath under a temp directory is a warning)
+  _gp_repo gp42; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; mkdir -p "$_gp_d/.git/worktrees/wt/rebase-merge" "$_gp_d/.git/modules/m/rebase-merge"
+  printf 'exec echo X\n' > "$_gp_d/.git/worktrees/wt/rebase-merge/git-rebase-todo"; printf 'exec echo X\n' > "$_gp_d/.git/modules/m/rebase-merge/git-rebase-todo"
+  _gp_run "$_gp_d"; _gp_has GP42 "./.git/worktrees/wt/rebase-merge/git-rebase-todo holds an exec line (P10)" "a worktree entry's pending exec line is reported"
+  _gp_has GP42b "./.git/modules/m/rebase-merge/git-rebase-todo holds an exec line (P10)" "and so is a submodule git directory's"
+  mkdir -p "$_gp_t/gstub"; printf '#!/bin/sh\nexit 2\n' > "$_gp_t/gstub/grep"; chmod 755 "$_gp_t/gstub/grep"
+  _gp_run "$_gp_d" "$_self" "$_gp_t/gstub"; _gp_has GP42c "UNVERIFIED: some paths could not be read" "a grep that fails reads UNVERIFIED, not clean"
+  _gk=$(mktemp -d); sed '/# MUT-GPTODO$/s/gp_unv=1; //' "$_self" > "$_gk/preflight.sh"
+  if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant GP42-grep-failure-clean did not apply"; fail=1
+  else
+    _gp_run "$_gp_d" "$_gk/preflight.sh" "$_gp_t/gstub"
+    case "$_gp_o" in *"UNVERIFIED: some paths could not be read"*) echo "FAIL: mutant GP42-grep-failure-clean survived"; fail=1 ;; *) echo "PASS: mutant GP42-grep-failure-clean is killed" ;; esac
+  fi
+  rm -rf "$_gk"
+  _gp_repo gp42t; _gp_g -C "$_gp_d" config core.hooksPath /tmp/kit-gp-hooks
+  _gp_run "$_gp_d"; _gp_has GP42d "warn git-plants: core.hooksPath in ./.git/config points under a temp directory" "a hooksPath under a temp directory is a warning with the hooksPath prefix (doctor's anchored exemption lets its dirty check run)"
+  _gp_no GP42e "info git-plants: core.hooksPath" "and no longer an info line"
+  _gp_g -C "$_gp_d" config core.hooksPath /dev/shm/kit-gp-hooks
+  _gp_run "$_gp_d"; _gp_has GP42f "points under a temp directory" "a hooksPath under /dev/shm is one too"
+  _gp_g -C "$_gp_d" config core.hooksPath /tmp
+  _gp_run "$_gp_d"; _gp_has GP42g "points under a temp directory" "and a temp root itself (/tmp, not only /tmp/x) is one"
+  # GP43: a recursive submodule's gitfile (its parent's index is not read) is an info line that names the limit, with its own unverified line (never ok; doctor does not exempt it)
+  _gp_repo gp43; mkdir -p "$_gp_d/.git/modules/a/modules/b/objects" "$_gp_d/d1/inner"; printf 'ref: refs/heads/main\n' > "$_gp_d/.git/modules/a/modules/b/HEAD"; printf 'gitdir: %s/.git/modules/a/modules/b\n' "$_gp_d" > "$_gp_d/d1/inner/.git"
+  _gp_run "$_gp_d"; _gp_has GP43 "names a recursive submodule's git directory under ./.git/modules" "a recursive submodule's gitfile is an info line that names the limit"
+  _gp_no GP43b "warn git-plants" "and raises no warning"
+  _gp_has GP43c "unverified git-plants: a nested .git file names a recursive submodule" "and prints its own unverified line"
+  _gp_no GP43d "ok   git-plants" "and never reads as nothing found"
+  _gp_no GP43e "names a worktree entry" "and is not the worktree-shaped line doctor exempts"
+  _gp_gp43=$_gp_d
+  _gp_kill GP43-recursive-unrecognised '/# MUT-GPRECUR$/s#modules/?\*/modules/?\*#modules/NOMATCH#' "$_gp_gp43" "names a recursive submodule's git directory"
+  # GP45 (a real submodule linked worktree's entry has the plain commondir ../.. and is not a finding)
+  _gp_repo gp45; _gp_g -C "$_gp_d" -c protocol.file.allow=always submodule add -q "$_gp_src" sub >/dev/null 2>&1; _gp_g -C "$_gp_d" commit -q -m sub >/dev/null 2>&1; _gp_g -C "$_gp_d/sub" worktree add -q ../swt -b swt >/dev/null 2>&1
+  _gp_run "$_gp_d"; _gp_no GP45b "is not the plain ../.." "a submodule linked worktree entry's commondir (../..) is not a finding"
+  # GP46: an include.path naming a FIFO in ./.git/config is reported by key name and never followed (the config is read from / with no repository context; the watchdog releases a hang)
+  _gp_repo gp46; mkfifo "$_gp_d/fifo"; printf '[include]\n\tpath = %s/fifo\n[core]\n\tfsmonitor = x\n' "$_gp_d" >> "$_gp_d/.git/config"
+  _gp_tr "$_gp_d" "$_self" "$_gp_d/fifo"; _gp_has GP46 "[core.fsmonitor]" "a ./.git/config with an include.path naming a FIFO is read without following the include"
+  _gp_has GP46b "[include.path]" "and the include key is reported by name"
+  if [ "$_gp_hung" -eq 0 ]; then echo "PASS: git-plants [GP46c] it did not hang"; else echo "FAIL: git-plants [GP46c] C1 hung on an include.path naming a FIFO"; fail=1; fi
+  _gp_gp46=$_gp_d
+  _gp_kill GP46-config-read-in-repo '/# MUT-GPCFGCD$/s#cd / [&][&]#cd "$gp_root" \&\&#' "$_gp_gp46" "[core.fsmonitor]" lost "$_gp_gp46/fifo"
+  # GP46d: a config that git cannot parse (an include to a FIFO, then a garbage line) is read as failed: no index read follows, so nothing opens the include and nothing hangs
+  _gp_repo gp46d; mkfifo "$_gp_d/fifo"; printf '[include]\n\tpath = %s/fifo\ngarbage line\n' "$_gp_d" >> "$_gp_d/.git/config"
+  _gp_tr "$_gp_d" "$_self" "$_gp_d/fifo"; _gp_has GP46d "unverified git-plants: no git was run" "a config git cannot parse leaves no index read, and says unverified"
+  if [ "$_gp_hung" -eq 0 ]; then echo "PASS: git-plants [GP46e] it did not hang"; else echo "FAIL: git-plants [GP46e] C1 hung (the index read opened the include)"; fail=1; fi
+  _gp_gp46d=$_gp_d
+  _gp_kill GP46-failed-read-keeps-index '/MUT-GPCFGFAIL$/s/; \[ -n "\${3:-}" \] || gp_nogit=1//' "$_gp_gp46d" "unverified git-plants: no git was run" lost "$_gp_gp46d/fifo"
+  # GP47: an unverified line prints beside a warning (a hooksPath warn does not hide a nogit one)
+  _gp_repo gp47; _gp_g -C "$_gp_d" config core.hooksPath .husky; printf 'garbage line\n' > "$_gp_d/.git/config.worktree"
+  _gp_run "$_gp_d"; _gp_has GP47 "points inside this checkout" "a hooksPath warning is printed"
+  _gp_has GP47b "unverified git-plants: no git was run" "and the unverified line prints beside it"
+  _gp_gp47=$_gp_d
+  _gp_kill GP47-unverified-needs-no-warn '/MUT-GPUNV$/s/\[ "\$gp_nogit" -eq 0 \] || printf/[ "$gp_nogit" -eq 0 ] || [ "$gp_warn" -ne 0 ] || printf/' "$_gp_gp47" "unverified git-plants: no git was run"
+  # GP48: a worktree entry whose HEAD is a FIFO is a warning and nothing opens it
+  _gp_repo gp48; _gp_g -C "$_gp_d" worktree add -q wt -b wt >/dev/null 2>&1; rm -f "$_gp_d/.git/worktrees/wt/HEAD"; mkfifo "$_gp_d/.git/worktrees/wt/HEAD"
+  _gp_tr "$_gp_d" "$_self" "$_gp_d/.git/worktrees/wt/HEAD"; _gp_has GP48 "wt/HEAD is not a regular file or a symlink" "a worktree entry with a FIFO HEAD is reported"
+  if [ "$_gp_hung" -eq 0 ]; then echo "PASS: git-plants [GP48b] it did not hang"; else echo "FAIL: git-plants [GP48b] C1 hung on a FIFO HEAD"; fail=1; fi
+  _gp_gp48=$_gp_d
+  _gp_kill GP48-head-check-dropped '/# MUT-GPWTHEAD$/s#gp_w "\$gp_wn/HEAD#: "$gp_wn/HEAD#' "$_gp_gp48" "wt/HEAD is not a regular file" lost "$_gp_gp48/.git/worktrees/wt/HEAD"
+  # GP49: a gitlink whose index name is quoted (a quote in the name) is not classified, and says so
+  _gp_repo gp49; _gp_sha=$(_gp_g -C "$_gp_d" rev-parse HEAD); _gp_g -C "$_gp_d" update-index --add --cacheinfo "160000,$_gp_sha,q\"x" >/dev/null 2>&1
+  _gp_run "$_gp_d"; _gp_has GP49 "a submodule with an unusual name is not classified" "a gitlink with a quoted name is a warning, not skipped"
+  _gp_gp49=$_gp_d
+  _gp_kill GP49-quoted-name-skipped 's/gp_w "a submodule with an unusual name/: "a submodule with an unusual name/' "$_gp_gp49" "a submodule with an unusual name is not classified"
+  # GP21: the exit does not move with findings
+  if [ "$_gp_gp1rc" -eq 0 ] && [ "$_gp_gp16rc" -eq 0 ]; then echo "PASS: git-plants [GP21] the exit is 0 with findings and without"; else echo "FAIL: git-plants [GP21] exits differ (findings $_gp_gp1rc, clean $_gp_gp16rc)"; fail=1; fi
+  _gk=$(mktemp -d); sed '/# MUT-GPEXIT$/s/exit 0/exit 3/' "$_self" > "$_gk/preflight.sh"
+  if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant GP21-exit-moves did not apply"; fail=1
+  else
+    _gp_run "$_gp_gp1" "$_gk/preflight.sh"
+    if [ "$_gp_rc" -ne 0 ]; then echo "PASS: mutant GP21-exit-moves is killed (rc $_gp_rc)"; else echo "FAIL: mutant GP21-exit-moves survived"; fail=1; fi
+  fi
+  rm -rf "$_gk"
+  # GP22: an unreadable subtree is UNVERIFIED, not cleared (skipped as root, which reads everything)
+  _gp_repo gp22; mkdir -p "$_gp_d/d1"; chmod 000 "$_gp_d/d1"
+  if [ -r "$_gp_d/d1" ]; then echo "PASS: git-plants [GP22] (this user reads a mode-000 directory, so the case cannot be built here: not exercised)"
+  else
+    _gp_run "$_gp_d"; _gp_has GP22 "UNVERIFIED: some paths could not be read" "an unreadable subtree says UNVERIFIED"
+    if [ "$_gp_rc" -eq 0 ]; then echo "PASS: git-plants [GP22b] and the exit is unchanged"; else echo "FAIL: git-plants [GP22b] rc $_gp_rc"; fail=1; fi
+    chmod 755 "$_gp_d/d1"
+  fi
+  rm -rf "$_gp_t"
+
   rm -rf "$_bnd"
 
   [ "${_pf_skips:-0}" -eq 0 ] || echo "NOTE: preflight selftest: ${_pf_skips} SKIP (coverage WEAK)"
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
+fi
+
+if [ "$GIT_PLANTS_ONLY" -eq 1 ]; then
+  check_git_plants
+  exit 0   # MUT-GPEXIT
 fi
 
 if [ "$BOUNDARY_ONLY" -eq 1 ]; then
@@ -5355,6 +6088,9 @@ echo "Universal prerequisites:"
 need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
+echo "Checkout git (parse-only; reported after the fact):"
+check_git_plants
+echo "Git capability, sandbox and boundary:"
 check_git_capability
 check_sandbox
 check_boundary

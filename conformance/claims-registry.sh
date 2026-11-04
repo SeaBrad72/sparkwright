@@ -17,7 +17,7 @@ set -eu
 
 REGISTRY="${KIT_CLAIMS:-conformance/claims.tsv}"
 # Headline claims that MUST stay registered (no silent drop). Change this set deliberately + ratified.
-REQUIRED_IDS="badge-version conformance-ci-wired doc-budget guard-single-source action-pinning security-policy gate-counts cost-governance supply-chain-verify gitlab-adoption doctor operate-loop tier-advice named-adapters actionlint-valid template-detectors-aligned provenance-precondition golden-path-trigger adopter-preflight mode-blind explain feature-flags-ready token-scope author-not-approver verify-enforced runaway-killswitch version-tag-coherent release-tag-on-merge governing-docs-current mirror-immutable-tags mirror-current promotion-contract promotion-readiness proportional-gate non-vacuity-gate eval-harness roster-guard profile-parity poster-parity branch-protection-declared"
+REQUIRED_IDS="guard-single-source action-pinning security-policy gate-counts cost-governance supply-chain-verify gitlab-adoption named-adapters actionlint-valid template-detectors-aligned provenance-precondition adopter-preflight mode-blind explain feature-flags-ready token-scope author-not-approver verify-enforced runaway-killswitch version-tag-coherent release-tag-on-merge mirror-immutable-tags promotion-contract promotion-readiness proportional-gate non-vacuity-gate roster-guard branch-protection-declared"
 
 TAB=$(printf '\t')
 
@@ -29,9 +29,9 @@ emit_diag() { [ -n "$1" ] && printf '%s\n' "$1" | sed 's/^/    | /' || true; }
 cr_san() { LC_ALL=C tr -d '[:cntrl:]'; }
 
 # cr_proof_want <verifier>: the proof DERIVED from FIELD 3 ALONE, on the DISPATCH SHAPE `.sh --selftest`.
-# Measured: five rows (doctor, operate-loop, tier-advice, verify-enforced, release-tag-on-merge) carry
-# `--selftest` in their claim PROSE and dispatch none — reading the whole line is the false 33/72 that
-# the true 28/72 replaces. HONEST CEILING: integrity of DISCLOSURE, not enforcement — no gate consults
+# Measured: two rows (verify-enforced, release-tag-on-merge) carry `--selftest` in their claim PROSE and
+# dispatch none (three more did until they were removed: doctor and operate-loop by SWAS-626, tier-advice by SWAS-619) —
+# reading the whole line is the false 33/72 that the true 28/72 replaces. HONEST CEILING: integrity of DISCLOSURE, not enforcement — no gate consults
 # the column, post-grammar it cannot influence execution, and a mention-vs-use fake inside field 3 stays
 # constructible with the reviewer as its only detector.
 cr_proof_want() { case "$1" in *.sh\ --selftest*) echo selftest ;; *) echo tree ;; esac; }
@@ -131,7 +131,7 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -v '^gate-counts' "$d/ok.tsv" > "$d/drop.tsv"
   if run_registry "$d/drop.tsv" >/dev/null 2>&1; then echo "FAIL: selftest — silent drop not caught"; sfail=1; else echo "PASS: selftest — dropped required claim detected"; fi
   # a DUPLICATE id must be caught
-  cp "$d/ok.tsv" "$d/dup.tsv"; printf '%s\t%s\ttrue\ttree\n' "badge-version" "dup" >> "$d/dup.tsv"
+  cp "$d/ok.tsv" "$d/dup.tsv"; printf '%s\t%s\ttrue\ttree\n' "gate-counts" "dup" >> "$d/dup.tsv"
   if run_registry "$d/dup.tsv" >/dev/null 2>&1; then echo "FAIL: selftest — duplicate id not caught"; sfail=1; else echo "PASS: selftest — duplicate id detected"; fi
   # an EMPTY verifier must be caught
   cp "$d/ok.tsv" "$d/empty.tsv"; printf '%s\t%s\t\t%s\n' "no-verifier" "missing" "tree" >> "$d/empty.tsv"

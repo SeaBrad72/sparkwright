@@ -39,7 +39,7 @@
 # (`-i user`, for the token-expiry header), to github.com only (host-gated on origin's literal host, so an SSH host alias reports no
 # adapter), sending gh's credential. Doctor sets no timeout of its own on them; gh's own network timeouts apply.
 # Merge relationship and branch protection (SWAS-207b): two more INFO-only reads. The default run reads `.kit/dials.conf` and `CLAUDE.md`
-# from origin's default branch with git (`ls-remote` against origin, no forge call and no credential beyond git's own) to print the
+# from origin's default branch with git (`ls-remote` against origin, run from `/` so this checkout's git config does not apply to it, and not at all while the checkout-git row has a finding; no forge call and no credential beyond git's own) to print the
 # `merge relationship:` lines, and makes two more `gh api` reads (the default branch, then its protection) for the `branch protection:`
 # line. The two merge-relationship lines never warn, fail or change the exit code. The protection line reads the SAME protection body (no new
 # call) and WARNs, naming the setting, when `dismiss_stale_reviews` is not true (SWAS-361, 352g F11): a push after approval then keeps the approval.
@@ -149,7 +149,7 @@ if [ "${1:-}" = "--selftest" ]; then
   posture_rc=0
   DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$0" --selftest-e2e >/dev/null 2>&1 || posture_rc=$?
   forced_rc=0
-  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_SCORECARD_CMD=false DOCTOR_META_CONTROL_CMD=false DOCTOR_NONVACUITY_CMD=false sh "$0" --selftest-e2e --full >/dev/null 2>&1 || forced_rc=$?
+  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_META_CONTROL_CMD=false DOCTOR_NONVACUITY_CMD=false sh "$0" --selftest-e2e --full >/dev/null 2>&1 || forced_rc=$?
   [ "$forced_rc" = "$posture_rc" ] || {
     echo "doctor --selftest: FAIL (non-gating invariant broken: forced-failing metrics changed exit from $posture_rc to $forced_rc)"
     sfail=1
@@ -166,8 +166,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # markers: none may appear. The invocation targets an ISOLATED COPY of this script in a bare temp tree
   # with no conformance/ siblings — a faithful real run (SEAMS=0, no seam flag) that exercises the exact
   # seam-gating path, but whose dimensions fall to their cheap "not present" branch. That isolation is
-  # load-bearing: a real doctor run in THIS tree invokes conformance/verify.sh, which runs doctor-wired.sh,
-  # which runs `doctor --selftest` — so a marker run against the in-tree script would recurse without end.
+  # load-bearing: a real doctor run in THIS tree invokes conformance/verify.sh (no caller of `doctor --selftest` is left under
+  # verify.sh), and a marker run against the in-tree script would still run that whole aggregate.
   # Pre-fix the seams are honored (cheap `touch` stubs run); post-fix they are ignored. Either way: fast,
   # deterministic, no recursion.
   # HOME is redirected into the empty temp tree so the real ~/.claude/settings.json is NEVER read by this
@@ -297,7 +297,7 @@ if [ "${1:-}" = "--selftest" ]; then
   _acc_ok "clean" "$_clean"
   printf '%s\n' "$_clean" > "$accd/f.json"
   _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
-       DOCTOR_DORA_CMD=true DOCTOR_SCORECARD_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
+       DOCTOR_DORA_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
        DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
        DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
        sh "$0" --selftest-e2e --full 2>&1) || true
@@ -307,7 +307,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # 2. accretion planted → the --full count is >= 1 (a count, never the pattern).
   printf '%s\n' '{"permissions":{"allow":["Bash(git status:*)","Bash(some-unsanctioned-tool:*)"]}}' > "$accd/f.json"
   _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
-       DOCTOR_DORA_CMD=true DOCTOR_SCORECARD_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
+       DOCTOR_DORA_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
        DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
        DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
        sh "$0" --selftest-e2e --full 2>&1) || true
@@ -476,7 +476,9 @@ TSTUB
   _o=$(_tcd_run "$_tcd/present" "$_tcd/tracker.conf")
   printf '%s\n' "$_o" | grep -qxF 'tracker credential: keychain (item present; not read)' \
     || { echo "doctor --selftest: FAIL (a stored item did not render the keychain (item present; not read) line)"; sfail=1; }
-  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcd/log" \
+  # SWAS-678: a `w` or `g` is matched only in a flag at the start of an argument, in any short-flag cluster, never as a substring: a logged argument that
+  # carries the temp path (a name such as hermetic-wOq618) holds "-w" with no -w flag anywhere and used to red this leg at random.
+  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcd/log" \
     || { echo "doctor --selftest: FAIL (doctor made other than ONE attribute-only store call: $(cat "$_tcd/log"))"; sfail=1; }
   # LOAD-BEARING NEGATIVE: the marker token the stub would return with -w never reaches doctor output. It kills a
   # mutant that reads the secret (adds -w) and prints it, and one that prints any store output.
@@ -544,7 +546,7 @@ WSTUB
     || { echo "doctor --selftest: FAIL (identity: doctor made other than TWO adapter reads)"; sfail=1; }
   printf '%s\n' "$_o" | grep -qF 'HOLDS' \
     && { echo "doctor --selftest: FAIL (identity: a non-admin credential was told it HOLDS admin permissions - wolf crying)"; sfail=1; } || true
-  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcd/log" \
+  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcd/log" \
     || { echo "doctor --selftest: FAIL (identity: doctor's own store call was other than ONE attribute-only call)"; sfail=1; }
   _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" clean env-user@example.com env-token)
   printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - runs as AgentFixture (712020:abc-00000042)' \
@@ -883,7 +885,10 @@ FSTUB
   _rd_c=$(git -C "$_rd" commit-tree "$_rd_t" -m base)
   git -C "$_rd" remote add origin "$_rdo"
   git -C "$_rd" push -q origin "$_rd_c:refs/heads/main" 2>/dev/null || true
-  _o=$(HOME="$_rdh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
+  # SWAS-680: the real read goes to a network URL only: origin is ssh://fixture<bare> over a GIT_SSH_COMMAND shim (answers git's -G probe with exit 1), and the real preflight clears the checkout
+  printf '#!/bin/sh\n[ "$1" = -G ] && exit 1\nshift\nPATH="$(git --exec-path):$PATH"; export PATH\nexec sh -c "$*"\n' > "$_rdh/ssh-shim.sh"; chmod 755 "$_rdh/ssh-shim.sh"
+  git -C "$_rd" remote set-url origin "ssh://fixture$_rdo"; cp scripts/preflight.sh "$_rd/scripts/preflight.sh"
+  _o=$(HOME="$_rdh" GIT_SSH_COMMAND="$_rdh/ssh-shim.sh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
   printf '%s\n' "$_o" | grep -qxF 'merge relationship: solo — the owner'"'"'s recorded GO, bound to the head sha, is the merge control for every class' \
     || { echo "doctor --selftest: FAIL (rel-real: a real run did not read origin's default branch and render the solo line)"; sfail=1; }
   # ...and a dials.conf that is a SYMLINK entry (mode 120000; its blob text is the link target, here a solo line) is NOT read: the
@@ -892,12 +897,12 @@ FSTUB
   _rd_s2=$(printf '120000 blob %s\tdials.conf\n' "$_rd_b2" | git -C "$_rd" mktree)
   _rd_t2=$(printf '040000 tree %s\t.kit\n' "$_rd_s2" | git -C "$_rd" mktree)
   _rd_c2=$(git -C "$_rd" commit-tree "$_rd_t2" -m linkbase)
-  git -C "$_rd" push -q -f origin "$_rd_c2:refs/heads/main" 2>/dev/null || true
-  _o=$(HOME="$_rdh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
+  GIT_SSH_COMMAND="$_rdh/ssh-shim.sh" git -C "$_rd" push -q -f origin "$_rd_c2:refs/heads/main" 2>/dev/null || true
+  _o=$(HOME="$_rdh" GIT_SSH_COMMAND="$_rdh/ssh-shim.sh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
   printf '%s\n' "$_o" | grep -qF 'merge relationship: solo' \
     && { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf on origin printed solo; the verbs read team for it)"; sfail=1; } || true
-  printf '%s\n' "$_o" | grep -qF 'merge relationship: unknown' \
-    || { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf did not read as unknown)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF "merge relationship: unknown - could not read .kit/dials.conf at origin's tip here" \
+    || { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf did not read as unknown for the tip/file cause)"; sfail=1; }
   rm -rf "$_rd" "$_rdo" "$_rdh" 2>/dev/null || true
 
   # --as agent: the gate
@@ -1059,7 +1064,7 @@ https://github.com/acme/other.git"; do
   #   verify.sh and claims-registry.sh files. THIS SELFTEST RUNS UNDER CI, which forces REQUIRE=1, so every leg that asserts the
   #   not-required behaviour runs its child as `env -u CI -u GITHUB_ACTIONS`, and each required-mode leg sets CI=1 or passes
   #   --require itself. No row count is hard-coded: R is read back from the stub the leg wrote.
-  _pq_nci='env -u CI -u GITHUB_ACTIONS'
+  _pq_nci='env -u CI -u GITHUB_ACTIONS -u GIT_SSH_COMMAND'
   _pq_pfx=$_pq_nci
   _pq_fail() { echo "doctor --selftest: FAIL ($1)"; sfail=1; }
   _pq_stub() {  # <file> <check lines> <printed rows> <closing command>: a verify.sh that prints result rows like the real one
@@ -1126,7 +1131,7 @@ https://github.com/acme/other.git"; do
   _pq_run "$(_pq_tree 0 3 'exit 0')"; _pq_reach "unmarked tree" "$_pq_err"
   [ "$(_pq_total "$_pq_err")" = "$_pq_n" ] || _pq_fail "C2: an unmarked tree counted a different N (its skipped claims step is still a step)"
   _pq_run "$_pq_a" --full; _pq_reach "--full" "$_pq_err"
-  [ "$(_pq_total "$_pq_err")" = "$((_pq_n+4))" ] || _pq_fail "C2: --full did not add its four metric steps to N"
+  [ "$(_pq_total "$_pq_err")" = "$((_pq_n+3))" ] || _pq_fail "C2: --full did not add its three metric steps to N"
   _pq_tk=$(_pq_tree 1 3 'exit 0'); mkdir -p "$_pq_tk/.kit"
   printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nproject=AB\n' > "$_pq_tk/.kit/tracker.conf"
   cp scripts/tracker-cred.sh scripts/tracker-conf.sh "$_pq_tk/scripts/"
@@ -1176,7 +1181,7 @@ https://github.com/acme/other.git"; do
     [ "$_pq_rc" = 2 ] || _pq_fail "C5: 'doctor $_pq_combo' exited $_pq_rc, expected 2 (usage)"
   done
 
-  # C6: stdout is unchanged. The golden below is the stdout of the pre-change script on the same stub tree.
+  # C6: stdout is stable. The golden below is the stdout of a default run on the same stub tree (SWAS-473 added the checkout-git row, printed before the battery).
   _pq_gold=$(cat <<'GOLD'
 sparkwright doctor
 ------------------
@@ -1184,9 +1189,10 @@ branch: unknown  sha: unknown  VERSION: unknown  latest-tag:
 
 POSTURE
 -------
+checkout-git: N/A - scripts/preflight.sh is not present, so git plants in this checkout were not checked
   conformance    PASS
   claims         PASS
-  git            WARN  [branch=unknown; clean; WARN: vunknown untagged/unreleased]
+  git            WARN  [branch=unknown; WARN: dirty check UNVERIFIED (git status was not run, or failed: it runs only when the checkout-git report reads ok, or holds only a core.hooksPath or worktree-shaped nested gitfile line); WARN: vunknown untagged/unreleased]
   kit-update     N/A   [N/A — conformance/kit-current.sh is not present in this tree.]
   permissions    N/A   [the sanctioned enumeration (sanctioned-commands.tsv) is not present]
 forge identity: N/A — no origin remote
@@ -1207,6 +1213,352 @@ GOLD
   # which no fixture controls (their own cells are the SWAS-357 ones above).
   [ "$(printf '%s\n' "$_pq_out" | sed 's/[[:space:]]*$//' | awk '/^secrets-in-env:/ { drop = 1; next } drop && /^      / { next } { drop = 0; print }')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
     || _pq_fail "C6: the stdout of a default run changed (progress must be stderr only)"
+
+  # SWAS-473 (MUT-DOCFSMON): doctor's own git row must not run a planted core.fsmonitor. The fixture is a repository whose core.fsmonitor names a canary script that writes FSMON-RAN if it is ever executed.
+  # The mutant (a rewritten COPY of this script with the safety flag cut from the git row) must make the canary run: that is what makes the cell non-vacuous, and proves the canary is live.
+  _pq_fs=$(_pq_tree 1 3 'exit 0'); cp scripts/preflight.sh "$_pq_fs/scripts/preflight.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_fs" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_fs" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_fs/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1
+  printf '#!/bin/sh\nprintf x > "%s/FSMON-RAN"\nexit 0\n' "$_pq_fs" > "$_pq_fs/mon.sh"; chmod 755 "$_pq_fs/mon.sh"
+  _pq_fh config core.fsmonitor "$_pq_fs/mon.sh"
+  rm -f "$_pq_fs/FSMON-RAN"; _pq_run "$_pq_fs"
+  [ ! -e "$_pq_fs/FSMON-RAN" ] || _pq_fail "DOCFSMON: a default doctor run executed a planted core.fsmonitor"
+  printf '%s\n' "$_pq_out" | grep -qE '^  git +(OK|WARN) ' || _pq_fail "DOCFSMON: the fixture run printed no git row (vacuous)"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCFSMON: a plant in the checkout did not make the dirty check UNVERIFIED"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: WARN - [0-9]+ finding' || _pq_fail "DOCFSMON: the plant was not reported on the checkout-git row"
+  # MUT-DOCSKIP and MUT-DOCFSMON together: with the skip dropped the flags are the only guard, and cutting them lets the monitor run (this proves the canary live)
+  sed -e '/# MUT-DOCSKIP$/s/^if .*; fi/_git_skip=0/' -e '/_git_dirty=\$(env/s/ -c core.fsmonitor=false//' "$0" > "$_pq_fs/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fs/scripts/doctor.sh"; then _pq_fail "DOCFSMON: the mutant did not apply"
+  else
+    rm -f "$_pq_fs/FSMON-RAN"; _pq_run "$_pq_fs"
+    [ -e "$_pq_fs/FSMON-RAN" ] || _pq_fail "DOCFSMON: MUT-DOCFSMON survived (the flag is not load-bearing, or the canary is not live)"
+  fi
+  # the filter canary: a planted filter.<name>.clean driver, which the three -c flags do not stop. Tracked file f, modified to the same size right after the commit, is hashed through the filter by status.
+  _pq_ff=$(_pq_tree 1 3 'exit 0'); cp scripts/preflight.sh "$_pq_ff/scripts/preflight.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_ff" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_ff" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_ff/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1
+  printf '#!/bin/sh\nprintf x > "%s/FILTER-RAN"\ncat\n' "$_pq_ff" > "$_pq_ff/flt.sh"; chmod 755 "$_pq_ff/flt.sh"
+  printf 'f filter=kit\n' > "$_pq_ff/.gitattributes"; _pq_fh config filter.kit.clean "$_pq_ff/flt.sh"; printf b > "$_pq_ff/f"
+  rm -f "$_pq_ff/FILTER-RAN"; _pq_run "$_pq_ff"
+  [ ! -e "$_pq_ff/FILTER-RAN" ] || _pq_fail "DOCFILTER: a default doctor run executed a planted filter driver"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCFILTER: a filter driver in the checkout did not make the dirty check UNVERIFIED"
+  sed '/# MUT-DOCSKIP$/s/^if .*; fi/_git_skip=0/' "$0" > "$_pq_ff/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_ff/scripts/doctor.sh"; then _pq_fail "DOCFILTER: the mutant did not apply"
+  else
+    rm -f "$_pq_ff/FILTER-RAN"; _pq_run "$_pq_ff"
+    [ -e "$_pq_ff/FILTER-RAN" ] || _pq_fail "DOCFILTER: MUT-DOCSKIP survived (the skip is not load-bearing, or the filter canary is not live)"
+  fi
+  # a report that could not clear the checkout (a gitfile .git) is rendered N/A UNVERIFIED, never OK
+  _pq_fu=$(_pq_tree 1 3 'exit 0'); printf 'gitdir: ../elsewhere\n' > "$_pq_fu/.git"; cp "$0" "$_pq_fu/scripts/doctor.sh"; cp scripts/preflight.sh "$_pq_fu/scripts/preflight.sh"
+  _pq_run "$_pq_fu"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: N/A - UNVERIFIED' || _pq_fail "DOCUNV: an unverifiable checkout was not rendered N/A UNVERIFIED"
+  printf '%s\n' "$_pq_out" | grep -qF 'checkout-git: OK' && _pq_fail "DOCUNV: an unverifiable checkout read OK" || true
+  # FAIL CLOSED (SWAS-473): git status runs only on a positive `ok git-plants`. A missing preflight, a crashing one and a skip verdict leave the dirty check UNVERIFIED and run nothing (the canary fixture again)
+  cp "$0" "$_pq_fs/scripts/doctor.sh"
+  for _pq_v in missing crash skipverdict; do
+    case "$_pq_v" in
+      missing) rm -f "$_pq_fs/scripts/preflight.sh" ;;
+      crash) printf 'exit 3\n' > "$_pq_fs/scripts/preflight.sh" ;;
+      skipverdict) printf 'echo "  skip git-plants - x"\n' > "$_pq_fs/scripts/preflight.sh" ;;
+    esac
+    rm -f "$_pq_fs/FSMON-RAN"; _pq_run "$_pq_fs"
+    [ ! -e "$_pq_fs/FSMON-RAN" ] || _pq_fail "DOCFAILCLOSED[$_pq_v]: doctor ran a planted monitor"
+    printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCFAILCLOSED[$_pq_v]: the dirty check did not read UNVERIFIED"
+  done
+  printf 'echo "  ok   git-plants: nothing found"\n' > "$_pq_fs/scripts/preflight.sh"
+  _pq_run "$_pq_fs"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' && _pq_fail "DOCFAILCLOSED[ok]: a positive ok report still left the dirty check UNVERIFIED (the gate never opens)" || true
+  printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' || _pq_fail "DOCFAILCLOSED[ok]: with an ok report the dirty check did not run"
+  # a status that FAILS (a garbage HEAD, behind a stub report that reads ok) is UNVERIFIED, never clean
+  printf 'garbage\n' > "$_pq_fs/.git/HEAD"; _pq_run "$_pq_fs"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCSTATUSRC: a git status that failed read as clean"
+  sed '/_git_dirty=\$(env/s/ || _git_skip=2//' "$0" > "$_pq_fs/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fs/scripts/doctor.sh"; then _pq_fail "DOCSTATUSRC: the mutant did not apply"
+  else _pq_run "$_pq_fs"; printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' && _pq_fail "DOCSTATUSRC: the mutant (a failed status ignored) survived" || true; fi
+
+  # H3 (ruling): the report and its warning line print BEFORE the battery, and the battery really does run git (the stub verify runs a plain `git ls-files`, which fires the planted monitor: that is why the row says
+  # "doctor's next checks run git"). The stub copies the stdout written so far; doctor does not stop and no exit moves.
+  _pq_fe=$(_pq_tree 1 3 "git ls-files >/dev/null 2>&1; grep -c '^checkout-git: WARN' stdout.txt > mark"); cp scripts/preflight.sh "$_pq_fe/scripts/preflight.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_fe" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_fe" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_fe/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1
+  printf '#!/bin/sh\nprintf x > "%s/FSMON-RAN"\nexit 0\n' "$_pq_fe" > "$_pq_fe/mon.sh"; chmod 755 "$_pq_fe/mon.sh"; _pq_fh config core.fsmonitor "$_pq_fe/mon.sh"
+  _pq_early() {  # <tree>: doctor to a file (stdout only), from the tree
+    rm -f "$1/mark" "$1/stdout.txt" "$1/FSMON-RAN"; : > "$1/stdout.txt"
+    ( cd "$1" && env -u CI -u GITHUB_ACTIONS HOME="$1" GIT_CEILING_DIRECTORIES="$1" sh scripts/doctor.sh > stdout.txt 2>/dev/null ) || _pq_erc=$?
+  }
+  _pq_erc=0; _pq_early "$_pq_fe"
+  [ "$(cat "$_pq_fe/mark" 2>/dev/null)" = 1 ] || _pq_fail "DOCEARLY: the checkout-git WARN row was not on stdout when the battery started"
+  [ -e "$_pq_fe/FSMON-RAN" ] || _pq_fail "DOCEARLY: the battery's plain git did not fire the planted monitor (the cell is vacuous, or the battery stopped running git)"
+  grep -qF 'Doctor'"'"'s next checks run git: stop here and read this first' "$_pq_fe/stdout.txt" || _pq_fail "DOCEARLY: the WARN row does not say doctor's next checks run git"
+  grep -qF 'sh scripts/preflight.sh --git-plants-only' "$_pq_fe/stdout.txt" || _pq_fail "DOCEARLY: the WARN row does not name the standalone command"
+  [ "$_pq_erc" = 0 ] || _pq_fail "DOCEARLY: a finding moved doctor's exit to $_pq_erc"
+  sed '/# MUT-DOCEARLY$/s/^_gp_row/:/' "$0" > "$_pq_fe/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fe/scripts/doctor.sh"; then _pq_fail "DOCEARLY: the mutant did not apply"
+  else _pq_early "$_pq_fe"; [ "$(cat "$_pq_fe/mark" 2>/dev/null)" = 1 ] && _pq_fail "DOCEARLY: the mutant (no row before the battery) survived" || true; fi
+  # I3: ONLY core.hooksPath inside ./.git/ lets the dirty check run; the finding still prints. Any other warn beside it still skips the check (a filter driver is the canary: the three -c flags do not stop it).
+  _pq_fk=$(_pq_tree 1 3 'exit 0'); cp scripts/preflight.sh "$_pq_fk/scripts/preflight.sh"; cp "$0" "$_pq_fk/scripts/doctor.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_fk" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_fk" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_fk/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1; printf b > "$_pq_fk/f"; _pq_fh config core.hooksPath .husky
+  _pq_run "$_pq_fk"
+  printf '%s\n' "$_pq_out" | grep -qF 'core.hooksPath in ./.git/config points inside this checkout' || _pq_fail "DOCHOOKS: the hooksPath finding no longer prints on doctor's row"
+  printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' || _pq_fail "DOCHOOKS: a hooksPath-only report left the dirty check skipped (the exemption is gone)"
+  mkdir -p "$_pq_fk/d1"; printf 'gitdir: x\n' > "$_pq_fk/d1/.git"   # a second warn (an unregistered nested gitfile) beside the hooksPath one
+  _pq_run "$_pq_fk"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCHOOKS: another warn beside the hooksPath one did not skip the dirty check"
+  sed '/# MUT-DOCEXEMPTV$/s#core\\\.hooksPath in \\\./\\\.git/##' "$0" > "$_pq_fk/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fk/scripts/doctor.sh"; then _pq_fail "DOCHOOKS: the widening mutant did not apply"
+  else _pq_run "$_pq_fk"; printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' && _pq_fail "DOCHOOKS: the widened exemption (every warn passes) survived" || true; fi
+  rm -rf "$_pq_fk/d1"
+  sed '/# MUT-DOCEXEMPT$/s# | grep -vE .*|| true# | cat || true#' "$0" > "$_pq_fk/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fk/scripts/doctor.sh"; then _pq_fail "DOCHOOKS: the exemption-removed mutant did not apply"
+  else _pq_run "$_pq_fk"; printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' && _pq_fail "DOCHOOKS: the mutant (no exemption) survived" || true; fi
+  # a core.hooksPath under a temp directory is a warn too (the row is WARN, never OK), with the same anchored prefix, so the dirty check still runs
+  cp "$0" "$_pq_fk/scripts/doctor.sh"; _pq_fh config core.hooksPath /tmp/kit-doc-hooks
+  _pq_run "$_pq_fk"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: WARN - [0-9]+ finding' || _pq_fail "DOCHOOKS: a temp-directory hooksPath did not make the checkout-git row WARN"
+  printf '%s\n' "$_pq_out" | grep -qF 'core.hooksPath in ./.git/config points under a temp directory' || _pq_fail "DOCHOOKS: the temp-directory hooksPath finding no longer prints on doctor's row"
+  printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' || _pq_fail "DOCHOOKS: a temp-directory hooksPath left the dirty check skipped (the anchored exemption no longer matches it)"
+  # a hooksPath warn beside a nogit trigger (a config.worktree git cannot parse): the dirty check stays off
+  printf 'garbage line\n' > "$_pq_fk/.git/config.worktree"; _pq_run "$_pq_fk"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCHOOKS: a hooksPath warn beside a config git cannot parse left the dirty check running"
+  rm -f "$_pq_fk/.git/config.worktree"
+
+  # DOCWT (errata E14): a nested gitfile naming ./.git/worktrees/<one name> reads UNVERIFIED, never OK, and the dirty check runs anyway; a recursive submodule's gitfile reads UNVERIFIED and the check stays off.
+  # THE CANARY, proved live first: the entry is a copy of .git with core.fsmonitor, an alias and a post-index-change hook aimed at a canary. A plain git status INSIDE the nested directory must create it (else the cell proves nothing).
+  _pq_fw=$(_pq_tree 1 3 'exit 0'); cp scripts/preflight.sh "$_pq_fw/scripts/preflight.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_fw" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_fw" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_fw/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1
+  printf '#!/bin/sh\nprintf x > "%s/CANARY"\nexit 0\n' "$_pq_fw" > "$_pq_fw/can.sh"; chmod 755 "$_pq_fw/can.sh"
+  _pq_fx=$(mktemp -d); cp -R "$_pq_fw/.git" "$_pq_fx/g"; mkdir -p "$_pq_fw/.git/worktrees"; mv "$_pq_fx/g" "$_pq_fw/.git/worktrees/n1"; rm -rf "$_pq_fx"
+  _pq_fe="$_pq_fw/.git/worktrees/n1"
+  printf '[core]\n\tfsmonitor = %s/can.sh\n[alias]\n\tst = !%s/can.sh\n' "$_pq_fw" "$_pq_fw" >> "$_pq_fe/config"
+  printf '[core]\n\tfsmonitor = %s/can.sh\n' "$_pq_fw" > "$_pq_fe/config.worktree"
+  mkdir -p "$_pq_fe/hooks"; cp "$_pq_fw/can.sh" "$_pq_fe/hooks/post-index-change"
+  mkdir -p "$_pq_fw/nest"; printf 'gitdir: %s\n' "$_pq_fe" > "$_pq_fw/nest/.git"; printf a > "$_pq_fw/nest/f"; printf b > "$_pq_fw/f"
+  rm -f "$_pq_fw/CANARY"; ( cd "$_pq_fw/nest" && env -i PATH="$PATH" HOME="$_pq_fw" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git status >/dev/null 2>&1 ) || true
+  [ -e "$_pq_fw/CANARY" ] || _pq_fail "DOCWT: the canary did not fire from a plain git status inside the nested directory (the fixture proves nothing)"
+  # doctor's status form, copied from the shipped line (not under env -i; the hermetic variables are added), run from the root: the canary must stay absent
+  rm -f "$_pq_fw/CANARY"; ( cd "$_pq_fw" && env HOME="$_pq_fw" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 git --no-optional-locks --git-dir=./.git --work-tree=. -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c protocol.ext.allow=never status --porcelain >/dev/null 2>&1 ) || true
+  [ ! -e "$_pq_fw/CANARY" ] || _pq_fail "DOCWT: doctor's status form fired the canary (option B is dead)"
+  # doctor itself, with a stub report that opens the gate with the worktree-shaped line only
+  cp "$0" "$_pq_fw/scripts/doctor.sh"; printf 'echo "  unverified git-plants: a nested .git file names a worktree entry of this repository: stub"\n' > "$_pq_fw/scripts/preflight.sh"
+  rm -f "$_pq_fw/CANARY"; _pq_run "$_pq_fw"
+  [ ! -e "$_pq_fw/CANARY" ] || _pq_fail "DOCWT: a doctor run fired the canary (option B is dead)"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: N/A - UNVERIFIED: a nested \.git file names a worktree entry' || _pq_fail "DOCWT: a worktree-shaped gitfile did not read N/A UNVERIFIED on the row"
+  printf '%s\n' "$_pq_out" | grep -qF 'the dirty check runs anyway' || _pq_fail "DOCWT: the row does not say the dirty check ran anyway"
+  printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' || _pq_fail "DOCWT: the exempt worktree-shaped line left the dirty check off"
+  printf '%s\n' "$_pq_out" | grep -qF 'checkout-git: OK' && _pq_fail "DOCWT: a worktree-shaped gitfile read OK" || true
+  # a clean, tagged tree with the git row OK still ends Overall: WARN on a nested worktree (the row warns; a possible plant never reads PASS); the row says its own dirty row gives the result
+  printf a > "$_pq_fw/f"; printf '*\n' >> "$_pq_fw/.git/info/exclude"; printf '9.9.9\n' > "$_pq_fw/VERSION"; _pq_fh tag v9.9.9 >/dev/null 2>&1
+  printf 'echo "  unverified git-plants: a nested .git file names a worktree entry of this repository: stub"\n' > "$_pq_fw/scripts/preflight.sh"; cp "$0" "$_pq_fw/scripts/doctor.sh"
+  _pq_pfx="env -i PATH=/usr/bin:/bin HOME=$_pq_fw GIT_CEILING_DIRECTORIES=$_pq_fw"; _pq_run "$_pq_fw"; _pq_pfx=$_pq_nci   # a scrubbed environment: a secret-looking variable in the caller's shell would add the secrets-in-env warn and hide the one under test
+  printf '%s\n' "$_pq_out" | grep -qF 'clean; tagged=v9.9.9' || _pq_fail "DOCWT: the clean tagged fixture did not read clean and tagged (the Overall cell proves nothing)"
+  printf '%s\n' "$_pq_out" | grep -qF 'and its own row below gives the result' || _pq_fail "DOCWT: the row does not say the dirty check's own row gives the result"
+  printf '%s\n' "$_pq_out" | grep -q '^Overall: WARN' || _pq_fail "DOCWT: a worktree-shaped gitfile on a clean tagged tree did not end Overall: WARN"
+  # the recursive-submodule line is NOT exempt: the dirty check stays off; widening the exemption to any unverified line must red
+  printf 'echo "  unverified git-plants: a nested .git file names a recursive submodule'"'"'s git directory: stub"\n' > "$_pq_fw/scripts/preflight.sh"; _pq_run "$_pq_fw"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCWT: a recursive submodule's unverified line left the dirty check running"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: N/A - UNVERIFIED: a nested \.git file names a recursive' || _pq_fail "DOCWT: a recursive submodule's gitfile did not read N/A UNVERIFIED naming its cause"
+  sed '/# MUT-DOCEXEMPTV$/s#unverified git-plants: a nested \\\.git file names a worktree entry#unverified git-plants:#' "$0" > "$_pq_fw/scripts/doctor.sh"
+  if cmp -s "$0" "$_pq_fw/scripts/doctor.sh"; then _pq_fail "DOCWT: the widening mutant did not apply"
+  else _pq_run "$_pq_fw"; printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' && _pq_fail "DOCWT: the mutant (any unverified line exempt) survived" || true; fi
+  # the same two shapes through the real report (benign fixtures): a real worktree, and a recursive submodule's gitfile
+  _pq_fr=$(_pq_tree 1 3 'exit 0'); cp scripts/preflight.sh "$_pq_fr/scripts/preflight.sh"
+  _pq_fh() { env -i PATH="$PATH" HOME="$_pq_fr" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_pq_fr" "$@"; }
+  _pq_fh init -q . >/dev/null 2>&1; printf a > "$_pq_fr/f"; _pq_fh add f >/dev/null 2>&1; _pq_fh commit -q -m s >/dev/null 2>&1; _pq_fh worktree add -q wtn -b wtn >/dev/null 2>&1; printf b > "$_pq_fr/f"
+  _pq_run "$_pq_fr"
+  printf '%s\n' "$_pq_out" | grep -qE '^checkout-git: N/A - UNVERIFIED: a nested \.git file names a worktree entry' || _pq_fail "DOCWT: a real worktree did not read N/A UNVERIFIED on the row"
+  printf '%s\n' "$_pq_out" | grep -qF 'WARN: dirty working tree' || _pq_fail "DOCWT: a real worktree left the dirty check off"
+  printf '%s\n' "$_pq_out" | grep -qF 'names ./.git/worktrees/<one name>' || _pq_fail "DOCWT: the row does not print the info line naming the path"
+  mkdir -p "$_pq_fr/.git/modules/a/modules/b/objects" "$_pq_fr/d1/inner"; printf 'ref: refs/heads/main\n' > "$_pq_fr/.git/modules/a/modules/b/HEAD"; printf 'gitdir: %s/.git/modules/a/modules/b\n' "$_pq_fr" > "$_pq_fr/d1/inner/.git"
+  _pq_run "$_pq_fr"
+  printf '%s\n' "$_pq_out" | grep -qF 'dirty check UNVERIFIED' || _pq_fail "DOCWT: a recursive submodule's gitfile (real report) left the dirty check running"
+  printf '%s\n' "$_pq_out" | grep -qF 'checkout-git: OK' && _pq_fail "DOCWT: a recursive submodule's gitfile read OK" || true
+
+  # SWAS-680 (O680): the merge-relationship read asks origin from `/`, and not at all while the checkout-git row has a finding. The real doctor.sh, a real repository tree, the real preflight.sh; a plant script that appends to a CANARY; a POSITIVE CONTROL per key
+  # (plain git, in that tree, fires the plant through the form doctor used before: `ls-remote origin`), else the cell proves nothing. Rewritten COPIES of this script are the mutants (no shipped knob). The credential-helper cell is a stand-in (git credential fill), not ls-remote against a 401 listener.
+  _o6_all=''
+  _o6_g() { env -i PATH="$PATH" HOME="$_o6_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c user.name=k -c user.email=k@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$_o6_t" "$@"; }
+  _o6_n() { if [ -f "$_o6_t/CANARY" ]; then wc -l < "$_o6_t/CANARY" | tr -d ' '; else echo 0; fi; }
+  _o6_mk() {  # a real repository tree (doctor, the real preflight, a commit) and a plant script; sets _o6_t. The caller adds origin.
+    _o6_t=$(_pq_tree 1 3 'exit 0'); _o6_all="$_o6_all $_o6_t"; cp scripts/preflight.sh "$_o6_t/scripts/preflight.sh"
+    _o6_g init -q . >/dev/null 2>&1; printf a > "$_o6_t/f"; _o6_g add f >/dev/null 2>&1; _o6_g commit -q -m s >/dev/null 2>&1
+    printf '#!/bin/sh\necho x >> "%s/CANARY"\nexit 1\n' "$_o6_t" > "$_o6_t/plant.sh"; chmod 755 "$_o6_t/plant.sh"
+  }
+  _o6_sub() { printf '%s' "$1" | sed "s#@P@#$_o6_t/plant.sh#g"; }   # @P@ is the plant script
+  _o6_ctl() {  # plain git fires the plant here, through doctor's old form
+    rm -f "$_o6_t/CANARY"; ( cd "$_o6_t" && env -i PATH="$PATH" HOME="$_o6_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git ls-remote --symref origin HEAD ) >/dev/null 2>&1 || true
+    [ "$(_o6_n)" -ge 1 ]
+  }
+  _o6_key() {  # <label> <origin url> <key> <value> [<key> <value>]: the plant, doctor default and --quick, then the two mutants
+    _o6_l=$1; _o6_u=$2; shift 2
+    _o6_mk; _o6_g remote add origin "$(_o6_sub "$_o6_u")"
+    while [ $# -ge 2 ]; do _o6_g config "$(_o6_sub "$1")" "$(_o6_sub "$2")"; shift 2; done
+    _o6_ctl || { _pq_fail "O680[$_o6_l]: plain git did not fire the plant (the cell proves nothing)"; return 0; }
+    for _o6_m in '' --quick; do
+      rm -f "$_o6_t/CANARY"; _pq_run "$_o6_t" $_o6_m
+      [ "$(_o6_n)" = 0 ] || _pq_fail "O680[$_o6_l $_o6_m]: doctor ran the planted program"
+      printf '%s\n' "$_pq_out" | grep -q '^checkout-git: WARN - [0-9]' || _pq_fail "O680[$_o6_l $_o6_m]: the plant was not reported by the checkout-git row (the skip rests on it)"
+      printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - the checkout-git row above has a finding' || _pq_fail "O680[$_o6_l $_o6_m]: no 'not read' row for a finding"
+      [ "$_pq_rc" = 0 ] || _pq_fail "O680[$_o6_l $_o6_m]: the skip moved doctor's exit to $_pq_rc"
+    done
+    # MUT skip: the skip rewritten away. The outside read must still run no plant (and the row must say it was REACHED, not skipped).
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' "$0" > "$_o6_t/scripts/doctor.sh"
+    if cmp -s "$0" "$_o6_t/scripts/doctor.sh"; then _pq_fail "O680[$_o6_l]: the skip mutant did not apply"
+    else
+      rm -f "$_o6_t/CANARY"; _pq_run "$_o6_t"
+      [ "$(_o6_n)" = 0 ] || _pq_fail "O680[$_o6_l]: with the skip removed the outside read still ran the planted program"
+      case "$_o6_u" in
+        ext::*|/*) _o6_rw='merge relationship: unknown - origin is not a network URL' ;;   # the classifier's row: the origin form never reaches git
+        *) _o6_rw="merge relationship: unknown - could not read origin's default branch" ;;   # the read itself ran from / and failed
+      esac
+      printf '%s\n' "$_pq_out" | grep -qF "$_o6_rw" || _pq_fail "O680[$_o6_l]: with the skip removed the row was not '$_o6_rw' (the cell proves nothing)"
+    fi
+    # MUT both: skip and the outside read both removed. Where origin is a network URL the plant must fire (the canary is live through the real doctor).
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' -e '/# MUT-RELOUT$/s# git -C / # git #' -e '/# MUT-RELOUT$/s# -c protocol.ext.allow=never##' "$0" > "$_o6_t/scripts/doctor.sh"
+    cmp -s "$0" "$_o6_t/scripts/doctor.sh" && _pq_fail "O680[$_o6_l]: the both-off mutant did not apply"
+    case "$_o6_u" in
+      ext::*|/*) ;;
+      *) rm -f "$_o6_t/CANARY"; _pq_run "$_o6_t"; [ "$(_o6_n)" -ge 1 ] || _pq_fail "O680[$_o6_l]: with the skip and the outside read both removed the plant did not fire (the canary is not live through doctor)" ;;
+    esac
+    cp "$0" "$_o6_t/scripts/doctor.sh"
+  }
+  _o6_key sshcommand 'ssh://127.0.0.1:1/x' core.sshCommand '@P@'
+  _o6_key gitproxy 'git://127.0.0.1:1/x' core.gitProxy '@P@'
+  _o6_key ext 'ext::@P@' protocol.ext.allow always
+  _o6_key insteadof-ext 'http://127.0.0.1:1/' 'url.ext::@P@.insteadOf' 'http://127.0.0.1:1/' protocol.ext.allow always
+  _o6_up=$(mktemp -d); _o6_all="$_o6_all $_o6_up"
+  _o6_key uploadpack "$_o6_up" remote.origin.uploadpack '@P@'
+  # the decoy: a rule in the checkout sends a closed-port https origin to a repository that declares solo. Without the fix doctor prints solo from the decoy.
+  _o6_mk; mkdir -p "$_o6_t/.kit"; printf 'MERGE_RELATIONSHIP=solo\n' > "$_o6_t/.kit/dials.conf"; _o6_g add .kit/dials.conf >/dev/null 2>&1; _o6_g commit -q -m d >/dev/null 2>&1
+  _o6_x=$(mktemp -d); _o6_all="$_o6_all $_o6_x"; _o6_g clone -q --bare "$_o6_t" "$_o6_x/k.git" >/dev/null 2>&1
+  printf '#!/bin/sh\n[ "$1" = -G ] && exit 1\nshift\nPATH="$(git --exec-path):$PATH"; export PATH\nexec sh -c "$*"\n' > "$_o6_x/ssh-shim.sh"; chmod 755 "$_o6_x/ssh-shim.sh"
+  _o6_g remote add origin https://127.0.0.1:1/k.git; _o6_g config "url.ssh://fixture$_o6_x/.insteadOf" https://127.0.0.1:1/   # a decoy reached over the same ssh shim as the liveness cell, so no file-transport belt needs cutting
+  if [ -n "$( cd "$_o6_t" && env -i PATH="$PATH" HOME="$_o6_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_SSH_COMMAND="$_o6_x/ssh-shim.sh" git ls-remote origin HEAD 2>/dev/null )" ]; then
+    _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh"; _pq_run "$_o6_t"
+    printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' && _pq_fail "O680[decoy]: doctor printed solo from the decoy the checkout's rule named" || true
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' "$0" > "$_o6_t/scripts/doctor.sh"; _pq_run "$_o6_t"
+    printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' && _pq_fail "O680[decoy]: with the skip removed the outside read still followed the decoy" || true
+    printf '%s\n' "$_pq_out" | grep -qF "merge relationship: unknown - could not read origin's default branch" || _pq_fail "O680[decoy]: with the skip removed the read was not reached"
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' -e '/# MUT-RELOUT$/s# git -C / # git #' "$0" > "$_o6_t/scripts/doctor.sh"; _pq_run "$_o6_t"
+    printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' || _pq_fail "O680[decoy]: with both removed doctor did not follow the decoy (the decoy is not live)"
+    _pq_pfx=$_pq_nci
+  else _pq_fail "O680[decoy]: plain git did not follow the rule (the cell proves nothing)"; fi
+  # LIVENESS: a read that always fails prints unknown and leaves every cell above green. A clean tree, origin ssh://fixture/<bare> over a GIT_SSH_COMMAND shim, dials.conf declaring solo: the line must read solo.
+  _o6_mk; mkdir -p "$_o6_t/.kit"; printf 'MERGE_RELATIONSHIP=solo\n' > "$_o6_t/.kit/dials.conf"; _o6_g add .kit/dials.conf >/dev/null 2>&1; _o6_g commit -q -m d >/dev/null 2>&1
+  _o6_x=$(mktemp -d); _o6_all="$_o6_all $_o6_x"; _o6_g clone -q --bare "$_o6_t" "$_o6_x/b.git" >/dev/null 2>&1
+  printf '#!/bin/sh\n[ "$1" = -G ] && exit 1\nshift\nPATH="$(git --exec-path):$PATH"; export PATH\nexec sh -c "$*"\n' > "$_o6_x/ssh-shim.sh"; chmod 755 "$_o6_x/ssh-shim.sh"
+  _o6_g remote add origin "ssh://fixture$_o6_x/b.git"
+  _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh"; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+  printf '%s\n' "$_pq_out" | grep -q '^checkout-git: OK' || _pq_fail "O680[live]: the clean fixture did not read checkout-git: OK (the skip would hide the read)"
+  printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' || _pq_fail "O680[live]: a working read did not print solo (a read that always fails would pass every other cell)"
+  sed -e '/# MUT-RELOUT$/s# git -C / # git -C /nonexistent-dir #' "$0" > "$_o6_t/scripts/doctor.sh"
+  if cmp -s "$0" "$_o6_t/scripts/doctor.sh"; then _pq_fail "O680[live]: the failing-read mutant did not apply"
+  else
+    _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh"; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+    printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' && _pq_fail "O680[live]: an always-failing read still printed solo (the liveness cell is vacuous)" || true
+  fi
+  cp "$0" "$_o6_t/scripts/doctor.sh"
+  # the environment still applies: the sandbox's route (a GIT_CONFIG_COUNT rule) sends the closed-port origin to the shim's bare repository
+  _o6_g remote set-url origin http://127.0.0.1:1/x
+  _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.ssh://fixture$_o6_x/b.git.insteadOf GIT_CONFIG_VALUE_0=http://127.0.0.1:1/x"; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+  printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' || _pq_fail "O680[env]: a GIT_CONFIG_COUNT rule and GIT_SSH_COMMAND no longer applied to the read"
+  # git's url list: an empty value resets it. url=decoy, url=, url=real: git 2.48.1 uses real (other gits can differ, errata E3), so doctor must too (a first-value read would ask the decoy and print unknown).
+  _o6_g config --unset-all remote.origin.url >/dev/null 2>&1 || true
+  _o6_g config --add remote.origin.url "ssh://fixture$_o6_x/decoy-nonexistent.git"; _o6_g config --add remote.origin.url ""; _o6_g config --add remote.origin.url "ssh://fixture$_o6_x/b.git"
+  _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh"; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+  printf '%s\n' "$_pq_out" | grep -q '^merge relationship: solo' || _pq_fail "O680[reset]: after an empty remote.origin.url reset doctor did not read the url git uses"
+  _o6_g config --unset-all remote.origin.url >/dev/null 2>&1 || true; _o6_g config --add remote.origin.url "ssh://fixture$_o6_x/b.git"
+  # an origin shaped like an option never reaches git; a local path is not read; the rows name the cause
+  _o6_g config remote.origin.url "--upload-pack=$_o6_t/plant.sh"; rm -f "$_o6_t/CANARY"; _pq_run "$_o6_t"
+  [ "$(_o6_n)" = 0 ] || _pq_fail "O680[option]: an option-shaped origin ran the plant"
+  printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: unknown - origin is not a network URL (https or ssh)' || _pq_fail "O680[option]: no 'not a network URL' row"
+  _o6_g config remote.origin.url "$_o6_x/b.git"; _pq_run "$_o6_t"
+  printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: unknown - origin is not a network URL (https or ssh)' || _pq_fail "O680[local]: a local-path origin was not named as such"
+  _o6_g config remote.origin.url "ssh://fixture$_o6_x/nonexistent.git"
+  _pq_pfx="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh"; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+  printf '%s\n' "$_pq_out" | grep -qF "merge relationship: unknown - could not read origin's default branch" || _pq_fail "O680[net]: an unreadable origin did not print the failed-read row"
+  # each skip cause prints its own row and moves no exit: the absent preflight, a failed status (a stub report that reads ok over a corrupt index), a gitfile
+  _o6_g config remote.origin.url "ssh://fixture$_o6_x/b.git"
+  rm -f "$_o6_t/scripts/preflight.sh"; _pq_run "$_o6_t"
+  printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - scripts/preflight.sh is not here' || _pq_fail "O680[nopreflight]: no row naming the absent preflight"
+  [ "$_pq_rc" = 0 ] || _pq_fail "O680[nopreflight]: the skip moved the exit to $_pq_rc"
+  printf 'echo "  ok   git-plants: nothing found"\n' > "$_o6_t/scripts/preflight.sh"; printf 'garbage\n' > "$_o6_t/.git/index"; _pq_run "$_o6_t"
+  printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - git status failed in this checkout' || _pq_fail "O680[status]: no row naming the failed status"
+  [ "$_pq_rc" = 0 ] || _pq_fail "O680[status]: the skip moved the exit to $_pq_rc"
+  cp scripts/preflight.sh "$_o6_t/scripts/preflight.sh"; rm -f "$_o6_t/.git/index"; _o6_g reset -q >/dev/null 2>&1 || true
+  mv "$_o6_t/.git" "$_o6_t-gitdir"; _o6_all="$_o6_all $_o6_t-gitdir"; printf 'gitdir: %s-gitdir\n' "$_o6_t" > "$_o6_t/.git"; _pq_run "$_o6_t"
+  printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - checkout-git could not clear this checkout' || _pq_fail "O680[gitfile]: no row naming the gitfile"
+  [ "$_pq_rc" = 0 ] || _pq_fail "O680[gitfile]: the skip moved the exit to $_pq_rc"
+  # CREDENTIAL HELPER (a stand-in: no 401 listener, so no ls-remote): `git credential fill` is the call a 401 makes. Plain git in the planted tree runs the helper; the report names the key, the row says not read, and
+  # no program runs from doctor. The read from `/` has no checkout config (kit-current's selftest runs the same helper control through its own read).
+  _o6_mk; _o6_g remote add origin https://127.0.0.1:1/x; _o6_g config credential.helper "!$_o6_t/plant.sh"
+  rm -f "$_o6_t/CANARY"; ( cd "$_o6_t" && printf 'protocol=https\nhost=x\n\n' | env -i PATH="$PATH" HOME="$_o6_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 git credential fill ) >/dev/null 2>&1 || true
+  if [ "$(_o6_n)" -ge 1 ]; then
+    rm -f "$_o6_t/CANARY"; _pq_run "$_o6_t"
+    [ "$(_o6_n)" = 0 ] || _pq_fail "O680[credential]: doctor ran the planted credential helper"
+    printf '%s\n' "$_pq_out" | grep -q '^checkout-git: WARN - [0-9]' || _pq_fail "O680[credential]: the planted credential.helper was not reported by the checkout-git row"
+    printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - the checkout-git row above has a finding' || _pq_fail "O680[credential]: no 'not read' row for a planted credential helper"
+  else _pq_fail "O680[credential]: plain git credential fill did not run the planted helper (the cell proves nothing)"; fi
+  # PARTIAL CLONE, ONE of the design's measured cases (the absent TIP, read by `cat-file -e`): a promisor remote `pl` whose url is ext::<plant>, protocol.ext.allow=always, and an origin (the ssh shim) that serves a tip this checkout does not hold. A local read of that tip
+  # lazy-fetches from `pl` and runs the plant, unless GIT_NO_LAZY_FETCH=1 holds. Which gits lack the variable is unmeasured (Apple 2.39.5 honours it [M]); the cell MEASURES it per git. So per git: the skip alone keeps doctor off it; with the skip removed the belt must hold where
+  # the git honours it, and the plant must fire where it does not; with both removed the plant fires. NOT built: a commit-only and a trees-only fixture, so a belt removed from the two `ls-tree` reads or from `cat-file blob` in _fg_rel_blob survives this cell (disclosed in the record).
+  _o6_mk; mkdir -p "$_o6_t/.kit"; printf 'MERGE_RELATIONSHIP=solo\n' > "$_o6_t/.kit/dials.conf"; _o6_g add .kit/dials.conf >/dev/null 2>&1; _o6_g commit -q -m d >/dev/null 2>&1
+  _o6_s=$_o6_t; _o6_x=$(mktemp -d); _o6_all="$_o6_all $_o6_x"; _o6_g clone -q --bare "$_o6_s" "$_o6_x/b.git" >/dev/null 2>&1
+  _o6_tip=$(env -i PATH="$PATH" HOME="$_o6_s" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$_o6_s" rev-parse HEAD)
+  printf '#!/bin/sh\n[ "$1" = -G ] && exit 1\nshift\nPATH="$(git --exec-path):$PATH"; export PATH\nexec sh -c "$*"\n' > "$_o6_x/ssh-shim.sh"; chmod 755 "$_o6_x/ssh-shim.sh"
+  _o6_mk; _o6_g remote add origin "ssh://fixture$_o6_x/b.git"
+  _o6_g config core.repositoryformatversion 1; _o6_g config extensions.partialClone pl; _o6_g config remote.pl.url "ext::$_o6_t/plant.sh"; _o6_g config remote.pl.promisor true
+  _o6_g config remote.pl.partialclonefilter blob:none; _o6_g config protocol.ext.allow always
+  mkdir -p "$_o6_x/bin"; _o6_real=$(command -v git)
+  printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$_o6_real" > "$_o6_x/bin/git"; chmod 755 "$_o6_x/bin/git"
+  _o6_pcv() {  # <label> <PATH for the run, or empty for the caller's> <PATH for the controls>
+    _o6_pl=$1; _o6_pp=$2
+    _o6_ctlpc() {  # <GIT_NO_LAZY_FETCH value or empty>: fires seen from a plain read of the absent tip
+      rm -f "$_o6_t/CANARY"; ( cd "$_o6_t" && env -i PATH="$3" HOME="$_o6_t" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null ${1:+GIT_NO_LAZY_FETCH=1} git cat-file -e "${_o6_tip}^{commit}" ) >/dev/null 2>&1 || true
+      _o6_n
+    }
+    _o6_c0=$(_o6_ctlpc '' "$_o6_pc" "$_o6_pc"); _o6_cb=$(_o6_ctlpc 1 "$_o6_pc" "$_o6_pc")
+    if [ "$_o6_c0" -lt 1 ]; then
+      if [ "${_o6_soft:-0}" = 1 ]; then echo "doctor --selftest: NOTE (O680[$_o6_pl]: a plain read of the absent tip did not run the promisor plant on this git, so its row is unrun)"; else _pq_fail "O680[$_o6_pl]: a plain read of the absent tip did not run the promisor plant (the cell proves nothing)"; fi
+      return 0
+    fi
+    _o6_ran=1
+    [ "$_o6_cb" = 0 ] && _o6_hon=honours || _o6_hon=ignores
+    echo "doctor --selftest: NOTE (O680[$_o6_pl]: this git $_o6_hon GIT_NO_LAZY_FETCH [M, measured by the cell's own control])"
+    _o6_pfxv="$_pq_nci GIT_SSH_COMMAND=$_o6_x/ssh-shim.sh${_o6_pp:+ PATH=$_o6_pp}"
+    for _o6_m in '' --quick; do
+      rm -f "$_o6_t/CANARY"; _pq_pfx=$_o6_pfxv; _pq_run "$_o6_t" $_o6_m; _pq_pfx=$_pq_nci
+      [ "$(_o6_n)" = 0 ] || _pq_fail "O680[$_o6_pl $_o6_m]: doctor fired the promisor plant with the skip in place"
+      printf '%s\n' "$_pq_out" | grep -qF 'merge relationship: not read - the checkout-git row above has a finding' || _pq_fail "O680[$_o6_pl $_o6_m]: no 'not read' row"
+    done
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' "$0" > "$_o6_t/scripts/doctor.sh"
+    cmp -s "$0" "$_o6_t/scripts/doctor.sh" && _pq_fail "O680[$_o6_pl]: the skip mutant did not apply"
+    rm -f "$_o6_t/CANARY"; _pq_pfx=$_o6_pfxv; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+    if [ "$_o6_cb" = 0 ]; then
+      [ "$(_o6_n)" = 0 ] || _pq_fail "O680[$_o6_pl]: with the skip removed the lazy-fetch belt did not hold (the belt is ignored here, or a read lost it)"
+      printf '%s\n' "$_pq_out" | grep -qF "merge relationship: unknown - could not read .kit/dials.conf at origin's tip here" || _pq_fail "O680[$_o6_pl]: with the skip removed the later reads were not reached (the cell proves nothing)"
+    else
+      [ "$(_o6_n)" -ge 1 ] || _pq_fail "O680[$_o6_pl]: this git ignores GIT_NO_LAZY_FETCH, so with the skip removed the plant must fire (it did not: the skip is not shown to be load-bearing)"
+    fi
+    sed -e '/# MUT-RELSKIP$/s/^.*$/    :/' -e '/GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1/s/GIT_NO_LAZY_FETCH=1 //g' "$0" > "$_o6_t/scripts/doctor.sh"
+    rm -f "$_o6_t/CANARY"; _pq_pfx=$_o6_pfxv; _pq_run "$_o6_t"; _pq_pfx=$_pq_nci
+    [ "$(_o6_n)" -ge 1 ] || _pq_fail "O680[$_o6_pl]: with the skip and the belt both removed the plant did not fire (the belt is not shown to be load-bearing)"
+    cp "$0" "$_o6_t/scripts/doctor.sh"
+  }
+  _o6_pc=$PATH; _o6_pcv pcnew ''
+  _o6_pc="$_o6_x/bin:$(dirname "$_o6_real"):/usr/bin:/bin"; _o6_pcv pcstripped "$_o6_pc"   # a fixture git that drops the variable: a stand-in for a git without it
+  # the REAL /usr/bin/git, when it is another git than the one above and runnable (a Mac without command-line tools gets a stub that opens an installer: not touched). The same cell, the git as found; the NOTE above says whether it honoured the variable.
+  if [ "$_o6_real" != /usr/bin/git ] && [ -x /usr/bin/git ] && { [ "$(uname -s)" != Darwin ] || xcode-select -p >/dev/null 2>&1; }; then
+    _o6_rv=$(/usr/bin/git --version 2>/dev/null) || _o6_rv=''
+    _o6_ran=0; _o6_soft=1; _o6_pc="/usr/bin:/bin"; _o6_pcv pcrealgit "$_o6_pc"; _o6_soft=0
+    if [ "$_o6_ran" = 1 ]; then echo "doctor --selftest: NOTE (O680 real git: the partial-clone cell ran with /usr/bin/git, '$_o6_rv')"; fi
+  else echo "doctor --selftest: NOTE (O680 real git: not run; no separate runnable /usr/bin/git; the stand-in ran)"; fi
+  # preflight --url-kind from doctor's side: a value starting with '-' is helper, https is remote (the cells above reach it through the real doctor)
+  [ "$(sh scripts/preflight.sh --url-kind '--upload-pack=x')" = helper ] && [ "$(sh scripts/preflight.sh --url-kind https://example.invalid/a/b.git)" = remote ] \
+    || _pq_fail "O680[kind]: preflight --url-kind did not say helper for a leading '-' and remote for https"
+  # shellcheck disable=SC2086  # the paths are mktemp names
+  rm -rf $_o6_all 2>/dev/null || true
 
   # C7: a seam run stays silent
   _pq_seam=$(cd "$_pq_a" && HOME="$_pq_a" GIT_CEILING_DIRECTORIES="$_pq_a" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$_pq_a/scripts/doctor.sh" --selftest-e2e 2>&1 || true)
@@ -1265,7 +1617,7 @@ GOLD
       && printf '%s\n' "$1" | grep -qE '^      secrets/a$' && printf '%s\n' "$1" | grep -qE '^      link/\.env$' \
       && printf '%s\n' "$1" | grep -qE '^      esc\[31m\.pem$' && ! printf '%s\n' "$1" | grep -q "$_st_esc" \
       && ! printf '%s\n' "$1" | grep -qE '\.env\.(example|sample)' \
-      && ! printf '%s\n' "$1" | grep -q 'node_modules' && ! printf '%s\n' "$1" | grep -qE '\.git/' \
+      && ! printf '%s\n' "$1" | grep -q 'node_modules' && ! printf '%s\n' "$1" | grep -qE '^      \.git/' \
       && ! printf '%s\n' "$1" | grep -q 'FIXTURE-CONTENT-MARKER-8841'
   }
   _st_out=$(_st_run "$0")
@@ -1283,6 +1635,41 @@ GOLD
   mkdir -p "$_st/clean"; : > "$_st/clean/.env.example"
   _st_co=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/clean" sh "$0" --selftest-e2e --require 2>/dev/null) || true
   printf '%s\n' "$_st_co" | grep -qE '^secrets-in-tree: OK' || { echo "doctor --selftest: FAIL (secrets-in-tree: a tree with only .env.example did not read OK)"; sfail=1; }
+  # SWAS-662: doctor over a REAL repository (its checkout-git row reads that repository's own ./.git/config) with the secrets fixture as DOCTOR_SECRETS_ROOT.
+  # actions/checkout leaves includeIf keys whose NAMES hold ".git/" in ./.git/config, so the row prints "./.git/config sets key(s)": the tree cell's whole
+  # contract must hold beside it. The planted url / credential key names hold a secret-shaped marker (built here, lower case: key names print lower-cased): it must reach no output.
+  _st_rp="$_st/repo"; _st_ab=$(cd "$(dirname "$0")" && pwd); _st_lk="kitleak""a$$"; _st_lk2="kitleak""b$$"
+  _st_gitx() { env -i PATH="$PATH" HOME="$_st" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git "$@"; }
+  _st_rr() {  # <preflight copy source>: a copy of this script in the fixture (it cds to its own parent, so it runs in the fixture repository); stdout and stderr together
+    cp "$1" "$_st_rp/scripts/preflight.sh"; cp "$0" "$_st_rp/scripts/doctor.sh"
+    ( cd "$_st_rp" && env -i PATH="$PATH" HOME="$_st" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_stt" sh scripts/doctor.sh --selftest-e2e 2>&1 ) || true
+  }
+  mkdir -p "$_st_rp/scripts"
+  if _st_gitx -C "$_st_rp" init -q . >/dev/null 2>&1 && [ -f "$_st_ab/preflight.sh" ]; then
+    _st_gitx -C "$_st_rp" config 'includeif.gitdir:/x/.git/worktrees/*.path' /nonexistent
+    _st_gitx -C "$_st_rp" config "url.https://x:${_st_lk}@h/.insteadof" y
+    _st_gitx -C "$_st_rp" config "credential.https://u:${_st_lk}@h.helper" y
+    _st_gitx -C "$_st_rp" config 'http.https://github.com/.extraheader' "AUTHORIZATION: basic $_st_lk2"
+    _st_go=$(_st_rr "$_st_ab/preflight.sh")
+    printf '%s\n' "$_st_go" | grep -qE '^checkout-git: WARN - [0-9]+ finding' \
+      || { echo "doctor --selftest: FAIL (secrets-in-tree: the real-repository fixture did not read checkout-git WARN, so the cells below prove nothing)"; sfail=1; }
+    _st_ok "$_st_go" \
+      || { echo "doctor --selftest: FAIL (secrets-in-tree: beside a checkout-git row for a real ./.git/config holding includeIf / url / credential keys, the tree line changed)"; sfail=1; }
+    printf '%s\n' "$_st_go" | grep -qF '[includeif.*.path] [url.*.insteadof] [credential.*.helper]' \
+      || { echo "doctor --selftest: FAIL (checkout-git: the key names were not printed with the subsection withheld)"; sfail=1; }
+    case "$_st_go" in
+      *"$_st_lk"*|*"$_st_lk2"*) echo "doctor --selftest: FAIL (checkout-git: a secret-shaped marker from a config key name or value reached the output)"; sfail=1 ;;
+    esac
+    # mutant: the key printed whole (a sed cut of the fixture's copy of preflight.sh) must put the marker in the output
+    sed '/# MUT-GPMASK$/s/\*\.\*) gp_k=/*.*) gp_kx=/' "$_st_ab/preflight.sh" > "$_st/pf-mut.sh"
+    if cmp -s "$_st_ab/preflight.sh" "$_st/pf-mut.sh"; then echo "doctor --selftest: FAIL (checkout-git mutant key-printed-whole: the mutation did not apply)"; sfail=1
+    else
+      _st_gm=$(_st_rr "$_st/pf-mut.sh")
+      case "$_st_gm" in *"$_st_lk"*) : ;; *) echo "doctor --selftest: FAIL (checkout-git mutant key-printed-whole survived: the marker did not reach the output)"; sfail=1 ;; esac
+    fi
+  else
+    echo "doctor --selftest: FAIL (the real-repository fixture could not be built: git init failed or scripts/preflight.sh is absent)"; sfail=1
+  fi
   mkdir -p "$_st/big/secrets"; _st_i=0
   while [ "$_st_i" -lt 25 ]; do : > "$_st/big/secrets/f$_st_i"; _st_i=$((_st_i+1)); done
   _st_bo=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_SECRETS_ROOT="$_st/big" sh "$0" --selftest-e2e 2>/dev/null) || true
@@ -1437,7 +1824,6 @@ if [ "$SEAMS" -eq 1 ]; then
   DOCTOR_VERIFY_CMD="${DOCTOR_VERIFY_CMD:-}"
   DOCTOR_CLAIMS_CMD="${DOCTOR_CLAIMS_CMD:-}"
   DOCTOR_DORA_CMD="${DOCTOR_DORA_CMD:-}"
-  DOCTOR_SCORECARD_CMD="${DOCTOR_SCORECARD_CMD:-}"
   DOCTOR_META_CONTROL_CMD="${DOCTOR_META_CONTROL_CMD:-}"
   DOCTOR_NONVACUITY_CMD="${DOCTOR_NONVACUITY_CMD:-}"
   DOCTOR_KITCURRENT_CMD="${DOCTOR_KITCURRENT_CMD:-}"
@@ -1475,7 +1861,6 @@ else
   DOCTOR_VERIFY_CMD=""
   DOCTOR_CLAIMS_CMD=""
   DOCTOR_DORA_CMD=""
-  DOCTOR_SCORECARD_CMD=""
   DOCTOR_META_CONTROL_CMD=""
   DOCTOR_NONVACUITY_CMD=""
   DOCTOR_KITCURRENT_CMD=""
@@ -1725,16 +2110,19 @@ _fg_expiry() {
   fi
 }
 # — SWAS-207b (D-241014-1): the merge relationship, the declaration agreement and the branch-protection line. The merge lines are
-# INFO only; the protection line WARNs on stale-review dismissal (SWAS-361); none fails or changes the exit code. They report what `promotion-verify.sh actuate` and `land` will read, so they
-# read the same place the verbs do: .kit/dials.conf and CLAUDE.md on ORIGIN'S DEFAULT BRANCH (git, no forge call). Under the seam
+# INFO only; the protection line WARNs on stale-review dismissal (SWAS-361); none fails or changes the exit code. They report what `promotion-verify.sh actuate` and `land` will read: the same
+# file, .kit/dials.conf and CLAUDE.md on ORIGIN'S DEFAULT BRANCH (git, no forge call), but NOT by the same route (SWAS-680). The verbs read origin with this checkout's git config; doctor reads it from `/`, outside
+# any repository, so a setting in ./.git/config does not apply to the read, and with a checkout-git finding (or a checkout the report could not clear) it makes no network read at all. So the two can differ, and the row says
+# so. That stops the checkout's config applying; it authenticates nothing (a global rule, or an edited kit-base, can still forge the answer). Two more ceilings: a credential embedded in origin's URL
+# is in argv while the read runs (visible to ps); and if `/` is itself a git repository, `git -C /` reads its config (not guarded). Under the seam
 # (DOCTOR_FORGE_DIALS / DOCTOR_FORGE_GOV) a fixture file stands in for each. The grammar is the verbs' (pv_merge_relationship,
 # pv_rel_governance in scripts/promotion-verify.sh) and conformance/branch-protection.sh read_governance; KEEP THEM IN STEP.
 _fg_rel_blob() {  # <tip> <path>: the blob (regular files only); rc 0 printed | 1 absent | 2 present but not a regular file
-  _fb_ent=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | head -1 || true)
+  _fb_ent=$(GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | head -1 || true)
   if [ -z "$_fb_ent" ]; then
     case "$2" in
       */*)
-        _fb_d=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "${2%%/*}" 2>/dev/null | head -1 || true)
+        _fb_d=$(GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "${2%%/*}" 2>/dev/null | head -1 || true)
         if [ -n "$_fb_d" ] && [ "${_fb_d%% *}" != 040000 ]; then return 2; fi ;;
     esac
     return 1
@@ -1744,18 +2132,38 @@ _fg_rel_blob() {  # <tip> <path>: the blob (regular files only); rc 0 printed | 
     *) return 2 ;;
   esac
   _fb_o=${_fb_ent#* }; _fb_o=${_fb_o#* }; _fb_o=${_fb_o%%"$(printf '\t')"*}
-  GIT_NO_REPLACE_OBJECTS=1 git cat-file blob "$_fb_o" 2>/dev/null
+  GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 git cat-file blob "$_fb_o" 2>/dev/null
+}
+_fg_lsr() {  # <--symref or empty> <url> <ref>: the ONE network read of the merge-relationship lines. From `/` (no repository, so this checkout's config does not apply), -- before the url (a value is never an option), nothing printed on stderr
+  # shellcheck disable=SC2086  # $1 is one flag or nothing
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR GIT_TERMINAL_PROMPT=0 git -C / -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote $1 -- "$2" "$3" 2>/dev/null   # MUT-RELOUT
+}
+_fg_origin_url() {  # <absolute checkout root>: remote.origin.url as git 2.48.1 reads it, from ./.git/config alone (gp_cfgread's form in preflight.sh); other gits can differ (errata E3). An empty value resets the list there (url=a, url=, url=b: git 2.48.1 uses b), so awk restarts at an empty line and keeps the first value after it
+  ( cd / && env -i PATH="$PATH" HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 git -c core.fsmonitor=false -c core.hooksPath=/dev/null config --no-includes --file "$1/.git/config" --get-all remote.origin.url 2>/dev/null ) | awk '$0 == "" { have = 0; first = ""; next } !have { first = $0; have = 1 } END { print first }'
+}
+_fg_rel_skipwhy() {  # sets FG_REL_WHY: the cause of the skip, for the one row that names it
+  if [ ! -f scripts/preflight.sh ]; then FG_REL_WHY=nopreflight
+  elif [ "${_git_skip:-1}" = 2 ]; then FG_REL_WHY=status
+  elif printf '%s\n' "${_gp_fresh:-}" | grep -q '^  warn git-plants:'; then FG_REL_WHY=finding
+  else FG_REL_WHY=gitfile
+  fi
 }
 _fg_rel_read() {
-  FG_REL_READ=0; FG_REL_DIAL=undeclared; FG_REL_GOV=undeclared
+  FG_REL_READ=0; FG_REL_WHY=net; FG_REL_DIAL=undeclared; FG_REL_GOV=undeclared
   if [ "$SEAMS" -eq 1 ]; then
     [ -n "$DOCTOR_FORGE_DIALS$DOCTOR_FORGE_GOV" ] || return 0
     _rr_dial=''; _rr_gov=''
     [ -z "$DOCTOR_FORGE_DIALS" ] || _rr_dial=$(cat "$DOCTOR_FORGE_DIALS" 2>/dev/null || true)
     [ -z "$DOCTOR_FORGE_GOV" ] || _rr_gov=$(cat "$DOCTOR_FORGE_GOV" 2>/dev/null || true)
   else
-    git remote get-url origin >/dev/null 2>&1 || return 0
-    _rr_hd=$(GIT_TERMINAL_PROMPT=0 git ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)
+    # SWAS-680: no network read while the checkout-git row has a finding or could not clear the checkout (`_git_skip` is set by section 3, under --quick too).
+    if [ "${_git_skip:-1}" != 0 ]; then FG_REL_READ=2; _fg_rel_skipwhy; return 0; fi   # MUT-RELSKIP
+    # Then the question goes to origin from outside any repository, so this checkout's own config does not apply to it. That authenticates nothing: a global rule or an edited kit-base can still forge the answer.
+    _rr_url=$(_fg_origin_url "$(pwd)")
+    [ -n "$_rr_url" ] || { FG_REL_WHY=net; return 0; }
+    _rr_kind=$(sh scripts/preflight.sh --url-kind "$_rr_url" 2>/dev/null) || _rr_kind=''
+    [ "$_rr_kind" = remote ] || { FG_REL_WHY=form; return 0; }
+    _rr_hd=$(_fg_lsr --symref "$_rr_url" HEAD | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)
     case "$_rr_hd" in
       refs/heads/?*) ;;
       *) _rr_hd=refs/heads/main ;;
@@ -1763,13 +2171,13 @@ _fg_rel_read() {
     case "$_rr_hd" in
       *[!A-Za-z0-9._/-]*) _rr_hd=refs/heads/main ;;
     esac
-    _rr_tip=$(GIT_TERMINAL_PROMPT=0 git ls-remote origin "$_rr_hd" 2>/dev/null | awk -v r="$_rr_hd" '$2 == r { s = $1; n++ } END { if (n == 1) print s }' || true)
-    [ -n "$_rr_tip" ] || return 0
-    GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${_rr_tip}^{commit}" 2>/dev/null || return 0
+    _rr_tip=$(_fg_lsr '' "$_rr_url" "$_rr_hd" | awk -v r="$_rr_hd" '$2 == r { s = $1; n++ } END { if (n == 1) print s }' || true)
+    [ -n "$_rr_tip" ] || { FG_REL_WHY=net; return 0; }
+    GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${_rr_tip}^{commit}" 2>/dev/null || { FG_REL_WHY=tip; return 0; }
     # Regular files only, and no replace refs (the verbs' pv_rel_blob): a symlinked .kit or dials.conf is NOT read, so doctor never
     # prints solo where the verbs read team. An unreadable dial file is "unknown"; an unreadable CLAUDE.md reads Governance team.
     _rr_rc=0; _rr_dial=$(_fg_rel_blob "$_rr_tip" .kit/dials.conf) || _rr_rc=$?
-    [ "$_rr_rc" -ne 2 ] || return 0
+    [ "$_rr_rc" -ne 2 ] || { FG_REL_WHY=tip; return 0; }
     _rr_rc=0; _rr_gov=$(_fg_rel_blob "$_rr_tip" CLAUDE.md) || _rr_rc=$?
     if [ "$_rr_rc" -ne 0 ] && [ "$_rr_rc" -ne 1 ]; then _rr_gov='- **Governance** (§ solo/team): team'; fi
   fi
@@ -1788,11 +2196,23 @@ _fg_rel_read() {
     fi
   fi
 }
+_fg_rel_why_line() {  # the one INFO row for a read that did not happen (FG_REL_READ=2) or failed (0), by cause. Never a warn, never an exit.
+  _rw_end='This says nothing about what the verbs read.'
+  case "$FG_REL_READ:$FG_REL_WHY" in
+    2:finding) printf "merge relationship: not read - the checkout-git row above has a finding, so doctor made no network read for this line. This says nothing about what the verbs read; they read .kit/dials.conf on origin's default branch themselves. Clear the finding, or read that file on your forge\n" ;;
+    2:gitfile) printf 'merge relationship: not read - checkout-git could not clear this checkout (see its row), so doctor made no network read for this line. %s Run doctor from the main checkout, fix what its row names, or read .kit/dials.conf on your forge\n' "$_rw_end" ;;
+    2:nopreflight) printf 'merge relationship: not read - scripts/preflight.sh is not here, so nothing cleared this checkout. %s Restore it, or read .kit/dials.conf on your forge\n' "$_rw_end" ;;
+    2:status) printf 'merge relationship: not read - git status failed in this checkout (see the git row above). %s Fix what git reports, or read .kit/dials.conf on your forge\n' "$_rw_end" ;;
+    0:tip) printf "merge relationship: unknown - could not read .kit/dials.conf at origin's tip here (git fetch origin, if the tip is not fetched). The verbs read it themselves, and read team when they can't\n" ;;
+    0:form) printf "merge relationship: unknown - origin is not a network URL (https or ssh), so doctor did not read it. The verbs read it themselves, and read team when they can't\n" ;;
+    *) printf "merge relationship: unknown - could not read origin's default branch (offline, no access, or a network setting kept only in this checkout, which this read does not use). The verbs read it themselves, and read team when they can't\n" ;;
+  esac
+}
 _fg_rel_lines() {
   if [ "$FG_STATE" = noorigin ]; then printf 'merge relationship: N/A — no origin remote\n'; return 0; fi
   _fg_rel_read
   if [ "$FG_REL_READ" -ne 1 ]; then
-    printf "merge relationship: unknown — could not read .kit/dials.conf on origin's default branch (git fetch origin); the verbs read team until then\n"
+    _fg_rel_why_line
     return 0
   fi
   case "$FG_REL_DIAL:$FG_REL_GOV" in
@@ -1948,7 +2368,7 @@ _pg_count() {  # N: git, kit-update and permissions always run; conformance and 
   [ "$QUICK" -eq 1 ] || PG_N=$((PG_N + 2))
   ! _pg_tracker_enabled || PG_N=$((PG_N + 1))
   ! _fg_enabled || PG_N=$((PG_N + 1))
-  [ "$FULL" -eq 0 ] || PG_N=$((PG_N + 4))
+  [ "$FULL" -eq 0 ] || PG_N=$((PG_N + 3))
   PG_N=$((PG_N + 2))  # secrets-in-tree and secrets-in-env always run in a real run (SWAS-357)
 }
 _pg_announce() {  # the upfront estimate: a dated sentence, never computed (doctor writes nothing, so it cannot remember a run)
@@ -1990,7 +2410,8 @@ _pg_rows() {
 # empty or not a number (the run was interrupted, the child was killed, the write failed) is _vrc=1, never 0. The rows only ever
 # decide what is printed to stderr, never the verdict.
 _pg_verify() {
-  _pv_tot=$(grep -c '^check ' conformance/verify.sh 2>/dev/null) || _pv_tot=0
+  _pv_kf=conformance/verify-kitself.rows; [ -f "$_pv_kf" ] || _pv_kf=""   # the kit-self rows file (SWAS-607) runs last; its rows are part of T
+  _pv_tot=$(cat conformance/verify.sh ${_pv_kf:+"$_pv_kf"} 2>/dev/null | grep -c '^check ') || _pv_tot=0
   _pv_st=$(mktemp "${TMPDIR:-/tmp}/doctor-vstatus.XXXXXX") || { _vrc=1; _vout=''; return 0; }
   _pv_out=$(mktemp "${TMPDIR:-/tmp}/doctor-vout.XXXXXX") || { rm -f "$_pv_st"; _vrc=1; _vout=''; return 0; }
   trap 'rm -f "$_pv_st" "$_pv_out"' EXIT
@@ -2274,6 +2695,43 @@ echo ""
 echo "POSTURE"
 echo "-------"
 
+# SWAS-473 C1 (checkout-git): git's redirect files in this checkout, read and PRINTED HERE, before the battery runs any git of its own (the battery below DOES run git: a planted config fires from it).
+# Parse-only (preflight --git-plants-only runs no git in a nested directory, no index read after an exec-key finding, and no git at all after a ./.git gitfile, symlink or commondir finding); advisory: warns+1,
+# never gate_fail, under --require too. Doctor does NOT stop on a finding: it says so on the row, and the dirty check below is skipped. What this guarantees is the row, not doctor as a whole (errata E10).
+_gp_out=""; _gp_rc=0
+if [ -f scripts/preflight.sh ]; then _gp_out=$(sh scripts/preflight.sh --git-plants-only 2>&1) || _gp_rc=$?; fi
+_gp_row() {
+  if [ ! -f scripts/preflight.sh ]; then
+    echo "checkout-git: N/A - scripts/preflight.sh is not present, so git plants in this checkout were not checked"; return 0
+  fi
+  _gp_n=$(printf '%s\n' "$_gp_out" | grep -c '^  warn git-plants:' || true)
+  if [ "$_gp_rc" -ne 0 ]; then
+    warns=$((warns+1))
+    echo "checkout-git: WARN - UNVERIFIED: the report could not be read (preflight --git-plants-only exited $_gp_rc)"
+  elif [ "$_gp_n" -gt 0 ]; then
+    warns=$((warns+1))
+    echo "checkout-git: WARN - $_gp_n finding(s) in this checkout. Doctor's next checks run git: stop here and read this first (sh scripts/preflight.sh --git-plants-only prints the same report and runs nothing else). Known keys only; names only, never a file's content; reported after the fact, so git run before doctor, Claude Code's own start-up git included, may already have run a plant"
+    printf '%s\n' "$_gp_out" | grep -E '^  (warn|info|unverified) git-plants:' | sed 's/^  /      /' || true
+  elif printf '%s\n' "$_gp_out" | grep -q '^  unverified git-plants: no git was run'; then
+    echo "checkout-git: N/A - UNVERIFIED: the checkout was not cleared: no git was run and no config was read (./.git is a gitfile, so this session may be a linked worktree or a submodule, or a plant; or a git environment variable redirects git). This report ran no git in a nested directory; doctor's battery below still runs git, and the dirty check is off"
+  elif printf '%s\n' "$_gp_out" | grep -q '^  unverified git-plants: a nested \.git file names a recursive'; then
+    echo "checkout-git: N/A - UNVERIFIED: a nested .git file names a recursive submodule's git directory, and its parent submodule's index is not read, so this check cannot tell it from a plant. The checkout is not cleared and the dirty check is off. Doctor's battery below still runs git"
+    printf '%s\n' "$_gp_out" | grep -E '^  info git-plants: .*: names ' | sed 's/^  /      /' || true
+  elif printf '%s\n' "$_gp_out" | grep -q '^  unverified git-plants: a nested \.git file names a worktree entry'; then
+    warns=$((warns+1))
+    echo "checkout-git: N/A - UNVERIFIED: a nested .git file names a worktree entry of this repository: a linked worktree or a plant, and this check cannot tell which. The checkout is not cleared and the check is uncertain; the dirty check runs anyway (status runs on ./.git and does not enter the nested directory), and its own row below gives the result. Doctor's battery below still runs git"
+    printf '%s\n' "$_gp_out" | grep -E '^  info git-plants: .*: names ' | sed 's/^  /      /' || true
+  elif printf '%s\n' "$_gp_out" | grep -q '^  skip git-plants'; then
+    echo "checkout-git: N/A - no ./.git here (not a repository root, or run from a subfolder): nothing was read"
+  elif printf '%s\n' "$_gp_out" | grep -q '^  ok   git-plants:'; then
+    echo "checkout-git: OK - nothing found among the keys it knows (known keys only; this reports and certifies nothing, after the fact). This report ran no git in a nested directory; doctor's battery below still runs git"
+  else
+    warns=$((warns+1))
+    echo "checkout-git: WARN - UNVERIFIED: the report could not be read (preflight --git-plants-only printed no verdict)"
+  fi
+}
+_gp_row   # MUT-DOCEARLY
+
 # 1. conformance [GATING]
 if [ "$QUICK" = "1" ]; then
   # --quick (SWAS-201): the step is skipped, so the verdict is UNVERIFIED, never a pass. It reuses the UNVERIFIED path below:
@@ -2362,7 +2820,24 @@ fi
 # 3. git [ADVISORY — WARN-only; never sets gate_fail]
 _pg_begin "git ground-truth"
 _git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
-_git_dirty=$(git status --porcelain 2>/dev/null || true)
+# SWAS-473: `git status` can run programs a plant names (core.fsmonitor, and a filter.<name>.clean or .process driver, which -c flags on three keys do not stop). So it is NOT run when the checkout-git
+# report above has a finding or could not clear the checkout (chosen over overriding driver names parsed from config: a parse is a second place to be wrong, and skipping runs nothing). The dirty
+# check then reads UNVERIFIED, never "clean". When the report is clean the flags remain as a belt.
+# FAIL CLOSED: git status runs only when the report POSITIVELY reads `ok git-plants` and holds no warn or unverified line. A missing preflight, a crashing one, a skip verdict and an empty report all leave the
+# dirty check UNVERIFIED (a tree with no scripts/preflight.sh therefore reads UNVERIFIED too: nothing was checked, so nothing is claimed). `git rev-parse --absolute-git-dir` is NOT used as a second check: it
+# would run git in the very directory under suspicion, and C1 already requires HEAD, objects and refs before it lets any git run.
+# TOCTOU, stated as a ceiling: the decision reads a FRESH report taken immediately before the status call (not the one read earlier for display), so the window is only the instant between that read and git's own start.
+# A same-user agent can always race that window; nothing here closes it. Status is pinned to ./.git with --git-dir and --work-tree, so a rejected ./.git cannot send it up to another repository.
+_gp_fresh=""; _gp_frc=0
+if [ -f scripts/preflight.sh ]; then _gp_fresh=$(sh scripts/preflight.sh --git-plants-only 2>&1) || _gp_frc=$?; fi
+_git_skip=1
+# Two lines the gate lets through, each anchored: (1) core.hooksPath set in ./.git/config or ./.git/config.worktree (inside the checkout or under a temp directory): `status` runs with -c core.hooksPath=/dev/null, so the dirty check is neutralised for THAT finding only; (2) the worktree-shaped
+# nested gitfile's own `unverified` line (errata E14): `status` runs on ./.git with --work-tree=. and never enters the nested directory, so what that entry holds is not read (canary-proved in the DOCWT cells). Both are still printed, and the row is never OK. Any other warn or unverified line (a recursive submodule's, a nogit one) still turns the check off.
+_gp_ex='warn git-plants: core\.hooksPath in \./\.git/|unverified git-plants: a nested \.git file names a worktree entry'   # MUT-DOCEXEMPTV
+_gp_bad=$(printf '%s\n' "$_gp_fresh" | grep -E '^  (warn|unverified) git-plants:' | grep -vE "^  ($_gp_ex)" || true)   # MUT-DOCEXEMPT
+if [ "$_gp_frc" -eq 0 ] && [ -z "$_gp_bad" ] && printf '%s\n' "$_gp_fresh" | grep -qE "^  (ok   git-plants:|$_gp_ex)"; then _git_skip=0; fi   # MUT-DOCSKIP
+_git_dirty=""
+[ "$_git_skip" = 1 ] || _git_dirty=$(env GIT_NO_LAZY_FETCH=1 git --no-optional-locks --git-dir=./.git --work-tree=. -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c protocol.ext.allow=never status --porcelain 2>/dev/null) || _git_skip=2   # MUT-DOCFSMON: a planted core.fsmonitor in the checkout must never run from here; a failed status reads UNVERIFIED, not clean
 _git_tag_for_ver=$(git tag --list "v$_version" 2>/dev/null || true)
 
 _git_warn=0
@@ -2378,7 +2853,15 @@ case "$_git_branch" in
     ;;
 esac
 
-if [ -n "$_git_dirty" ]; then
+if [ "$_gp_out" != "$_gp_fresh" ]; then
+  _git_notes="${_git_notes}WARN: the checkout-git report changed since the start of this run (the first one is printed above; read the second with sh scripts/preflight.sh --git-plants-only); "
+  _git_warn=1
+fi
+
+if [ "$_git_skip" != 0 ]; then
+  _git_notes="${_git_notes}WARN: dirty check UNVERIFIED (git status was not run, or failed: it runs only when the checkout-git report reads ok, or holds only a core.hooksPath or worktree-shaped nested gitfile line); "
+  _git_warn=1
+elif [ -n "$_git_dirty" ]; then
   _git_notes="${_git_notes}WARN: dirty working tree; "
   _git_warn=1
 else
@@ -2719,7 +3202,6 @@ if [ "$_sd_env_on" -eq 1 ]; then
   fi
   _pg_end
 fi
-
 # — VERDICT ——————————————————————————————————————————————————————————————————
 echo ""
 if [ "$QUICK" = "1" ] && [ "$gate_fail" = "1" ] && [ "$REQUIRE" = "1" ]; then
@@ -2762,20 +3244,6 @@ if [ "$FULL" = "1" ]; then
     printf '%s\n' "$_dora_out"
   else
     echo "  dora:           N/A (not present)"
-  fi
-  _pg_end
-
-  # agent-scorecard
-  _pg_begin "metric: agent-scorecard"
-  if [ -n "$DOCTOR_SCORECARD_CMD" ]; then
-    # overridden (test path) — run directly, discard rc
-    _sc_out=$($DOCTOR_SCORECARD_CMD 2>&1) || true
-    printf '%s\n' "$_sc_out"
-  elif [ -f "scripts/agent-scorecard.sh" ]; then
-    _sc_out=$(sh scripts/agent-scorecard.sh 2>&1) || true
-    printf '%s\n' "$_sc_out"
-  else
-    echo "  agent-scorecard: N/A (not present)"
   fi
   _pg_end
 

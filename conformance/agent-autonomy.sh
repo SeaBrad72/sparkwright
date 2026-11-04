@@ -93,7 +93,7 @@ aa_usage() {
 # GUARD-CORPUS-RUNTIME — the MODE GATE. `run` (the default, every graded pass) executes every cell.
 # `oracle` (--selftest only) skips the ~2.6k guard spawns whose verdicts --selftest DISCARDS; the
 # functions and fixtures the oracle reads are still defined. Set UNCONDITIONALLY here, so an
-# environment value is ignored; the ONLY route to `oracle` is the `--selftest` arm below (argv, never
+# environment value is ignored; the ONLY routes to `oracle` are the `--selftest` arm and the `--delta` arm below (SWAS-550: --delta records its cells and spawns no guard for them) (argv, never
 # env). STRING values, never a numeric 1/0 flag: the non-vacuity mutator flips a literal-one assignment. Every
 # gated helper tests `[ "$AA_MODE" = oracle ]`, so an unexpected value degrades toward RUNNING cells.
 # AA_CELLS_RUN counts cells that actually spawned the guard (incremented AFTER the spawn returns, on
@@ -119,8 +119,14 @@ case "${1:-}" in
     AA_DELTA_DIR=$(mktemp -d /tmp/aa-delta.XXXXXX) || { echo "agent-autonomy: mktemp failed" >&2; exit 2; }
     AA_CELLS=$AA_DELTA_DIR/cells
     : > "$AA_CELLS" || { echo "agent-autonomy: cannot create $AA_CELLS" >&2; exit 2; }
-    AA_DELTA=1 ;;
-  --selftest) AA_MODE=oracle ;;            # dispatched at the BOTTOM of this file; skips the ungraded cells
+    # SWAS-550: --delta RECORDS the cells and spawns NO guard for them (the replay below is the only judge), so it takes the same
+    # mode gate as --selftest: every aa_cell_skip answers SKIP, denied_at answers without a spawn, and the NOH anchor (run mode only)
+    # is not reached. assert_deny, assert_allow and scp_deny record BEFORE they test the gate, so a skipped cell is still collected.
+    # SWAS-550: the floor is not an environment dial on a graded --delta run (an inherited value would lower it); the selftest legs that
+    # lower it call aa_delta_adjudicate directly, never through this arm.
+    unset AA_DELTA_MIN_CELLS
+    AA_DELTA=1; AA_MODE=oracle ;;
+  --selftest) AA_MODE=oracle ;;          # dispatched at the BOTTOM of this file; skips the ungraded cells
   --cells)                                 # the LOCAL fix-round filter (half (a)); never a graded pass
     AA_MODE=scoped; AA_CELLS_GLOB="${2:-}"
     # C-B(i): fail CLOSED where a scoped rc 0 could be graded (verify's is_self_skip reads a green cell run as PASS)
@@ -591,6 +597,10 @@ aa_cell_record() {
   [ "$AA_DELTA" = 1 ] || return 0
   # SWAS-301a belt: a cell recorded after the adjudication was never replayed. The adjudication is placed after the last cell
   # (a selftest leg locks the order), and this catches a future wrapper that runs a cell later by a path the static order misses.
+  # SWAS-550: the --delta block now EXITS right after it sets AA_DELTA_DONE=1 (the cell section is behind it, never after it), so in a real
+  # run nothing can reach a recorder once the flag is set; this branch can fire only from code that runs between the adjudication and that
+  # exit (none today) or from the late-record selftest leg, which sets the flag by hand. It is kept as the belt for a later edit that moves
+  # the exit; the static order leg and that selftest leg are what hold it in place.
   if [ "$AA_DELTA_DONE" = 1 ]; then
     echo "FAIL: a cell was recorded after the delta adjudication (it would go unreplayed): $1"; fail=1; return 0
   fi
@@ -610,43 +620,102 @@ aa_cell_record() {
   printf '%s\t%s\t%s\n' "$1" "$_acb" "$3" >> "$AA_CELLS"
 }
 
-# aa_verdicts <core> <cells> — print ALLOW or DENY for each cell, in cell order. The core is sourced
-# ONCE and each command judged in a NESTED subshell, so no cell can leak shell state (`set -f`, a
-# stray variable) into the next one while the expensive parse happens a single time.
-aa_verdicts() {
+# aa_replay <core> <cells> <pristine|built> — judge each cell ONCE on the named core, in cell order (SWAS-550: it used to be five passes,
+# three of them the same guard_check_command call on the same cell and core). One row per cell, three TAB-separated fields:
+#   VERDICT KS SITE
+# VERDICT is ALLOW or DENY (the call's status). KS is the MESSAGE half: PRESENT / ABSENT / N-A, where the observable is the kill-switch
+# sentence in the deny reason, so a slice that moves a MESSAGE (Face 4) is not invisible to a verdict-only replay. N-A is for a cell
+# that ALLOWED: there is no reason text to classify, and calling that "absent" would score every refund as a message improvement.
+# SITE is the emit site the pristine reason's fixed prefix names (aa_site_of), '-' for an ALLOW; the built pass does not classify, so its
+# SITE is always '-' and the adjudication reads only the pristine one.
+# The core is sourced ONCE and each command judged in a NESTED subshell, so no cell can leak shell state (`set -f`, a stray variable)
+# into the next one while the expensive parse happens a single time.
+aa_replay() {
   # shellcheck disable=SC1090  # the core to source is the POINT of this mode: one arm is a pristine
   # file named on the command line, the other the tree's own. A constant path would defeat the check.
   ( . "$1" >/dev/null 2>&1 || exit 9
     # A core that sources cleanly but defines no guard_check_command judges NOTHING: every cell would
     # take the `else` arm and read DENY, and a whole-file "widening" would be reported as fact. Refuse.
     command -v guard_check_command >/dev/null 2>&1 \
-      || { echo "delta: $1 pristine defines no guard_check_command" >&2; exit 8; }
-    while IFS="$(printf '\t')" read -r _vl _vb _vk; do
-      _vc=$(printf '%s' "$_vb" | jq -rR '@base64d' 2>/dev/null) || _vc=''
-      if ( guard_check_command "$_vc" >/dev/null 2>&1 ) </dev/null; then echo ALLOW; else echo DENY; fi
+      || { echo "delta: $1 defines no guard_check_command" >&2; exit 8; }
+    while IFS="$(printf '\t')" read -r _rl _rb _rk; do
+      _rc=$(printf '%s' "$_rb" | jq -rR '@base64d' 2>/dev/null) || _rc=''
+      if _rr=$( ( guard_check_command "$_rc" 2>/dev/null ) </dev/null ); then printf 'ALLOW\tN-A\t-\n'; continue; fi
+      # SWAS-301a: PRESENT is the old override sentence (the pristine core) OR the write-route pointer (the built core),
+      # so a write-route site that swapped one for the other does not read as a message move (NOH-B1).
+      case "$_rr" in *KIT_GUARD_SELFEDIT*|*'escape card R30 cp-write'*) _rs=PRESENT ;; *) _rs=ABSENT ;; esac
+      if [ "$3" = pristine ]; then printf 'DENY\t%s\t%s\n' "$_rs" "$(aa_site_of "$_rr")"; else printf 'DENY\t%s\t-\n' "$_rs"; fi
     done < "$2"
   )
 }
+# aa_rows <file> <fields> — how many rows of <file> hold exactly <fields> TAB-separated fields, none empty (the alignment count: a pass
+# that lost a row, or a row that lost a column, makes it differ from the cell count).
+aa_rows() { awk -F'\t' -v n="$2" 'NF == n { ok = 1; for (i = 1; i <= n; i++) if ($i == "") ok = 0; c += ok } END { print c + 0 }' "$1"; }
 
-# aa_ks <core> <cells> — the MESSAGE half of the replay, in cell order: PRESENT / ABSENT / N-A per
-# cell, where the observable is the kill-switch sentence in the deny reason. It exists because
-# aa_verdicts is verdict-only, and a slice that moves a MESSAGE (Face 4) is invisible to it — the
-# guard could stop advertising the kill switch on a real WRITE and the delta would print `0 changed`.
-# N-A is for a cell that ALLOWED: there is no reason text to classify, and calling that "absent" would
-# score every refund as a message improvement.
-aa_ks() {
-  # shellcheck disable=SC1090  # naming the core to source is the point of this mode, as in aa_verdicts
-  ( . "$1" >/dev/null 2>&1 || exit 9
-    command -v guard_check_command >/dev/null 2>&1 \
-      || { echo "delta-ks: $1 defines no guard_check_command" >&2; exit 8; }
-    while IFS="$(printf '\t')" read -r _kl _kb _kk; do
-      _kc=$(printf '%s' "$_kb" | jq -rR '@base64d' 2>/dev/null) || _kc=''
-      if _kr=$( ( guard_check_command "$_kc" 2>/dev/null ) </dev/null ); then echo N-A; continue; fi
-      # SWAS-301a: PRESENT is the old override sentence (the pristine core) OR the write-route pointer (the built core),
-      # so a write-route site that swapped one for the other does not read as a message move (NOH-B1).
-      case "$_kr" in *KIT_GUARD_SELFEDIT*|*'escape card R30 cp-write'*) echo PRESENT ;; *) echo ABSENT ;; esac
-    done < "$2"
-  )
+# aa_gblk_scan <file> — the STATIC LOCK on where a recorder may sit (SWAS-550, errata E5/E6). A --delta run skips every gated cell, so a recorder
+# (assert_deny, assert_allow, scp_deny, gsr_deny, gsr_allow) inside a block gated by aa_cell_skip would silently lose its cell from the replay,
+# and so would a wrapper that tests the gate before it records. This reads <file> as text and prints one line per violation:
+#   RED <line> recorder inside a block gated by aa_cell_skip (gate <label> at line <n>)
+#   RED <line> the gate is tested before the recorder on one line (only [ "$AA_DELTA" = 1 ] || may precede it)
+#   RED <line> a delta entry on a gate other than GTM-G21
+# then `BLOCKS <n>` = how many gated blocks it saw, so a caller can refuse a vacuous read. The one named exception is GTM-G21: its gate line
+# ends in || [ "$AA_DELTA" = 1 ], so --delta enters the block and its assert_allow records; without that clause the block is gated and reds.
+# Four gate shapes are read, by indentation (the file's own convention): `if ! aa_cell_skip` .. `fi` (the body is gated), `if aa_cell_skip .. else`
+# .. `fi` (the else body), `aa_cell_skip .. || {` .. `}` and a function's `aa_cell_skip .. && return 0` (the rest of the function), plus the
+# one-line and elif forms the cells below plant. Ceiling, stated: the fall-through is default-allow, so a gate in a shape not read here passes
+# silently and loses its cell under --delta (a security seat traced several, SWAS-667's card); command position only on the line; a recorder
+# spelled through a variable, `eval` or a different helper is out of its scope.
+aa_gblk_scan() {
+  awk '
+    function ind(s) { match(s, /^[ \t]*/); return RLENGTH }
+    function isrec(s) { return s ~ /(^|[^A-Za-z0-9_$])(assert_deny|assert_allow|scp_deny|gsr_deny|gsr_allow)[ \t]+(["$]|\047)/ }
+    function push(g, ci, ck, lbl, wk, ii) { sp++; gated[sp] = g; cind[sp] = ci; ckind[sp] = ck; glabel[sp] = lbl; gline[sp] = NR; wasskip[sp] = wk; isif[sp] = ii; if (g) blocks++ }
+    function anygate(  i) { for (i = 1; i <= sp; i++) if (gated[i]) return i; return 0 }
+    function label_of(s,  r) { r = s; sub(/^.*aa_cell_skip[ \t]+"/, "", r); sub(/".*$/, "", r); return r }
+    {
+      t = $0
+      if (t ~ /^[ \t]*#/) next
+      sub(/[ \t]#[ \t].*$/, "", t)
+      n = ind(t)
+      if (sp > 0 && n == cind[sp]) {
+        if (ckind[sp] == "fi" && t ~ /^[ \t]*fi([ \t;]|$)/) { sp--; next }
+        if (ckind[sp] == "}" && t ~ /^[ \t]*}/) { sp--; next }
+      }
+      # a branch line of an open if: after a skip test, every later branch (else, or an elif that is not itself a skip test) is the run side
+      if (t ~ /^[ \t]*(else|elif)([ \t]|$)/ && sp > 0 && n == cind[sp] && ckind[sp] == "fi") {
+        if (t ~ /^[ \t]*elif aa_cell_skip /) { gated[sp] = 0; isif[sp] = 1; wasskip[sp] = 1 }
+        else if (wasskip[sp] && !gated[sp]) { gated[sp] = 1; isif[sp] = 0; blocks++ }
+        g = anygate()
+        if (g && isrec(t)) print "RED " NR " recorder inside a block gated by aa_cell_skip (gate " glabel[g] " at line " gline[g] ")"
+        if (t ~ /;[ \t]*fi[ \t]*$/) sp--
+        next
+      }
+      # an elif skip test whose outer if is not on the stack (the outer if is no gate): open its chain here, closed by the chain fi
+      if (t ~ /^[ \t]*elif aa_cell_skip /) { push(0, n, "fi", label_of(t), 1, 1); if (t ~ /;[ \t]*fi[ \t]*$/) sp--; next }
+      if (t ~ /aa_cell_skip/) {
+        i = index(t, "aa_cell_skip"); before = substr(t, 1, i - 1); rest = substr(t, i + 12)
+        if (isrec(rest) && before !~ /"\$AA_DELTA" = 1 \] \|\|/) print "RED " NR " the gate is tested before the recorder on one line (only [ \"$AA_DELTA\" = 1 ] || may precede it)"
+      }
+      if (t ~ /^[ \t]*if [!\[]/ && t ~ /! aa_cell_skip / && t !~ /fi[ \t]*$/) {
+        lbl = label_of(t)
+        if (t ~ /\|\| \[ "\$AA_DELTA" = 1 \]/) {
+          if (lbl != "GTM-G21") print "RED " NR " a delta entry on a gate other than GTM-G21 (" lbl ")"
+          push(0, n, "fi", lbl, 0, 0)
+        } else push(1, n, "fi", lbl, 0, 0)
+        next
+      }
+      if (t ~ /^[ \t]*if aa_cell_skip / && t !~ /fi[ \t]*$/) {
+        push(0, n, "fi", label_of(t), 1, 1)
+        if (t ~ /else[ \t]*$/) { gated[sp] = 1; isif[sp] = 0; blocks++ }
+        next
+      }
+      if (t ~ /^[ \t]*aa_cell_skip .*\|\| \{[ \t]*$/) { push(1, n, "}", label_of(t), 0, 0); next }
+      if (t ~ /^[ \t]*aa_cell_skip "[^"]*" && return 0[ \t]*$/) { push(1, n - 2, "}", label_of(t), 0, 0); next }
+      g = anygate()
+      if (g && isrec(t)) print "RED " NR " recorder inside a block gated by aa_cell_skip (gate " glabel[g] " at line " gline[g] ")"
+    }
+    END { print "BLOCKS " blocks + 0 }
+  ' "$1"
 }
 
 # SWAS-301a - the SITE TABLE the message half classifies a cell with. The pristine reason's FIXED PREFIX (or its fixed
@@ -678,20 +747,6 @@ aa_site_of() {   # <pristine reason> -> its emit site on stdout, or '-'
     *'with a glob or magic pathspec cannot be proven'*) echo E15 ;;
     *) echo - ;;
   esac
-}
-# aa_ks_sites <core> <cells> - the emit site of each cell's reason on the named core, in cell order ('-' for an ALLOW or an
-# unclassified reason). Called on the PRISTINE core only.
-aa_ks_sites() {
-  # shellcheck disable=SC1090  # naming the core to source is the point of this mode, as in aa_verdicts
-  ( . "$1" >/dev/null 2>&1 || exit 9
-    command -v guard_check_command >/dev/null 2>&1 \
-      || { echo "delta-ks: $1 defines no guard_check_command" >&2; exit 8; }
-    while IFS="$(printf '\t')" read -r _sl _sb _sk; do
-      _sc=$(printf '%s' "$_sb" | jq -rR '@base64d' 2>/dev/null) || _sc=''
-      if _sr=$( ( guard_check_command "$_sc" 2>/dev/null ) </dev/null ); then echo -; continue; fi
-      aa_site_of "$_sr"
-    done < "$2"
-  )
 }
 
 # EXPECTED_KS_DELTA — the same shape as EXPECTED_DELTA, for the MESSAGE observable, and deliberately
@@ -1165,8 +1220,10 @@ aa_delta_kind_direction() {
 aa_delta_adjudicate() {
   _adc=$1
   printf 'delta: %d stress cells excluded (graded by guard-battery):%s\n' "$AA_STRESS_N" "$AA_DELTA_STRESS"
-  aa_verdicts "$2" "$_adc" > "$_adc.before" || { echo "delta: FAILED to replay the PRISTINE core ($2)"; return 2; }
-  aa_verdicts "$3" "$_adc" > "$_adc.after"  || { echo "delta: FAILED to replay the BUILT core ($3)"; return 2; }
+  # SWAS-550: ONE pass per core (aa_replay): the pristine row carries verdict, KS state and site; the built row verdict and KS state.
+  # Each stream below is cut from the row it belongs to; a stream read from the wrong column is what delta-wrong-stream-mutant pins.
+  aa_replay "$2" "$_adc" pristine > "$_adc.rp" || { echo "delta: FAILED to replay the PRISTINE core ($2)"; return 2; }
+  aa_replay "$3" "$_adc" built    > "$_adc.rb" || { echo "delta: FAILED to replay the BUILT core ($3)"; return 2; }
   _adn=$(wc -l < "$_adc" | tr -d ' ')
   # NON-VACUITY FLOOR. An empty (or truncated) cells file replays clean and prints
   # `0 cells replayed, 0 changed, 0 expected, 0 unexpected` at rc 0 — a certificate of zero widening
@@ -1174,20 +1231,26 @@ aa_delta_adjudicate() {
   # a stale AA_DELTA, or a cells file the trap swept early would produce, and it is indistinguishable
   # from success to a reader skimming for "0 unexpected". Zero-widening is a claim about the WHOLE
   # cell surface: below the floor the mode must REFUSE to make it.
-  if [ "$_adn" -lt "${AA_DELTA_MIN_CELLS:-900}" ]; then
+  if [ "$_adn" -lt "${AA_DELTA_MIN_CELLS:-2900}" ]; then
     echo "delta: only $_adn cells replayed — the cell collector is not recording; refusing to certify zero-widening"
     return 2
   fi
-  _adb=$(wc -l < "$_adc.before" | tr -d ' ')
-  _ada=$(wc -l < "$_adc.after" | tr -d ' ')
-  if [ "$_adn" != "$_adb" ] || [ "$_adn" != "$_ada" ]; then
-    echo "delta: replay produced $_adb/$_ada verdicts for $_adn cells — the replay is not aligned with the cells"
+  # ALIGNMENT, per pass: each pass must hold exactly one whole row (three non-empty fields) per cell. A pass that dropped, doubled or
+  # emptied a row is refused here, before any stream is cut from it.
+  _adb=$(aa_rows "$_adc.rp" 3)
+  _ada=$(aa_rows "$_adc.rb" 3)
+  if [ "$_adn" != "$_adb" ] || [ "$_adn" != "$_ada" ] \
+     || [ "$_adn" != "$(wc -l < "$_adc.rp" | tr -d ' ')" ] || [ "$_adn" != "$(wc -l < "$_adc.rb" | tr -d ' ')" ]; then
+    echo "delta: replay produced $_adb/$_ada rows for $_adn cells — the replay is not aligned with the cells"
     return 2
   fi
+  # A cut or a paste that fails (a full disk, a vanished file) must not leave a short stream to be read as a clean one: rc 2, named.
+  cut -f1 "$_adc.rp" > "$_adc.before" || { echo "delta: FAILED to cut the verdict stream of the PRISTINE pass"; return 2; }
+  cut -f1 "$_adc.rb" > "$_adc.after" || { echo "delta: FAILED to cut the verdict stream of the BUILT pass"; return 2; }
   _adm=0; _adk=0; _adu=0; _add=0
   # Walk the three streams together. `paste` keeps the alignment explicit (and the cells file already
   # has exactly one line per cell, base64 having removed every embedded newline).
-  paste "$_adc" "$_adc.before" "$_adc.after" > "$_adc.joined"
+  paste "$_adc" "$_adc.before" "$_adc.after" > "$_adc.joined" || { echo "delta: FAILED to join the verdict streams"; return 2; }
   while IFS="$(printf '\t')" read -r _adl _adz _adki _adbv _adav; do
     [ "$_adbv" = "$_adav" ] && continue
     _adm=$((_adm + 1))
@@ -1209,17 +1272,13 @@ aa_delta_adjudicate() {
   printf 'delta: %d cells replayed, %d changed, %d expected, %d unexpected, %d kind-direction agreed\n' \
     "$_adn" "$_adm" "$_adk" "$_adu" "$_add"
   # ---- THE MESSAGE HALF (reviewer I1) -------------------------------------------------------------
-  # Same cells, same two cores, different observable. Run as a second pass rather than folded into the
+  # Same cells, same two cores, different observable. Read as a second stream rather than folded into the
   # first: the verdict figure is the one every past round quotes, and burying a second number inside
   # its summary line would silently change what `<n>/<m> against <sha>` means in the record.
-  aa_ks "$2" "$_adc" > "$_adc.ksb" || { echo "delta-ks: FAILED to replay the PRISTINE core ($2)"; return 2; }
-  aa_ks "$3" "$_adc" > "$_adc.ksa" || { echo "delta-ks: FAILED to replay the BUILT core ($3)"; return 2; }
-  aa_ks_sites "$2" "$_adc" > "$_adc.ksp" || { echo "delta-ks: FAILED to classify the PRISTINE core's reasons ($2)"; return 2; }
-  _kdb=$(wc -l < "$_adc.ksb" | tr -d ' '); _kda=$(wc -l < "$_adc.ksa" | tr -d ' '); _kdp=$(wc -l < "$_adc.ksp" | tr -d ' ')
-  if [ "$_adn" != "$_kdb" ] || [ "$_adn" != "$_kda" ] || [ "$_adn" != "$_kdp" ]; then
-    echo "delta-ks: replay produced $_kdb/$_kda/$_kdp states for $_adn cells — the ks replay is not aligned"
-    return 2
-  fi
+  # SWAS-550: the same two passes, read for the other observables: KS state on both cores, the emit site on the pristine one.
+  cut -f2 "$_adc.rp" > "$_adc.ksb" || { echo "delta: FAILED to cut the KS stream of the PRISTINE pass"; return 2; }
+  cut -f2 "$_adc.rb" > "$_adc.ksa" || { echo "delta: FAILED to cut the KS stream of the BUILT pass"; return 2; }
+  cut -f3 "$_adc.rp" > "$_adc.ksp" || { echo "delta: FAILED to cut the site stream of the PRISTINE pass"; return 2; }
   _kdm=0; _kdk=0; _kdu=0; _kdr=0
   # ⚠️ A CELL WHOSE VERDICT MOVED IS NOT JUDGED HERE, and that is a scoping decision, not a let-off.
   # A DENY->ALLOW refund necessarily takes its message from ABSENT (or PRESENT) to N-A — there is no
@@ -1228,7 +1287,7 @@ aa_delta_adjudicate() {
   # unexpected, and all 11 were exactly the enumerated verdict refunds. The verdict half already
   # adjudicates those, by kind-direction AND by prefix. What is LEFT for this half is the thing
   # nothing else can see: a cell that DENIES AT BOTH ENDS and whose advertisement moved.
-  paste "$_adc" "$_adc.before" "$_adc.after" "$_adc.ksb" "$_adc.ksa" "$_adc.ksp" > "$_adc.ksjoined"
+  paste "$_adc" "$_adc.before" "$_adc.after" "$_adc.ksb" "$_adc.ksa" "$_adc.ksp" > "$_adc.ksjoined" || { echo "delta: FAILED to join the KS streams"; return 2; }
   _kdw=0
   while IFS="$(printf '\t')" read -r _kdl _kdz _kdki _kvb _kva _kdbv _kdav _kdsite; do
     # SWAS-301a (the generator leg, design 3.2): the committed list may never excuse a cell whose PRISTINE reason is one of the
@@ -1258,7 +1317,7 @@ aa_delta_adjudicate() {
   _kdu=$((_kdu + _kdw))
   printf 'delta-ks: %d cells replayed, %d changed, %d expected, %d unexpected (%d skipped: verdict moved, adjudicated by the verdict half; %d write-route list violations)\n' \
     "$_adn" "$_kdm" "$_kdk" "$_kdu" "$_kdr" "$_kdw"
-  rm -f "$_adc.before" "$_adc.after" "$_adc.joined" "$_adc.ksb" "$_adc.ksa" "$_adc.ksp" "$_adc.ksjoined"
+  rm -f "$_adc.rp" "$_adc.rb" "$_adc.before" "$_adc.after" "$_adc.joined" "$_adc.ksb" "$_adc.ksa" "$_adc.ksp" "$_adc.ksjoined"
   [ "$_adu" = 0 ] && [ "$_kdu" = 0 ] || return 1
   return 0
 }
@@ -1331,14 +1390,14 @@ noh_check() {   # <label> <cell json> <the guard's deny output>
   noh_p3 "$_nc_v" || { echo "FAIL NOH-P3 (a stop pointer beside a remedy): $1"; fail=1; }
 }
 assert_deny() {
+  aa_cell_record "$1" "$2" deny   # SWAS-550: before the gate, so a --delta run (which skips every cell) still collects it; a no-op outside --delta
   aa_cell_skip "$1" && return 0
-  aa_cell_record "$1" "$2" deny
   if denied "$2"; then echo "PASS deny : $1"; noh_check "$1" "$2" "$AA_OUT"; else echo "FAIL (wanted deny): $1"; fail=1; fi
   AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 assert_allow() {
+  aa_cell_record "$1" "$2" allow   # SWAS-550: before the gate (see assert_deny)
   aa_cell_skip "$1" && return 0
-  aa_cell_record "$1" "$2" allow
   if denied "$2"; then echo "FAIL (wanted allow, got deny): $1"; fail=1
   elif [ "$AA_SRC" != 0 ]; then echo "FAIL (wanted allow rc 0, got fault $(aa_allow_why)): $1"; fail=1
   else echo "PASS allow: $1"; fi
@@ -2765,8 +2824,8 @@ assert_allow "Read control-plane"   '{"tool_name":"Read","tool_input":{"file_pat
 # READER face (`/bin/cat .env`) is not in 332: the owner moved it to SWAS-336.
 scpj() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"; }
 scp_deny() {  # <guard> <label> <json> <A|B|R>
+  aa_cell_record "$2" "$3" deny   # SWAS-550: before the gate (see assert_deny)
   aa_cell_skip "$2" && return 0
-  aa_cell_record "$2" "$3" deny
   _scpt_o=$(printf '%s' "$3" | sh "$1" 2>/dev/null) || :
   AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
   _scpt_r=$(noh_reason_of "$_scpt_o")
@@ -3974,6 +4033,12 @@ dt_root_corpus_ok() {
         && printf '%s\n' "z > $_drc" | grep -Eq "$_CP8B_PATHHIT_T1_LC" \
         && printf '%s\n' "$_drpy" | grep -Eq "$_CP8B_PATHHIT_T1_LC" \
         || { echo "  MISSING: $_drf is in _ROOT_LEAF_CORPUS but not REACHABLE at site [pathhit_t1_lc] (folded: $_drc)" >&2; _drrc=1; }
+      # GLOB (SWAS-715): an ALL-LOWERCASE glob that spells the leaf's prefix (the last byte of the folded
+      # instance replaced by `*`) must deny through _cp8b_glob_hits_cp. A glob with no uppercase byte is
+      # its own fold, so only the scan of _CP8B_GLOB_LEAVES_LC in the no-uppercase arm can see a folded
+      # leaf (codeowners) that _CP8B_GLOB_LEAVES lacks.
+      _cp8b_glob_hits_cp "${_drc%?}*" \
+        || { echo "  MISSING: $_drf is in _ROOT_LEAF_CORPUS but not REACHABLE at site [glob_lc_probe] (all-lowercase glob: ${_drc%?}*)" >&2; _drrc=1; }
     done
     _drk=''; for _drm in ${_KIT_CONF_CORPUS:-}; do _drk="$_drk .kit/$_drm.conf"; done
     _drall=" $_drk ${_GOV_SUBJECT_CORPUS:-} $_drl "
@@ -4002,6 +4067,93 @@ if dt_root_corpus_ok ".claude/hooks/guard-core.sh"; then
   echo "PASS root-corpus : every _ROOT_LEAF_CORPUS leaf is reachable at all SIX matcher sites, every leaf-list token is declared, every entry has an adopter-safe shape"
 else
   echo "FAIL root-corpus : the root-leaf corpus and its six matcher sites DISAGREE (detail above) — a root control-plane name protected at some sites and not others is protected at none"; fail=1
+fi
+
+# =============================================================================================
+# GUARD-FASTPATH-LOCALE (SWAS-715) — the guard's letter classes in shell `case` arms are spelled out.
+# bash 3.2 (macOS /bin/sh) collates a bracket RANGE by locale: under en_US.UTF-8 `[A-Z]` admits b-z and
+# accented letters, so an all-lowercase command took the uppercase fold route and the M-ROOT10 mutant
+# survived on the owner's Mac while CI (dash, bash 5, C locale) killed it. The same bytes in every shell
+# and locale is the cure (SWAS-200's approach (b)); no pin at guard entry.
+#
+# BYTE LEG (always on, every host): no SINGLE-CASE letter range (`A-Z` without `a-z`, or `a-z` without
+# `A-Z`, in one bracket) sits inside a shell case-pattern bracket in guard-core.sh or hooks/pre-push. That
+# is the hazard: under UTF-8, bash 3.2 widens a single-case range to the ASCII letters of the other case
+# (and accents). A DUAL-CASE range (`A-Za-z`, `0-9a-fA-F`) admits only NON-ASCII letters, which is
+# SWAS-200's residual R2 (a non-ASCII letter is not a shell metacharacter, so a literal stays literal);
+# it is EXCLUDED BY RULE, which is smaller than listing ~35 sites. A case arm is read as: after an
+# optional `case … in`, the text up to the first `)` is a bare pattern (no blank in it). A line of the
+# form NAME=… is an assignment (regex text; regex does not widen) and is never read. grep, sed, awk, tr
+# and jq strings carry blanks before their `)`, so they are not read.
+# ⚠️ CEILINGS, stated: an arm whose pattern is split over a `\`-continued line, or quoted with a blank
+# inside, is not read; `[[ == ]]` and `${v%%[A-Z]*}` globs are not read; only the text up to a line's
+# FIRST `)` is read, so a later arm of a one-line case (`case $x in a) ;; *[a-z]*) ;; esac`), an inner
+# case after an outer arm on the same line, and a case after `if`/`then`/`do`/`;` on one line are not read.
+# ALLOWLIST: ` file|exact-pattern ` entries (space-delimited), each with its reason; EMPTY means none.
+_BR_ALLOW=''
+dt_range_bytes_ok() {   # <guard-core path> — also reads hooks/pre-push
+  _brrc=0
+  for _brf in "$1" hooks/pre-push; do
+    [ -r "$_brf" ] || { echo "  cannot read $_brf" >&2; _brrc=1; continue; }
+    _brhits=$(LC_ALL=C awk '
+      { l=$0; sub(/^[ \t]+/, "", l)
+        if (l ~ /^#/) next
+        if (l ~ /^[A-Za-z_][A-Za-z0-9_]*=/) next
+        if (l ~ /^case /) { if (!sub(/^case .* in[ \t]+/, "", l)) next }
+        i=index(l, ")"); if (!i) next
+        h=substr(l, 1, i-1)
+        if (h ~ /[ \t]/) next
+        bad=0; rest=h
+        while (match(rest, /\[[!^]?[^]]+\]/)) {
+          b=substr(rest, RSTART, RLENGTH); rest=substr(rest, RSTART+RLENGTH)
+          lo=(b ~ /[a-z]-[a-z]/); up=(b ~ /[A-Z]-[A-Z]/)
+          if (lo != up) bad=1 }
+        if (bad) print NR "|" h }' "$_brf") || { echo "  awk failed on $_brf" >&2; _brrc=1; continue; }
+    [ -n "$_brhits" ] || continue
+    _brbase=$(basename "$_brf")
+    _brbad=$(printf '%s\n' "$_brhits" | while IFS='|' read -r _brn _brp; do
+      if [ "${_BR_ALLOW#*" $_brbase|$_brp "}" != "$_BR_ALLOW" ]; then continue; fi
+      echo "  RANGE: $_brf:$_brn: case pattern '$_brp' carries a letter range (spell the class out)"
+    done)
+    [ -z "$_brbad" ] && continue
+    printf '%s\n' "$_brbad" >&2
+    _brrc=1
+  done
+  return $_brrc
+}
+if dt_range_bytes_ok ".claude/hooks/guard-core.sh"; then
+  echo "PASS range-bytes : no letter range sits in a case-pattern bracket in guard-core.sh or hooks/pre-push (the classes are spelled out; locale cannot widen them)"
+else
+  echo "FAIL range-bytes : a case-pattern bracket in guard-core.sh or hooks/pre-push carries a letter range (detail above) — bash 3.2 widens it under a UTF-8 locale"; fail=1
+fi
+
+# BEHAVIOUR LEG (Darwin, where en_US.UTF-8 exists: FAIL, never SKIP). Under LC_ALL=en_US.UTF-8 (a) the
+# root-corpus gate must hold and (b) an all-lowercase command must take the guard's ALL-LOWERCASE route in
+# _cp8b_pathhit, not the fold route. (b) is read by shadowing _guard_vanished, which only the fold route
+# calls; a positive control (an uppercase probe must call it) proves the shadow is bound. On a host
+# without bash 3.2 collation (Linux CI) the leg passes trivially and says so below.
+dt_locale_route_ok() {   # <guard-core path>
+  ( LC_ALL=en_US.UTF-8; export LC_ALL
+    dt_root_corpus_ok "$1" || { echo "  the root-corpus gate FAILS under en_US.UTF-8" >&2; exit 1; }
+    # shellcheck disable=SC1090
+    . "$1" >/dev/null 2>&1 || { echo "  cannot source the core: $1" >&2; exit 1; }
+    _dlm="${TMPDIR:-/tmp}/.dlm.$$"; rm -f "$_dlm"
+    _guard_vanished() { : > "$_dlm"; }
+    _cp8b_pathhit "Z > codeowners" || { echo "  ROUTE: the uppercase probe did not hit" >&2; rm -f "$_dlm"; exit 1; }
+    [ -e "$_dlm" ] || { echo "  ROUTE: the fold route did not call the shadow, so the leg is unbound" >&2; exit 1; }
+    rm -f "$_dlm"
+    _cp8b_pathhit "z > codeowners" || { echo "  ROUTE: the all-lowercase probe did not hit" >&2; exit 1; }
+    if [ -e "$_dlm" ]; then echo "  ROUTE: under en_US.UTF-8 an all-lowercase command took the FOLD route in _cp8b_pathhit (a letter range widened)" >&2; rm -f "$_dlm"; exit 1; fi
+    exit 0 )
+}
+if [ "$(uname -s)" = Darwin ] && locale -a 2>/dev/null | grep -qx 'en_US.UTF-8'; then
+  if dt_locale_route_ok ".claude/hooks/guard-core.sh"; then
+    echo "PASS locale-route : under en_US.UTF-8 the root gate holds and an all-lowercase command takes the all-lowercase route in _cp8b_pathhit (host: $(uname -s) $(uname -r))"
+  else
+    echo "FAIL locale-route : under en_US.UTF-8 the guard's fast path or the root gate differs from the C locale (detail above)"; fail=1
+  fi
+else
+  echo "N/A  locale-route : needs Darwin with en_US.UTF-8 (host: $(uname -s)); the byte leg range-bytes above ran on this host"
 fi
 
 # =============================================================================================
@@ -4767,7 +4919,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # order of magnitude, not jitter); the figures print so the PR can quote them. The hook's own timeout is the harness's (default
   # 600 s, and a timed-out hook proceeds), so the cap's worst case is priced against that in docs/operations/runtime-guards.md.
   scp_time() {   # <core> <command> <calls> -> whole seconds taken by that many guard_check_command calls
-    # shellcheck disable=SC1090  # naming the core to source is the point of this leg, as in aa_verdicts
+    # shellcheck disable=SC1090  # naming the core to source is the point of this leg, as in aa_replay
     ( . "$1" >/dev/null 2>&1 || exit 9
       _st0=$(date +%s); _sti=0
       while [ "$_sti" -lt "$3" ]; do ( guard_check_command "$2" >/dev/null 2>&1 ) </dev/null || :; _sti=$((_sti + 1)); done
@@ -6884,6 +7036,26 @@ if [ "${GPAB_G:-}" != "" ]; then
   # M-ROOT11 — a governing document dropped from _CP8B_PATHHIT_T1 (CLAUDE.md, the §5 A1 family).
   corp_mutant "M-ROOT11: CLAUDE.md removed from _CP8B_PATHHIT_T1 -> the root gate REDs" \
     '/^_CP8B_PATHHIT_T1=/ s@(^|.^a-zA-Z..)CLAUDE\\\.md|@@' FAIL dt_root_corpus_ok '[pathhit_t1]' 'CLAUDE.md'
+  # --- GUARD-FASTPATH-LOCALE (SWAS-715) -------------------------------------------------------------
+  # M-ROOT12 — the item-2 scan removed: an all-lowercase glob returns 1 again without consulting
+  # _CP8B_GLOB_LEAVES_LC, so `codeowne*` ALLOWs. Only the all-lowercase glob probe sees it.
+  corp_mutant "M-ROOT12: the all-lowercase _GLOB_LEAVES_LC scan removed from _cp8b_glob_hits_cp -> the root gate REDs" \
+    '/^_cp8b_glob_hits_cp() {/,/^}/ s@^    \*) _cp8b_glob_scan .*; return ;;@    *) return 1 ;;@' FAIL dt_root_corpus_ok '[glob_lc_probe]' 'CODEOWNERS'
+  # M-LOC1 — ONE site (_cp8b_pathhit's) reverted to the range `*[A-Z]*`: the byte leg REDs on every host.
+  corp_mutant "M-LOC1: _cp8b_pathhit's spelled class reverted to the range *[A-Z]* -> the byte leg REDs" \
+    '/^_cp8b_pathhit() {/,/^}/ s@\*\[ABCDEFGHIJKLMNOPQRSTUVWXYZ]\*) : ;;@*[A-Z]*) : ;;@' FAIL dt_range_bytes_ok 'RANGE' '*[A-Z]*'
+  # M-LOC3 — a DUAL-case site turned single-case (`[!A-Za-z0-9_]` -> `[!A-Z0-9_]`): the byte leg REDs.
+  corp_mutant "M-LOC3: a dual-case range [!A-Za-z0-9_] turned single-case [!A-Z0-9_] -> the byte leg REDs" \
+    's@^      \*\[!A-Za-z0-9_]\*) break ;;@      *[!A-Z0-9_]*) break ;;@' FAIL dt_range_bytes_ok 'RANGE' '[!A-Z0-9_]'
+  # M-LOC2 — the same single revert, run under en_US.UTF-8: on Darwin the all-lowercase probe takes the
+  # fold route and the behaviour leg REDs. Meaningful only where bash 3.2 collates (Darwin), so it runs
+  # only there; elsewhere the visible N/A line says so (no silent SKIP).
+  if [ "$(uname -s)" = Darwin ] && locale -a 2>/dev/null | grep -qx 'en_US.UTF-8'; then
+    corp_mutant "M-LOC2: only _cp8b_pathhit's class reverted to *[A-Z]*, run under en_US.UTF-8 -> the behaviour leg REDs" \
+      '/^_cp8b_pathhit() {/,/^}/ s@\*\[ABCDEFGHIJKLMNOPQRSTUVWXYZ]\*) : ;;@*[A-Z]*) : ;;@' FAIL dt_locale_route_ok 'ROUTE' 'FOLD route'
+  else
+    echo "N/A  corp-mutant : M-LOC2 needs Darwin with en_US.UTF-8 (host: $(uname -s))"
+  fi
   # The VERDICT half of the same two legs. Two independent detectors on one fix, which is the panel's
   # "a selftest that fails without the fix": the gate sees the source omission, these see the behaviour.
   # (Both tiers since CP-MATCHER-CORPUS-ALL-FAMILIES §5 A2: an all-lowercase command now reaches _T1_LC
@@ -10714,8 +10886,9 @@ assert_allow "F-j W8b a single-command start line still gets its relief (the cur
 # a real filesystem (a stub `find`, a symlink): they run in a mktemp scratch dir the CHECK makes, swept by the single EXIT trap
 # through GPAB_TRASH, never in the repo; they are fixture legs and sit outside the --delta replay (the ceiling above).
 gsr_json() { jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
-gsr_deny() { aa_cell_skip "$1" && return 0; assert_deny "$1" "$(gsr_json "$2")"; }
-gsr_allow() { aa_cell_skip "$1" && return 0; assert_allow "$1" "$(gsr_json "$2")"; }
+# SWAS-550: under --delta the wrappers do not test the gate first, or the cell would never reach the recorder in assert_deny/assert_allow.
+gsr_deny() { [ "$AA_DELTA" = 1 ] || { aa_cell_skip "$1" && return 0; }; assert_deny "$1" "$(gsr_json "$2")"; }
+gsr_allow() { [ "$AA_DELTA" = 1 ] || { aa_cell_skip "$1" && return 0; }; assert_allow "$1" "$(gsr_json "$2")"; }
 # gsr_fx <label> <deny|allow> <dir> <command> [<PATH>]: one fixture cell. PATH rides on the guard's command, never on a function call.
 gsr_fx() {
   aa_cell_skip "$1" && return 0
@@ -11771,7 +11944,7 @@ LXBLK
   _dd=$(mktemp -d /tmp/aa-delta-st.XXXXXX) || _dd=''
   if [ -n "$_dd" ]; then
     GPAB_TRASH="$GPAB_TRASH $_dd"   # swept by the file's single EXIT trap if a leg dies mid-way
-    # These legs feed HAND-WRITTEN cells files of one or two cells, so the production floor (900) would
+    # These legs feed HAND-WRITTEN cells files of one or two cells, so the production floor (2900, errata E6) would
     # refuse every one of them. Lower it to 1 — and note that 1 still REFUSES the empty file the floor
     # leg feeds it, which is the whole property under test.
     AA_DELTA_MIN_CELLS=1
@@ -11817,6 +11990,63 @@ LXBLK
     else
       echo "nv: delta floor leg did not refuse an empty cells file (rc $_deorc) [$_deo]"; _st=1
     fi
+    # delta-floor-2900 (errata E6): the PRODUCTION floor, edge to edge. The selftest's own lowered value is unset in a subshell and the
+    # replay is stood in for by a function that answers ALLOW for every cell (a subshell-local function, no knob in the shipped file; a
+    # real replay of 2,900 cells would take ~12 min [E]). 2899 rows must refuse (rc 2, the refusal line); 2900 must pass (rc 0).
+    awk 'BEGIN { for (i = 1; i <= 2900; i++) printf "FLR %d\t%s\tallow\n", i, "bHM=" }' > "$_dd/cells.2900"
+    sed '$d' "$_dd/cells.2900" > "$_dd/cells.2899"
+    _dfl() {   # <cells file> -> output, rc in _dflrc
+      _dflo=$( unset AA_DELTA_MIN_CELLS
+               aa_replay() { awk '{ printf "ALLOW\tN-A\t-\n" }' "$2"; }
+               aa_delta_adjudicate "$1" /nonexistent-pristine /nonexistent-built ) && _dflrc=0 || _dflrc=$?
+    }
+    _dfl "$_dd/cells.2899"; _dfl1=$_dflrc; _dflo1=$_dflo
+    _dfl "$_dd/cells.2900"; _dfl2=$_dflrc; _dflo2=$_dflo
+    if [ "$_dfl1" = 2 ] && printf '%s' "$_dflo1" | grep -q 'only 2899 cells replayed' \
+       && [ "$_dfl2" = 0 ] && printf '%s' "$_dflo2" | grep -q 'delta: 2900 cells replayed, 0 changed'; then
+      echo "OK: delta-floor-2900 — 2899 cells refuse to certify (rc 2) and 2900 adjudicate clean (rc 0) on the production floor"
+    else
+      echo "nv: delta-floor-2900 — 2899 gave rc $_dfl1 [$_dflo1], 2900 gave rc $_dfl2 [$_dflo2]"; _st=1
+    fi
+    # its mutant: the floor moved back to 900 in a throwaway copy of the adjudication; the 2899 file then passes and the same test goes red
+    sed -n '/^aa_delta_adjudicate() {/,/^}/p' "$0" > "$_dd/adjf.sh"
+    sed 's/AA_DELTA_MIN_CELLS:-2900/AA_DELTA_MIN_CELLS:-900/' "$_dd/adjf.sh" > "$_dd/adjf-mut.sh"
+    if [ ! -s "$_dd/adjf.sh" ] || cmp -s "$_dd/adjf.sh" "$_dd/adjf-mut.sh"; then echo "nv: delta-floor-2900 mutant is unbound (the floor default was not found to rewrite)"; _st=1
+    else
+      _dflm=$( . "$_dd/adjf-mut.sh"; unset AA_DELTA_MIN_CELLS
+               aa_replay() { awk '{ printf "ALLOW\tN-A\t-\n" }' "$2"; }
+               aa_delta_adjudicate "$_dd/cells.2899" /nonexistent-pristine /nonexistent-built ) && _dflmr=0 || _dflmr=$?
+      if [ "$_dflmr" = 2 ]; then echo "nv: delta-floor-2900 mutant survived: a floor of 900 still refused 2899 cells"; _st=1
+      else echo "OK: delta-floor-2900-mutant — with the floor back at 900 the 2899-cell file is no longer refused"; fi
+    fi
+    # delta-floor-env: the --delta ARM itself drops an inherited AA_DELTA_MIN_CELLS. The arm's own text is lifted into a throwaway script (the
+    # real arm, run as a case on a hand-set argv), run with the variable set to 1; it must come out unset. The mutant deletes the unset line
+    # from the lifted copy and the variable must then survive, so the leg cannot pass over an arm that no longer drops it.
+    sed -n '/^  --delta)$/,/AA_DELTA=1; AA_MODE=oracle ;;$/{p;/AA_DELTA=1; AA_MODE=oracle ;;$/q;}' "$0" > "$_dd/arm.txt"
+    sed '/^    unset AA_DELTA_MIN_CELLS$/d' "$_dd/arm.txt" > "$_dd/arm-mut.txt"
+    _dfe() {   # <arm text file> -> prints the variable's value in the arm's shell after the arm ran (UNSET when dropped)
+      { printf 'case "${1:-}" in\n'; cat "$1"; printf 'esac\nprintf "%%s" "${AA_DELTA_MIN_CELLS-UNSET}"\nrm -rf "$AA_DELTA_DIR"\n'; } > "$_dd/arm-run.sh"
+      ( set -- --delta "$_dd/pristine.sh"; AA_DELTA_MIN_CELLS=1; export AA_DELTA_MIN_CELLS; . "$_dd/arm-run.sh" ) 2>/dev/null
+    }
+    if [ ! -s "$_dd/arm.txt" ] || cmp -s "$_dd/arm.txt" "$_dd/arm-mut.txt"; then echo "nv: delta-floor-env is unbound (the --delta arm or its unset line was not found)"; _st=1
+    elif [ "$(_dfe "$_dd/arm.txt")" != UNSET ]; then echo "nv: delta-floor-env — the --delta arm left an inherited AA_DELTA_MIN_CELLS in place, so a graded run could lower the floor"; _st=1
+    elif [ "$(_dfe "$_dd/arm-mut.txt")" != 1 ]; then echo "nv: delta-floor-env mutant did not keep the value, so the lift proves nothing"; _st=1
+    else echo "OK: delta-floor-env — the --delta arm drops an inherited AA_DELTA_MIN_CELLS; with its unset line deleted the value 1 survives (the mutant goes red)"; fi
+    # delta-cut-paste (SWAS-550 fix round): a cut or paste that FAILS inside the adjudication is rc 2 with a named line, never a short stream read as clean.
+    # cut and paste are shadowed by subshell-local functions that fail on ONE call (named by their arguments); the real tool serves every other call.
+    _dcpok=0; printf 'FCP one cell\t%s\tdeny\n' "$_db" > "$_dd/cells.cp"
+    for _dcpm in 'cut|-f1 *.rp|verdict stream of the PRISTINE' 'cut|-f1 *.rb|verdict stream of the BUILT' 'cut|-f2 *.rp|KS stream of the PRISTINE' \
+                 'cut|-f2 *.rb|KS stream of the BUILT' 'cut|-f3 *.rp|site stream of the PRISTINE' 'paste|3|join the verdict streams' 'paste|6|join the KS streams'; do
+      _dcpt=${_dcpm%%|*}; _dcpr=${_dcpm#*|}; _dcpa=${_dcpr%%|*}; _dcpw=${_dcpr#*|}
+      _dcpo=$( AA_FAILTOOL=$_dcpt; AA_FAILARG=$_dcpa
+               # shellcheck disable=SC2254  # the failing call's argument pattern is the point
+               cut() { if [ "$AA_FAILTOOL" = cut ]; then case "$1 $2" in ($AA_FAILARG) return 1 ;; esac; fi; command cut "$@"; }
+               paste() { if [ "$AA_FAILTOOL" = paste ] && [ "$#" = "$AA_FAILARG" ]; then return 1; fi; command paste "$@"; }
+               aa_delta_adjudicate "$_dd/cells.cp" "$_dd/pristine.sh" .claude/hooks/guard-core.sh ) && _dcprc=0 || _dcprc=$?
+      case "$_dcpo" in *"FAILED to"*"$_dcpw"*) [ "$_dcprc" = 2 ] && _dcpok=$((_dcpok + 1)) ;; esac
+    done
+    if [ "$_dcpok" = 7 ]; then echo "OK: delta-cut-paste — a failing cut (5 call sites) or paste (2) inside the adjudication is rc 2 with a named FAILED line"
+    else echo "nv: delta-cut-paste — only $_dcpok of 7 failing cut/paste calls were refused as rc 2 with a named line"; _st=1; fi
 
     # KIND-BOUND DIRECTION (I2) — the SAME widening flip, on a cell whose KIND is `allow`, under a
     # prefix that IS on the expected list. A prefix says "this label may have changed"; it may never
@@ -11847,7 +12077,7 @@ LXBLK
     fi
 
     # SWAS-301a - the MESSAGE half's new teeth (the site table and the generator leg). Each synthetic pristine puts the override
-    # sentence back at ONE site, which is what the pristine core printed there, so the legs drive the real aa_ks, aa_ks_sites and
+    # sentence back at ONE site, which is what the pristine core printed there, so the legs drive the real aa_replay and
     # aa_site_of path. (1) A WRITE-route site (E5) swaps the sentence for the R30 pointer: the observable counts both as PRESENT, so
     # nothing moves. (2) A listed label at a write-route site is the generator leg's violation. (3) A mover at a non-write-route
     # site (E9) is UNEXPECTED unless its label is listed, and is expected once it is.
@@ -11922,7 +12152,7 @@ LXBLK
     _dl=$(grep -n -F 'aa_delta_adjudicate "$AA_CELLS" "$AA_PRISTINE"' "$0" | tail -n 1 | cut -d: -f1)
     _dfc=$(grep -n -F 'aa_fc_main; fi' "$0" | tail -n 1 | cut -d: -f1)
     if [ -n "$_dl" ] && [ -n "$_dfc" ] && [ "$_dl" -gt "$_dfc" ] \
-       && [ "$(awk -v n="$_dl" 'NR > n && /^ *assert_(deny|allow|reason_has|reason_lacks|deny_reason|deny_at|allow_at)[ ]/ { c++ } END { print c + 0 }' "$0")" = 0 ]; then
+       && [ "$(awk -v n="$_dl" 'NR > n && /^ *(assert_(deny|allow|reason_has|reason_lacks|deny_reason|deny_at|allow_at)|scp_deny|gsr_[a-z_]+)[ ]/ { c++ } END { print c + 0 }' "$0")" = 0 ]; then
       echo "OK: delta-order — the delta adjudication runs after the last cell, so every cell is replayed and no recorder meets a removed work dir"
     else
       echo "nv: delta-order leg — the adjudication call (line [$_dl]) is not after the cell section's end (fork-cap line [$_dfc]) or a cell follows it"; _st=1
@@ -11947,6 +12177,221 @@ LXBLK
       if _lv "$_lmo"; then echo "nv: delta-late mutant survived: a belt removed from aa_cell_record still passed the leg [$_lmo]"; _st=1
       else echo "OK: delta-late-mutant — with the belt removed the same assertion goes red"; fi
     fi
+
+    # === SWAS-550 - the fused replay and the record-only mode: equivalence legs and their mutants ===================================
+    # THE SAMPLE (errata E3). The equivalence of the old five-pass replay with the fused one, and of a live recording with the
+    # record-only one, is proved ONCE on the full cell set, in the one-off compare step of the guard-delta job on SWAS-550's own PR (errata E5), not here; a full --delta run is ~100 min [M] and would sit in every
+    # hermetic face (each guard call costs ~0.25 s [M], so the sample is five cells). Selection rule, so a reader can check it: five
+    # commands written out by hand below, never drawn from the live corpus (so the sample cannot drift with it), the smallest set
+    # that holds one of each class the replay can tell apart: (a) both kinds, an allow and a deny; (b) all three KS states (N-A on an
+    # allow, PRESENT, ABSENT); (c) at least two distinct pristine emit sites besides '-'; (d) a command whose verdict MOVES between
+    # the real core and the synthetic one (the W16 shape), so a wrong-stream mutant has a move to lose; (e) one command per site the
+    # synthetic pristine moves or holds (E5 write-route, E9 hooksPath). The leg refuses its own sample (nv: ... vacuous) when (a)-(c)
+    # do not hold on the output it measures, and the wrong-stream leg refuses it when (d) and (e) do not show in the adjudication.
+    _dxs="$_dd/cells.sample"; : > "$_dxs"
+    _dxadd() { printf '%s\t%s\t%s\n' "$2" "$(jq -rn --arg c "$3" '$c|@base64')" "$1" >> "$_dxs"; }   # <kind> <label> <command>
+    _dxadd deny  'SX1 W16 a read verb piped into sh'      'echo "cp e .claude/hooks/guard-core.sh" | sh'
+    _dxadd deny  'SX2 write-route cp into the guard'      'cp /tmp/x .claude/hooks/guard-core.sh'
+    _dxadd deny  'SX3 core.hooksPath'                     'git config core.hooksPath /tmp/x'
+    _dxadd deny  'SX4 secret read'                        'cat .env'
+    _dxadd allow 'SX5 gh read'                            'gh pr view 5 --json x'
+    # the OLD single-purpose judging, kept here as the oracle for the fused pass: ONE guard call per observable (verdict, KS state, site),
+    # three separate calls per cell, each with the judging line the five in-process passes used before SWAS-550 (aa_verdicts, aa_ks,
+    # aa_ks_sites). The three loops are one here only to source the core once; no call is shared between them.
+    _dxr() {   # <core> <cells> <verdict-out> <ks-out> <site-out>
+      # shellcheck disable=SC1090  # naming the core to source is the point of this oracle
+      ( . "$1" >/dev/null 2>&1 || exit 9
+        while IFS="$(printf '\t')" read -r _xl _xb _xk; do
+          _xc=$(printf '%s' "$_xb" | jq -rR '@base64d' 2>/dev/null) || _xc=''
+          if ( guard_check_command "$_xc" >/dev/null 2>&1 ) </dev/null; then echo ALLOW >> "$3"; else echo DENY >> "$3"; fi
+          if _xr=$( ( guard_check_command "$_xc" 2>/dev/null ) </dev/null ); then echo N-A >> "$4"
+          else case "$_xr" in *KIT_GUARD_SELFEDIT*|*'escape card R30 cp-write'*) echo PRESENT >> "$4" ;; *) echo ABSENT >> "$4" ;; esac; fi
+          if _xr=$( ( guard_check_command "$_xc" 2>/dev/null ) </dev/null ); then echo - >> "$5"; else aa_site_of "$_xr" >> "$5"; fi
+        done < "$2" )
+    }
+    sed 's@^_cp8b_piped_interp() {@_cp8b_piped_interp() { return 1 #@' "$_dd/pristine-e5.sh" \
+      | sed '/13: git config core.hooksPath/ s@"\$(_guard_stop_pointer hooks-path)"@" Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance."@' > "$_dd/pristine-all.sh"
+    # delta-fused-equivalence: on two cores, the fused pass's three columns equal the three single-purpose passes, byte for byte,
+    # and the built-mode pass equals the first two. Then the sample must be non-vacuous.
+    : > "$_dd/fx.all"; _dxeq=1
+    for _dxcore in "$_dd/pristine-all.sh" .claude/hooks/guard-core.sh; do
+      aa_replay "$_dxcore" "$_dxs" pristine > "$_dd/fx.p"
+      : > "$_dd/rx.v"; : > "$_dd/rx.k"; : > "$_dd/rx.s"; _dxr "$_dxcore" "$_dxs" "$_dd/rx.v" "$_dd/rx.k" "$_dd/rx.s"
+      paste "$_dd/rx.v" "$_dd/rx.k" "$_dd/rx.s" > "$_dd/rx.all"
+      cmp -s "$_dd/fx.p" "$_dd/rx.all" || { echo "nv: delta-fused-equivalence — the fused PRISTINE pass differs from the single-purpose calls on $_dxcore"; _dxeq=0; }
+      cat "$_dd/fx.p" >> "$_dd/fx.all"
+      # the rows the mutant and alignment legs below replay from (their subject is the adjudication's column cuts, not the replay)
+      case "$_dxcore" in
+        "$_dd/pristine-all.sh") cp "$_dd/fx.p" "$_dd/rows.p" ;;
+        *) aa_replay "$_dxcore" "$_dxs" built > "$_dd/rows.b"   # the BUILT pass, on the core it is used on: its two columns equal the single-purpose ones
+           paste "$_dd/rx.v" "$_dd/rx.k" > "$_dd/rx.vk"; cut -f1,2 "$_dd/rows.b" > "$_dd/rows.b12"
+           cmp -s "$_dd/rows.b12" "$_dd/rx.vk" || { echo "nv: delta-fused-equivalence — the fused BUILT pass differs from the single-purpose calls on $_dxcore"; _dxeq=0; } ;;
+      esac
+    done
+    _dxvac=''
+    grep -q '^ALLOW' "$_dd/fx.all" && grep -q '^DENY' "$_dd/fx.all" || _dxvac="$_dxvac kinds"
+    for _dxks in PRESENT ABSENT N-A; do cut -f2 "$_dd/fx.all" | grep -qx "$_dxks" || _dxvac="$_dxvac ks:$_dxks"; done
+    [ "$(cut -f3 "$_dd/fx.all" | LC_ALL=C sort -u | grep -vcx -e - || :)" -ge 2 ] || _dxvac="$_dxvac sites"
+    if [ "$_dxeq" = 1 ] && [ -z "$_dxvac" ]; then echo "OK: delta-fused-equivalence — the fused passes equal the single-purpose passes on a sample covering both kinds, all three KS states and two or more emit sites (2 cores)"
+    elif [ -n "$_dxvac" ]; then echo "nv: delta-fused-equivalence — the sample is vacuous, it does not cover:$_dxvac"; _st=1
+    else _st=1; fi
+    # delta-wrong-stream-mutant: five rewritten throwaway copies of the adjudication, each cutting ONE stream from the wrong column of
+    # a pass. The sample is judged by a synthetic pristine that moves a verdict (SX1), a KS state at a listed label (SX3, site E9) and
+    # holds a write-route site (SX2, E5). Each mutant's whole output must DIFFER from the real one, and the real one must show the
+    # moves (so the streams are exercised, not equal by emptiness).
+    _dxk=$AA_EXPECTED_KS_DELTA; AA_EXPECTED_KS_DELTA='[SX3 core.hooksPath]'
+    _dxo=$(aa_delta_adjudicate "$_dxs" "$_dd/pristine-all.sh" .claude/hooks/guard-core.sh) && _dxorc=0 || _dxorc=$?
+    case "$_dxo" in
+      *'UNEXPECTED: [SX1 W16 a read verb piped into sh] moved ALLOW->DENY'*'delta-ks: 5 cells replayed, 1 changed, 1 expected, 0 unexpected'*) : ;;
+      *) echo "nv: delta-wrong-stream-mutant — the real adjudication of the sample does not show the verdict move and the listed KS mover [$_dxo]"; _st=1 ;;
+    esac
+    [ "$_dxorc" = 1 ] || { echo "nv: delta-wrong-stream-mutant — the real adjudication of the sample returned $_dxorc, not 1"; _st=1; }
+    sed -n '/^aa_delta_adjudicate() {/,/^}/p' "$0" > "$_dd/adjx.sh"
+    # CONTROL (so a mutant cannot die for the wrong reason): the UNMUTATED copy, fed the same captured rows through the same stand-in replay,
+    # must give exactly the real adjudication's output and status, with nothing on stderr. If the stand-in or the extraction were wrong, every
+    # mutant below would differ for that reason alone and "differs" would prove nothing about the stream it rewrote.
+    _dxcr=$( . "$_dd/adjx.sh"; aa_replay() { cat "$_dd/rows.${3%${3#?}}"; }
+             aa_delta_adjudicate "$_dxs" "$_dd/pristine-all.sh" .claude/hooks/guard-core.sh 2> "$_dd/adjx-ctl.err" ) && _dxcrc=0 || _dxcrc=$?
+    if [ "$_dxcr" = "$_dxo" ] && [ "$_dxcrc" = "$_dxorc" ] && [ ! -s "$_dd/adjx-ctl.err" ]; then
+      echo "OK: delta-wrong-stream-control — the unmutated copy with the captured rows equals the real adjudication (same output, rc $_dxcrc, silent stderr)"
+    else echo "nv: delta-wrong-stream-control — the unmutated copy with captured rows differs from the real adjudication (rc $_dxcrc vs $_dxorc), so the mutants below prove nothing"; _st=1; fi
+    _dxsv=0
+    for _dxm in 'W1 the pristine verdict read from the KS column|s/cut -f1 "\$_adc.rp"/cut -f2 "\$_adc.rp"/' \
+                'W2 the built verdict read from the KS column|s/cut -f1 "\$_adc.rb"/cut -f2 "\$_adc.rb"/' \
+                'W3 the pristine site read from the KS column|s/cut -f3 "\$_adc.rp"/cut -f2 "\$_adc.rp"/' \
+                'W4 the pristine KS state read from the verdict column|s/cut -f2 "\$_adc.rp" > "\$_adc.ksb"/cut -f1 "\$_adc.rp" > "\$_adc.ksb"/' \
+                'W5 the built KS state read from the verdict column|s/cut -f2 "\$_adc.rb" > "\$_adc.ksa"/cut -f1 "\$_adc.rb" > "\$_adc.ksa"/'; do
+      _dxn=${_dxm%%|*}; sed "${_dxm#*|}" "$_dd/adjx.sh" > "$_dd/adjx-mut.sh"
+      if [ ! -s "$_dd/adjx.sh" ] || cmp -s "$_dd/adjx.sh" "$_dd/adjx-mut.sh"; then echo "nv: delta-wrong-stream-mutant $_dxn is unbound (the stream line was not found to rewrite)"; _st=1; continue; fi
+      _dxmo=$( . "$_dd/adjx-mut.sh"; aa_replay() { cat "$_dd/rows.${3%${3#?}}"; }   # the rows captured above: p(ristine) or b(uilt)
+               aa_delta_adjudicate "$_dxs" "$_dd/pristine-all.sh" .claude/hooks/guard-core.sh 2> "$_dd/adjx-mut.err" ) && _dxmrc=0 || _dxmrc=$?
+      # a CRASH is not a kill: a mutant that fails to run (stderr output, a status other than 0 or 1, or a refusal line) differs from the real
+      # output for a reason that says nothing about the stream it rewrote
+      case "$_dxmrc" in 0|1) : ;; *) echo "nv: delta-wrong-stream-mutant $_dxn crashed (rc $_dxmrc), which is not a kill"; _st=1; continue ;; esac
+      if [ -s "$_dd/adjx-mut.err" ]; then echo "nv: delta-wrong-stream-mutant $_dxn wrote to stderr, which is a crash and not a kill"; _st=1; continue; fi
+      case "$_dxmo" in *'FAILED to'*|*'not aligned'*|*'refusing to certify'*) echo "nv: delta-wrong-stream-mutant $_dxn was refused by the adjudication itself, which is not a kill"; _st=1; continue ;; esac
+      if [ "$_dxmo" = "$_dxo" ] && [ "$_dxmrc" = "$_dxorc" ]; then echo "nv: delta-wrong-stream-mutant survived: $_dxn left the adjudication unchanged"; _st=1; else _dxsv=$((_dxsv + 1)); fi
+    done
+    AA_EXPECTED_KS_DELTA=$_dxk
+    [ "$_dxsv" = 5 ] && echo "OK: delta-wrong-stream-mutant — each of five wrong-stream rewrites (verdict, KS state, site; pristine and built) changes the adjudication of the sample"
+    # each pass checks alignment: a pass that loses its last row, or a column of every row, is refused with rc 2 and says so.
+    _dxal=0
+    for _dxc in "sed '\$d'" "cut -f1,2"; do
+      _dxao=$( aa_replay() { cat "$_dd/rows.${3%${3#?}}" | eval "$_dxc"; }; aa_delta_adjudicate "$_dxs" "$_dd/pristine-all.sh" .claude/hooks/guard-core.sh ) && _dxarc=0 || _dxarc=$?
+      case "$_dxao" in *'the replay is not aligned with the cells'*) [ "$_dxarc" = 2 ] && _dxal=$((_dxal + 1)) ;; esac
+    done
+    if [ "$_dxal" = 2 ]; then echo "OK: delta-align — a pass that loses a row, or a column of every row, is refused as not aligned (rc 2)"
+    else echo "nv: delta-align — a short or narrowed pass was not refused as not aligned ($_dxal of 2)"; _st=1; fi
+
+    # delta-record-equivalence: the same sample recorded LIVE (the old way: the guard runs for every cell) and RECORD-ONLY (--delta's
+    # mode: nothing spawns) gives a byte-identical cells file, the same stress count, and a byte-identical adjudication. The recorders
+    # driven are all three (assert_deny, assert_allow, scp_deny) and both gsr wrappers, plus four cells that must NOT be recorded (a
+    # Read cell, a malformed cell, a cwd cell, a named stress cell). The record-only run is handed a guard path that does not exist:
+    # a cell that spawned would print a PASS or a FAIL line, so the output must be empty.
+    _dxj() { jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
+    _dxrec() {   # <AA_MODE> <cells-out> <guard> [<file of function definitions to source first>] -> prints what the helpers print
+      # shellcheck disable=SC1090  # the file of function definitions is chosen per run by this leg
+      ( [ -z "${4:-}" ] || . "$4"
+        AA_DELTA=1; AA_MODE=$1; AA_CELLS=$2; : > "$AA_CELLS"; AA_STRESS_N=0; GUARD=$3; fail=0; _dxsid=SC-D27
+        assert_deny  "SY1 deny sample"  "$(_dxj 'rm -rf /tmp/x')"
+        assert_allow "SY2 allow sample" "$(_dxj 'ls -la')"
+        scp_deny "$GUARD" "SY3 copy-family sample" "$(_dxj 'cp .env x')" A
+        scp_deny "$GUARD" "$_dxsid stress sample" "$(_dxj 'cp .env y')" A   # a named stress id, held in a variable so GD10's line count of the real cells stays exact
+        gsr_deny  "SY5 wrapper deny sample"  'rm -rf /tmp/x2'
+        gsr_allow "SY6 wrapper allow sample" 'ls -l'
+        assert_allow "SY7 read cell" '{"tool_name":"Read","tool_input":{"file_path":"CLAUDE.md"}}'
+        assert_deny  "SY8 malformed cell" 'not json at all'
+        assert_deny  "SY9 cwd cell" '{"cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls"}}'
+        printf '%s\n' "$AA_STRESS_N" > "$2.n" ) 2>&1
+    }
+    _dxlo=$(_dxrec run "$_dd/rec.live" "$GUARD"); _dxro=$(_dxrec oracle "$_dd/rec.only" /nonexistent-guard)
+    _dxlr=$(aa_delta_adjudicate "$_dd/rec.live" "$_dd/pristine.sh" .claude/hooks/guard-core.sh) || :
+    _dxrr=$(aa_delta_adjudicate "$_dd/rec.only" "$_dd/pristine.sh" .claude/hooks/guard-core.sh) || :
+    if [ -z "$_dxro" ] && cmp -s "$_dd/rec.live" "$_dd/rec.only" && cmp -s "$_dd/rec.live.n" "$_dd/rec.only.n" \
+       && [ "$(wc -l < "$_dd/rec.only" | tr -d ' ')" = 5 ] && [ "$(cat "$_dd/rec.only.n")" = 1 ] && [ "$_dxlr" = "$_dxrr" ] && [ -n "$_dxlr" ]; then
+      echo "OK: delta-record-equivalence — record-only collects the same 5 cells as a live recording (3 recorders, both wrappers; Read, malformed, cwd and stress cells left out), spawns nothing, and adjudicates identically"
+    else
+      echo "nv: delta-record-equivalence — live and record-only differ (record-only output [$_dxro], cells $(wc -l < "$_dd/rec.only" | tr -d ' ') vs $(wc -l < "$_dd/rec.live" | tr -d ' '), stress [$(cat "$_dd/rec.only.n" 2>/dev/null)] vs [$(cat "$_dd/rec.live.n" 2>/dev/null)])"; _st=1
+    fi
+    # its mutants: the recorder moved back AFTER the gate (assert_deny), and a gsr wrapper that tests the gate first. Each throwaway
+    # copy loses ITS OWN cells (SY1; SY5 and SY6) and the same comparison goes red.
+    sed -n '/^assert_deny() {/,/^}/p' "$0" > "$_dd/real-order.sh"
+    awk 'NR == 2 { a = $0; next } NR == 3 { print; print a; next } { print }' "$_dd/real-order.sh" > "$_dd/mut-order.sh"
+    { sed -n '/^gsr_deny() /p' "$0"; sed -n '/^gsr_allow() /p' "$0"; } > "$_dd/real-gsr.sh"
+    sed 's/\[ "\$AA_DELTA" = 1 \] || { aa_cell_skip "\$1" && return 0; }; /aa_cell_skip "$1" \&\& return 0; /' "$_dd/real-gsr.sh" > "$_dd/mut-gsr.sh"
+    _dxmo1=$(_dxrec oracle "$_dd/rec.m1" /nonexistent-guard "$_dd/mut-order.sh") || :
+    _dxmo2=$(_dxrec oracle "$_dd/rec.m2" /nonexistent-guard "$_dd/mut-gsr.sh") || :
+    if cmp -s "$_dd/rec.live" "$_dd/rec.m1" || grep -qF 'SY1' "$_dd/rec.m1" 2>/dev/null; then echo "nv: delta-record-equivalence mutant survived: the recorder after the gate still collected the assert_deny cell"; _st=1
+    elif cmp -s "$_dd/rec.live" "$_dd/rec.m2" || grep -qF 'SY5' "$_dd/rec.m2" 2>/dev/null || grep -qF 'SY6' "$_dd/rec.m2" 2>/dev/null; then echo "nv: delta-record-equivalence mutant survived: a wrapper that tests the gate first still collected its cells"; _st=1
+    elif [ ! -s "$_dd/mut-order.sh" ] || [ ! -s "$_dd/mut-gsr.sh" ] || cmp -s "$_dd/mut-order.sh" "$_dd/real-order.sh" || cmp -s "$_dd/mut-gsr.sh" "$_dd/real-gsr.sh"; then echo "nv: delta-record-equivalence mutants are unbound (the order or the wrapper test was not found to rewrite)"; _st=1
+    else echo "OK: delta-record-equivalence-mutant — a recorder placed after the gate loses its cell, and a wrapper that tests the gate first loses its two, so the same comparison goes red"; fi
+
+    # bare-checks-still-required: outside --delta a run that misses the NOH non-vacuity floor, a named NOH cell, or the completeness
+    # floor still REDs, each by its own message. The bottom of the file (from the NOH marker to the end) is lifted into a throwaway
+    # script with its inputs preset, so it runs in seconds; two throwaway rewrites (the NOH test dropped, the completeness call dropped)
+    # must each turn the same assertion red.
+    _dxt="$_dd/bare-tail.sh"
+    if [ "$(grep -c '^# SWAS-301a NOH-L2 non-vacuity: the locks inside assert_deny' "$0")" = 1 ]; then
+      awk '/^# SWAS-301a NOH-L2 non-vacuity: the locks inside assert_deny/ { p = 1 } p { print }' "$0" > "$_dxt"
+      _dxbare() {   # <tail file> <noh-n> <noh-seen> <cells-run> -> output (rc in _dxbrc)
+        { printf 'set -eu\nfail=0\nAA_MODE=run\nAA_DELTA=0\nAA_T0=0\nAA_NOH_N=%s\nAA_NOH_NEED=%s\nAA_NOH_SEEN=%s\nAA_CELLS_RUN=%s\nAA_CELL_FLOOR=3521\n' "$2" "'|c1|'" "'$3'" "$4"
+          sed -n '/^aa_completeness() {/,/^}/p' "$0"; cat "$1"; } > "$_dd/bare-run.sh"
+        _dxbrc=0; sh "$_dd/bare-run.sh" 2>&1 || _dxbrc=$?
+        printf 'rc=%s\n' "$_dxbrc"
+      }
+      _dxbok() {   # <tail file> -> 0 iff the four expected outcomes hold (each output ends in its exit status)
+        _dxb1=$(_dxbare "$1" 5 '|c1|' 3521); case "$_dxb1" in *'examined only 5 denies'*'rc=1') : ;; *) return 1 ;; esac
+        _dxb2=$(_dxbare "$1" 1001 '|' 3521); case "$_dxb2" in *'the named cell [c1] was not examined'*'rc=1') : ;; *) return 1 ;; esac
+        _dxb3=$(_dxbare "$1" 1001 '|c1|' 3); case "$_dxb3" in *'ran 3 cells, below the floor 3521'*'rc=1') : ;; *) return 1 ;; esac
+        _dxb4=$(_dxbare "$1" 1001 '|c1|' 3521); case "$_dxb4" in 'OK: NOH-L2/P1/P3 examined 1001 denies'*'OK: agent-autonomy guard denies'*'rc=0') : ;; *) return 1 ;; esac
+        return 0
+      }
+      sed 's/^if \[ "\$AA_MODE" = run \]; then$/if false; then/' "$_dxt" > "$_dd/bare-m1.sh"
+      sed 's/^if aa_completeness .*$/:/' "$_dxt" > "$_dd/bare-m2.sh"
+      if _dxbok "$_dxt"; then
+        if cmp -s "$_dxt" "$_dd/bare-m1.sh" || cmp -s "$_dxt" "$_dd/bare-m2.sh"; then echo "nv: bare-checks-still-required mutants are unbound (the NOH test or the completeness call was not found to rewrite)"; _st=1
+        elif _dxbok "$_dd/bare-m1.sh"; then echo "nv: bare-checks-still-required mutant survived: with the NOH test dropped the four outcomes still held"; _st=1
+        elif _dxbok "$_dd/bare-m2.sh"; then echo "nv: bare-checks-still-required mutant survived: with the completeness call dropped the four outcomes still held"; _st=1
+        else echo "OK: bare-checks-still-required — a bare run still reds on a low NOH count, an unexamined named cell and a cell count under the floor, and passes when all hold; dropping either check turns the same assertion red"; fi
+      else echo "nv: bare-checks-still-required — the lifted bottom of the file does not give the four expected outcomes (low NOH count, unexamined named cell, count under the floor, all green)"; _st=1; fi
+    else echo "nv: bare-checks-still-required — the NOH marker line is not found exactly once, so the bottom of the file cannot be lifted"; _st=1; fi
+
+    # delta-record-sites (errata E5/E6): the STATIC lock. No recorder sits inside a block gated by aa_cell_skip and no wrapper tests the gate before it
+    # records (GTM-G21 alone is entered under --delta, by its || [ "$AA_DELTA" = 1 ] clause). It reads the file as text, so it costs no guard spawn.
+    # Non-vacuity: it must have SEEN gated blocks (the floor below is the count measured at build, [M]). Three mutants on rewritten throwaway copies
+    # of this file, each watched red by its OWN reason: a recorder planted in a gated block, a gate-first wrapper, and G21 with its clause deleted.
+    aa_gblk_scan "$0" > "$_dd/gb.real"
+    _gbn=$(awk '$1 == "BLOCKS" { print $2 }' "$_dd/gb.real"); _gbr=$(awk '$1 == "RED"' "$_dd/gb.real" | wc -l | tr -d ' ')
+    if [ "$_gbr" = 0 ] && [ "${_gbn:-0}" -ge 40 ]; then echo "OK: delta-record-sites — no recorder inside any of $_gbn gated blocks, no gate-first wrapper (GTM-G21 the one delta-entered block)"
+    else echo "nv: delta-record-sites — $_gbr violation(s) over ${_gbn:-0} gated blocks (floor 40) [$(awk '$1 == "RED"' "$_dd/gb.real" | head -n 3)]"; _st=1; fi
+    _gbk() {   # <label> <mutant file> <wanted reason> -> counts a kill only when the lock reds with THAT reason
+      aa_gblk_scan "$2" > "$_dd/gb.out"
+      if cmp -s "$0" "$2"; then echo "nv: delta-record-sites mutant $1 is unbound (the rewrite matched nothing)"; _st=1
+      elif grep -qF -e "$3" "$_dd/gb.out"; then echo "OK: delta-record-sites-mutant — $1 reds the lock ($3)"
+      else echo "nv: delta-record-sites mutant $1 survived: the lock did not red with [$3] [$(head -n 2 "$_dd/gb.out")]"; _st=1; fi
+    }
+    awk -v P='  assert_deny "planted" "$1"' '{ print } index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P }' "$0" > "$_dd/gb-m1.sh"
+    _gbk "a recorder planted in a gated block" "$_dd/gb-m1.sh" 'recorder inside a block gated by aa_cell_skip (gate NOH-L1'
+    sed 's/\[ "\$AA_DELTA" = 1 \] || { aa_cell_skip "\$1" && return 0; }; /aa_cell_skip "$1" \&\& return 0; /' "$0" > "$_dd/gb-m2.sh"
+    _gbk "a wrapper that gates before it records" "$_dd/gb-m2.sh" 'the gate is tested before the recorder on one line'
+    sed 's/\(if ! aa_cell_skip "GTM-G21"\) || \[ "\$AA_DELTA" = 1 \]/\1/' "$0" > "$_dd/gb-m3.sh"
+    _gbk "GTM-G21 without its delta clause" "$_dd/gb-m3.sh" 'recorder inside a block gated by aa_cell_skip (gate GTM-G21'
+    # the shapes the first read could not see (fix round 2): a recorder with a single-quoted label, a one-line if-led gate, a multi-line
+    # `if [ .. ] && ! aa_cell_skip`, and an `elif aa_cell_skip` whose outer if is no gate. Each planted before the NOH-L1 gate line (column 0).
+    _gbp() {   # <out file> <lines to plant, \n-separated>
+      awk -v P="$2" 'index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P } { print }' "$0" > "$1"
+    }
+    awk -v P="  assert_deny 'planted' '{}'" '{ print } index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P }' "$0" > "$_dd/gb-m4.sh"
+    _gbk "a single-quoted-label recorder in a gated block" "$_dd/gb-m4.sh" 'recorder inside a block gated by aa_cell_skip (gate NOH-L1'
+    # (the plants are spelled through two variables so that no line of THIS file holds a gate and a recorder together, which the lock would read)
+    _gbs=aa_cell_skip
+    _gbr=assert_deny
+    _gbp "$_dd/gb-m5.sh" "if ! $_gbs \"PLANT1\"; then $_gbr \"p\" \"\$1\"; fi"
+    _gbk "a one-line if-led gate before a recorder" "$_dd/gb-m5.sh" 'the gate is tested before the recorder on one line'
+    _gbp "$_dd/gb-m6.sh" "if [ \"\$AA_DELTA\" = 0 ] && ! $_gbs \"PLANT2\"; then\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "a multi-line if [ .. ] && ! gate" "$_dd/gb-m6.sh" 'recorder inside a block gated by aa_cell_skip (gate PLANT2'
+    _gbp "$_dd/gb-m7.sh" "if false; then :\nelif $_gbs \"PLANT3\"; then :\nelse\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "an elif gate whose outer if is no gate" "$_dd/gb-m7.sh" 'recorder inside a block gated by aa_cell_skip (gate PLANT3'
     rm -rf "$_dd"
   else
     # Infrastructure failure is NOT a pass: the legs did not prove themselves, so the selftest must
@@ -12341,9 +12786,59 @@ LXBLK
     AA_FC_ORIGPATH=$_fcn_op; AA_FC_TMP=$_fcn_ot
   fi
   [ -z "$_fcn_d" ] || rm -rf "$_fcn_d"
+  # === SWAS-604 AA-SFE: a FAIL line printed by an UNGATED top-level leg makes --selftest exit non-zero ===
+  # The top-level `fail` is read by nothing in the old dispatch (`selftest; exit $?`), so a FAIL line then an OK line then rc 0.
+  # A throwaway script holds the REAL aa_selftest_exit text and the ONE real dispatch line (copied out of this file, no knob), a stub
+  # selftest and a planted `fail=1`. Planted: rc 1, a line-start FAIL: line, no OK line. Clean twin: rc 0 and the OK line.
+  # Mutant: the old dispatch restored; the planted run must then give rc 0 (the cell sees this defect).
+  _sf_nl='
+'
+  _sf_fn=$(awk '/^aa_selftest_exit[(][)] [{]/ { p = 1 } p { print } p && /^}/ { exit }' "$0")
+  _sf_dp=$(awk '/^case "[$][{]1:-[}]" in --selftest[)]/ && /aa_selftest_exit/ { print }' "$0")
+  _sf_n=$(awk '/^case "[$][{]1:-[}]" in --selftest[)]/ && /aa_selftest_exit/ { n++ } END { print n + 0 }' "$0")
+  _sf_d=$(mktemp -d "${TMPDIR:-/tmp}/aa-sfe.XXXXXX") || _sf_d=''
+  if [ -z "$_sf_d" ]; then echo "nv: AA-SFE mktemp failed"; _st=1
+  elif [ "$_sf_n" != 1 ] || [ -z "$_sf_fn" ]; then echo "nv: AA-SFE the copy needs the aa_selftest_exit function and EXACTLY ONE dispatch line naming it (found function [${_sf_fn:+yes}], $_sf_n dispatch lines)"; _st=1
+  else
+    for _sf_v in planted clean; do
+      { printf '%s\n' 'set -eu' 'fail=0' '_st=0' '_fla=x' 'selftest() { return 0; }'; printf '%s\n' "$_sf_fn"
+        if [ "$_sf_v" = planted ]; then printf '%s\n' 'echo "FAIL planted"; fail=1'; fi
+        printf '%s\n' "$_sf_dp"; } > "$_sf_d/$_sf_v.sh"
+    done
+    sed 's/_aa_top=[$]fail; selftest; aa_selftest_exit "[$]_aa_top"; exit [$]?/selftest; exit $?/' "$_sf_d/planted.sh" > "$_sf_d/mutant.sh"
+    if cmp -s "$_sf_d/planted.sh" "$_sf_d/mutant.sh"; then echo "nv: AA-SFE the old-dispatch mutant changed nothing (nothing to mutate)"; _st=1; fi
+    _sf_prc=0; _sf_po=$(sh "$_sf_d/planted.sh" --selftest 2>&1) || _sf_prc=$?
+    _sf_crc=0; _sf_co=$(sh "$_sf_d/clean.sh" --selftest 2>&1) || _sf_crc=$?
+    _sf_mrc=0; _sf_mo=$(sh "$_sf_d/mutant.sh" --selftest 2>&1) || _sf_mrc=$?
+    [ "$_sf_prc" = 1 ] || { echo "nv: AA-SFE a planted ungated FAIL exited $_sf_prc, not 1"; _st=1; }
+    case "$_sf_nl$_sf_po" in
+      *"${_sf_nl}FAIL: agent-autonomy --selftest"*) : ;;
+      *) echo "nv: AA-SFE the planted run printed no line-start FAIL: agent-autonomy --selftest line"; _st=1 ;;
+    esac
+    case "$_sf_nl$_sf_po" in
+      *"${_sf_nl}OK: agent-autonomy selftest"*) echo "nv: AA-SFE an OK line was printed beside the planted FAIL"; _st=1 ;;
+    esac
+    [ "$_sf_crc" = 0 ] || { echo "nv: AA-SFE the clean twin exited $_sf_crc, not 0"; _st=1; }
+    case "$_sf_nl$_sf_co" in
+      *"${_sf_nl}OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: x"*) : ;;
+      *) echo "nv: AA-SFE the clean twin did not print the OK line"; _st=1 ;;
+    esac
+    [ "$_sf_mrc" = 0 ] || { echo "nv: AA-SFE the old-dispatch mutant exited $_sf_mrc on the planted FAIL, not 0 (the cell cannot see this defect)"; _st=1; }
+    rm -rf "$_sf_d"
+  fi
   AA_MODE=$_st_mode; fail=$_save
-  [ "$_st" = 0 ] && echo "OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: $_fla"
   return $_st
+}
+# SWAS-604: the exit the --selftest dispatch takes. <top> is the top-level `fail` the dispatch captured BEFORE selftest ran: an
+# ungated cell that printed FAIL left it at 1 and, until now, nothing read it. It also reads the global `_st`, so the fold holds if a
+# top-level `set +e` is ever added. The OK line is printed here, and only on a green exit, so it never sits beside a FAIL.
+aa_selftest_exit() {
+  if [ "$1" != 0 ] || [ "$_st" != 0 ]; then
+    echo "FAIL: agent-autonomy --selftest — an ungated top-level leg or a selftest leg failed (see the FAIL or nv: line above)"
+    return 1
+  fi
+  echo "OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: $_fla"
+  return 0
 }
 # =============================================================================================
 # B2-SESSION-IDENTITY-LEDGER — the claim-ref arm, four views day one (design decision 5).
@@ -13107,7 +13602,7 @@ assert_deny "GTM-Q15 cp -tGLOB glued" '{"tool_name":"Bash","tool_input":{"comman
 assert_deny "GTM-Q16 sed -i on a glob skill file" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ sk*/build/SKILL.md"}}'
 assert_allow "GTM-Q17 pin: sed without -i on a glob (a read)" '{"tool_name":"Bash","tool_input":{"command":"sed -n 1p sk*/build/SKILL.md"}}'
 # R3: a huge SOURCE glob must neither time out nor deny: only the destination of cp/install/mv is walked
-if ! aa_cell_skip "GTM-G21"; then
+if ! aa_cell_skip "GTM-G21" || [ "$AA_DELTA" = 1 ]; then   # SWAS-550: the block holds a recorded cell and its fixture, so --delta enters it (the assert_allow below records, then skips)
   aa_shard_nest   # SWAS-374: the assert_allow below is a gate inside this one
   _g21=$(mktemp -d /tmp/gtmg21.XXXXXX) && { GPAB_TRASH="$GPAB_TRASH $_g21"; awk 'BEGIN { for (i = 1; i <= 20000; i++) print "f" i }' | (cd "$_g21" && xargs touch); }
   _g21t0=$(date +%s)
@@ -14493,8 +14988,9 @@ if [ "${GPAB_G:-}" != "" ]; then
 
   # === SWAS-278a fix round 2 (security I1: a clone-controlled key name reaches the deny JSON; hardlink L-a, L-b) ================
   # S1: a quoted config subsection holding a TAB, an ESC, a quote and a backslash is the offending key of a declined G4. The deny must stay valid JSON, a deny,
-  # name the key only in the sanitised charset [A-Za-z0-9._-] (capped), and carry no control byte. Two mutants: the sanitiser dropped (the key is then
-  # escaped by json_escape alone, so the NAMED text differs: killed), and the sanitiser AND json_escape's control-byte strip dropped (invalid JSON: killed).
+  # name the key as section.*.variable (the subsection is withheld, SWAS-689; the printed charset is [A-Za-z0-9._*-], capped), and carry no control byte.
+  # Two mutants: the mask and the sanitiser dropped together (MS1: the raw key is then escaped by json_escape alone, so the NAMED text differs: killed),
+  # and the sanitiser AND json_escape's control-byte strip dropped (invalid JSON: killed). The mask alone is proved by MS3, the cap by MS4.
   gx_wsc="$GPAB_TMP/gxcl-ws"; gx_mkclone "$gx_wsc"; printf '[x "a\t\033q\\"z\\\\w"]\n\tv = 1\n' >> "$gx_wsc/.git/config"
   gx_jsonok() {   # <command> <wanted substring>: 0 iff the hook's output is valid JSON, a deny, names the wanted text, and holds no control byte
     gx_jo=$(printf '%s' "$(gx_in "$gx_R" "$1")" | sh "$GX_G" 2>/dev/null) || :
@@ -14507,13 +15003,13 @@ if [ "${GPAB_G:-}" != "" ]; then
   }
   aa_cell_skip "SWAS278A-S1" || {
     gx_wsq="cd $gx_wsc && sh $gx_R/scripts/board.sh show SWAS-1"
-    if gx_jsonok "$gx_wsq" "config-key x.aqzw.v"; then echo "PASS deny : SWAS278A-S1 a hostile config-key name is sanitised: valid JSON, a deny, naming x.aqzw.v, no control byte"
-    else echo "FAIL (hostile key name): SWAS278A-S1 the deny is not valid JSON, not a deny, or does not name the sanitised key"; fail=1; fi
+    if gx_jsonok "$gx_wsq" "config-key x.*.v"; then echo "PASS deny : SWAS278A-S1 a hostile config-key name is masked: valid JSON, a deny, naming x.*.v, no control byte"
+    else echo "FAIL (hostile key name): SWAS278A-S1 the deny is not valid JSON, not a deny, or does not name the masked key"; fail=1; fi
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     sed '/# G-WHY-CLEAN$/s/.*/  _gcl=$1/' "$GPAB_TMP/gc.pristine" > "$GX_GC"
     if cmp -s "$GPAB_TMP/gc.pristine" "$GX_GC" || ! sh -n "$GX_GC" 2>/dev/null; then echo "FAIL mutant : SWAS278A-MS1 — the mutation matched nothing or does not parse"; fail=1
-    elif gx_jsonok "$gx_wsq" "config-key x.aqzw.v"; then echo "FAIL mutant : SWAS278A-MS1 — the sanitiser dropped and S1 still passed; the leg proves nothing"; fail=1
-    else echo "PASS mutant : SWAS278A-MS1 (the sanitiser dropped: S1 reds)"; fi
+    elif gx_jsonok "$gx_wsq" "config-key x.*.v"; then echo "FAIL mutant : SWAS278A-MS1 — the raw key replaced the cleaned one and S1 still passed; the leg proves nothing"; fail=1
+    else echo "PASS mutant : SWAS278A-MS1 (the raw key printed in place of the mask and the sanitiser: S1 reds)"; fi
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     sed '/# G-JSON-CTRL$/s/LC_ALL=C tr [^|]* | //' "$GUARD" > "$GX_G"
     if cmp -s "$GUARD" "$GX_G"; then echo "FAIL mutant : SWAS278A-MS2 — the json_escape mutation matched nothing"; fail=1
@@ -14521,6 +15017,78 @@ if [ "${GPAB_G:-}" != "" ]; then
     else echo "FAIL mutant : SWAS278A-MS2 — both dropped and the output still parsed; the leg proves nothing"; fail=1; fi
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     cp "$GPAB_TMP/gc.pristine" "$GX_GC"; cp "$GUARD" "$GX_G"
+  }
+  # SWAS-689 (S2, S3, S4, MS3, MS4): the refusal prints section.*.variable, withholding the subsection (S5 pins the measured exception) (a URL rule's middle part can hold a credential).
+  # The fixtures hold only the fake word FAKEMARKERNOTASECRET, never a token shape. Both matches are on fixed strings (quoted case patterns), so the
+  # `*` of url.*.insteadof is a literal. S5 and MS5 (measured, git 2.48): a NUL inside a subsection makes git print the key cut at the NUL, with no variable,
+  # so the mask finds no second dot and misses it; the tr is then what reduces it, and S5 pins that reduced text (a ceiling, not a cure: it still holds the
+  # marker). The NUL is built at run time, never written into a file of the kit.
+  gx_wsq="cd $gx_wsc && sh $gx_R/scripts/board.sh show SWAS-1"   # S1's command, set again so MS3 does not lean on S1's block having run
+  gx_nl() {   # <cwd> <command> <wanted> <absent>: 0 iff the hook denies, names <wanted> and does not hold <absent>
+    gx_nlo=$(printf '%s' "$(gx_in "$1" "$2")" | sh "$GX_G" 2>/dev/null) || :
+    case "$gx_nlo" in
+      *'"permissionDecision":"deny"'*"$3"*) : ;;
+      *) return 1 ;;
+    esac
+    case "$gx_nlo" in
+      *"$4"*) return 1 ;;
+    esac
+    return 0
+  }
+  gx_c689="$GPAB_TMP/gxcl689"; gx_mkclone "$gx_c689"; gx_cfg "$gx_c689" 'url.http://x:FAKEMARKERNOTASECRET@127.0.0.1:1/.insteadof' x
+  gx_s80=$(awk 'BEGIN { for (i = 0; i < 80; i++) printf "a" }'); gx_w64=$(printf '%s' "$gx_s80" | cut -c1-64); gx_w65=$(printf '%s' "$gx_s80" | cut -c1-65)
+  gx_c689b="$GPAB_TMP/gxcl689b"; gx_mkclone "$gx_c689b"; gx_cfg "$gx_c689b" "$gx_s80.x.v" 1
+  gx_g4a="sh $gx_R/scripts/board.sh show SWAS-1"; gx_g5a='pipx run semgrep==1.181.0 --config p/default --metrics=off conformance/x.sh'
+  gx_s2() { gx_nl "$gx_R" "cd $gx_c689 && $gx_g4a" "config-key url.*.insteadof" FAKEMARKERNOTASECRET \
+              && gx_nl "$gx_c689" "$gx_g4a" "config-key url.*.insteadof" FAKEMARKERNOTASECRET; }
+  gx_s3() { gx_nl "$gx_R" "cd $gx_c689 && $gx_g5a" "config-key url.*.insteadof" FAKEMARKERNOTASECRET \
+              && gx_nl "$gx_c689" "$gx_g5a" "config-key url.*.insteadof" FAKEMARKERNOTASECRET; }
+  gx_s4() { gx_nl "$gx_R" "cd $gx_c689b && $gx_g4a" "config-key $gx_w64" "$gx_w65"; }
+  gx_c689n="$GPAB_TMP/gxcl689n"; gx_mkclone "$gx_c689n"; printf '[url "http://x:FAKEMARKERNOTASECRET\000"]\n\tinsteadof = y\n' >> "$gx_c689n/.git/config"
+  gx_s5() { gx_nl "$gx_R" "cd $gx_c689n && $gx_g4a" "config-key url.httpxFAKEMARKERNOTASECRET" "x:FAKEMARKER"; }   # the tr reduced the cut key; "x:FAKEMARKER" is the tr-less form
+  aa_cell_skip "SWAS278A-S2" || {
+    if gx_s2; then echo "PASS deny : SWAS278A-S2 G4 on a credential-shaped subsection names url.*.insteadof and lacks the marker (cd and cwd forms)"
+    else echo "FAIL (subsection printed): SWAS278A-S2 the G4 deny does not name config-key url.*.insteadof, or holds the marker"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  aa_cell_skip "SWAS278A-S3" || {
+    if gx_s3; then echo "PASS deny : SWAS278A-S3 G5 on a credential-shaped subsection names url.*.insteadof and lacks the marker (cd and cwd forms)"
+    else echo "FAIL (subsection printed): SWAS278A-S3 the G5 deny does not name config-key url.*.insteadof, or holds the marker"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  aa_cell_skip "SWAS278A-S4" || {
+    if gx_s4; then echo "PASS deny : SWAS278A-S4 an 80-byte section name is printed as its first 64 bytes"
+    else echo "FAIL (cap): SWAS278A-S4 the deny does not name the 64-byte form, or holds the 65-byte form"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  aa_cell_skip "SWAS278A-S5" || {
+    if gx_s5; then echo "PASS deny : SWAS278A-S5 a NUL-cut key (no variable, so unmasked) is printed reduced by the tr; it still holds the marker (a ceiling, pinned)"
+    else echo "FAIL (tr): SWAS278A-S5 the deny does not name the tr-reduced cut key, or holds the unreduced form"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  aa_cell_skip "SWAS278A-MS5" || {
+    sed "/# G-WHY-CLEAN\$/s/LC_ALL=C tr [^|]*| //" "$GPAB_TMP/gc.pristine" > "$GX_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GX_GC" || ! sh -n "$GX_GC" 2>/dev/null; then echo "FAIL mutant : SWAS278A-MS5 — the mutation matched nothing or does not parse"; fail=1
+    elif gx_s5; then echo "FAIL mutant : SWAS278A-MS5 — the tr dropped and S5 still passed; the leg proves nothing"; fail=1
+    else echo "PASS mutant : SWAS278A-MS5 (the tr dropped: S5 reds)"; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    cp "$GPAB_TMP/gc.pristine" "$GX_GC"
+  }
+  aa_cell_skip "SWAS278A-MS3" || {
+    sed '/# G-WHY-MASK$/s/.*/    *.*) : ;;/' "$GPAB_TMP/gc.pristine" > "$GX_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GX_GC" || ! sh -n "$GX_GC" 2>/dev/null; then echo "FAIL mutant : SWAS278A-MS3 — the mutation matched nothing or does not parse"; fail=1
+    elif gx_jsonok "$gx_wsq" "config-key x.*.v" || gx_s2; then echo "FAIL mutant : SWAS278A-MS3 — the mask dropped and S1 or S2 still passed; the leg proves nothing"; fail=1
+    else echo "PASS mutant : SWAS278A-MS3 (the mask dropped, the sanitiser kept: S1 and S2 red)"; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    cp "$GPAB_TMP/gc.pristine" "$GX_GC"
+  }
+  aa_cell_skip "SWAS278A-MS4" || {
+    sed '/# G-WHY-CLEAN$/s/ | cut -c1-64//' "$GPAB_TMP/gc.pristine" > "$GX_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GX_GC" || ! sh -n "$GX_GC" 2>/dev/null; then echo "FAIL mutant : SWAS278A-MS4 — the mutation matched nothing or does not parse"; fail=1
+    elif gx_s4; then echo "FAIL mutant : SWAS278A-MS4 — the cap dropped and S4 still passed; the leg proves nothing"; fail=1
+    else echo "PASS mutant : SWAS278A-MS4 (the 64-byte cap dropped: S4 reds)"; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    cp "$GPAB_TMP/gc.pristine" "$GX_GC"
   }
   # L-a / L-b (hardlink): the any-name search does not prune .git/lfs, and a name it cannot confirm fails SAFE (a deny with remedy text), not open.
   if [ "$gx_hl" = 1 ]; then
@@ -15597,9 +16165,15 @@ if [ "$AA_DELTA" = 1 ]; then
   if [ "$AA_STRESS_N" -ne "$AA_STRESS_PIN" ]; then echo "delta: FAIL - $AA_STRESS_N stress cells were excluded, the pinned count is $AA_STRESS_PIN (AA_DELTA_STRESS, GD10)"; fail=1; fi
   aa_delta_adjudicate "$AA_CELLS" "$AA_PRISTINE" ".claude/hooks/guard-core.sh" || fail=1
   AA_DELTA_DONE=1
+  # SWAS-550: a --delta run spawns no guard for the cells it records, so the two anchors below the cell section (the NOH locks'
+  # non-vacuity count and the completeness floor) have nothing to count and are NOT run here. Its own anchors are the cell floor
+  # (AA_DELTA_MIN_CELLS, 2900; errata E6) inside the adjudication (raised from 900 to 2900 by SWAS-550) and the stress pin above (still 9). A bare run never enters this block.
+  if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
+  echo "OK: agent-autonomy --delta recorded and replayed the cells wall=$(( $(date +%s) - AA_T0 ))"
+  exit 0
 fi
 
-case "${1:-}" in --selftest) selftest; exit $? ;; esac
+case "${1:-}" in --selftest) _aa_top=$fail; selftest; aa_selftest_exit "$_aa_top"; exit $? ;; esac
 
 # THE COMPLETENESS ANCHOR (GUARD-CORPUS-RUNTIME). A graded pass must have EXECUTED at least this many
 # cells. ⚠️ A LITERAL assignment, never `${AA_CELL_FLOOR:-…}`: an env-overridable floor would let
@@ -15684,7 +16258,9 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 #     (SC-M1 to SC-M6, SC-M8 to SC-M21, SC-M23, SC-M25 to SC-M27, SC-M29, SC-M31, SC-M32, SC-M32b, SC-M32c, SC-M33, SC-M36, SC-M38 to
 #     SC-M45) and 1 scp_mut_lacks cell (SC-M22), and the SC-T1 timing leg (it spawns the guard) -> 3373 + 148 = 3521. The static SC-C1
 #     coupling and its two mutants spawn no guard and are not counted.
-AA_CELL_FLOOR=3521
+#   + SWAS-689 (the refusal withholds a config key's subsection): 7 counted cells in the SWAS278A block (S2, S3, S4, S5, MS3, MS4, MS5), none
+#     behind a skip -> 3521 + 7 = 3528. Counted from the diff, not measured.
+AA_CELL_FLOOR=3528
 # SWAS-374: the bottoms of --list-cells and --shard (the bare path and every other mode never reach these two lines).
 if [ "$AA_MODE" = list ]; then exit 0; fi
 if [ "$AA_MODE" = shard ]; then aa_shard_finish && exit 0; exit 1; fi

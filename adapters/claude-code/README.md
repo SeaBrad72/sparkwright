@@ -23,7 +23,7 @@ This adapter declares Claude Code's binding to the universal governance layer. I
 | `review-roles` | **native** | Dedicated subagents (`reviewer.md`, `security-reviewer.md`) enforce builder ≠ reviewer |
 | `mcp-gate` | **native** | `guard_check_mcp` + `mcp-policy.json` gate MCP tool calls inline |
 | `orchestration` | **native** | `.claude/agents/orchestrator.md` + `engineer.md` dispatch the kit's seats as native subagents |
-| `model-tiering` | **native** | `conformance/model-map-binding.sh` proves the per-seat model map is bound, not just declared |
+| `model-tiering` | **native** | the proof is that `.claude/agents/orchestrator.md` exists, the dispatch surface that reads the tier map; it does not check what that file says |
 
 These seven are the whole contract — the dimension set is **closed**, so a key outside them is a manifest FAIL.
 

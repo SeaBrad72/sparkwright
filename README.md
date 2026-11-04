@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.243.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
+`v3.244.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
 Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -89,7 +89,7 @@ Sparkwright is at the **`release-candidate`** stage — hardened, dogfooded, and
 
 ## Harness-neutral
 
-Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can bring your own with `sh scripts/new-adapter.sh <harness>`. Named `codex`, `cursor`, and `gemini` adapters ship as curated, conformance-locked-in-shape starting points — `claude-code` and `codex` are **measured**, `cursor` and `gemini` are **declared** (see `docs/operations/harness-adapters.md`) — and `codex` is **floor-verified**: its universal-layer floor passed all five CP-7 acceptance criteria cold on a real vehicle ([field-test evidence](docs/operations/harness-enforcement-evidence.md)), the honest maximum for a harness with no inline `PreToolUse`-equivalent interception (`cursor`/`gemini` stay experimental). The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([evidence](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the [boundary contract](docs/operations/harness-adapters.md).
+Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can bring your own with `sh scripts/new-adapter.sh <harness>`. Named `codex`, `cursor`, and `gemini` adapters ship as curated, conformance-locked-in-shape starting points — `claude-code` and `codex` are **measured**, `cursor` and `gemini` are **declared** (see `docs/operations/harness-adapters.md`) — and `codex` is **floor-verified**: its universal-layer floor passed all five acceptance criteria cold on a real vehicle ([field-test evidence](docs/operations/harness-enforcement-evidence.md)), the honest maximum for a harness with no inline `PreToolUse`-equivalent interception (`cursor`/`gemini` stay experimental). The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([evidence](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the [boundary contract](docs/operations/harness-adapters.md).
 
 ## What's inside
 
@@ -130,7 +130,7 @@ So the kit **dictates the contract and offers the implementation**: rewrite the 
 - **Governing lens:** rituals that *manage human effort* die; rituals that *clarify intent or improve quality* get stronger. Agent effort is cheap; human attention and integration risk are the scarce resources.
 - **Flow, not sprints:** WIP-limited kanban; humans are the pacing metronome at the gates.
 - **Closed loop:** production feeds the next idea; every retro exits into an artifact (the "adjust" step).
-- **Agent governance:** autonomy tiers by risk × reversibility; irreversible actions are human-gated; autonomy is earned by metrics.
+- **Agent governance:** autonomy tiers by risk × reversibility; irreversible actions are human-gated; autonomy is earned by a track record a person judges.
 - **Universal + profile:** standards stay stack-neutral; the one stack-specific layer is a swappable profile.
 
 ## Where `.claude/` lives (scoping)

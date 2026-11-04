@@ -45,7 +45,7 @@ The kit cannot fire a timer, so the trigger is **checkpoint-based discipline**, 
 | **drift self-check (this)** | **during** the build, before any gate | the agent **correcting itself** — earliest, cheapest |
 
 It is the **agent-side complement** to [`agentic-ops.md`](./agentic-ops.md): agentic-ops *observes* the
-run (trace + scorecard); the self-check is the agent *correcting itself within* the run.
+run (the trace); the self-check is the agent *correcting itself within* the run.
 
 ## Why there is deliberately no conformance gate
 

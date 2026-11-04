@@ -125,7 +125,7 @@ _fs_case_insensitive() {
 is_control_plane_path() {
   _cpp_match "$1" && return 0
   case "$1" in
-    *[A-Z]*) : ;;
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;
     *) return 1 ;;
     esac
   _cppf=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
@@ -1123,7 +1123,7 @@ is_control_plane_target() {
   is_control_plane_path "$_ct" && return 0
   _ctm_match "$_ct" && return 0
   case "$_ct" in
-    *[A-Z]*) _ctm_match "$(printf '%s' "$_ct" | LC_ALL=C tr 'A-Z' 'a-z')" && return 0 ;;
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) _ctm_match "$(printf '%s' "$_ct" | LC_ALL=C tr 'A-Z' 'a-z')" && return 0 ;;
   esac
   # GUARD-DENY-TRIO M1: a glob-spelled target whose literal prefix segment-intersects a protected leaf
   # (`hooks/pre-pus*`, `AGENTS.m*`, `agents/*.agent.m*`) is a write to a governing file. Reached from the
@@ -1335,9 +1335,9 @@ _cp8b_glob_hits_cp() {
     esac        # empty literal prefix -> ALLOW (bare * / ./*)
   _cp8b_glob_scan "$_gt" "$_CP8B_GLOB_LEAVES" && return 0
   case "$_gt" in
-    *[A-Z]*) : ;;
-    *) return 1 ;;
-    esac      # fold only on an uppercase byte (mirrors :93)
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;
+    *) _cp8b_glob_scan "$_gt" "$_CP8B_GLOB_LEAVES_LC"; return ;;
+    esac      # fold only on an uppercase byte (mirrors :93); an all-lowercase glob is its own fold, so scan the folded leaves directly (SWAS-715, deny-only)
   _cp8b_glob_scan "$(printf '%s' "$_gt" | LC_ALL=C tr 'A-Z' 'a-z')" "$_CP8B_GLOB_LEAVES_LC"
 }
 
@@ -3125,7 +3125,9 @@ _cp8b_pathhit() {
   _gmq control-plane-path "$1" -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
   # Arm 1 above is byte-identical to the pre-fold regex and returns first (the `_under_temp`
   # add-only shape at :309-328) — this can only ever ADD a pathhit. HOT PATH: guard the `tr` fork on an
-  # UPPERCASE byte only (`*[A-Z]*`), mirroring `is_control_plane_path:93` — `tr 'A-Z' 'a-z'` cannot
+  # UPPERCASE byte only (the SPELLED class `*[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*`, not the range `*[A-Z]*`:
+  # bash 3.2 on macOS collates a range by locale, so under UTF-8 an all-lowercase command matched it and
+  # took the fold route; the spelled class is the same bytes in every shell and locale, SWAS-715), mirroring `is_control_plane_path:93` — `tr 'A-Z' 'a-z'` cannot
   # change a string that has no uppercase byte, so an all-lowercase command is its own fold and needs
   # no `tr`. It still needs `_CP8B_PATHHIT_T1_LC`, though: `_T1` does not match the lowercase spelling
   # of an uppercase-named leg (`CODEOWNERS`, `AGENTS.md`, `REQUIRED-CHECKS.md`, the governance
@@ -3133,7 +3135,7 @@ _cp8b_pathhit() {
   # interpreter write to them ALLOWed. The all-lowercase route therefore costs exactly ONE `grep` and
   # no `tr`. (`*[A-Za-z]*` — ANY letter — was wrong: it forked `tr` on nearly every command.)
   case "$1" in
-    *[A-Z]*) : ;;
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;
     *)
       _gmq control-plane-path "$1" -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
       return 1 ;;
@@ -3173,7 +3175,7 @@ _cp8b_scan_denied() {
   # every other decision still reads the original `$_ss`.
   _ssl=$_ss
   case "$_ss" in
-    *[A-Z]*) _ssl=$(printf '%s' "$_ss" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault scan-fold
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) _ssl=$(printf '%s' "$_ss" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault scan-fold
       _guard_vanished scan-fold "$_ss" "$_ssl" ;;
     esac
   # VERBS FOLD TOO. On a case-insensitive filesystem `/bin/RM` resolves to `/bin/rm`, so a byte-literal
@@ -5332,10 +5334,18 @@ _cp8b_g_cfg_reloc_free() (
   return 0
 )
 
-# _cp8b_g_clean "<clone-controlled text>": a name that came from the clone (a git-config key, whose quoted subsection can hold a TAB, an ESC,
-# a quote or a backslash) is reduced to [A-Za-z0-9._-] and capped at 64 bytes before it is put on a deny; `?` when nothing is left (security I1).
+# _cp8b_g_clean "<clone-controlled text>": a name that came from the clone (a git-config key, whose quoted subsection can hold a credential, a TAB,
+# an ESC, a quote or a backslash) has its subsection withheld (section.*.variable), is then reduced to [A-Za-z0-9._*-] and capped at 64 bytes
+# before it is put on a deny; `?` when nothing is left (security I1). Ceiling, measured: a NUL in a subsection makes git print a key cut at the NUL
+# with no variable, so, when the cut subsection has no dot, the mask finds no second dot and the reduction is all that stands between that text and
+# the deny (if it has a dot, the mask fires and what follows the last dot prints, reduced [R, reasoned, not run]).
 _cp8b_g_clean() {
-  _gcl=$(printf '%s' "$1" | LC_ALL=C tr -cd 'A-Za-z0-9._-' | cut -c1-64)   # G-WHY-CLEAN
+  _gck=$1
+  # The form of gp_cfg in scripts/preflight.sh (SWAS-662): a subsection can hold a credential, so print section.*.variable.
+  case "${_gck#*.}" in
+    *.*) _gck="${_gck%%.*}.*.${_gck##*.}" ;;   # G-WHY-MASK
+  esac
+  _gcl=$(printf '%s' "$_gck" | LC_ALL=C tr -cd 'A-Za-z0-9._*-' | cut -c1-64)   # G-WHY-CLEAN
   printf '%s' "${_gcl:-?}"
 }
 
@@ -9783,7 +9793,7 @@ _kitbase_ref_denied() {
     if [ "$_kbs_lead" = git ]; then
       _kbs_sub=$(_cp8b_git_sub "$_kbs_pl") || _guard_fault kitbase-sub
       case "$_kbs_sub" in
-        *[!a-z-]*) _kbs_sub='' ;;
+        *[!abcdefghijklmnopqrstuvwxyz-]*) _kbs_sub='' ;;
       esac
     fi
     _kbs_unp=0; if _cp8b_unparseable "$_seg"; then _kbs_unp=1; fi
@@ -10738,7 +10748,7 @@ guard_check_path() {
       # `scripts/kit-guard` that passes a bare or escaping name. Fold once, then match a LOWERCASE list.
       _bn=$base
       case "$_bn" in
-        *[A-Z]*) _bn=$(printf '%s' "$_bn" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault path-basename-fold ;;
+        *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) _bn=$(printf '%s' "$_bn" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault path-basename-fold ;;
         esac
       case "$_bn" in
         guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|codeowners|.meta-control-last|meta-control-log.md|\
@@ -10822,6 +10832,11 @@ guard_check_push() {
       if [ "$local_sha" = "$zero" ]; then
         printf '%s%s' '13: deleting main/master is destructive and bypasses review - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1
       fi
+      # SWAS-712: the FIRST push creates main on a remote that has none (remote sha all zeros). ORDER MATTERS: the delete
+      # deny above runs first, so this allow only ever sees a non-zero local sha; do not move it above that deny. Nothing exists to open a PR against, so this is the one admitted shape.
+      # Disclosed risk: an all-zero remote sha also admits re-creating a main someone deleted on the host, and pushing
+      # main to a new empty mirror. Both are rare human acts; branch protection on the host is the real control.
+      if [ "$remote_sha" = "$zero" ]; then return 0; fi
       printf '%s%s' '13: pushing directly to main/master bypasses review - human-gated.' "$(_guard_stop_pointer push-main)"; return 1 ;;
   esac
   # force-push / non-fast-forward to ANY branch: remote tip not an ancestor of the new tip.
@@ -11492,8 +11507,8 @@ _kbr_word_doubt() {
   done
   if [ "$_kw_sp" = 0 ]; then return 1; fi
   case $_kw_lit in
-    *[A-Z]*)
-      _kw_lit=$(printf '%s' "$_kw_lit" | tr '[:upper:]' '[:lower:]') || _guard_fault kbr-lit ;;
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*)
+      _kw_lit=$(printf '%s' "$_kw_lit" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault kbr-lit ;;
   esac
   if [ -z "$_kw_lit" ] && [ "$_kw_hint" = 0 ]; then return 1; fi
   _kw_full=kit-base-replace
@@ -11556,7 +11571,7 @@ _kbr_text_hit() {
     esac
     _kbh_r=${_kbh_r#*kit-base-replace}
     case "$_kbh_r" in
-      [a-z0-9_]*) : ;;
+      [abcdefghijklmnopqrstuvwxyz0123456789_]*) : ;;
       *) return 0 ;;
     esac
   done
@@ -11568,7 +11583,7 @@ _kbr_text_hit() {
     esac
     _kbh_r=${_kbh_r#*--kit-base-}
     case "$_kbh_r" in
-      keep|keep[!a-z0-9_-]*) : ;;
+      keep|keep[!abcdefghijklmnopqrstuvwxyz0123456789_-]*) : ;;
       *) return 0 ;;
     esac
   done

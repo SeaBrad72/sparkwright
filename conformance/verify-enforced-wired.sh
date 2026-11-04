@@ -368,15 +368,29 @@ _judge() {
 }
 
 # ── K5 (ADOPTER-KIT-SELFTESTS-ON-CHANGE) — the emitted pipelines pass `--changed` ONLY on a pull request ──
-# Design §4.3/§7. A pipeline may let verify.sh skip the kit's own selftests only when (1) the listing comes
-# from a step gated to pull_request, whose base sha is ENV-BOUND (never interpolated into a `run:` line) and
-# which refuses a newline-bearing path set; (2) the ONE verify.sh line passes `--changed` only through
-# `${KIT_CHANGED:+…}`, so push / schedule / a failed or refused diff run plain `verify.sh --require`
-# (the full battery); and (3) GitHub also passes `--summary-file "$GITHUB_STEP_SUMMARY"`, plus a WEEKLY
-# `schedule:` cron. The verify.sh line stays ONE line on purpose: _ep_github/_ep_gitlab above read a
+# Design §4.3/§7, widened by SWAS-606. A pipeline may let verify.sh skip the kit's own selftests only when
+# (1) the listing comes from ONE step gated to a pull request into the default branch OR a push to it (never a
+# schedule), whose shas (the PR base, and the push's `before`) are ENV-BOUND (never interpolated into a `run:`
+# line), shape-checked (40 or 64 hex, never all zero), with a TWO-dot push range, and which refuses a
+# newline-bearing path set; (2) the ONE verify.sh line passes `--changed` only through
+# `${KIT_CHANGED:+…}`, so a schedule / any unknown event / a failed or refused diff run plain
+# `verify.sh --require` (the full battery); and (3) GitHub also passes `--summary-file "$GITHUB_STEP_SUMMARY"`,
+# plus a WEEKLY `schedule:` cron. The verify.sh line stays ONE line on purpose: _ep_github/_ep_gitlab above read a
 # single-line `run:`/script item. Comment lines are ignored. Each helper prints one reason per violation.
+# The listing is GITHUB's. The GitLab variant builds none (SWAS-650), so its helper below is a negative check.
 _KST_GH_LINE='run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}'
-_KST_GL_LINE='- sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}'
+# SWAS-650: the GitLab job has NO changed-path listing, so its verify line is the plain one and the lock is negative.
+_KST_GL_LINE='- sh conformance/verify.sh --require'
+# SWAS-650 / SWAS-670: the line directly above the verify line clears the one variable that can make the guard
+# battery defer on this job (agent-autonomy reads KIT_GUARD_BATTERY_VARIANTS only after KIT_GUARD_BATTERY_REF is set).
+_KST_GL_UNSET='- unset KIT_GUARD_BATTERY_REF'
+# SWAS-606: the lines the lock pins WHOLE (matched with the indentation stripped). A near miss — an extra event or
+# branch in the gating if:, a fourth case arm, a sha refusal reworded — is not the reviewed block.
+_KST_GH_IF="if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
+_KST_GH_CASE=$(printf '%s\n%s\n%s\n%s\n%s\n' 'case "$GITHUB_EVENT_NAME" in' 'pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;' 'push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;' '*) exit 0 ;;' 'esac')
+_KST_GH_HEX="case \"\$base\" in *[!0-9a-f]*|'') exit 0 ;; esac"
+_KST_GH_LEN='[ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0'
+_KST_GH_ZERO='case "$base" in *[!0]*) : ;; *) exit 0 ;; esac'
 _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
   _kw_t=$(grep -v '^[[:space:]]*#' "$1") || _kw_t=""; _kw_rc=0
   printf '%s\n' "$_kw_t" | grep -Eq '^  schedule:' || { echo "K5: $1 has no 'schedule:' trigger"; _kw_rc=1; }
@@ -384,13 +398,38 @@ _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
   _kw_n=$(printf '%s\n' "$_kw_t" | grep -c 'github\.event\.pull_request\.base\.sha') || true
   _kw_ok=$(printf '%s\n' "$_kw_t" | grep -Ec '^[[:space:]]+BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}[[:space:]]*$') || true
   { [ "$_kw_n" -ge 1 ] && [ "$_kw_n" = "$_kw_ok" ]; } || { echo "K5: $1 must use the PR base sha ONLY as an env: 'BASE_SHA: \${{ github.event.pull_request.base.sha }}' (found $_kw_n use(s), $_kw_ok env-bound)"; _kw_rc=1; }
+  # SWAS-606: the push leg's BEFORE_SHA is event input and is held to the same rule: every use of
+  # github.event.before is the one env binding, which is empty on any event that is not a push.
+  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c 'github\.event\.before') || true
+  _kw_ok=$(printf '%s\n' "$_kw_t" | grep -Ec "^[[:space:]]+BEFORE_SHA: \\$\\{\\{ github\\.event_name == 'push' && github\\.event\\.before \\|\\| '' \\}\\}[[:space:]]*\$") || true
+  { [ "$_kw_n" -ge 1 ] && [ "$_kw_n" = "$_kw_ok" ]; } || { echo "K5: $1 must use github.event.before ONLY as the env: \"BEFORE_SHA: \${{ github.event_name == 'push' && github.event.before || '' }}\" (found $_kw_n use(s), $_kw_ok env-bound and limited to push)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -qF -e 'case "$GITHUB_EVENT_NAME" in' || { echo "K5: $1 does not choose the range by case \"\$GITHUB_EVENT_NAME\" (the range must follow the event, never 'BEFORE is set')"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -qF -e 'range="$BEFORE_SHA..$GITHUB_SHA"' || { echo "K5: $1 lacks the TWO-dot push range \"\$BEFORE_SHA..\$GITHUB_SHA\" (two trees: a force-push over-lists, the safe direction)"; _kw_rc=1; }
+  # THREE dots: refused on ANY block line that mentions BEFORE_SHA (however the range is spelt), and the old forms.
+  { printf '%s\n' "$_kw_t" | grep -F 'BEFORE_SHA' | grep -qF -e '...'; } && { echo "K5: $1 diffs a push with THREE dots (a line naming BEFORE_SHA carries '...'; the merge base can drop kit changes that exist only on the old side)"; _kw_rc=1; }
+  ! printf '%s\n' "$_kw_t" | grep -qE 'BEFORE_SHA\.\.\.|\.\.\.\$GITHUB_SHA' || { echo "K5: $1 diffs a push with THREE dots (the merge base can drop kit changes that exist only on the old side)"; _kw_rc=1; }
+  _kw_n=$(printf '%s\n' "$_kw_t" | awk '/^[[:space:]]*push\)/ { n += gsub(/range=/, "&") } END { print n + 0 }')
+  [ "$_kw_n" = 1 ] || { echo "K5: $1's push arm must assign exactly one range= (found $_kw_n); a second assignment can replace the pinned two-dot range"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -qF -e '*) exit 0 ;;' || { echo "K5: $1's case has no '*) exit 0 ;;' arm, so a schedule or other event could get a listing"; _kw_rc=1; }
+  # Pinned lines (indentation-insensitive): the gating if:, the three-arm case, and the three sha refusals.
+  _kw_s=$(printf '%s\n' "$_kw_t" | sed 's/^[[:space:]]*//')
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_IF" || { echo "K5: $1 lacks the pinned gating if: line: $_KST_GH_IF"; _kw_rc=1; }
+  _kw_c=$(printf '%s\n' "$_kw_s" | grep -A4 -xF -e 'case "$GITHUB_EVENT_NAME" in') || _kw_c=""
+  [ "$_kw_c" = "$_KST_GH_CASE" ] || { echo "K5: $1 lacks the pinned three-arm case (pull_request, push, *) exit 0) exactly as:"; printf '%s\n' "$_KST_GH_CASE"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_HEX" || { echo "K5: $1 does not refuse a non-hex sha: want the line: $_KST_GH_HEX"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_LEN" || { echo "K5: $1 does not refuse a sha that is not 40 or 64 hex: want the line: $_KST_GH_LEN"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_ZERO" || { echo "K5: $1 does not refuse an all-zero before sha: want the line: $_KST_GH_ZERO"; _kw_rc=1; }
+  # M1: the diff is the condition of an `if`, so a failed diff falls back to the full battery rather than aborting.
+  printf '%s\n' "$_kw_t" | grep -qE '^[[:space:]]*if git diff ' || { echo "K5: $1's listing must use the 'if git diff … then … fi' form (a bare git diff aborts the step under bash -e instead of falling back to the full battery)"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | awk '
-    function flush() { if (d) { if (g && nl) good = 1; else bad = 1 } d = 0; g = 0; nl = 0 }
+    function flush() { if (d) { if (g && p && nl && !sc) good = 1; else bad = 1 } d = 0; g = 0; p = 0; nl = 0; sc = 0 }
     /^[[:space:]]*-[[:space:]]+name:/ { flush() }
     /git diff/ { d = 1; if ($0 !~ /--no-renames/ || $0 !~ / -z /) bad = 1 }
-    /if:[[:space:]]*github\.event_name == .pull_request./ && /github\.base_ref == github\.event\.repository\.default_branch/ { g = 1 }
+    /if:[[:space:]]*\(?github\.event_name == .pull_request./ && /github\.base_ref == github\.event\.repository\.default_branch/ { g = 1 }
+    /if:/ && /github\.event_name == .push./ && /github\.ref == format\(.refs\/heads\/[{]0[}]., github\.event\.repository\.default_branch\)/ { p = 1 }
+    /^[[:space:]]*if:/ && /schedule/ { sc = 1 }
     /tr -cd .\\n./ { nl = 1 }
-    END { flush(); exit(good && !bad ? 0 : 1) }' || { echo "K5: $1 has no 'git diff -z --no-renames' listing step gated by if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch (S2) that refuses a newline-bearing path set (tr -cd '\\n', R6)"; _kw_rc=1; }
+    END { flush(); exit(good && !bad ? 0 : 1) }' || { echo "K5: $1 has no 'git diff -z --no-renames' listing step gated by ONE if: line allowing only (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) (S2), never a schedule, that refuses a newline-bearing path set (tr -cd '\\n', R6)"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | grep -q 'GITHUB_ENV' || { echo "K5: $1's listing step never exports KIT_CHANGED via GITHUB_ENV"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | grep -qF -- "$_KST_GH_LINE" || { echo "K5: $1 lacks the single verify line: $_KST_GH_LINE"; _kw_rc=1; }
   _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -e '--changed') || true
@@ -399,14 +438,20 @@ _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
 }
 _kst_wiring_gitlab() {  # <file> -> 0 conforming; else 1 with reasons
   _kw_t=$(grep -v '^[[:space:]]*#' "$1") || _kw_t=""; _kw_rc=0
-  for _kw_k in merge_request_event CI_MERGE_REQUEST_DIFF_BASE_SHA CI_MERGE_REQUEST_TARGET_BRANCH_NAME CI_DEFAULT_BRANCH '--no-renames' 'git diff -z' 'mktemp' "tr -cd '\\n'"; do
-    printf '%s\n' "$_kw_t" | grep -qF -e "$_kw_k" || { echo "K5: $1 lacks '$_kw_k' in the listing step (merge-request + default-branch gate, mktemp files, newline refusal)"; _kw_rc=1; }
+  # SWAS-650: the GitLab variant has no changed-path listing. The lock is negative: the verify line is pinned whole
+  # and is the only line running verify.sh, no non-comment line names a listing, and no kit:owned marker is left.
+  _kw_s=$(printf '%s\n' "$_kw_t" | sed 's/^[[:space:]]*//')
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GL_LINE" || { echo "K5: $1 lacks the pinned verify line: $_KST_GL_LINE"; _kw_rc=1; }
+  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -F -e 'verify.sh') || true
+  [ "$_kw_n" = 1 ] || { echo "K5: $1 has $_kw_n non-comment lines running verify.sh, want exactly one non-comment line running verify.sh (the pinned line)"; _kw_rc=1; }
+  for _kw_k in '--changed' 'KIT_CHANGED' 'git diff'; do
+    ! printf '%s\n' "$_kw_t" | grep -qF -e "$_kw_k" || { echo "K5: $1 names '$_kw_k' on a non-comment line: the GitLab variant builds no changed-path listing (whether a pipeline variable can override the CI_* values a listing reads was not checked, and the job has never been run)"; _kw_rc=1; }
   done
-  ! printf '%s\n' "$_kw_t" | grep -qF '/tmp/kit-changed' || { echo "K5: $1 uses a fixed /tmp/kit-changed.* listing path (use mktemp)"; _kw_rc=1; }
-  printf '%s\n' "$_kw_t" | grep -qF -- "$_KST_GL_LINE" || { echo "K5: $1 lacks the single verify line: $_KST_GL_LINE"; _kw_rc=1; }
-  ! printf '%s\n' "$_kw_t" | grep -q 'GITHUB_STEP_SUMMARY' || { echo "K5: $1 passes GITHUB_STEP_SUMMARY on GitLab"; _kw_rc=1; }
-  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -e '--changed') || true
-  [ "$_kw_n" = 1 ] || { echo "K5: $1 mentions --changed on $_kw_n non-comment line(s), want exactly the one verify line"; _kw_rc=1; }
+  # The markers are comments, so they are read on the raw file, anchored as the fleet's own marker scan anchors them.
+  ! grep -Eq '^[[:space:]]*# (>>>|<<<) kit:owned ' "$1" || { echo "K5: $1 carries a kit:owned marker: the GitLab variant has no kit-owned block, so a marker pair here is a listing put back"; _kw_rc=1; }
+  # SWAS-670: the clear of the one variable that can make the guard battery defer is the line directly above the
+  # verify line; a presence-only check would pass it moved below, where it clears nothing for the run.
+  printf '%s\n' "$_kw_s" | awk -v a="$_KST_GL_UNSET" -v b="$_KST_GL_LINE" 'p == 1 && $0 == b { ok = 1 } { p = ($0 == a) } END { exit ok ? 0 : 1 }' || { echo "K5: $1 lacks the pinned clear of KIT_GUARD_BATTERY_REF directly above the verify line: $_KST_GL_UNSET"; _kw_rc=1; }
   return "$_kw_rc"
 }
 
@@ -617,7 +662,8 @@ _fleet_run() {
     _fr_n_gl=$((_fr_n_gl + 1))
     enforcing_present "$_fr_f" gitlab || { echo "FAIL: $_fr_f does not run a real 'verify.sh --require'"; _fr_rc=1; }
     _fr_k5=$(_kst_wiring_gitlab "$_fr_f") || { echo "FAIL: $_fr_k5"; _fr_rc=1; }
-    _fr_dc=$(_fleet_caps "$_fr_f") || { printf '%s\n' "$_fr_dc"; _fr_rc=1; }
+    # SWAS-650: no _fleet_caps here. changed-listing is a capability of the GitHub profiles; the GitLab profile
+    # carries no listing, and _kst_wiring_gitlab refuses a kit:owned marker of any id.
   done
   for _fr_id in $(_cap_ids); do
     _since_ok "$(_cap_field "$_fr_id" 2)" "$_fr_root" || { echo "FAIL: capability '$_fr_id' since $(_cap_field "$_fr_id" 2): that version is neither above $_fr_root/VERSION (pending) nor a '## [<since>]' heading in $_fr_root/CHANGELOG.md — a mis-guessed since"; _fr_rc=1; }
@@ -748,20 +794,84 @@ if [ "${1:-}" = "--selftest" ]; then
   # These drive the REAL _fleet_run, not a replica — testing a copy of the logic is the classic way a
   # green proves nothing about the shipped path (the K3 lesson).
   # K5 conforming fixtures (the shape the shipped profiles carry) — every fleet fixture that must PASS uses these.
+  # The fixtures mirror the shipped block LINE FOR LINE where the lock reads it (SWAS-606: a pull request into the
+  # default branch OR a push to it; the sha refusals, the `if git diff … then … fi` fallback and the verify line).
+  # The listing is GitHub's: the GitLab fixture below is the plain file with no listing (SWAS-650).
+  # Quoted heredocs keep the shell text literal; the one verify line is appended from the lock's own constant.
   _kst_fx_gh() {  # <file>
-    { printf 'on:\n  pull_request:\n  push:\n    branches: [main]\n  schedule:\n    - cron: %s\n' "'23 5 * * 1'"
-      printf 'jobs:\n  ci:\n    steps:\n      # >>> kit:owned changed-listing\n      - name: Changed-path listing\n        if: github.event_name == %s && github.base_ref == github.event.repository.default_branch\n' "'pull_request'"
-      printf '        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n        run: |\n'
-      printf '          git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$RUNNER_TEMP/z"\n'
-      printf '          [ "$(%s < "$RUNNER_TEMP/z" | wc -c)" -eq 0 ]\n' "tr -cd '\\n'"
-      printf '          echo "KIT_CHANGED=$RUNNER_TEMP/list" >> "$GITHUB_ENV"\n      - name: Conformance aggregate\n        %s\n      # <<< kit:owned changed-listing\n' "$_KST_GH_LINE"
-    } > "$1"
+    cat > "$1" <<'KSTGHEOF'
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
+jobs:
+  ci:
+    steps:
+      # >>> kit:owned changed-listing
+      - name: Changed-path listing
+        if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: |
+          z="$RUNNER_TEMP/kit-changed.z"
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;
+            push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;
+            *) exit 0 ;;
+          esac
+          case "$base" in *[!0-9a-f]*|'') exit 0 ;; esac
+          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0
+          case "$base" in *[!0]*) : ;; *) exit 0 ;; esac
+          if git diff -z --name-only --no-renames "$range" > "$z" \
+            && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
+            tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
+            echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          fi
+      - name: Conformance aggregate
+KSTGHEOF
+    printf '        %s\n      # <<< kit:owned changed-listing\n' "$_KST_GH_LINE" >> "$1"
   }
+  # SWAS-650: the GitLab fixture is the plain conforming file, no listing. The block an adopter on an older
+  # release still carries is its own fixture below, used only where the drift leg meets such an adopter.
   _kst_fx_gl() {  # <file>
-    { printf '# >>> kit:owned changed-listing\nconformance-aggregate:\n  stage: verify\n  before_script:\n    - |\n'
-      printf '      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" = "$CI_DEFAULT_BRANCH" ] && kz=$(mktemp) && kl=$(mktemp) && git diff -z --name-only --no-renames "$CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD" > "$kz" && [ "$(%s < "$kz" | wc -c)" -eq 0 ]; then export KIT_CHANGED="$kl"; fi\n' "tr -cd '\\n'"
-      printf '  script:\n    %s\n# <<< kit:owned changed-listing\n' "$_KST_GL_LINE"
-    } > "$1"
+    cat > "$1" <<'KSTGLEOF'
+conformance-aggregate:
+  stage: verify
+  script:
+    # only the kit's own workflow sets this; a CI variable must not make the guard battery defer on this job
+    - unset KIT_GUARD_BATTERY_REF
+    - sh conformance/verify.sh --require
+KSTGLEOF
+  }
+  _kst_fx_gl_old() {  # <file> — the GitLab listing block as an earlier release shipped it (verify line inline)
+    cat > "$1" <<'KSTGLOLDEOF'
+# >>> kit:owned changed-listing
+conformance-aggregate:
+  stage: verify
+  before_script:
+    - |
+      unset KIT_CHANGED
+      kbase=""; krange=""
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" = "$CI_DEFAULT_BRANCH" ]; then
+        kbase="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}"; krange="$kbase...HEAD"
+      elif [ "$CI_PIPELINE_SOURCE" = "push" ] && [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        kbase="${CI_COMMIT_BEFORE_SHA:-}"; krange="$kbase..$CI_COMMIT_SHA"
+      fi
+      case "$kbase" in *[!0-9a-f]*|'') kbase="" ;; esac
+      [ "${#kbase}" -eq 40 ] || [ "${#kbase}" -eq 64 ] || kbase=""
+      case "$kbase" in *[!0]*) : ;; *) kbase="" ;; esac
+      if [ -n "$kbase" ] && kz=$(mktemp) && kl=$(mktemp) \
+        && git diff -z --name-only --no-renames "$krange" > "$kz" \
+        && [ -s "$kz" ] && [ "$(tr -cd '\n' < "$kz" | wc -c)" -eq 0 ]; then
+        tr '\0' '\n' < "$kz" > "$kl" && export KIT_CHANGED="$kl"
+      fi
+  script:
+    - sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}
+# <<< kit:owned changed-listing
+KSTGLOLDEOF
   }
   _fx_meta() {  # <root> — the VERSION + CHANGELOG heading the fleet's since-lock reads
     printf '3.232.0\n' > "$1/VERSION"; printf '## [3.232.0] - fixture\n' > "$1/CHANGELOG.md"
@@ -774,14 +884,19 @@ if [ "${1:-}" = "--selftest" ]; then
   # per property must FAIL, each against the SAME base fixture so a green mutant means that property is unchecked.
   _kst_wiring_github "$_fd/good/profiles/a/ci.yml" >/dev/null || { echo "FAIL: K5 — the conforming GitHub fixture was REJECTED (checker broken shut)"; st=1; }
   _kst_wiring_gitlab "$_fd/good/profiles/b/ci.gitlab-ci.yml" >/dev/null || { echo "FAIL: K5 — the conforming GitLab fixture was REJECTED (checker broken shut)"; st=1; }
-  _kst_mut() {  # <label> <sed-script> — mutate the GitHub fixture; the checker must now FAIL
+  # _kst_mut <label> <sed-script> [<reason>] — mutate the GitHub fixture; the checker must now FAIL, and (when a
+  # <reason> is given) its output must carry that refusal text, so a mutant that reds for an INCIDENTAL reason
+  # (a neighbouring check, a broken fixture) fails its leg instead of passing as proof.
+  _kst_mut() {
     sed "$2" "$_fd/good/profiles/a/ci.yml" > "$_fd/mut.yml"
     if cmp -s "$_fd/mut.yml" "$_fd/good/profiles/a/ci.yml"; then echo "FAIL: K5 mutant '$1' changed nothing (vacuous)"; st=1; return 0; fi
-    ! _kst_wiring_github "$_fd/mut.yml" >/dev/null || { echo "FAIL: K5 — mutant '$1' was ACCEPTED (that property is not checked)"; st=1; }
+    _km_rc=0; _km_out=$(_kst_wiring_github "$_fd/mut.yml") || _km_rc=$?
+    [ "$_km_rc" != 0 ] || { echo "FAIL: K5 — mutant '$1' was ACCEPTED (that property is not checked)"; st=1; return 0; }
+    [ -z "${3:-}" ] || printf '%s\n' "$_km_out" | grep -qF -e "$3" || { echo "FAIL: K5 — mutant '$1' went red but NOT for its own reason ('$3')"; st=1; }
   }
   _kst_mut no-schedule      '/^  schedule:/d;/cron:/d'
   _kst_mut daily-cron       's/\* \* 1/* * */'
-  _kst_mut no-pr-gate       '/if: github.event_name/d'
+  _kst_mut no-pr-gate       '/^        if: /d'
   _kst_mut base-sha-in-run  's/"\$BASE_SHA\.\.\.HEAD"/"${{ github.event.pull_request.base.sha }}...HEAD"/'
   _kst_mut renames-on       's/ --no-renames//'
   _kst_mut no-nul-list      's/git diff -z/git diff/'
@@ -789,16 +904,52 @@ if [ "${1:-}" = "--selftest" ]; then
   _kst_mut unconditional    's/\${KIT_CHANGED:+--changed "\$KIT_CHANGED" --summary-file "\$GITHUB_STEP_SUMMARY"}/--changed list.txt/'
   _kst_mut no-default-branch 's/ && github.base_ref == github.event.repository.default_branch//'
   _kst_mut no-newline-refusal '/tr -cd/d'
+  # SWAS-606 push leg: each of these is the push leg's ONE property, mutated alone against the conforming
+  # fixture (a rewritten throwaway copy; no knob in the shipped block). The newline refusal above is shared
+  # by the pull-request and push legs (one listing step), so its mutant pins the push leg's refusal too.
+  # Each carries its OWN pinned refusal text (the M2 rule): the leg fails if it reds for any other reason.
+  _kst_mut before-not-env-bound  's/"\$BEFORE_SHA\.\.\$GITHUB_SHA"/"${{ github.event.before }}..$GITHUB_SHA"/' 'must use github.event.before ONLY'
+  _kst_mut before-not-push-only  's/BEFORE_SHA: \${{ github.event_name == .push. && github.event.before || .. }}/BEFORE_SHA: ${{ github.event.before }}/' 'must use github.event.before ONLY'
+  _kst_mut push-three-dot        's/BEFORE_SHA\.\.\$GITHUB_SHA/BEFORE_SHA...$GITHUB_SHA/' 'THREE dots'
+  _kst_mut push-three-dot-quoted 's/range="\$BEFORE_SHA\.\.\$GITHUB_SHA"/range="${BEFORE_SHA}"..."$GITHUB_SHA"/' 'THREE dots'
+  _kst_mut push-two-range-assigns 's/push) base="\$BEFORE_SHA"; range=/push) base="$BEFORE_SHA"; range="HEAD"; range=/' 'exactly one range='
+  _kst_mut push-any-branch       's/ && github.ref == format(.refs\/heads\/{0}., github.event.repository.default_branch)//' 'pinned gating if: line'
+  _kst_mut no-all-zero-refusal   '/\*\[!0\]\*/d' 'refuse an all-zero'
+  _kst_mut no-hex-refusal        '/\[!0-9a-f\]/d' 'refuse a non-hex'
+  _kst_mut no-sha-length-check   '/-eq 40/d' 'is not 40 or 64'
+  _kst_mut wrong-sha-length      's/-eq 64/-eq 65/' 'is not 40 or 64'
+  _kst_mut schedule-in-if        's/ || (github.event_name == .push./ || github.event_name == .schedule. || (github.event_name == .push./' 'pinned gating if: line'
+  _kst_mut schedule-arm-lists    's/^\( *\)\*) exit 0 ;;/\1*) base=HEAD~1; range=HEAD~1..HEAD ;;/' 'pinned three-arm case'
+  # M1: the shipped listing is `if git diff … && [ -s ] && [ … -eq 0 ]; then … fi`, so a failed diff falls back to the
+  # full battery; a bare `git diff` would abort the step under bash -e instead.
+  _kst_mut no-if-fallback        's/^\( *\)if git diff/\1git diff/' "'if git diff"
+  # _kst_mutgl <label> <sed-script> [<reason>] — the same, against the GitLab fixture.
   _kst_mutgl() {
     sed "$2" "$_fd/good/profiles/b/ci.gitlab-ci.yml" > "$_fd/mutgl.yml"
     if cmp -s "$_fd/mutgl.yml" "$_fd/good/profiles/b/ci.gitlab-ci.yml"; then echo "FAIL: K5 GitLab mutant '$1' changed nothing (vacuous)"; st=1; return 0; fi
-    ! _kst_wiring_gitlab "$_fd/mutgl.yml" >/dev/null || { echo "FAIL: K5 — GitLab mutant '$1' was ACCEPTED"; st=1; }
+    _km_rc=0; _km_out=$(_kst_wiring_gitlab "$_fd/mutgl.yml") || _km_rc=$?
+    [ "$_km_rc" != 0 ] || { echo "FAIL: K5 — GitLab mutant '$1' was ACCEPTED"; st=1; return 0; }
+    [ -z "${3:-}" ] || printf '%s\n' "$_km_out" | grep -qF -e "$3" || { echo "FAIL: K5 — GitLab mutant '$1' went red but NOT for its own reason ('$3')"; st=1; }
   }
-  _kst_mutgl no-mr-gate   's/merge_request_event/push/'
-  _kst_mutgl no-target-branch-gate 's/CI_MERGE_REQUEST_TARGET_BRANCH_NAME/CI_X/'
-  _kst_mutgl fixed-tmp    's/\$(mktemp)/\/tmp\/kit-changed.z/g'
-  _kst_mutgl no-newline-refusal 's/ && \[ "\$(tr -cd [^|]*| wc -c)" -eq 0 \]//'
-  _kst_mutgl unconditional 's/\${KIT_CHANGED:+--changed "\$KIT_CHANGED"}/--changed list.txt/'
+  # SWAS-650: the GitLab variant has NO changed-path listing, so the lock is a negative one. Each mutant puts ONE
+  # kind of listing back on the plain conforming fixture and asserts its OWN refusal text (the M2 rule), so a mutant
+  # that reds for a neighbouring reason fails its leg. The pinned verify line is proven only by listing-restored:
+  # the others red through the --changed / KIT_CHANGED / git diff refusals, which would hide a dropped pin.
+  _kst_mutgl listing-restored    's/--require$/--require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}/' 'lacks the pinned verify line'
+  _kst_mutgl listing-unconditional 's/--require$/--require --changed list.txt/' "names '--changed' on a non-comment line"
+  _kst_mutgl kit-changed-exported '/^  script:$/i\
+  before_script: [export KIT_CHANGED=x]' "names 'KIT_CHANGED' on a non-comment line"
+  _kst_mutgl diff-step-restored  '/^  script:$/i\
+  before_script: [git diff --name-only HEAD]' "names 'git diff' on a non-comment line"
+  _kst_mutgl marker-restored     '1i\
+# >>> kit:owned changed-listing
+$a\
+# <<< kit:owned changed-listing' 'carries a kit:owned marker'
+  _kst_mutgl second-verify-line  '$a\
+    - sh conformance/verify.sh --require' 'exactly one non-comment line running verify.sh'
+  # SWAS-670: the clear of KIT_GUARD_BATTERY_REF, deleted (battery-ref-not-cleared). Its ORDER (moved below the verify
+  # line) was proven by hand at the build on a throwaway mutant: the same refusal, not a second shipped mutant.
+  _kst_mutgl battery-ref-not-cleared '/^    - unset KIT_GUARD_BATTERY_REF$/d' 'lacks the pinned clear of KIT_GUARD_BATTERY_REF directly above the verify line'
   rm -f "$_fd/mut.yml" "$_fd/mutgl.yml"
   _fleet_run "$_fd/good" 1 1 >/dev/null || { echo "FAIL: fleet — a fully-enforcing fixture must PASS"; st=1; }
 
@@ -838,8 +989,16 @@ if [ "${1:-}" = "--selftest" ]; then
   done
   sed '/<<< kit:owned/d' "$_fd/good/profiles/a/ci.yml" > "$_fd/nomarker-close/profiles/a/ci.yml"
   _fleet_run "$_fd/nomarker-close" 1 1 >/dev/null && { echo "FAIL: drift fleet — a profile with its '<<<' marker deleted must FAIL (lock 1, close)"; st=1; }
-  sed '/>>> kit:owned/d' "$_fd/good/profiles/b/ci.gitlab-ci.yml" > "$_fd/nomarker-open/profiles/b/ci.gitlab-ci.yml"
+  # SWAS-650: the GitLab fixture carries no marker now (so a sed on it would change nothing), and the GitLab fleet
+  # loop no longer demands one; the open-marker lock is proven on the GitHub fixture, as the close lock is above.
+  sed '/>>> kit:owned/d' "$_fd/good/profiles/a/ci.yml" > "$_fd/nomarker-open/profiles/a/ci.yml"
   _fleet_run "$_fd/nomarker-open" 1 1 >/dev/null && { echo "FAIL: drift fleet — a profile with its '>>>' marker deleted must FAIL (lock 1, open)"; st=1; }
+  # SWAS-650: the GitLab fleet loop reds on a GitLab profile ALONE. The GitHub profile here is the good fixture, so
+  # nothing else can red the tree; the GitLab profile is the old listing block, which still passes enforcing_present,
+  # so only the wiring lock's marker refusal can (the nomarker-* trees above all red through GitHub).
+  mkdir -p "$_fd/gl-old-block/profiles/a" "$_fd/gl-old-block/profiles/b"; _fx_meta "$_fd/gl-old-block"
+  _kst_fx_gh "$_fd/gl-old-block/profiles/a/ci.yml"; _kst_fx_gl_old "$_fd/gl-old-block/profiles/b/ci.gitlab-ci.yml"
+  _fleet_run "$_fd/gl-old-block" 1 1 2>&1 | grep -qF 'carries a kit:owned marker' || { echo "FAIL: drift fleet — a GitLab profile that still carries the old kit:owned block must FAIL the fleet naming the marker (the GitLab loop alone)"; st=1; }
   { cat "$_fd/good/profiles/a/ci.yml"; printf '# >>> kit:owned zzz-unknown\n# <<< kit:owned zzz-unknown\n'; } > "$_fd/unknown-id/profiles/a/ci.yml"
   _fleet_run "$_fd/unknown-id" 1 1 >/dev/null && { echo "FAIL: drift fleet — a kit:owned id missing from the registry must FAIL (lock 1, enumeration)"; st=1; }
   sed 's/--changed "\$KIT_CHANGED"//' "$_fd/good/profiles/a/ci.yml" > "$_fd/no-capability/profiles/a/ci.yml"
@@ -869,7 +1028,8 @@ if [ "${1:-}" = "--selftest" ]; then
     _kst_fx_gh "$_fd/$_fl/profiles/a/ci.yml"; _kst_fx_gh "$_fd/$_fl/profiles/b/ci.yml"; _kst_fx_gl "$_fd/$_fl/profiles/c/ci.gitlab-ci.yml"
   done
   _fleet_run "$_fd/dup-same" 2 1 >/dev/null || { echo "FAIL: drift fleet — two identical marked blocks must PASS (positive first)"; st=1; }
-  sed 's#RUNNER_TEMP/list#RUNNER_TEMP/list2#' "$_fd/dup-same/profiles/b/ci.yml" > "$_fd/dup-diff/profiles/b/ci.yml"
+  sed 's#RUNNER_TEMP/kit-changed.txt#RUNNER_TEMP/kit-changed2.txt#' "$_fd/dup-same/profiles/b/ci.yml" > "$_fd/dup-diff/profiles/b/ci.yml"
+  ! cmp -s "$_fd/dup-same/profiles/b/ci.yml" "$_fd/dup-diff/profiles/b/ci.yml" || { echo "FAIL: drift fleet — the dup-diff mutant changed nothing (vacuous)"; st=1; }
   _fleet_run "$_fd/dup-diff" 2 1 2>&1 | grep -qF 'not byte-identical' || { echo "FAIL: drift fleet — a marked block that differs between two GitHub profiles must FAIL (lock: identical blocks)"; st=1; }
   rm -rf "$_sx" 2>/dev/null || true
   rm -rf "$_fd" 2>/dev/null || true
@@ -1122,8 +1282,8 @@ if [ "${1:-}" = "--selftest" ]; then
   _mx_assert "$_mtf" 1 'names no file' '--wf= a nonexistent path must FAIL (fail-closed), never pass vacuously' "--wf=$_mx/nope.yml"
 
   # ── KIT-UPDATE-PROFILE-CI-DRIFT (design §3): the drift leg on the REAL dispatch ────────────────────
-  # One load-bearing negative per control. The fixture PROFILE is the K5-conforming fixture above (it
-  # carries the kit:owned markers), read from the fixture tree's own profiles/ — never the kit's.
+  # One load-bearing negative per control. The fixture PROFILE is the K5-conforming fixture above (the GitHub one
+  # carries the kit:owned markers; the GitLab one has none, SWAS-650), read from the fixture tree's own profiles/.
   _dr_assert() {  # <tree> <expect-rc> <must-contain|-> <label> [argv...] — run the dispatch (or a copy: _DR_SELF)
     _da_t=$1; _da_rc=$2; _da_c=$3; _da_l=$4; shift 4
     _MX_OUT=$( cd "$_da_t" && sh "${_DR_SELF:-$_self}" "$@" 2>&1 ) && _MX_RC=0 || _MX_RC=$?
@@ -1193,13 +1353,23 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT:' && { echo "FAIL: drift [source] — the kit's own pipeline got a notice"; st=1; }
   _dt=$(_mx_tree dr-noprof); _dr_stale_wf "$_dt" emitted
   _dr_assert "$_dt" 0 'no profile pipeline' 'drift: no in-tree profile -> N/A naming it'
-  # (8) GitLab: the notice is the GitLab block, no GitHub word; the profile as the workflow is silent
+  # (8) GitLab (SWAS-650): the GitLab profile carries no listing, so a GitLab pipeline is never told it lacks one,
+  # and an adopter still carrying the block from an earlier release is read as current, not drifted.
+  # Positive FIRST (a leg that never fires satisfies every silent cell below): an in-tree GitLab profile that DOES
+  # carry the block still fires the notice for a plain emitted GitLab pipeline.
+  _dt=$(_mx_tree dr-gl-pos); mkdir -p "$_dt/profiles/p"; _kst_fx_gl_old "$_dt/profiles/p/ci.gitlab-ci.yml"; _mx_pipe "$_dt" gitlab emitted step
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: an in-tree GitLab profile carrying the block, a plain emitted GitLab pipeline -> FAIL with the notice'
+  _dt=$(_mx_tree dr-gl-old); _dr_prof "$_dt" gitlab
+  _kst_fx_gl_old "$_mx/gl-old.yml"
+  _drift_has changed-listing "$_mx/gl-old.yml" || { echo "FAIL: drift-gitlab-old-block — the old block must read as HAVING the capability, else the cell below passes by reading nothing (vacuous)"; st=1; }
+  { printf '%s\n' "$_MXMARK"; cat "$_mx/gl-old.yml"; } > "$_dt/.gitlab-ci.yml"
+  _dr_assert "$_dt" 0 - 'drift-gitlab-old-block: an emitted GitLab pipeline with the old block, against the plain profile -> rc 0'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift-gitlab-old-block — the dispatch printed a notice :: $_MX_OUT"; st=1; }
+  _dr_assert "$_dt" 0 - 'drift-gitlab-old-block: the --drift form, same pair -> rc 0' --drift --wf=.gitlab-ci.yml --profile=profiles/p/ci.gitlab-ci.yml
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift-gitlab-old-block — the --drift form printed a notice :: $_MX_OUT"; st=1; }
   _dt=$(_mx_tree dr-gl); _dr_prof "$_dt" gitlab; _mx_pipe "$_dt" gitlab emitted step
-  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: emitted GitLab pipeline without the listing -> FAIL with the notice'
-  printf '%s\n' "$_MX_OUT" | grep -qF 'conformance-aggregate:' || { echo "FAIL: drift [gitlab] — the notice does not print the GitLab block :: $_MX_OUT"; st=1; }
-  printf '%s\n' "$_MX_OUT" | grep -qF 'GITHUB_' && { echo "FAIL: drift [gitlab] — a GitHub string leaked into a GitLab notice :: $_MX_OUT"; st=1; }
-  { printf '%s\n' "$_MXMARK"; cat "$_dt/profiles/p/ci.gitlab-ci.yml"; } > "$_dt/.gitlab-ci.yml"
-  _dr_assert "$_dt" 0 'CI capabilities current' 'drift: the GitLab profile copied as the workflow -> silent'
+  _dr_assert "$_dt" 0 - 'drift: an emitted GitLab pipeline against the plain profile -> rc 0 (the profile carries no capability)'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift [gitlab] — a GitLab pipeline got a notice for a capability its profile does not carry :: $_MX_OUT"; st=1; }
   # (9) the --drift form (what kit-update runs): same text, rc 1 stale / 0 current, errors fail closed
   _dt=$(_mx_tree dr-form); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
   _dr_assert "$_dt" 1 'CI-DRIFT: .github/workflows/ci.yml (github)' 'drift: --drift form prints the notice with the given paths' --drift --wf=.github/workflows/ci.yml --profile=profiles/p/ci.yml
@@ -1257,7 +1427,8 @@ OK: verify-enforced-wired selftest — the §3 disposition matrix on the REAL di
                        fleet counts stated-not-derived; each per-platform zero guard killed ALONE;
                        the CI-DRIFT leg (notice on a stale emitted pipeline, silent on a current or
                        equivalently adapted one, rc 0 for brownfield, decline scoped, in-tree profile,
-                       GitLab, --drift form) and its three --fleet locks (markers, own predicate, since).
+                       GitLab with no listing, an old GitLab block read as current, --drift form) and its
+                       three --fleet locks (markers, own predicate, since).
     CEILING — what this green does NOT say. The matrix covers the rows ENUMERATED in the header;
     the input space is NOT proven exhausted, and a disposition invented for an unenumerated cell
     is exactly what took this file two review BLOCKs. Unenumerated combinations fail CLOSED, which

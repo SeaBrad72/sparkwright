@@ -39,7 +39,7 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 - **<deep|fast|light>** — the abstract MODEL tier this step is dispatched at, resolved by
   `scripts/model-tier.sh resolve --role <role> --change-class <c>` (pins + floors enforced there). The
   Orchestrator presents this tier **with a one-line rationale in the plan's team table** (non-blocking:
-  the human may change a row); a harness adapter binds it (Slice 2b). **Declared ≠ bound** — this records the tier
+  the human may change a row); a harness adapter binds it. **Declared ≠ bound** — this records the tier
   the step was dispatched at, not proof the harness honored it. Pinned seats
   (orchestrator/reviewer/security/architect/plan/verification) are always `deep`; absent ⇒ `deep` (fail-safe).
 
@@ -50,7 +50,7 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 - touch control-plane files unless this step's whole purpose is a ratified control-plane change
 - add a runtime dependency
 - weaken or delete an existing gate / conformance assertion
-- write the promotion ledger — no `scripts/promotion-verify.sh record`, `sync` or `land`, and no `refs/notes/` write (D-240805-3: GO records are the orchestrator's, never a subagent's)
+- write the promotion ledger — no `scripts/promotion-verify.sh record`, `sync` or `land`, and no `refs/notes/` write (GO records are the orchestrator's, never a subagent's)
 - **modify the subject-under-test** — for a validation / field-test class step, a repair inside the vehicle
   voids the test (cold-integrity); route the discovered defect to the originating backlog instead
 - <task-specific prohibition>
@@ -85,7 +85,7 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 
 ### Prohibitions (do NOT)
 - weaken any existing deny rule or its conformance case
-- write the promotion ledger — no `scripts/promotion-verify.sh record`, `sync` or `land`, and no `refs/notes/` write (D-240805-3: GO records are the orchestrator's, never a subagent's)
+- write the promotion ledger — no `scripts/promotion-verify.sh record`, `sync` or `land`, and no `refs/notes/` write (GO records are the orchestrator's, never a subagent's)
 - self-apply the control-plane change (stage a /tmp candidate; human runs the cp)
 - add a second deny-matrix implementation (single source of truth)
 ```

@@ -80,4 +80,4 @@ The judgment work — the analysis (timeline, root causes, contributing factors,
 
 ## Slice context
 
-This is **operate-loop Slice 1 of 2**. Slice 1 closes the incident → postmortem → backlog arc. **Slice 2** (planned — not yet shipped) will compose `dora.sh` + `agent-scorecard.sh` into a tier RECOMMENDATION that a human ratifies and applies; it does not auto-actuate an autonomy-tier change.
+This is **operate-loop Slice 1**. It closes the incident → postmortem → backlog arc. The kit does not compute autonomy-tier recommendations; a person judges tiers.

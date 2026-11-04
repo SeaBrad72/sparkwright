@@ -295,9 +295,9 @@ do_resume() {
   fi
   _head=$(git -C "$SR_ISO" rev-parse "$SR_SCRATCH" 2>/dev/null || echo unknown)
   echo "branch:       $_branch @ $_head (on $SR_REMOTE)"
-  _kclass=$(sr_trailer Kit-Class); _kstage=$(sr_trailer Kit-Stage)
+  _kclass=$(sr_trailer Kit-Class)
   _kplan=$(sr_trailer Kit-Plan);   _kreview=$(sr_trailer Kit-Review)
-  echo "  trailers:   Kit-Class: ${_kclass:-unknown} · Kit-Stage: ${_kstage:-unknown}"
+  echo "  trailers:   Kit-Class: ${_kclass:-unknown}"
   echo "              Kit-Plan: ${_kplan:-unknown} · Kit-Review: ${_kreview:-unknown}"
 
   # (d) THE DESIGN GO — printed VERBATIM with the note's OWN committer [sec-7]. Fetched into the

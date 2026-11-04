@@ -353,7 +353,8 @@ shard_filter() {
 #    Sharding is applied LAST, after every membership filter, so a shard is always a strict subset of the
 #    true target set — never a different set.
 target_set() {
-  grep -E '^check control' conformance/verify.sh 2>/dev/null \
+  _nvk=conformance/verify-kitself.rows; [ -f "$_nvk" ] || _nvk=""   # SWAS-607: the kit-self rows file is part of the registry (here and below)
+  grep -hE '^check control' conformance/verify.sh ${_nvk:+"$_nvk"} 2>/dev/null \
     | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
     | while IFS= read -r _f; do
         [ -f "$_f" ] || continue
@@ -369,7 +370,8 @@ target_set() {
 #    sweep prints them as SKIPPED so the exclusion is visible (no silent cap), never counted UNCOVERED.
 #    The OTHER exclusion — no --selftest substring at all — is enumerated by excluded_set below.
 nonbearing_set() {
-  grep -E '^check control' conformance/verify.sh 2>/dev/null \
+  _nvk=conformance/verify-kitself.rows; [ -f "$_nvk" ] || _nvk=""
+  grep -hE '^check control' conformance/verify.sh ${_nvk:+"$_nvk"} 2>/dev/null \
     | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
     | while IFS= read -r _f; do
         [ -f "$_f" ] || continue
@@ -392,7 +394,8 @@ nonbearing_set() {
 nv_is_kit_tree() { [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; }
 
 excluded_set() {
-  grep -E '^check control' conformance/verify.sh 2>/dev/null \
+  _nvk=conformance/verify-kitself.rows; [ -f "$_nvk" ] || _nvk=""
+  grep -hE '^check control' conformance/verify.sh ${_nvk:+"$_nvk"} 2>/dev/null \
     | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
     | while IFS= read -r _f; do
         [ -f "$_f" ] || continue; grep -q -- '--selftest' "$_f" 2>/dev/null || printf '%s\n' "$_f"

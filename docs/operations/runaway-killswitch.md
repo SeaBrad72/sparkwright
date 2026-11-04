@@ -10,20 +10,19 @@ it *can* enforce a ceiling on *reported* usage and halt the loop.
 
 **The budget is per slice.** One slice is one board **row**; every metered step names its row, each
 row is graded alone against its own ceiling, and a new row starts at zero. A second slice's normal
-work never trips the first one's ceiling (design: `docs/architecture/2026-09-28-runaway-ceiling-per-slice-design.md`
-and its `-confirming-design.md`).
+work never trips the first one's ceiling.
 
 ## The story in three controls
 
 | Control | Concern | How |
 |---------|---------|-----|
-| **H3b cost-governance** (`cost-governance.md`) | A budget posture is *declared + attested* | `conformance/cost-governance-ready.sh` verifies attestation |
-| **E4d (this)** | *Resource-exhaustion* runaway — executable enforcement at the orchestration seam | `scripts/runaway-guard.sh step --row <ROW>` called once per step |
-| **E2 feature-flags** (`feature-flags.md`) | Soft *release* kill-switch | Flag default-OFF; instant-off at restart |
+| **Cost governance** (`cost-governance.md`) | A budget posture is *declared + attested* | `conformance/cost-governance-ready.sh` verifies attestation |
+| **Runaway guard (this)** | *Resource-exhaustion* runaway — executable enforcement at the orchestration seam | `scripts/runaway-guard.sh step --row <ROW>` called once per step |
+| **Feature flags** (`feature-flags.md`) | Soft *release* kill-switch | Flag default-OFF; instant-off at restart |
 
-**Declare the ceiling (H3b) → enforce it at runtime (E4d) → toggle features off instantly (E2).**
+**Declare the ceiling (cost governance) → enforce it at runtime (runaway guard) → toggle features off instantly (feature flags).**
 
-## The seam E4d guards
+## The seam the guard covers
 
 The orchestration seam — the between-step / before-spawn boundary — is the one boundary the kit
 can actually control. The checker is called *once per step* by the orchestrator harness, after the
@@ -91,9 +90,8 @@ runaway-guard.sh wip   --count N               # is another slice already in fli
 
 ## One tally per REPO, one ceiling per ROW
 
-Before `B4-CROSS-SESSION-BUDGET` the tally was `.kit-run/tally`, relative to `$PWD`, so N worktrees
-had N ceilings. Before this row it was one file per machine graded as a single sum, so an unrelated
-slice's normal work (or a sibling session's) tripped every other slice's ceiling. Now:
+The tally is one file per repo, shared by every worktree, and each row is graded alone, so an unrelated
+slice's normal work (or a sibling session's) never trips another slice's ceiling:
 
 ```
 $HOME/.local/state/sparkwright/runaway/<root-commit>/
@@ -107,9 +105,9 @@ $HOME/.local/state/sparkwright/runaway/<root-commit>/
   lowercase hex), so every worktree and clone of the repo shares one key directory and two different
   repos never share one. **A shallow clone is refused (rc 2)** — it has no stable root; run
   `git fetch --unshallow`. A repo with no commit, or a `$PWD` outside a work tree, is also rc 2.
-- **The v1 file is untouched and not read.** `runaway/tally` (the machine-wide file) and any old
-  `.kit-run/tally` are dead state: nothing in this version reads or writes them, and they can be deleted.
-  Worktrees not yet rebased keep stepping v1 into the old file; that tail fades as those slices land.
+- **Older tally files are not read.** `runaway/tally` (the old machine-wide file) and any old
+  `.kit-run/tally` are dead state: nothing reads or writes them, and they can be deleted.
+  A worktree on an older kit version keeps stepping the old file, so its usage does not count here.
 - **Session key** = the sanitized work-tree root of `$PWD` — attribution on each line only, never
   grading (a row is graded from all its lines, whichever session wrote them). Outside a work tree the
   guard refuses.
@@ -144,16 +142,16 @@ RAISE <ROW> MAX_TOKENS=<n> MAX_AGENTS=<n> MAX_STEPS=<n>
   least one is required); per key, the last line that names it wins. A malformed `RAISE` line
   (bad row, value not a positive integer, unknown key) is **rc 2 naming the line**.
 - A raise is **uncommitted and owner-ratified**: the operator adds the line to a working tree's
-  config with the owner's word. "Owner-ratified" is a convention until `RUNAWAY-RAISE-ROUTE` ships
+  config with the owner's word. "Owner-ratified" is a convention, not a recorded control
   (see *Honest ceiling*: the guard reads the config beside its own script, and only the guarded
   checkout's path-guard protects that file). **A committed `RAISE` line is a defect** — a raise that outlives its
-  row is exactly what `BUDGET-CEILING-RESET` was written to end.
+  row keeps lifting a ceiling nobody is reviewing.
 - **An unscoped raise.** If `.kit/budget.conf` differs (byte-wise) from its committed copy in `HEAD` and a
   base `MAX_*` value changed, the edit is **honoured, but WARNs on every `step` and `check`**
   (`WARN: unscoped raise: …`, naming the value, `HEAD`'s value and the row being charged): it lifts
   every row. Scope a raise with a `RAISE <ROW>` line instead.
-- The full route — a recorded-GO raise with an expiry — is boarded as `RUNAWAY-RAISE-ROUTE`; today a
-  raise is a config edit that the owner ratifies by convention, not by a recorded control.
+- A recorded-GO raise with an expiry is not covered: a raise is a config edit that the owner
+  ratifies by convention, not by a recorded control.
 
 ### The operator route after a STOP
 
@@ -184,13 +182,10 @@ When a step STOPs (rc 1), the loop halts and escalates a `runaway-breach` record
    simply does not breach. A stale verdict can never lift a ceiling: it is keyed by the old trace id,
    and the ceiling is lifted only by the config line.
 
-(Design correction I1, from the T3 review: the earlier two-run seam could not reach the raise-ceiling
-arm, because a RAISE placed before run 2 means run 2 never breaches. See the design's §9 amendment log.)
-
 ## The landing gate — `land` / `actuate` consult the meter
 
-`scripts/promotion-verify.sh` `land` and `actuate` call `meter --row <ROW>` behind the `RUNAWAY_METERING_GATE` dial
-(`RUNAWAY-METERING-LANDING-GATE`), **after** the separation-of-duties check and **before** anything is written or merged: a
+`scripts/promotion-verify.sh` `land` and `actuate` call `meter --row <ROW>` behind the `RUNAWAY_METERING_GATE` dial,
+**after** the separation-of-duties check and **before** anything is written or merged: a
 refusal on `land` writes no note, and a refusal on either verb attempts no merge. The row is the approved commit's
 `Kit-Row` trailer on `land` and the GO note's own `kit-row:` on `actuate`; no new note key exists.
 
@@ -210,17 +205,16 @@ refusal on `land` writes no note, and a refusal on either verb attempts no merge
   A branch cut before the key merged carries no key, so it reads observe at its head until it merges main.
 - **The meter is called with the redirection env scrubbed** (`KIT_RUNAWAY_SANDBOX`, `RUNAWAY_TALLY`,
   `RUNAWAY_BUDGET_CONFIG` are unset for that one call), so a caller cannot point the gate at a tally it wrote.
-- **Verdicts.** rc 0 (metered): print the meter line, proceed. rc 3 (never metered): both modes proceed (SWAS-302: the
+- **Verdicts.** rc 0 (metered): print the meter line, proceed. rc 3 (never metered): both modes proceed (the
   kit does not meter a conductor's dispatches); observe prints `unmetered: <ROW> (observe — not gating)` and enforce
   prints `unmetered: <ROW> (enforce — an unmetered row is not a landing condition)`. rc 2 (the guard failed closed) and any other rc, including
   127 (guard script missing): enforce refuses naming it, observe prints one line. **rc 1 (metered, at or past the
   ceiling): proceed in both modes**, with `STOP: <ROW> tokens(n/N) … — ceiling breached (landed anyway: approved)` on
-  stderr and repeated in the landing report. This is the owner's ruling (F3 "Option A"): `step` already stopped the work
+  stderr and repeated in the landing report. `step` already stopped the work
   when the ceiling was crossed, so a refusal after Approve would only force an owner keystroke; surfacing a breach
-  *before* Approve belongs to `RUNAWAY-METERING-REVIEW-LEG`. **No row** (no trailer, `(none)`): enforce refuses
+  *before* Approve is not covered. **No row** (no trailer, `(none)`): enforce refuses
   ("cannot meter an unnamed row"), observe prints one line.
-- **Recording usage is optional.** The enforce refusal of an unmetered row (and the remedy it printed) was dropped by
-  SWAS-302. To record a slice's usage anyway, use `sh scripts/runaway-guard.sh step --row <ROW> --tokens N --agents N`
+- **Recording usage is optional.** The gate does not refuse an unmetered row. To record a slice's usage anyway, use `sh scripts/runaway-guard.sh step --row <ROW> --tokens N --agents N`
   with the **actual summed dispatch usage**; if the usage is unknown, do not estimate it; a resumed subagent reports
   its usage cumulatively, so sum each agent's last report once and meter a resume as the delta from its previous
   metered report (its first report metered in full), never its reports summed. A dial change is the owner's, on the
@@ -232,9 +226,9 @@ refusal on `land` writes no note, and a refusal on either verb attempts no merge
   change prints `N/A: docs-only change` and proceeds in both modes. An unreachable remote, a base missing locally, an
   empty listing, or an absent or failing classifier means **not** docs-only, and a `.sh` -> `.md` rename lists both
   paths, so it is not exempt. When the base is the reason, one line says so in both modes (`docs-only exemption unavailable:
-  cannot read origin's main`, or `… origin/main tip not fetched — git fetch origin`). Docs is the class that ran away most recently (#710); exempting it is the owner's ruling.
-- **Honest ceiling.** Before SWAS-302 the gate proved a row was metered **ever**, not **honestly** (`step --row R --tokens 1
-  --agents 1` passed it), which is why the unmetered-row refusal was dropped. What remains is the ceiling STOP line (rc 1
+  cannot read origin's main`, or `… origin/main tip not fetched — git fetch origin`). Exempting docs is the owner's ruling, and a docs-only slice has run away before.
+- **Honest ceiling.** The gate can prove a row was metered **ever**, not **honestly** (`step --row R --tokens 1
+  --agents 1` would pass it), which is why it does not refuse an unmetered row. What it has is the ceiling STOP line (rc 1
   never refuses). It does not own row identity: a trailer naming any row passes; a metered one is checked against its ceiling (the row-to-branch binding belongs to
   `loop-state` / `backlog-presence`). The tally is **per machine**, so a row metered on another machine reads as
   unmetered here. Both the STOP line and "metered" ride on that self-reported, uid-writable, per-machine tally (and on
@@ -260,7 +254,7 @@ and `refs/claims-log/*` records every release that was taken.
 
 Every read-sum-append happens inside a `mkdir` lock beside the tally (bounded 300 × 0.1 s spin — 30 s,
 because contenders *serialize*). On timeout the guard exits **2 and appends nothing**. The protocol
-(a security-reviewed control; `conformance/runaway-killswitch-wired.sh` legs L1–L6, A7–A9, N1, M1, M4):
+(a security-reviewed control; its check is `conformance/runaway-killswitch-wired.sh`):
 
 - **The lock directory is never moved, except by its own holder at release.** A breaker never renames
   it away and never restores it — the rename-then-restore design allowed a double hold.
@@ -271,19 +265,19 @@ because contenders *serialize*). On timeout the guard exits **2 and appends noth
   `mv`d to `pid.dead.<breaker-pid>` and the breaker publishes its own token into the same directory — or puts
   the moved token back atomically if it turns out not to be the one it judged. EPERM (another uid's
   pid) reads as *alive*.
-- **A7 — an abandoned takeover** (a breaker killed after moving the token out): a pid-less directory
+- **An abandoned takeover** (a breaker killed after moving the token out): a pid-less directory
   holding only dead `pid.dead.*` tokens (every suffix *and* token content a dead pid) is adopted by an
   atomic `mv` of the lowest one; any live, EPERM, malformed or unreadable file leaves it live.
-- **A8 — orphan reaping** (a taker killed between `mkdir` and `ln`): an empty lock directory is
+- **Orphan reaping** (a taker killed between `mkdir` and `ln`): an empty lock directory is
   `rmdir`ed once it is older than `RG_LOCK_ORPHAN_AGE` seconds. The age is read with `find -mmin`, so
   the effective age is whole minutes with a **floor of one minute**.
-- **A9 — release** is the holder moving its own directory away and deleting it, so a breaker's later
-  `ln` fails instead of publishing into a directory that is being deleted. **N1:** the held flag is
+- **Release** is the holder moving its own directory away and deleting it, so a breaker's later
+  `ln` fails instead of publishing into a directory that is being deleted. The held flag is
   cleared *before* that move, so a TERM re-entering the release can never move a new holder's lock.
 - **The rare fail-closed wedge.** If a lock cannot be taken within 30 s the guard refuses with rc 2 and
   names the remedy: **remove that directory** (`rm -rf` the `lock` directory named in the message,
   after confirming no `runaway-guard.sh` is running). Every new failure mode of this protocol is
-  fail-closed, except the accepted M3 residual (see Honest ceiling), which needs a taker stalled ≥ 1 minute.
+  fail-closed, except the accepted stalled-taker residual (see Honest ceiling), which needs a taker stalled ≥ 1 minute.
 
 ## Conformance lock
 
@@ -297,11 +291,11 @@ never WRITE to the real `$HOME`). Registered in `conformance/claims.tsv` and aut
 ## The config — `.kit/budget.conf`
 
 The ceiling config is **control-plane** (committed). In the guarded checkout, an autonomous agent cannot
-raise its own ceiling — the kit's path-guard blocks any write to `.kit/budget.conf`. This is the M2-S5
-lesson applied directly: enforcement whose config is agent-writable is not enforced.
+raise its own ceiling — the kit's path-guard blocks any write to `.kit/budget.conf`. Enforcement
+whose config is agent-writable is not enforced.
 
 ```ini
-# .kit/budget.conf — E4d runaway ceilings, PER SLICE (row)
+# .kit/budget.conf — runaway ceilings, PER SLICE (row)
 # A dimension is DISABLED when its value is 0.
 MAX_TOKENS=10000000     # tokens per ROW (0 = disabled) — a runaway DETECTOR, not a budget:
                         #   an M control-plane slice under the build-loop caps measures ~3-5M, so this is a 2-3x margin
@@ -346,7 +340,7 @@ done
   never committed, shared by every session and worktree of this repo (append-only by convention; the
   platform cap is the backstop if the log is defeated — see below).
 
-## Honest ceiling — what E4d does and does not guarantee
+## Honest ceiling — what the runaway guard does and does not guarantee
 
 **Guarantees:**
 - A control-plane ceiling (agent-immutable in the guarded checkout) on tokens/cost and agent-spawns, graded **per slice**.
@@ -356,10 +350,10 @@ done
 
 **Does not guarantee:**
 - **A hard LLM-API spend cap.** That is platform-owned. Set an API-key or workspace spend
-  limit in your LLM provider's console — this is the backstop above E4d, and the only control
+  limit in your LLM provider's console — this is the backstop above the runaway guard, and the only control
   that can actually stop mid-completion billing. See `docs/operations/cost-governance.md`.
 - **The count is self-reported.** The harness supplies the numbers; the platform usage cap is the hard stop.
-- **Metering is optional at landing (SWAS-302).** A session that never steps is invisible while it works, and
+- **Metering is optional at landing.** A session that never steps is invisible while it works, and
   `land`/`actuate` no longer refuse an unmetered row (they note it). In a repo whose approved tree carries
   `RUNAWAY_METERING_GATE=enforce` (this repo does; an adopter export ships none) they still refuse a commit with no
   `Kit-Row`, an absent guard and an unreadable tally (see *The landing gate*).
@@ -367,17 +361,17 @@ done
 - **A ceiling across MACHINES.** The tally is per machine (and per repo): a slice built on two machines
   has two tallies. The provider's spend cap is the only control that spans them.
 - **Where the raise is protected.** The guard reads the budget config beside its own script. A dev-clone's
-  (or any unguarded clone's) config is agent-writable, so "owner-ratified" is a convention until
-  `RUNAWAY-RAISE-ROUTE` ships a recorded-GO raise. The engineer role runner is NOT sandboxed (same uid, shared
+  (or any unguarded clone's) config is agent-writable, so "owner-ratified" is a convention; a recorded-GO
+  raise is not covered. The engineer role runner is NOT sandboxed (same uid, shared
   `.git`), and the orchestrator's integration refusal closes the diff/merge channel only (see *The operator
   route after a STOP*).
 - **An unscoped raise is loud, not refused.** An edited base `MAX_*` is honoured and WARNs on every step.
-  The full route is `RUNAWAY-RAISE-ROUTE`.
+  A recorded-GO raise is not covered.
 - **A tamper-proof runtime tally.** An agent with write access could truncate the tally to evade the
   ceiling. The primary guarantee is the ceiling config (immutable in the guarded checkout); the platform cap is the backstop.
   Stated precisely:
   - **The session key is caller-derived** (attribution only; it has no grading effect).
-  - **A6 — non-ASCII paths.** With the `LC_ALL=C` locale pin, a worktree path containing non-ASCII bytes
+  - **Non-ASCII paths.** With the `LC_ALL=C` locale pin, a worktree path containing non-ASCII bytes
     sanitizes to a different session key than before the pin. The key is attribution only, so this
     changes no grade.
   - **`rm -f` of the tally is one allowed call** — the tally's best-effort posture, unchanged.
@@ -392,11 +386,11 @@ done
     fail-closed, but a real weakness.
   - **A future-dated epoch is never breakable,** so a lock stamped in the future refuses every step
     (exit 2) until a human removes the lock directory (the refusal names it).
-  - **The accepted M3 residual.** A taker **stalled for a minute or more** (e.g. under `SIGSTOP`)
+  - **The accepted stalled-taker residual.** A taker **stalled for a minute or more** (e.g. under `SIGSTOP`)
     inside its `mkdir` → `ln` window can, after an orphan reap, publish into a live holder's
     set-aside window and cause a double hold. It needs a stall of at least `RG_LOCK_ORPHAN_AGE`
-    (floor one minute); it is noted in the review record and not closed. `record()` is one atomic
-    append, so a duplicate holder costs nothing there. **SEC-3, same family:** a TERM landing after a
+    (floor one minute); it is not closed. `record()` is one atomic
+    append, so a duplicate holder costs nothing there. **Same family:** a TERM landing after a
     failed `ln` publish but before the held flag is cleared makes the trap's release move whatever
     directory is at the lock path; that directory is foreign only after an orphan reap plus a stall of
     at least a minute. Accepted and documented; the optional closure (remember our token, compare it at

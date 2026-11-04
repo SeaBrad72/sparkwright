@@ -10,10 +10,10 @@ over *your* project doc, at the same path, and call it a merge.
 
 It **presents a delta**. It does not apply one.
 
-**Ceiling.** This path is proven on fixture trees by `conformance/kit-update-identity.sh` and
-`conformance/kit-update-merge.sh` — it has never yet been run by an external adopter against a real,
-divergently-edited project, and it carries no row in `conformance/claims.tsv` (tracked, unrefined, as
-`KIT-UPDATE-CLAIM-ROW`). Treat the tool's output as a delta to review, not a merge you can trust blind.
+**Ceiling.** This path is proven on fixture trees by the kit's own checks `kit-update-identity` and
+`kit-update-merge` (kit-only, not in your tree) — it has never yet been run by an external adopter against a real,
+divergently-edited project, and it carries no row in `conformance/claims.tsv` (it is not covered by
+the claims registry). Treat the tool's output as a delta to review, not a merge you can trust blind.
 
 ```sh
 sh scripts/kit-update.sh --from https://github.com/SeaBrad72/sparkwright     # the update: report + patch
@@ -48,6 +48,29 @@ agent-run pull already failed part-way, first run `git status`, then restore onl
 `git checkout -- <those paths>` (or `git stash`); a bare `git checkout -- .` would discard all your uncommitted
 changes. The update keeps the sandbox on; there is no profile to choose.
 
+### Files the kit stops shipping
+
+When a release stops shipping a file, the update removes it from your tree **only through your own `git apply` and
+PR**. `kit-update` never deletes in your tree. The report says what happens to each such path, in a block
+(`== removed by this release`) and on the path itself:
+
+- **In the patch, unmodified.** Marked `(removed: the patch deletes it)` under *offered*; `git apply --summary <patch>`
+  lists it as `delete mode`, or a renamed file as `rename`. It reads as the kit's own: equal to a release your base records, and (in the release's own
+  script) matching the exporter's record.
+- **Kept, you changed it.** Listed under *CONFLICT* with `(the kit removed this; you changed it)`. It is not in the patch.
+- **Kept, not proven the kit's.** The base's copy of the file does not match the exporter's own record
+  (`.kit-digests`, read from the base commit that decided the file pristine; a missing record counts as not proven). It
+  may be your file at a path the kit once shipped, so the patch keeps it. This hold is on by default.
+
+A kept file leaves your base **PARTIAL** (`Kit-Behind` above 0, no new tag) until you delete it or move it to a path
+of your own; then re-run `--advance-base` and it clears. Until then each `--from` reports it again.
+
+**The first update that removes files** runs your *installed* `kit-update`, which predates this block: it prints a long
+*offered* list with the deletions unmarked, has **no hold, and can offer your own file at a path the kit once shipped
+for deletion** (your review of the patch is then the only protection), and walks its vendor-commit grouping slowly. Run the
+**release's own** script against your repository instead, so the report names the removals and keeps what it
+cannot prove is the kit's: `sh <clone-of-the-release>/scripts/kit-update.sh --from <source> --repo <your repo>`.
+
 ### Your first update: the order
 
 The verbs an update brings (`board create --parent`, the `create.<field>` map) arrive *with* the update, and the
@@ -60,8 +83,6 @@ conf they need is one an agent cannot edit in place. So the first update goes in
 4. Pull, and the agent runs `--advance-base`.
 5. **Only then** use the verbs the update brought. Any `.kit/tracker.conf` line the new release asks for is a
    dev-clone edit (`templates/JIRA-SETUP-TEMPLATE.md` §4).
-
-(cold test 2, items 34 and 38)
 
 ---
 
@@ -86,7 +107,7 @@ Each side is run through **the `incept` that belongs to it**, with the **same re
 survive. The three trees are 3-way merged in a throwaway repo, and the result is read back and reported.
 
 The proof that the reconstruction is right is an **identity**: for an adopter who changed nothing,
-`incept_old(kit-base)` **equals** their `HEAD`, exactly (`conformance/kit-update-identity.sh`).
+`incept_old(kit-base)` **equals** their `HEAD`, exactly (the kit's own `kit-update-identity` check, kit-only).
 
 ---
 
@@ -207,7 +228,7 @@ The choice is a **runtime capability probe** (it *runs* the subcommand), never a
 You can force either one with `--merge-impl merge-tree|worktree`.
 
 **They agree on the answer you act on** — which files are offered, which conflict, which are yours —
-and that agreement is asserted in `conformance/kit-update-merge.sh`. They are **not byte-identical**
+and that agreement is asserted by the kit's own `kit-update-merge` check (kit-only). They are **not byte-identical**
 inside a conflicted file: the two label conflict hunks differently (`<<<<<<< <commit-oid>` vs
 `<<<<<<< HEAD`), and on exotic histories — **notably a release that renames a kit file** — merge-ort
 (new git) and merge-recursive (old git) can resolve differently and report a different **CONFLICT set**.
@@ -320,7 +341,7 @@ A branch opened before the update does not carry it. `loop-state` grades the PR'
   message so the contiguous `Kit-*` block is its last paragraph. The commit is unpublished, so this needs no force push.
 - **(b) Ask a human to rebase and force-push.** The guard reserves force pushes to a human.
 
-Do not push the merge commit and amend it afterwards: that *is* a force push. (cold test 2, item 60)
+Do not push the merge commit and amend it afterwards: that *is* a force push.
 
 ---
 
@@ -337,7 +358,7 @@ Do not push the merge commit and amend it afterwards: that *is* a force push. (c
 - **`--publish-base`: nothing local.** It pushes the base you hold (the advance's one atomic, never-forced push of `kit-base`
   to the remote's `refs/kit/base` plus the chain's own tags) and writes no ref, object or config of yours.
 - **`--advance-base`: `refs/heads/kit-base`, one create-only tag when the release is fully taken, and the objects
-  they need — atomically** (one ref transaction; decisions D-241002-1 and D-241003-1). Never your worktree, index,
+  they need — atomically** (one ref transaction). Never your worktree, index,
   `HEAD` or config. After the local write it **publishes**: one atomic, non-forced push of `kit-base` to the remote's
   `refs/kit/base`, plus the chain's `kit-base/*` tags (`--no-push` skips it). It is the job that records what `HEAD`
   took; `--from` (verified import) and `--publish-base` are the only other jobs that touch refs or the remote.
@@ -352,7 +373,7 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 - **LATEST ONLY.** `--from` carries whatever that source's `HEAD` is, and the public mirror carries only
   the **current** release. **This cannot move you to an intermediate version.** There is no
   `--to v3.100.0`.
-- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge in v1. `--from` applies not one byte to your files (its one write is the
+- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge. `--from` applies not one byte to your files (its one write is the
   verified `kit-base` import above; `--advance-base` writes the `kit-base` ref and, for a fully taken release, a tag, then publishes them). Every hunk is your decision; the
   patch is a suggestion at a scratch path.
 - **IT REQUIRES AN INTACT `kit-base`.** The entire delta is computed against `incept_old(kit-base)`. If
@@ -360,8 +381,8 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
   trust its output.
 - **`kit-base` IS ONLY AS GOOD AS ITS RECORD.** Skip an `--advance-base` and the next run refuses as
   STALE; on a legacy tree the `--at` shas are your assertion, not a record. The advance records per path what
-  `HEAD` took and re-offers the rest (PARTIAL), but it **cannot detect** a base that an advance made *before*
-  this change over-claims (it recorded a whole release); see `docs/operations/kit-base.md`, *My base over-claims*.
+  `HEAD` took and re-offers the rest (PARTIAL), but it **cannot detect** a base that an advance made by an
+  older kit-update over-claims (it recorded a whole release); see `docs/operations/kit-base.md`, *My base over-claims*.
   Publishing is to `refs/kit/base` only, which has **no forge protection** (anyone with push access can write it); a clone
   imports it verified on `--from`, and the residuals are in `docs/operations/kit-base.md`, *Share it*. Grouping by vendor
   commit is partly inference (see above).
@@ -371,7 +392,6 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
   (or the `cp`) stays a human act, and until it happens the gate stays red. Every run prints a verdict or says it
   could not check (`hook state: not checked (<reason>)`, e.g. the gate is absent, printed no verdict, or only its
   N/A); a clean PASS stays silent. The state is read only when someone runs `kit-update` or `guard-wired.sh`.
-  (cold test 2, items 101 and 102)
 - **A KIT FILE YOU DELETED THAT AN OLDER RELEASE DID NOT HAVE IS OFFERED AGAIN.** A kit file you deleted
   that an *older* release you took did not have (absent == absent there) is offered again, marked
   `(re-add)`; decline by not applying that hunk. One present at every release you took reads as yours
@@ -402,7 +422,4 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 ## Related
 
 - `docs/operations/kit-base.md` — the base this all depends on, and the advance step. Do not delete it.
-- `conformance/kit-update-advance.sh` — the chain legs: advance, STALE refusal, declined/stranded hunks.
-- `conformance/kit-base-shared.sh` — the shared base: `--from` imports a published `kit-base` verified (a forged chain is refused and never runs), `--publish-base`. See `docs/operations/kit-base.md`, *Share it*.
-- `conformance/kit-update-identity.sh` — the identity proof (unmodified adopter ⇒ empty diff).
-- `conformance/kit-update-merge.sh` — the two engines, same fixture, same answer.
+- The kit's own proofs of this path (`kit-update-advance`, `kit-base-shared`, `kit-update-identity`, `kit-update-merge`: the chain legs, the shared base, the identity proof, the two engines) are kit-only and are not in your tree. For the shared base see `docs/operations/kit-base.md`, *Share it*.

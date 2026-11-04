@@ -100,35 +100,37 @@ selftest() {
   # SWAS-537 fix round 2: the evidence leg reads its layout at TWO locations (the gate's own checkout AND the repository it runs in), so a
   # fixture repository that a gate in a kit layout runs in must carry the same two facts (conformance/ci-gate-state.sh, and a `gate:` job in
   # .github/workflows/ci.yml); an adopter-looking one carries neither. Written untracked and listed in info/exclude: no cell sees a dirty tree.
-  fx_layout() {  # <repo dir> <decider 0|1> <gate-job 0|1>
+  fx_layout() {  # <repo dir> <decider 0|1> <gate-job 0|1> [<marker 0|1> = the decider's: conformance/adopter-census.sh, the kit-only third fact (SWAS-641)]
     mkdir -p "$1/conformance" "$1/.github/workflows"
-    rm -f "$1/conformance/ci-gate-state.sh"
+    rm -f "$1/conformance/ci-gate-state.sh" "$1/conformance/adopter-census.sh"
     if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "${4:-$2}" = 1 ]; then : > "$1/conformance/adopter-census.sh"; fi
     if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
     else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
     _fx_ex="$(git -C "$1" rev-parse --git-path info/exclude)"
     case "$_fx_ex" in /*) ;; *) _fx_ex="$1/$_fx_ex" ;; esac
     mkdir -p "$(dirname "$_fx_ex")"
-    printf '/conformance/ci-gate-state.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
+    printf '/conformance/ci-gate-state.sh\n/conformance/adopter-census.sh\n/.github/workflows/ci.yml\n' >> "$_fx_ex"
   }
   # SWAS-537 fix round 3: the general land/trace fixtures plant the layout of the gate copy UNDER TEST, never a fixed kit one. In the
   # exported, adopter-shaped tree conformance/ci-gate-state.sh and the workflow are export-ignored, so the gate reads adopter at its own
   # checkout; a repository planted kit would be a layout-mismatch and every land would refuse. Read the two facts the way the gate does
-  # (pv_ev_lay_of): <root> -> "<decider 0|1> <gate-job 0|1>". The cells that assert an evidence refusal or a FLAG only exist on a kit tree.
+  # (pv_ev_lay_of): <root> -> "<decider 0|1> <marker 0|1> <gate-job 0|1>". The cells that assert an evidence refusal or a FLAG only exist on a kit tree.
   fx_facts() {
-    _ffd=0; _ffg=0
+    _ffd=0; _ffm=0; _ffg=0
     if [ -f "$1/conformance/ci-gate-state.sh" ]; then _ffd=1; fi
+    if [ -f "$1/conformance/adopter-census.sh" ]; then _ffm=1; fi
     if grep -q '^  gate:[[:space:]]*$' "$1/.github/workflows/ci.yml" 2>/dev/null; then _ffg=1; fi
-    echo "$_ffd $_ffg"
+    echo "$_ffd $_ffm $_ffg"
   }
   FX_OWN="$(dirname "$VERIFY")/.."
   fx_like_own() {  # <repo dir> [<gate checkout root> = the gate under test's own]
     _fff="$(fx_facts "${2:-$FX_OWN}")"
-    fx_layout "$1" "${_fff% *}" "${_fff#* }"
+    fx_layout "$1" "${_fff%% *}" "${_fff##* }" "$(printf '%s' "$_fff" | cut -d' ' -f2)"
   }
   case "$(fx_facts "$FX_OWN")" in
-    "1 1") FX_KIND=kit ;;
-    "0 0") FX_KIND=adopter ;;
+    "1 1 1") FX_KIND=kit ;;
+    "0 0 0"|"0 0 1") FX_KIND=adopter ;;
     *) FX_KIND=half ;;
   esac
   # Every skip is COUNTED and the count is printed on the final line, so a silent narrowing shows on the export lane (a kit tree says 0).
@@ -829,18 +831,19 @@ selftest() {
     printf 'record: promotion GO (approve->execute->log)\napproved-sha: %s\napproved-tree: %s\ngate: promotion\nkit-row: TR-ROW\nscope: PR #56\n' "$_ta1" "$(git rev-parse 'HEAD^{tree}')" \
       | git notes --ref=promotions add -f -F - "$_ta2" ) >/dev/null 2>&1 || { echo "FAIL: could not build the TR2 fixture"; st=1; }
   TA1="$(cat "$TR2D/.ta1" 2>/dev/null || true)"; TA2="$(git -C "$TR2D" rev-parse HEAD)"; TA12="$(printf '%s' "$TA1" | cut -c1-12)"; TB12="$(printf '%s' "$TA2" | cut -c1-12)"
-  tr_copy() {  # <dir> <decider 0|1> <gate-job 0|1> : a COPY of the gate in a kit-or-adopter layout (the classifier is always beside it)
+  tr_copy() {  # <dir> <decider 0|1> <gate-job 0|1> [<marker 0|1> = the decider's] : a COPY of the gate in a kit-or-adopter layout (the classifier is always beside it)
     mkdir -p "$1/scripts" "$1/conformance" "$1/.github/workflows"
     cp "$VERIFY" "$1/scripts/promotion-verify.sh"
     cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$1/conformance/ci-classify-changes.sh"
     if [ "$2" = 1 ]; then : > "$1/conformance/ci-gate-state.sh"; fi
+    if [ "${4:-$2}" = 1 ]; then : > "$1/conformance/adopter-census.sh"; fi
     if [ "$3" = 1 ]; then printf 'jobs:\n  gate:\n    runs-on: x\n  changes:\n    needs: gate\n' > "$1/.github/workflows/ci.yml"
     else printf 'jobs:\n  changes:\n    runs-on: x\n' > "$1/.github/workflows/ci.yml"; fi
   }
-  # tr_lay <label> <decider> <gate-job> <forge kind> <404-pr|-> <rc> <needle> <must-not|-> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] — trace --recent 2 through a gate COPY
+  # tr_lay <label> <decider> <gate-job> <forge kind> <404-pr|-> <rc> <needle> <must-not|-> [<sed-script> = a mutant] [<repo decider> <repo gate-job> = the copy's] [<copy marker> = the decider's] [<repo marker> = the repo decider's] — trace --recent 2 through a gate COPY
   tr_lay() {
-    _tl_dir="$D/trlay"; rm -rf "$_tl_dir"; tr_copy "$_tl_dir" "$2" "$3"; _tl_mut=0
-    fx_layout "$TR2D" "${10:-$2}" "${11:-$3}"
+    _tl_dir="$D/trlay"; rm -rf "$_tl_dir"; tr_copy "$_tl_dir" "$2" "$3" "${12:-$2}"; _tl_mut=0
+    fx_layout "$TR2D" "${10:-$2}" "${11:-$3}" "${13:-${10:-${12:-$2}}}"
     if [ -n "${9:-}" ]; then
       _tl_mut=1; cp "$_tl_dir/scripts/promotion-verify.sh" "$_tl_dir/orig.sh"; sed "$9" "$_tl_dir/orig.sh" > "$_tl_dir/scripts/promotion-verify.sh"
       if cmp -s "$_tl_dir/orig.sh" "$_tl_dir/scripts/promotion-verify.sh"; then echo "FAIL: $1: the mutant script changed nothing (it no longer matches the gate)"; st=1; return 0; fi
@@ -872,11 +875,12 @@ selftest() {
   tr_lay "M1c: every read ok -> the summary counts FLAG, ok and UNVERIFIED" 1 1 light - 0 "evidence leg: 0 FLAG(s) over 2 commit(s) read (2 ok, 0 pre-gate, 0 UNVERIFIED)" "PARTIAL"
   tr_lay "M1m1-mutant: any failed read turns the leg off" 1 1 cheap 56 0 "$TRM1A" "no commit was checked" 's/if \[ "\$_tr_ev_n" -eq 0 \] && ! gh api rate_limit >\/dev\/null 2>&1; then _tr_ev_on=0/if true; then _tr_ev_on=0/'
   tr_lay "M1m3-mutant: the probe is not made (a failing first read always turns the leg off)" 1 1 cheap 55 0 "evidence leg: $TA12 UNVERIFIED (forge read failed)" "the first forge read failed" 's/ && ! gh api rate_limit >\/dev\/null 2>&1; then _tr_ev_on=0/; then _tr_ev_on=0/'
-  tr_lay "H1-TR-a: an adopter layout -> the N/A line, once, no flag" 0 0 cheap - 0 "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)" "FLAG admin-merge"
+  tr_lay "H1-TR-a: an adopter layout -> the N/A line, once, no flag" 0 0 cheap - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "FLAG admin-merge"
   tr_lay "H1-TR-b: a kit layout with a cheap run -> the FLAG" 1 1 cheap - 0 "FLAG admin-merge: $TA12" "N/A"
-  tr_lay "H1-TR-c: decider only -> UNVERIFIED kit-pipeline-half-present, no flag" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge"
-  tr_lay "H1-TR-d: gate job only -> UNVERIFIED kit-pipeline-half-present, no flag" 0 1 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge"
-  tr_lay "H1m-TR-1-mutant: the adopter branch runs the leg" 0 0 cheap - 0 "exact-head CI evidence: N/A (this repository's CI has no gate/changes jobs)" "FLAG admin-merge" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
+  tr_lay "H1-TR-c: decider only -> UNVERIFIED kit-pipeline-half-present, no flag" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" "" "" "" 0
+  tr_lay "H1-TR-d: an adopter's own gate job (no decider, no marker) -> the N/A line, no flag (SWAS-641)" 0 1 cheap - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "FLAG admin-merge"
+  tr_lay "H1-TR-e: the marker only -> UNVERIFIED kit-pipeline-half-present, no flag (SWAS-641)" 0 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" "" "" "" 1
+  tr_lay "H1m-TR-1-mutant: the adopter branch runs the leg" 0 0 cheap - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "FLAG admin-merge" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
   tr_lay "H1m-TR-2-mutant: the kit branch skips the leg" 1 1 cheap - 0 "FLAG admin-merge: $TA12" "N/A" 's/^    kit\/kit)         _pv_ev_layout=kit ;;/    kit\/kit)         _pv_ev_layout=adopter ;;/'
   tr_lay "H1m-TR-3-mutant: the half branch skips the leg" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
   # LM-TR (fix round 2): the layout is read at the gate's own checkout AND the repository trace runs in. A mismatch either way prints ONE
@@ -1978,8 +1982,8 @@ EOF
           --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$_fxsha" --approved-by "solo maintainer" --go-by "the owner" \
           --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land at $_fxsha" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   }
-  if [ "$(fx_facts "$FXAD")" = "0 0" ]; then echo "PASS: FXL-c: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0)"
-  else echo "FAIL: FXL-c: an adopter-layout gate copy read '$(fx_facts "$FXAD")', not '0 0'"; st=1; fi
+  if [ "$(fx_facts "$FXAD")" = "0 0 0" ]; then echo "PASS: FXL-c: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0 0)"
+  else echo "FAIL: FXL-c: an adopter-layout gate copy read '$(fx_facts "$FXAD")', not '0 0 0'"; st=1; fi
   mkorigin fxla; fx_like_own "$LOA" "$FXAD"; rm -f "$LAND_MARK"; fxl_land "$LOA"
   if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && onote "$LOSHA" && printf '%s' "$_ld_out" | grep -qF -e "exact-head CI evidence: N/A"; then
     echo "PASS: FXL-a: an adopter-layout gate copy + a fixture planted like it -> the N/A line, the general land proceeds (merge + note on origin)"

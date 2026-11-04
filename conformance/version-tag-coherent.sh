@@ -27,8 +27,8 @@ check() {
   printf '%s' "$_v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version-tag-coherent: N/A — VERSION '$_v' not semver"; return 0; }
   ( cd "$_d" && git rev-parse --git-dir >/dev/null 2>&1 ) || {
     # Non-git tree: an adopter export (pre-adoption) is N/A; the KIT must be a git repo
-    # (docs/ROADMAP-KIT.md present, export-ignored) -> escalate. Fail-closed; mirrors
-    # feature-flags-wired.sh:49 (same kit-self anchor). Single-marker (ROADMAP-KIT.md only,
+    # (docs/ROADMAP-KIT.md present, export-ignored) -> escalate. Fail-closed; anchored on
+    # docs/ROADMAP-KIT.md, one of the two kit markers agentops-sensor-wired.sh uses. Single-marker (ROADMAP-KIT.md only,
     # not the OR-of-two used by file-presence checks) because this check is git-state-scoped:
     # a no-git tree without the kit anchor has no tags to verify regardless.
     # N/A-skip (not carve): the check stays live for an adopter once they git init.

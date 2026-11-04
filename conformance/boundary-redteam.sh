@@ -119,7 +119,7 @@ RE_SOCKDENY='Operation not permitted'   # unmeasured (no Docker run yet). Archit
 # line (a closed vocabulary: anything that matches no rule is INCONCLUSIVE, and only a full conjunction prints PASS). Calibration: RE_NETDENY is an
 # estimate, measured on no platform; the runtime facts the cells lean on (allowRead in the pinned srt, `**` expansion, the network namespace, the
 # proxy variables srt exports) are UNVERIFIED until the first CI run, and each unmet fact reads INCONCLUSIVE here, never PASS.
-MEASURE_ORDER="C36 C37 C37c C42 C42b C42c C42L C42h C42x C42s C42R C73k C73T C73Tw C73b0 C73g C73g2 C73gt C73s C73d C73r C73w C73c C73m C73u C73b C73h"
+MEASURE_ORDER="C36 C37 C37c C42 C42b C42c C42L C42h C42x C42s C42R C73k C73T C73Tw C73b0 C73g C73g2 C73gt C73s C73d C73r C73w C73c C73m C73u C73b C73h C73F"
 # SWAS-473 (docs/architecture/2026-10-28-checkout-gitfile-plant-473-design.md rev 1.2 section 4, plan docs/plans/2026-10-29-checkout-gitfile-plant-473.md): the C73 cells measure whether a
 # process the agent starts can plant a file git discovers or follows inside the session's own checkout (a nested .git gitfile, symlink or directory, a renamed ./.git, the redirect
 # files inside ./.git: worktree commondir/gitdir/config.worktree, ./.git/commondir, submodule config/hooks/commondir, a registered submodule's gitfile), and whether a candidate row that
@@ -1618,6 +1618,16 @@ _c73_prep() {
       _c73_git "$_cp_s" init -q && _c73_git "$_cp_s" add -A && _c73_git "$_cp_s" -c user.name=br -c user.email=br@example.invalid -c commit.gpgsign=false commit -q -m s || return 1
       _c73_git "$_c73_co" -c protocol.file.allow=always submodule add -q "$_cp_s" sub || return 1
       _c73_git "$_c73_co" -c user.name=br -c user.email=br@example.invalid -c commit.gpgsign=false commit -q -m sub || return 1 ;;
+    C73F)
+      # the friction cell's host-made state: a registered submodule, and the linked worktrees the admin verbs act on (one stale, one with a long-untouched gitdir file)
+      _cp_s="$_base/fxsrc-$_rand"
+      mkdir -p "$_cp_s" && printf 's\n' > "$_cp_s/f" || return 1
+      _c73_git "$_cp_s" init -q && _c73_git "$_cp_s" add -A && _c73_git "$_cp_s" -c user.name=br -c user.email=br@example.invalid -c commit.gpgsign=false commit -q -m s || return 1
+      _c73_git "$_c73_co" -c protocol.file.allow=always submodule add -q "$_cp_s" sub || return 1
+      _c73_git "$_c73_co" -c user.name=br -c user.email=br@example.invalid -c commit.gpgsign=false commit -q -m sub || return 1
+      for _cp_w in wh wd wg ws; do _c73_git "$_c73_co" worktree add -q "$_cp_w" -b "$_cp_w" || return 1; done
+      rm -rf "$_c73_co/ws" || return 1
+      touch -t 200001010000 "$_c73_co/.git/worktrees/wg/gitdir" || return 1 ;;
   esac
   return 0
 }
@@ -1807,6 +1817,27 @@ _c73_steps() {  # <id> -> the steps of the cell (each begins with `; `)
       _c73_step IP "printf '$_cg' '$_cs/agent-gitdir' > '$_cs/sub/.git'"
       _c73_step NW "printf '$_cg' '$_cs/agent-gitdir' > '$_cs/sub/.git.new'"
       _c73_step RN "mv '$_cs/sub/.git.new' '$_cs/sub/.git'" ;;
+    C73F)
+      # the friction measure: every op an ordinary session may run, each its own subshell with its own KITERR-<tag>, `;` between steps. A refusal is recorded; nothing here is graded as a failure.
+      _cf_g="env -i PATH=\"\$PATH\" HOME='$_fxhome' GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c commit.gpgsign=false -c user.name=br -c user.email=br@example.invalid -c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.file.allow=always"
+      _c73_step WA "$_cf_g worktree add -q ./wf -b wf"
+      _c73_s_commit "$_cs/wf" WC
+      _c73_step WM "$_cf_g worktree move ./wh ./wh2"
+      _c73_step WR "$_cf_g worktree repair"
+      _c73_step WP "$_cf_g worktree prune"
+      _c73_step WD "$_cf_g worktree remove ./wd"
+      _c73_s_commit "$_cs/wg" GD
+      _c73_step BC "$_cf_g -C ./sub branch config"
+      _c73_step BH "$_cf_g -C ./sub branch hooks"
+      _c73_step BCT "$_cf_g branch config"
+      _c73_step BHT "$_cf_g branch hooks"
+      _c73_step SA "$_cf_g submodule add -q '$_base/fxsrc-$_rand' ./sa"
+      _c73_step NI "$_cf_g init -q ./n1"
+      _c73_step CL "$_cf_g clone -q '$_base/fxsrc-$_rand' ./src/pkg"
+      _c73_step SW "$_cf_g switch -q -c sw"
+      _c73_step FE "$_cf_g fetch -q '$_base/fxsrc-$_rand'"
+      _c73_step GC "$_cf_g gc -q"
+      _c73_step MV "mv ./d1 ./d9" ;;
     C73b)
       _c73_step BL "mkdir -p '$_cs/bare1/objects' '$_cs/bare1/refs' && printf 'ref: refs/heads/main\\n' > '$_cs/bare1/HEAD' && printf '[core]\\n\\trepositoryformatversion = 0\\n\\tfsmonitor = %s\\n' '$_wmark' > '$_cs/bare1/config'" ;;
   esac
@@ -1929,6 +1960,30 @@ _judge_c73_bare() {
   echo "VOID the bare layout carried no canary and was not refused with a known signature"
 }
 
+# C73F (the friction measure): one state per op, ok | refused (the EPERM signature on the line before its own tag) | other. The cell always reads FRICTION and is graded PASS: a count above zero is for the reader to state
+# ("not zero"), never graded by the harness. Only a failed fixture, seed or liveness reads INCONCLUSIVE, like every C73 cell.
+_c73_fstate() {  # <tag>
+  if ! _c42_said "KITERR-$1"; then echo ok; return 0; fi
+  if [ "$(_c42_ref "$1")" = perm ]; then echo refused; return 0; fi   # MUT-C73FSIG
+  echo other
+}
+
+_judge_c73_friction() {
+  _jf_n=0; _jf_o=0; _jf_s=""
+  for _jf_t in WA WC WM WR WP WD GD BC BH BCT BHT SA NI CL SW FE GC MV; do
+    _jf_v=$(_c73_fstate "$_jf_t")
+    if [ "$_jf_t" = WC ]; then   # no worktree to commit in when WA was refused: not counted
+      case "$_jf_s" in
+        *" WA=refused"*) _jf_v="n/a" ;;
+      esac
+    fi
+    if [ "$_jf_v" = refused ]; then _jf_n=$((_jf_n + 1)); fi
+    if [ "$_jf_v" = other ]; then _jf_o=$((_jf_o + 1)); fi
+    _jf_s="$_jf_s $_jf_t=$_jf_v"
+  done
+  echo "FRICTION n=$_jf_n other=$_jf_o$_jf_s"
+}
+
 _c73_status_note() {  # C73gt: what the host's git status shows (safety flags on), as one line
   _sn=$(_c73_git "$_c73_co" status --porcelain 2>&1 | head -n 3 | tr '\n' ',')
   printf '%s' "${_sn:-clean}"
@@ -1954,6 +2009,7 @@ _c73_judge() {  # <id>
     C73T|C73Tw) _judge_c73_live "$1" ;;
     C73d) _judge_c73_dir ;;
     C73b) _judge_c73_bare ;;
+    C73F) _judge_c73_friction ;;
     C73gt) _cj=$(_judge_c73_plant C73gt "$(_c73_canary_dir C73gt)"); printf '%s; git status shows: %s\n' "$_cj" "$(_c73_status_note)" ;;
     C73m)
       _cj=$(_judge_c73_plant C73m "$(_c73_canary_dir C73m)")
@@ -1979,12 +2035,13 @@ _c73_leg() {
 }
 
 # C73u (P12): a registered submodule's gitfile, rewritten in place and renamed over. Leg 1 runs under the policy under test; leg 2 (N2) under that policy plus exactly the row C1 will print for the
-# submodule (./sub/.git; its Edit(...) twin is a Claude Code permission rule the harness cannot exercise, and this pair is hand-written until C1, task 3, prints it).
+# submodule (./sub/.git; its Edit(...) twin is a Claude Code permission rule the harness cannot exercise; the row itself is read from C1's real output, never hand-written).
 _c73_run_u() {
   _c73_leg C73u C73u; _u1=$_c73_jr; _u1fx=$_c73_fx
   _u2="VOID the second leg did not run"; _u2fx=dead
   _cfg_keep=$_cfg
-  if jq --arg r "$(_tr_path './sub/.git')" '.filesystem.denyWrite += [$r]' "$_cfg" > "$_cfg.n2"; then
+  _u_row=$(_c73_q4_row)   # N2: the row is the one C1 prints for the registered submodule, read from C1's real output (never hand-written)
+  if [ -n "$_u_row" ] && jq --arg r "$(_tr_path "$_u_row")" '.filesystem.denyWrite += [$r]' "$_cfg" > "$_cfg.n2"; then
     _cfg=$_cfg.n2
     _c73_leg C73u C73un; _u2=$_c73_jr; _u2fx=$_c73_fx
     _cfg=$_cfg_keep
@@ -1995,15 +2052,19 @@ _c73_run_u() {
   else _ur=VOID
   fi
   _c73_fx=live; if [ "$_u1fx" = dead ] || [ "$_u2fx" = dead ]; then _c73_fx=dead; fi
-  _c73_jr="$_ur leg1 (the policy under test): ${_u1}; leg2 (N2: plus the C1 pair ./sub/.git, hand-written until task 3; the Edit twin is session-only): ${_u2}"
+  _c73_jr="$_ur leg1 (the policy under test): ${_u1}; leg2 (N2: plus the C1 pair row=${_u_row:-none}, read from C1's real output; the Edit twin is session-only): ${_u2}"
 }
 
-# C73h (stub-only typed placeholder): the git call C1 (task 3) will make, with the safety flags. Until C1 exists this stands in for it so the flags can be mutant-proven; a live run claims nothing.
-_c73_c1_standin() {  # <fixture dir>
-  _c73_under "$1" || return 97
-  _fx_git -C "$1" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat status --porcelain >/dev/null 2>&1   # MUT-C73EXEC
+# _c73_q4_row -> the denyWrite row the real C1 prints for the registered submodule of a fresh C73u fixture (empty when C1 printed none)
+_c73_q4_row() {
+  _c73_prep C73u || return 0
+  _c73_under "$_c73_co" || return 0
+  _q4_o=$( cd "$_c73_co" && _fx_env sh "$HERE/../scripts/preflight.sh" --git-plants-only 2>&1 ) || _q4_o=$_q4_o
+  printf '%s\n' "$_q4_o" | sed -n 's/^.*denyWrite "\([^"]*\)" and permissions.deny.*$/\1/p' | sed -n 1p
 }
 
+# C73h: C1 (scripts/preflight.sh --git-plants-only) run for real on a fixture whose ./.git/config carries a planted core.fsmonitor canary. It must report the plant by key name and the canary must never run.
+# MUT-C73EXEC lives in preflight.sh: a rewritten copy of the tree whose C1 gains one unflagged `git status` must read FAIL here (the selftest builds that copy; there is no knob).
 _c73_run_h() {
   _c73_fx=dead
   if ! _c73_fresh; then _c73_jr="VOID seed=SEED-FAILED the host could not build the fixture checkout"; return 0; fi
@@ -2013,17 +2074,22 @@ _c73_run_h() {
   fi
   _c73_fx=live
   rm -f "$_ch_r"
-  _c73_c1_standin "$_c73_co"
-  if [ -e "$_ch_r" ]; then _c73_jr="OPEN the planted core.fsmonitor ran: the C1 stand-in executed a planted monitor"; return 0; fi
-  if [ "$(_c73_canary "$_c73_co")" = "$_ch_s" ]; then _c73_jr="DENIED the stand-in reported the plant (core.fsmonitor names the canary) and the canary never ran"; return 0; fi
-  _c73_jr="VOID the stand-in neither ran the canary nor reported the plant"
+  _ch_pf="$HERE/../scripts/preflight.sh"
+  if [ ! -f "$_ch_pf" ]; then _c73_jr="VOID scripts/preflight.sh is not beside this harness, so C1 could not run"; return 0; fi
+  _c73_under "$_c73_co" || return 97
+  _ch_o=$( cd "$_c73_co" && _fx_env sh "$_ch_pf" --git-plants-only 2>&1 ) || _ch_o="$_ch_o"
+  if [ -e "$_ch_r" ]; then _c73_jr="OPEN the planted core.fsmonitor ran: C1 executed a planted monitor"; return 0; fi
+  case "$_ch_o" in
+    *"[core.fsmonitor]"*) _c73_jr="DENIED C1 reported the plant by key name (core.fsmonitor) and the canary never ran" ;;
+    *) _c73_jr="VOID C1 neither ran the canary nor reported the plant" ;;
+  esac
 }
 
 _c73_emit() {  # <id> <"<reading> <reason>">
   _ce_rd=${2%% *}; _ce_nt=${2#* }
   case "$_ce_rd" in
     OPEN|DEAD) _ce_bv=FAIL ;;
-    DENIED|WRITABLE) _ce_bv=PASS ;;
+    DENIED|WRITABLE|FRICTION) _ce_bv=PASS ;;
     *) _ce_bv=INCONCLUSIVE ;;
   esac
   _bm_cell "$1" "$_ce_bv" "reads=$_ce_rd fx=$_c73_fx m5=$_c73_stripped: $_ce_nt out: $(_obs_full "$_out" | cut -c1-300)"
@@ -2031,10 +2097,6 @@ _c73_emit() {  # <id> <"<reading> <reason>">
 
 _run_c73() {  # <id> -> one BR-MEASURE line. OPEN or DEAD -> FAIL, DENIED or WRITABLE -> PASS, anything else -> INCONCLUSIVE (VOID in the table)
   _c73_id=$1
-  case "$_c73_id" in
-    C73b|C73h)
-      if [ -z "$_stub" ]; then _bm_cell "$_c73_id" INCONCLUSIVE "placeholder: no live claim; the cell is stub-only until C1 exists (SWAS-473 task 3)"; return 0; fi ;;
-  esac
   if ! _fx_gate; then _bm_cell "$_c73_id" INCONCLUSIVE "fixture proof failed: $_fx_why; no C73 cell acts on a path it cannot prove is a fixture path (VOID, never DENIED)"; return 0; fi
   if ! _have "$(cell_needs "$_c73_id")"; then _bm_cell "$_c73_id" INCONCLUSIVE "needs git to run the cell"; return 0; fi
   if ! _gate write; then _bm_cell "$_c73_id" INCONCLUSIVE "the write control failed, so this cell proves nothing"; return 0; fi
@@ -2101,18 +2163,27 @@ _c73_rows_a1() {
   printf "%s\n" "./*/.git" "./*/.git/**"
 }
 
+# B is B-core: the rows that stay default-on candidates. N4 (a submodule branch or log named config or hooks): the restricted forms, never `modules/**/config` or `modules/**/hooks`, so `**` cannot enter refs/ or logs/.
+# What the restriction drops, stated: the rows reach a submodule git directory named a/b (modules/*/*/...) or nested once (a/modules/b, modules/*/modules/*/...). A name with three or more segments (a/b/c), and a
+# directory nested twice (a/modules/b/modules/c), is reached by no row. C1 walks such a directory's config and hooks (an exec key, a hook file) but no longer warns on the name alone; that warn may return with PR 2's rows (473 errata E12).
 _c73_rows_b() {
-  printf "%s\n" "./.git/worktrees/*/commondir" "./.git/worktrees/*/gitdir" "./.git/worktrees/*/config.worktree"   # MUT-C73ROW3
-  printf "%s\n" "./.git/commondir" "./.git/modules/**/config" "./.git/modules/**/hooks" "./.git/modules/**/commondir"
+  printf "%s\n" "./.git/commondir" "./.git/worktrees/*/config.worktree"
+  printf "%s\n" "./.git/modules/*/*/config" "./.git/modules/*/modules/*/config" "./.git/modules/*/*/hooks" "./.git/modules/*/modules/*/hooks"   # MUT-C73N4
+  printf "%s\n" "./.git/modules/**/commondir"
   printf "%s\n" "./.git/modules/**/worktrees/*/commondir" "./.git/modules/**/worktrees/*/gitdir" "./.git/modules/**/worktrees/*/config.worktree"
 }
 
-_c73_cand() {  # <A|A1|B|D> -> the candidate's denyWrite rows, one per line
+# B-wt: the two top-level worktree redirect rows. Creating a linked worktree inside the sandbox writes both, so these are opt-in, never part of B.
+_c73_rows_bw() {
+  printf "%s\n" "./.git/worktrees/*/commondir" "./.git/worktrees/*/gitdir"   # MUT-C73ROW3
+}
+
+_c73_cand() {  # <A|A1|B|D> -> the candidate's denyWrite rows, one per line (ONE source for the lint, the print-only --c73-candidate and the measurement)
   case "$1" in
     A) _c73_rows_a ;;
     A1) _c73_rows_a; _c73_rows_a1 ;;
     B) _c73_rows_b ;;
-    D) _c73_rows_a; _c73_rows_a1; _c73_rows_b ;;
+    D) _c73_rows_a; _c73_rows_a1; _c73_rows_b; _c73_rows_bw ;;
   esac
 }
 
@@ -2793,8 +2864,9 @@ _st_selcopy() {
 # _mutant <id> <check-that-must-go-red> <description> <sed-script> <segments>: a temp copy of this script with one control cut, run on the segments it declares (the lock first, LK1-LK6 around the run).
 _mutant() {
   _mut_lock "$_st_base" "$1" "$2" "$5" || return 0
-  mkdir -p "$d/m/conformance"
+  mkdir -p "$d/m/conformance" "$d/m/scripts"
   cp "$HERE/guard-wired.sh" "$d/m/conformance/guard-wired.sh"
+  cp "$HERE/../scripts/preflight.sh" "$d/m/scripts/preflight.sh"
   sed "$4" "$_self" > "$d/m/conformance/boundary-redteam.sh"
   if cmp -s "$_self" "$d/m/conformance/boundary-redteam.sh"; then _bad "$1 the mutant equals the original (the control is not pinned)"; return 0; fi
   _st_selcopy "$d/m/conformance/boundary-redteam.sh" "$d/m/sel.sh" "$5" && mv "$d/m/sel.sh" "$d/m/conformance/boundary-redteam.sh"
@@ -2818,7 +2890,7 @@ selftest() {
   _kw=$(_lk_base "$_st_base") || _bad "LK8 the baseline is not well formed: $_kw"
   _kw=$(_lk_src "$_self") || _bad "LK7 the source is not as designed: $_kw"
   # The isolation anchor (LK9): every segment runs ALONE, in its own process, on an unmutated copy made by the mutants' own copy-rewrite path, and must equal its baseline slice.
-  mkdir -p "$d/m/conformance"; cp "$HERE/guard-wired.sh" "$d/m/conformance/guard-wired.sh"
+  mkdir -p "$d/m/conformance" "$d/m/scripts"; cp "$HERE/guard-wired.sh" "$d/m/conformance/guard-wired.sh"; cp "$HERE/../scripts/preflight.sh" "$d/m/scripts/preflight.sh"   # C73h and C73u's second leg run the real C1 beside the harness
   _ia_bad=""
   for _ia in $SEG_ORDER; do
     _st_selcopy "$_self" "$d/m/conformance/boundary-redteam.sh" "$_ia"
@@ -2940,7 +3012,8 @@ selftest() {
   _mutant M113 TC73-L "MUT-C73LIVE: the pwd/liveness gate removed, so a refused fixture checkout could read DENIED" '/# MUT-C73LIVE$/s/! _c73_live/false/' 'c73b'
   _mutant M114 TC73-fsmon "MUT-C73FSMON: the host read of core.fsmonitor pointed at a key nothing sets (an OPEN reads INCONCLUSIVE, never DENIED)" '/# MUT-C73FSMON$/s/config --get core.fsmonitor/config --get core.nothing/' 'c73o'
   _mutant M115 TC73-b "MUT-C73BARE: the safe.bareRepository=explicit leg inverted (it no longer refuses)" '/# MUT-C73BARE$/s/safe.bareRepository=explicit/safe.bareRepository=all/' 'c73b c73m c73o c73v'
-  _mutant M116 TC73-h "MUT-C73EXEC: C1's -c core.fsmonitor=false dropped, so the planted monitor runs" '/# MUT-C73EXEC$/s/ -c core.fsmonitor=false//' 'c73b'
+  _mutant M150 TC73-F2 "MUT-C73FSIG: the refusal-signature test dropped from the friction state, so an op that failed without one reads refused" '/# MUT-C73FSIG$/s/\[ "\$(_c42_ref "\$1")" = perm \]/true/' 'c73m'
+  _mutant M151 TC73-N4 "MUT-C73N4: B holds a ** module config row, which would also freeze a submodule branch or log named config" '/# MUT-C73N4$/s#\./\.git/modules/\*/\*/config#./.git/modules/**/config#' 'c73a'
   _mutant M117 TC73-m5 "MUT-C73M5: the temp-root .git rows no longer stripped from the C73 policy" '/# MUT-C73M5$/s/_dw=\$(_c73_m5 "\$_dw")/true/' 'c73a c73w'
   _mutant M118 TC73-ro "MUT-C73RO: the Linux report-only rule dropped, so an INCONCLUSIVE attack cell is VOID again" '/# MUT-C73RO$/s/elif _c73_report_only "\$1"/elif false/' 'c73os'
   _mutant M121 TC73-V4 "MUT-LEGC73KF: the OPEN-positive-control check removed from the leg aggregation" '/# MUT-LEGC73KF$/s/C73k|FAIL|/NEVER-MATCHES|/' 'c73l'
@@ -3801,6 +3874,7 @@ _mk_c73() {  # <file> <override-lines...>: the all-PASS profile of the C73 cells
     "C73m|1|$(_k7_tags CF HK CD WCD)|c73-n4" \
     "C73u|1|$(_k7_tags IP RN)|" \
     "C73un|1|$(_k7_tags IP RN)|" \
+    'C73F|0||' \
     'C73b|0||c73-bare'
 }
 
@@ -3824,11 +3898,11 @@ _k7_v5() {  # <cell id> <the line the harness emitted> <the phrase it must carry
     *) _bad "TC73-V5 the emitted line for $3 is not the expected INCONCLUSIVE line: $2"; return 0 ;;
   esac
   grep -v "^BR-MEASURE|$1|" "$d/leg73.out" > "$d/leg73s.out"; printf '%s\n' "$2" >> "$d/leg73s.out"
-  if ! _leg_verdict_os Linux 1 "$d/leg73s.out" 21 2>&1 | grep -q 'could not run on its fixture'; then _bad "TC73-V5 the aggregation must refuse a real emitted line that could not run on its fixture, naming it ($1: $3)"; else _pass "TC73-V5 a real emitted line that could not run on its fixture reds the aggregation ($1: $3)"; fi
+  if ! _leg_verdict_os Linux 1 "$d/leg73s.out" 24 2>&1 | grep -q 'could not run on its fixture'; then _bad "TC73-V5 the aggregation must refuse a real emitted line that could not run on its fixture, naming it ($1: $3)"; else _pass "TC73-V5 a real emitted line that could not run on its fixture reds the aggregation ($1: $3)"; fi
 }
 
-_k7_all="C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u,C73b,C73h"
-_st_c73r() { _st_run "$1" "$d/c73.json" --measure "$_k7_all"; }   # <scenario>: the sixteen C73 cells
+_k7_all="C73k,C73T,C73Tw,C73b0,C73g,C73g2,C73gt,C73s,C73d,C73r,C73w,C73c,C73m,C73u,C73b,C73h,C73F"
+_st_c73r() { _st_run "$1" "$d/c73.json" --measure "$_k7_all"; }   # <scenario>: the seventeen C73 cells
 
 _st_mx16() { _s16o=$_st_out; _st_out=$_st_out16; _st_mx "$@"; _st_out=$_s16o; }      # _st_mx on the 16-cell run's saved output
 _st_mhas16() { _s16o=$_st_out; _st_out=$_st_out16; _st_mhas "$@"; _st_out=$_s16o; }  # _st_mhas on the 16-cell run's saved output
@@ -3904,6 +3978,18 @@ _seg_c73a() {
     [ "$_k7_em" = "$(_c73_cand "$_k7_l")" ] || _k7_cd="$_k7_cd $_k7_l"
   done
   if [ -z "$_k7_cd" ]; then _pass "TC73-cand --c73-candidate A, A1, B and D print denyWrite rows equal to the rows the lints read"; else _bad "TC73-cand the emitted rows differ from _c73_cand for:$_k7_cd"; fi
+  # the B and N4 split: B holds the restricted module rows and none of the two top-level worktree rows; D is everything opt-in reaches; no candidate holds a ** config or hooks row
+  _k7_bs=$(_c73_cand B); _k7_ds=$(_c73_cand D); _k7_bwr=$(_c73_rows_bw)
+  _k7_bad=""
+  case "$_k7_bs" in *"./.git/worktrees/*/commondir"*|*"./.git/worktrees/*/gitdir"*) _k7_bad="$_k7_bad B-holds-a-worktree-top-row" ;; esac
+  set -f   # the rows hold *; no pathname expansion
+  for _k7_r in $_k7_bwr; do case "$_k7_ds" in *"$_k7_r"*) : ;; *) _k7_bad="$_k7_bad D-lacks:$_k7_r" ;; esac; done
+  set +f
+  for _k7_l in A A1 B D; do
+    case "$(_c73_cand "$_k7_l")" in *"modules/**/config"*|*"modules/**/hooks"*|*"**/hooks"*|*"**/config"*) _k7_bad="$_k7_bad $_k7_l-holds-a-**-config-or-hooks-row" ;; esac
+  done
+  case "$_k7_bs" in *"./.git/modules/*/*/config"*"./.git/modules/*/modules/*/hooks"*) : ;; *) _k7_bad="$_k7_bad B-lacks-the-restricted-module-rows" ;; esac
+  if [ -z "$_k7_bad" ]; then _pass "TC73-N4 B is B-core (the restricted module rows, no top-level worktree row), D adds the two, and no candidate holds a ** config or hooks row (N4 stays closed)"; else _bad "TC73-N4 the candidate table is wrong:$_k7_bad"; fi
   sh "$_self" --c73-candidate Z --settings "$d/c73.json" >/dev/null 2>&1; _k7_r1=$?
   sh "$_self" --c73-candidate A >/dev/null 2>&1; _k7_r2=$?
   if [ "$_k7_r1" = 64 ] && [ "$_k7_r2" = 64 ]; then _pass "TC73-cand2 --c73-candidate with a bad letter or no --settings is a usage error (64)"; else _bad "TC73-cand2 want 64 and 64 (got $_k7_r1 and $_k7_r2)"; fi
@@ -3911,7 +3997,7 @@ _seg_c73a() {
   jq -c --argjson r "$(_c73_cand D | jq -R . | jq -s -c .)" '.sandbox.filesystem.denyWrite += $r' "$d/c73.json" > "$d/c73d.json"
   _k7_map=$( _c73_sel=1; _load_settings "$d/c73d.json" >/dev/null 2>&1; _base="$d/c73m1"; _tree="$_base/tree"; _fxhome="$_base/home"; _fxtmp="$_base/fxtmp"; _c73_co="$_base/fxco-x"; _cfg="$_base/policy.json"; mkdir -p "$_base"
     _build_cfg "$d/c73d.json" >/dev/null 2>&1
-    jq -c --arg c "$_c73_co" '.filesystem.denyWrite as $dw | all(["/*/**/.git","/*/**/.git/**","/*/.git","/*/.git/**","/.git/commondir","/.git/worktrees/*/commondir","/.git/modules/**/config","/.git/modules/**/hooks","/.mcp.json","/.git/config"][]; . as $r | $dw | index($c + $r) != null) and (.filesystem.allowWrite | index($c + "/") != null)' "$_cfg" 2>&1 )
+    jq -c --arg c "$_c73_co" '.filesystem.denyWrite as $dw | all(["/*/**/.git","/*/**/.git/**","/*/.git","/*/.git/**","/.git/commondir","/.git/worktrees/*/commondir","/.git/worktrees/*/gitdir","/.git/modules/*/*/config","/.git/modules/*/*/hooks","/.git/modules/**/commondir","/.mcp.json","/.git/config"][]; . as $r | $dw | index($c + $r) != null) and (.filesystem.allowWrite | index($c + "/") != null)' "$_cfg" 2>&1 )
   if [ "$_k7_map" = true ]; then _pass "TC73-map every candidate row and the kit-only row reach the built policy mapped under the fixture checkout, and ./ is writable there"; else _bad "TC73-map the built policy must hold the candidate rows under the fixture checkout: $_k7_map"; fi
   _k7_m5=$( _c73_sel=1; _load_settings "$d/c73.json" >/dev/null 2>&1; _base="$d/c73m2"; _tree="$_base/tree"; _fxhome="$_base/home"; _fxtmp="$_base/fxtmp"; _c73_co="$_base/fxco-x"; _cfg="$_base/policy.json"; mkdir -p "$_base"
     _build_cfg "$d/c73.json" >/dev/null 2>&1
@@ -4022,7 +4108,9 @@ _seg_c73z() {
   _st_mx16 TC73-0b C73b FAIL "a bare layout that is refused-free reads FAIL (declared OPEN, a residual)"
   _st_mrc16 TC73-0r 0 "the all-refused profile exits 0 (C73b is declared OPEN)"
   _k_n=$(printf '%s\n' "$_st_out16" | grep -c '^BR-MEASURE|')
-  if [ "$_k_n" -eq 16 ]; then _pass "TC73-0n sixteen BR-MEASURE lines, one per C73 cell"; else _bad "TC73-0n want sixteen BR-MEASURE lines (found $_k_n)"; fi
+  _st_mx16 TC73-0F C73F PASS "the friction cell reads PASS whatever it counts (FRICTION is stated by the reader, never graded)"
+  _st_mhas16 TC73-0Fb C73F "reads=FRICTION" "and names its reading"
+  if [ "$_k_n" -eq 17 ]; then _pass "TC73-0n seventeen BR-MEASURE lines, one per C73 cell"; else _bad "TC73-0n want seventeen BR-MEASURE lines (found $_k_n)"; fi
   _st_mhas16 TC73-0f C73k "fx=live" "the line records that the liveness passed"
   _st_mhas16 TC73-0m C73g "m5=2" "the line records the M5 strip count"
   _st_mhas16 TC73-0p C73k "root=the settings' ./ row" "the C73k evidence records the root kind from the built policy: here the settings' own ./ row (N3, R8)"
@@ -4081,6 +4169,7 @@ _seg_c73o() {
   _st_mx TC73-m1 C73m FAIL "the module config, hook and commondir writes landing reads FAIL (OPEN)"
   _st_mx TC73-u1 C73u FAIL "the gitfile rewritten in place under the policy under test reads FAIL (OPEN), whatever the second leg reads"
   _st_mhas TC73-u1b C73u "leg2 (N2: plus the C1 pair" "the line carries the N2 second leg"
+  _st_mhas TC73-u-q4 C73u "row=./sub/.git, read from C1's real output" "Q4: leg 2 carries the exact row the real C1 printed for the registered submodule"
   if _st_ml C73c | grep -q "^BR-MEASURE|C73c|FAIL|strict=simulated|" || _st_ml C73c | grep -q "^BR-MEASURE|C73c|INCONCLUSIVE|strict=simulated|.*git read no canary"; then _pass "TC73-c2 a commondir pointing at an agent dir reads OPEN where this git honours it, and INCONCLUSIVE (git rejects it) where it does not"; else _bad "TC73-c2 a landed commondir must read FAIL or INCONCLUSIVE with the git-rejects reason (line: $(_st_ml C73c))"; fi
 }
 
@@ -4135,6 +4224,16 @@ _seg_c73m() {
   _st_mx TC73-n4c C73m PASS "the N4 friction does not change the module verdict"
   _st_mhas TC73-n4d C73m "refused (friction" "N4: a refused ref named config is stated as friction"
   _st_mx TC73-u4 C73u INCONCLUSIVE "the second leg INCONCLUSIVE with the first DENIED is INCONCLUSIVE, never PASS"
+  # C73F, the friction measure: refused ops are counted by signature, an op that failed without one is `other`, and neither moves the grade (PASS)
+  _st_c73rd rf1 "C73F" "C73F|1|$(_k7_tags WA WM)|"
+  _st_mx TC73-F1 C73F PASS "the friction cell reads PASS whatever it counts"
+  _st_mhas TC73-F1b C73F "n=2 other=0 WA=refused" "two ops refused by the EPERM signature count as n=2, other=0"
+  _st_mhas TC73-F1c C73F "WC=n/a" "a commit in a worktree whose creation was refused is not counted"
+  _st_c73rd rf2 "C73F" "C73F|1|$(_k7_io WR)|"
+  _st_mx TC73-F2 C73F PASS "an op that failed with no refusal signature does not move the grade"
+  _st_mhas TC73-F2b C73F "other=1" "and is counted as other, never as refused (zero needs other=0)"
+  _st_c73rd rf3 "C73F" 'c73-live|1||'
+  _st_mx TC73-F3 C73F INCONCLUSIVE "a failed liveness write reads INCONCLUSIVE: nothing was measured"
   _st_c73rd rmw "C73m" "C73m|1|$(_k7_tags CF HK CD)|c73-mw"
   if _st_ml C73m | grep -q "^BR-MEASURE|C73m|FAIL|strict=simulated|" || _st_ml C73m | grep -q "^BR-MEASURE|C73m|INCONCLUSIVE|strict=simulated|.*git read no canary"; then _pass "TC73-m4 a worktree entry's commondir repointed at the agent git directory reads OPEN where this git honours it, and INCONCLUSIVE (git rejects it) where it does not"; else _bad "TC73-m4 a landed worktree-entry commondir must read FAIL or INCONCLUSIVE with the git-rejects reason (line: $(_st_ml C73m))"; fi
 }
@@ -4142,7 +4241,7 @@ _seg_c73m() {
 _seg_c73b() {
   _st_c73fx
   _st_c73git b || return 0
-  # C73b (P8) and C73h (C1 safety) are stub-only typed placeholders: a live run claims nothing. The bare layout is read without and with -c safe.bareRepository=explicit; the stand-in runs C1's flagged git call.
+  # C73b (P8) reads a planted bare layout without and with -c safe.bareRepository=explicit (declared OPEN); C73h (C1 safety) runs the real preflight --git-plants-only on a planted core.fsmonitor and the canary must not run.
   _k7_bp="$d/c73bp"; mkdir -p "$_k7_bp/b1/objects" "$_k7_bp/b1/refs"; printf 'ref: refs/heads/main\n' > "$_k7_bp/b1/HEAD"; printf '[core]\n\trepositoryformatversion = 0\n\tfsmonitor = KITPROBE\n' > "$_k7_bp/b1/config"
   _k7_bv=$(env -i PATH="$_fx_sys_path" HOME="$_k7_bp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$_k7_bp/b1" -c safe.bareRepository=explicit config --get core.fsmonitor 2>/dev/null)
   _st_c73rd rbh "C73b,C73h"
@@ -4152,8 +4251,22 @@ _seg_c73b() {
   else
     _pass "TC73-b (this git does not honour safe.bareRepository=explicit: the leg is not exercised here)"
   fi
-  _st_mx TC73-h C73h PASS "the C1 stand-in reports the plant and the planted core.fsmonitor never runs"
+  _st_mx TC73-h C73h PASS "the real C1 reports the plant and the planted core.fsmonitor never runs"
   _st_mhas TC73-hb C73h "reported the plant" "the evidence says the plant was reported"
+  # MUT-C73EXEC, on a rewritten COPY of the tree (this harness plus a preflight whose C1 gains one unflagged `git status`; no knob): the canary must run and C73h must read FAIL. That also proves the canary script is live.
+  if mkdir -p "$d/mx/conformance" "$d/mx/scripts" && cp "$HERE/guard-wired.sh" "$d/mx/conformance/guard-wired.sh" && cp "$_self" "$d/mx/conformance/boundary-redteam.sh" && sed '/# MUT-GPSTATUS$/s#   \# MUT-GPSTATUS$#; git status >/dev/null 2>\&1 || :#' "$HERE/../scripts/preflight.sh" > "$d/mx/scripts/preflight.sh" && ! cmp -s "$HERE/../scripts/preflight.sh" "$d/mx/scripts/preflight.sh"; then
+    _st_runx "$d/mx/conformance/boundary-redteam.sh" "$d/c73-rbh.scn" "$d/c73.json" --measure C73h
+    _st_mx TC73-h-mut C73h FAIL "MUT-C73EXEC: C1 with one unflagged git status runs the planted monitor and C73h reads FAIL"
+  else
+    _bad "TC73-h-mut the throwaway tree for MUT-C73EXEC could not be built"
+  fi
+  # MUT-GPROW, harness side: a preflight whose printed row gains a trailing slash gives leg 2 a row that is not the measured one, and TC73-u-q4's needle (the exact row) must go missing
+  if mkdir -p "$d/mx2/conformance" "$d/mx2/scripts" && cp "$HERE/guard-wired.sh" "$d/mx2/conformance/guard-wired.sh" && cp "$_self" "$d/mx2/conformance/boundary-redteam.sh" && sed '/# MUT-GPROW$/s#denyWrite \\"\$1\\"#denyWrite \\"\$1/\\"#' "$HERE/../scripts/preflight.sh" > "$d/mx2/scripts/preflight.sh" && ! cmp -s "$HERE/../scripts/preflight.sh" "$d/mx2/scripts/preflight.sh"; then
+    _st_runx "$d/mx2/conformance/boundary-redteam.sh" "$d/c73-rbh.scn" "$d/c73.json" --measure C73u
+    if _st_ml C73u | grep -qF "row=./sub/.git, read from C1's real output"; then _bad "TC73-u-q4-mut MUT-GPROW survived (a trailing-slash row still read as the measured row)"; else _pass "TC73-u-q4-mut MUT-GPROW: a C1 row with a trailing slash is not the measured row (the cell reds)"; fi
+  else
+    _bad "TC73-u-q4-mut the throwaway tree for MUT-GPROW could not be built"
+  fi
   # liveness, the fixture proof, the write control
   _st_c73rd rl1 "C73k,C73g,C73T" 'c73-live|1||'
   _st_mx TC73-L C73g INCONCLUSIVE "a failed liveness write reads INCONCLUSIVE, never PASS"
@@ -4197,14 +4310,14 @@ _seg_c73l() {
   _st_c73fx
   _st_c73git l || return 0
   _mk_c73 "$d/c73-0.scn"
-  # the leg aggregation sees the C73 lines too: 7 C42 lines and 14 C73 lines
-  : > "$d/leg73.out"; for _k_c in C42 C42b C42c C42L C42h C42x C42s C73k C73T C73Tw C73b0 C73g C73g2 C73gt C73s C73d C73r C73w C73c C73m C73u; do printf 'BR-MEASURE|%s|PASS|strict=simulated|x\n' "$_k_c" >> "$d/leg73.out"; done
-  if sh "$_self" --leg-verdict 1 "$d/leg73.out" 21 >/dev/null 2>&1; then _pass "TC73-V0 a leg of 7 C42 and 14 C73 clean lines passes the aggregation"; else _bad "TC73-V0 the aggregation must accept 21 clean C42/C73 lines"; fi
-  if sh "$_self" --leg-verdict 1 "$d/leg73.out" 7 >/dev/null 2>&1; then _bad "TC73-V2 the aggregation counted only the C42 lines"; else _pass "TC73-V2 the C73 lines are counted: 21 lines where 7 were expected reds the aggregation"; fi
+  # the leg aggregation sees the C73 lines too: 7 C42 lines and 17 C73 lines
+  : > "$d/leg73.out"; for _k_c in C42 C42b C42c C42L C42h C42x C42s C73k C73T C73Tw C73b0 C73g C73g2 C73gt C73s C73d C73r C73w C73c C73m C73u C73b C73h C73F; do printf 'BR-MEASURE|%s|PASS|strict=simulated|x\n' "$_k_c" >> "$d/leg73.out"; done
+  if sh "$_self" --leg-verdict 1 "$d/leg73.out" 24 >/dev/null 2>&1; then _pass "TC73-V0 a leg of 7 C42 and 17 C73 clean lines passes the aggregation"; else _bad "TC73-V0 the aggregation must accept 24 clean C42/C73 lines"; fi
+  if sh "$_self" --leg-verdict 1 "$d/leg73.out" 7 >/dev/null 2>&1; then _bad "TC73-V2 the aggregation counted only the C42 lines"; else _pass "TC73-V2 the C73 lines are counted: 24 lines where 7 were expected reds the aggregation"; fi
   sed 's/^BR-MEASURE|C73g|PASS|/BR-MEASURE|C73g|INCONCLUSIVE|/' "$d/leg73.out" > "$d/leg73w.out"
-  if _leg_verdict_os Linux 1 "$d/leg73w.out" 21 >/dev/null 2>&1; then _pass "TC73-V3 an INCONCLUSIVE attack cell (a Linux warning) does not fail the leg"; else _bad "TC73-V3 a C73 INCONCLUSIVE other than C73k must not fail the leg"; fi
+  if _leg_verdict_os Linux 1 "$d/leg73w.out" 24 >/dev/null 2>&1; then _pass "TC73-V3 an INCONCLUSIVE attack cell (a Linux warning) does not fail the leg"; else _bad "TC73-V3 a C73 INCONCLUSIVE other than C73k must not fail the leg"; fi
   sed 's/^BR-MEASURE|C73k|PASS|/BR-MEASURE|C73k|FAIL|/' "$d/leg73.out" > "$d/leg73f.out"
-  if ! _leg_verdict_os Linux 1 "$d/leg73f.out" 21 2>&1 | grep -q 'C73k positive control reads OPEN'; then _bad "TC73-V4 the aggregation must refuse a leg whose positive control C73k reads OPEN (FAIL), naming it"; else _pass "TC73-V4 an OPEN C73k reds the aggregation: the instrument is wrong"; fi
+  if ! _leg_verdict_os Linux 1 "$d/leg73f.out" 24 2>&1 | grep -q 'C73k positive control reads OPEN'; then _bad "TC73-V4 the aggregation must refuse a leg whose positive control C73k reads OPEN (FAIL), naming it"; else _pass "TC73-V4 an OPEN C73k reds the aggregation: the instrument is wrong"; fi
   # TC73-V5: the inputs are lines the harness itself emitted in stubbed runs (never hand-written), so the arm cannot drift from the emitter's format
   _mk_c73 "$d/c73-v5l.scn" 'c73-live|1||'
   _st_run "$d/c73-v5l.scn" "$d/c73.json" --measure C73g,C73u
@@ -4222,26 +4335,26 @@ _seg_c73l() {
   _k7_v5 C73g "$_k7_vl3" "the pwd assertion did not hold"
   _k7_v5 C73g "$_k7_vl4" "seed=SEED-FAILED"
   sed 's/^BR-MEASURE|C73k|PASS|/BR-MEASURE|C73k|INCONCLUSIVE|/' "$d/leg73.out" > "$d/leg73k.out"
-  if ! _leg_verdict_os Linux 1 "$d/leg73k.out" 21 2>&1 | grep -q 'C73k positive control is INCONCLUSIVE'; then _bad "TC73-V1 the aggregation must refuse a leg whose positive control C73k is INCONCLUSIVE, naming the control (the per-id loop also fails it, so only its own message proves the C73k check)"; else _pass "TC73-V1 an INCONCLUSIVE C73k reds the aggregation"; fi
+  if ! _leg_verdict_os Linux 1 "$d/leg73k.out" 24 2>&1 | grep -q 'C73k positive control is INCONCLUSIVE'; then _bad "TC73-V1 the aggregation must refuse a leg whose positive control C73k is INCONCLUSIVE, naming the control (the per-id loop also fails it, so only its own message proves the C73k check)"; else _pass "TC73-V1 an INCONCLUSIVE C73k reds the aggregation"; fi
   # SWAS-565 (TC73-V6): the OS-aware arm. Off Linux a plain C73 INCONCLUSIVE is a VOID row that an OPEN cell (exit 1) would hide, so the verdict fails it; on Linux it stays a warning.
   sed 's/^BR-MEASURE|C42|PASS|/BR-MEASURE|C42|FAIL|/' "$d/leg73w.out" > "$d/leg73o.out"
-  if ! _leg_verdict_os Darwin 1 "$d/leg73o.out" 21 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _bad "TC73-V6a a Darwin leg with a C42 OPEN line and a C73g INCONCLUSIVE line must be refused naming the cell: the VOID is hidden by the OPEN"; else _pass "TC73-V6a a Darwin leg with a C42 OPEN line and a C73g INCONCLUSIVE line reds the aggregation"; fi
-  if _leg_verdict_os Darwin 1 "$d/leg73o.out" 21 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _pass "TC73-V6d the Darwin refusal names the cell and the OS"; else _bad "TC73-V6d the Darwin refusal must name the C73 cell and the OS"; fi
+  if ! _leg_verdict_os Darwin 1 "$d/leg73o.out" 24 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _bad "TC73-V6a a Darwin leg with a C42 OPEN line and a C73g INCONCLUSIVE line must be refused naming the cell: the VOID is hidden by the OPEN"; else _pass "TC73-V6a a Darwin leg with a C42 OPEN line and a C73g INCONCLUSIVE line reds the aggregation"; fi
+  if _leg_verdict_os Darwin 1 "$d/leg73o.out" 24 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _pass "TC73-V6d the Darwin refusal names the cell and the OS"; else _bad "TC73-V6d the Darwin refusal must name the C73 cell and the OS"; fi
   # the wrapper passes the REAL OS: the rewritten Darwin and Linux copies of the harness run --leg-verdict end to end (never an environment switch)
   # this segment makes its own copies: under SWAS-560 every segment runs on its own $d, so the copies c73os makes are never here (the same _k7_copy calls as c73os; a copy that could not be made leaves V6e/V6f without their file, so they red)
   _k7_copy "$d/lx" Linux && _k7_copy "$d/dw" Darwin || :
-  if [ -f "$d/dw/conformance/boundary-redteam.sh" ] && env sh "$d/dw/conformance/boundary-redteam.sh" --leg-verdict 1 "$d/leg73o.out" 21 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _pass "TC73-V6e the --leg-verdict wrapper passes the real OS: a Darwin copy refuses the C73g VOID and names Darwin"; else _bad "TC73-V6e the Darwin copy of the harness must refuse a C73g INCONCLUSIVE under an OPEN line and name Darwin"; fi
-  if [ -f "$d/lx/conformance/boundary-redteam.sh" ] && env sh "$d/lx/conformance/boundary-redteam.sh" --leg-verdict 1 "$d/leg73o.out" 21 >/dev/null 2>&1; then _pass "TC73-V6f the same leg on a Linux copy of the harness passes (report-only)"; else _bad "TC73-V6f the Linux copy of the harness must accept a C73g INCONCLUSIVE under an OPEN line"; fi
+  if [ -f "$d/dw/conformance/boundary-redteam.sh" ] && env sh "$d/dw/conformance/boundary-redteam.sh" --leg-verdict 1 "$d/leg73o.out" 24 2>&1 | grep -q 'C73g is INCONCLUSIVE on Darwin'; then _pass "TC73-V6e the --leg-verdict wrapper passes the real OS: a Darwin copy refuses the C73g VOID and names Darwin"; else _bad "TC73-V6e the Darwin copy of the harness must refuse a C73g INCONCLUSIVE under an OPEN line and name Darwin"; fi
+  if [ -f "$d/lx/conformance/boundary-redteam.sh" ] && env sh "$d/lx/conformance/boundary-redteam.sh" --leg-verdict 1 "$d/leg73o.out" 24 >/dev/null 2>&1; then _pass "TC73-V6f the same leg on a Linux copy of the harness passes (report-only)"; else _bad "TC73-V6f the Linux copy of the harness must accept a C73g INCONCLUSIVE under an OPEN line"; fi
   # SWAS-565 fix round 1: which cells printed, not only how many
   sed 's/^BR-MEASURE|C73k|PASS|/BR-MEASURE|C73kk|PASS|/' "$d/leg73.out" > "$d/leg73nk.out"
-  if _leg_verdict_os Linux 1 "$d/leg73nk.out" 21 2>&1 | grep -q 'not exactly one C73k'; then _pass "TC73-V7 a leg with the right count but no C73k line reds the aggregation and names the control"; else _bad "TC73-V7 a leg with 21 lines and no C73k line must fail naming the C73k control"; fi
+  if _leg_verdict_os Linux 1 "$d/leg73nk.out" 24 2>&1 | grep -q 'not exactly one C73k'; then _pass "TC73-V7 a leg with the right count but no C73k line reds the aggregation and names the control"; else _bad "TC73-V7 a leg with 24 lines and no C73k line must fail naming the C73k control"; fi
   sed 's/^BR-MEASURE|C73u|PASS|/BR-MEASURE|C73g|PASS|/' "$d/leg73.out" > "$d/leg73dp.out"
-  if _leg_verdict_os Linux 1 "$d/leg73dp.out" 21 2>&1 | grep -q 'C73g printed more than once'; then _pass "TC73-V8 a leg with the right count and a duplicated cell id reds the aggregation and names the id"; else _bad "TC73-V8 a leg with 21 lines and a duplicated C73g must fail naming the id"; fi
+  if _leg_verdict_os Linux 1 "$d/leg73dp.out" 24 2>&1 | grep -q 'C73g printed more than once'; then _pass "TC73-V8 a leg with the right count and a duplicated cell id reds the aggregation and names the id"; else _bad "TC73-V8 a leg with 24 lines and a duplicated C73g must fail naming the id"; fi
   sed -e 's/^BR-MEASURE|C42|PASS|/BR-MEASURE|C42|FAIL|/' -e 's/^BR-MEASURE|C73u|PASS|/BR-MEASURE|C73_u|INCONCLUSIVE|/' "$d/leg73.out" > "$d/leg73id.out"
-  if _leg_verdict_os Darwin 1 "$d/leg73id.out" 21 2>&1 | grep -q 'C73_u is INCONCLUSIVE on Darwin'; then _pass "TC73-V9 an INCONCLUSIVE C73 line whose id is not alphanumeric fails closed off Linux"; else _bad "TC73-V9 a C73_u INCONCLUSIVE line must fail on Darwin naming the id"; fi
-  if _leg_verdict_os Linux 1 "$d/leg73o.out" 21 >/dev/null 2>&1; then _pass "TC73-V6b the same lines on a Linux leg pass: a plain C73 INCONCLUSIVE stays report-only"; else _bad "TC73-V6b a Linux leg with a C42 OPEN line and a C73g INCONCLUSIVE line must pass (report-only)"; fi
+  if _leg_verdict_os Darwin 1 "$d/leg73id.out" 24 2>&1 | grep -q 'C73_u is INCONCLUSIVE on Darwin'; then _pass "TC73-V9 an INCONCLUSIVE C73 line whose id is not alphanumeric fails closed off Linux"; else _bad "TC73-V9 a C73_u INCONCLUSIVE line must fail on Darwin naming the id"; fi
+  if _leg_verdict_os Linux 1 "$d/leg73o.out" 24 >/dev/null 2>&1; then _pass "TC73-V6b the same lines on a Linux leg pass: a plain C73 INCONCLUSIVE stays report-only"; else _bad "TC73-V6b a Linux leg with a C42 OPEN line and a C73g INCONCLUSIVE line must pass (report-only)"; fi
   sed 's/^BR-MEASURE|C42|PASS|/BR-MEASURE|C42|FAIL|/' "$d/leg73.out" > "$d/leg73c.out"
-  if _leg_verdict_os Darwin 1 "$d/leg73c.out" 21 >/dev/null 2>&1; then _pass "TC73-V6c a clean Darwin leg (one OPEN, no INCONCLUSIVE) passes"; else _bad "TC73-V6c a clean Darwin leg must pass"; fi
+  if _leg_verdict_os Darwin 1 "$d/leg73c.out" 24 >/dev/null 2>&1; then _pass "TC73-V6c a clean Darwin leg (one OPEN, no INCONCLUSIVE) passes"; else _bad "TC73-V6c a clean Darwin leg must pass"; fi
 }
 
 # ---- selftest-only helpers and the lock segment (SWAS-560; BELOW selftest() on purpose, like the helpers above) ----

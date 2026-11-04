@@ -598,7 +598,7 @@ _tcr_selftest() {
   # host binding: a base url naming another host asks for that host's service and finds no item
   _tcr_st_set ok "$_tcr_host"
   _tcr_out=$(_tcr_st_run "https://other.example.net")
-  if [ "$_tcr_out" = "||1" ] && grep -qF 'sparkwright-tracker:other.example.net' "$_tcr_sd/log" && ! grep -qF -- '-w' "$_tcr_sd/log" && ! grep -qF "sparkwright-tracker:$_tcr_host" "$_tcr_sd/log"; then _tcr_st_pass "host binding: another host looks up its own service and never gets this host's item"; else _tcr_st_fail "host binding: out=$_tcr_out log=$(cat "$_tcr_sd/log")"; fi
+  if [ "$_tcr_out" = "||1" ] && grep -qF 'sparkwright-tracker:other.example.net' "$_tcr_sd/log" && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcr_sd/log" && ! grep -qF "sparkwright-tracker:$_tcr_host" "$_tcr_sd/log"; then _tcr_st_pass "host binding: another host looks up its own service and never gets this host's item"; else _tcr_st_fail "host binding: out=$_tcr_out log=$(cat "$_tcr_sd/log")"; fi
   for _tcr_bad in "http://ex.atlassian.net" "https://user@ex.atlassian.net" "https://ex.atlassian.net:8443" "https://ex.atlassian.net?x=1" "https://-bad.example.com" "ex.atlassian.net" ""; do
     _tcr_st_set ok "$_tcr_host"
     _tcr_out=$(_tcr_st_run "$_tcr_bad")
@@ -645,11 +645,11 @@ _tcr_selftest() {
   # tracker_cred_available: attribute-only, never -w, never a value
   _tcr_st_set ok "$_tcr_host"
   _tcr_av=$( unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; tracker_cred_available "$_tcr_base" >> "$_tcr_sd/all.out" 2>> "$_tcr_sd/all.err"; printf '%s|%s|%s' "$?" "$TRACKER_CRED_SOURCE" "${KIT_TRACKER_TOKEN:-}" )
-  if [ "$_tcr_av" = "0|keychain|" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcr_sd/log"; then _tcr_st_pass "available: present, one attribute-only call, no -w, no token set"; else _tcr_st_fail "available: $_tcr_av log=$(cat "$_tcr_sd/log")"; fi
+  if [ "$_tcr_av" = "0|keychain|" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcr_sd/log"; then _tcr_st_pass "available: present, one attribute-only call, no -w, no token set"; else _tcr_st_fail "available: $_tcr_av log=$(cat "$_tcr_sd/log")"; fi
   for _tcr_am in "rc44:none" "rc36:keychain" "rc51:keychain" "hang:keychain"; do
     _tcr_st_set "${_tcr_am%%:*}" "$_tcr_host"
     _tcr_av=$( unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; tracker_cred_available "$_tcr_base" >> "$_tcr_sd/all.out" 2>> "$_tcr_sd/all.err"; printf '%s|%s' "$?" "$TRACKER_CRED_SOURCE" )
-    if [ "$_tcr_av" = "1|${_tcr_am#*:}" ] && ! grep -qF -- '-w' "$_tcr_sd/log"; then _tcr_st_pass "available: ${_tcr_am%%:*} answers not-present as ${_tcr_am#*:}, still no -w"; else _tcr_st_fail "available ${_tcr_am%%:*}: $_tcr_av"; fi
+    if [ "$_tcr_av" = "1|${_tcr_am#*:}" ] && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcr_sd/log"; then _tcr_st_pass "available: ${_tcr_am%%:*} answers not-present as ${_tcr_am#*:}, still no -w"; else _tcr_st_fail "available ${_tcr_am%%:*}: $_tcr_av"; fi
   done
   _tcr_st_set ok "$_tcr_host"
   _tcr_av=$( unset JIRA_EMAIL JIRA_TOKEN; KIT_TRACKER_USER=u; KIT_TRACKER_TOKEN=t; tracker_cred_available "$_tcr_base"; printf '%s|%s' "$?" "$TRACKER_CRED_SOURCE" )
@@ -669,7 +669,7 @@ _tcr_selftest() {
   # C3: no item for the declared account: refused, one call, no secret read, a fixed sentence naming as.agent and no email
   _tcr_st_set ok "$_tcr_host"; _tcr_st_items "$_tcr_other"; ST_ROOT="$_tcr_sd/root-A"
   _tcr_out=$(_tcr_st_run "$_tcr_base"); _tcr_st_clear
-  if [ "$_tcr_out" = "||1" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcr_sd/log" && grep -qF 'as.agent' "$_tcr_sd/last.err" && ! grep -qF 'example.com' "$_tcr_sd/last.err"; then _tcr_st_pass "C3: no item for the declared account is refused with no fallback, no secret call, and no email on stderr"; else _tcr_st_fail "C3: out=$_tcr_out log=$(cat "$_tcr_sd/log") err=$(cat "$_tcr_sd/last.err")"; fi
+  if [ "$_tcr_out" = "||1" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcr_sd/log" && grep -qF 'as.agent' "$_tcr_sd/last.err" && ! grep -qF 'example.com' "$_tcr_sd/last.err"; then _tcr_st_pass "C3: no item for the declared account is refused with no fallback, no secret call, and no email on stderr"; else _tcr_st_fail "C3: out=$_tcr_out log=$(cat "$_tcr_sd/log") err=$(cat "$_tcr_sd/last.err")"; fi
   # C4: the store answers another account than the one asked: refused before the secret is requested
   _tcr_st_set forgeacct "$_tcr_host"; _tcr_st_items "$_tcr_other" "$_tcr_agent"; ST_ROOT="$_tcr_sd/root-A"
   _tcr_out=$(_tcr_st_run "$_tcr_base"); _tcr_st_clear
@@ -677,7 +677,7 @@ _tcr_selftest() {
   # C5: the presence question names the account too, and still reads no secret
   _tcr_st_set ok "$_tcr_host"; _tcr_st_items "$_tcr_other" "$_tcr_agent"
   _tcr_av=$( unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; tracker_cred_bind_root "$_tcr_sd/root-A"; tracker_cred_available "$_tcr_base" >/dev/null 2>&1; printf '%s|%s' "$?" "${KIT_TRACKER_TOKEN:-}" )
-  if [ "$_tcr_av" = "0|" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && grep -qF -e "-a $_tcr_agent" "$_tcr_sd/log" && ! grep -qF -- '-w' "$_tcr_sd/log"; then _tcr_st_pass "C5: available with as.agent makes one attribute call carrying -a, reads no secret"; else _tcr_st_fail "C5: $_tcr_av log=$(cat "$_tcr_sd/log")"; fi
+  if [ "$_tcr_av" = "0|" ] && [ "$(wc -l < "$_tcr_sd/log" | tr -d ' ')" = "1" ] && grep -qF -e "-a $_tcr_agent" "$_tcr_sd/log" && ! grep -qE -- '(^| )-[A-Za-z]*[wg]' "$_tcr_sd/log"; then _tcr_st_pass "C5: available with as.agent makes one attribute call carrying -a, reads no secret"; else _tcr_st_fail "C5: $_tcr_av log=$(cat "$_tcr_sd/log")"; fi
   # C6 (F2): a token resolved under one root's account is never handed over after a re-bind to another account
   _tcr_st_set ok "$_tcr_host"; _tcr_st_items "$_tcr_other" "$_tcr_agent"
   _tcr_c6=$(

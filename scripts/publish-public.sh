@@ -632,7 +632,7 @@ gate() {
     cat "$_gw/refs.out" "$_gw/findings" 2>/dev/null | LC_ALL=C sort -u | sed 's/^/  /' >&2
   fi
   if [ "$_gcure" -ne 0 ]; then
-    echo "publish-public: gate: cure for those lines — a public block may not contain a # followed by digits (also PR#, owner/repo# or &#35;), a GH- number, a forge /pull(s)/, /issues/ or /commit(s)/ URL, or a github/gitlab/bitbucket URL (with or without a scheme or www.) under pull(s), issues, commit(s), compare, tree or blob, this project's tracker key with a number (any case, a space, _ or - between), the word changelog, [Unreleased], a path the export drops, or, in the block that ships, a marker that shares its line or opens twice. Reword it to name nothing a public reader cannot open (the public repo is a mirror with no PR history); see MAINTAINING.md section 3." >&2
+    echo "publish-public: gate: cure for those lines — a public block may not contain a # followed by digits (also PR#, owner/repo# or &#35;), a GH- number, a forge /pull(s)/, /issues/ or /commit(s)/ URL, or a github/gitlab/bitbucket URL (with or without a scheme or www.) under pull(s), issues, commit(s), compare, tree or blob, this project's tracker key with a number (any case, a space, _ or - between), the word changelog, [Unreleased], a path the export drops, or, in the block that ships, a marker that shares its line or opens twice. Reword it to name nothing a public reader cannot open (the public repo is a mirror with no PR history); see docs/kit-internals/maintaining.md section 3." >&2
   fi
   if [ "$_gbad" -ne 0 ]; then
     echo "publish-public: gate: cure — replace the owner identifier with a neutral placeholder (reviewer-login / author-login); the identifier list is .publish-identifiers (export-ignored); a withheld-document path is cured by export-ignoring it in .gitattributes; a [name] hit is cured by renaming (the withheld component sits under the printed prefix: git ls-files '<prefix>/'); a [symlink] hit is cured by replacing the link with the file." >&2
@@ -1501,7 +1501,7 @@ NOTE_REFS_RC=0
 NOTE_REFS=$(public_note_refs "$ROOT/CHANGELOG.md" "$VERSION" 2>"$NOTE_DIR/refs.err") || NOTE_REFS_RC=$?
 [ "$NOTE_REFS_RC" -ne 2 ] || die "ABORT — the release note for $VERSION could not be checked for private references: $(_err_text "$NOTE_DIR/refs.err"). Nothing published."
 [ ! -s "$NOTE_DIR/refs.err" ] || say "      note: $(_err_text "$NOTE_DIR/refs.err")"
-[ "$NOTE_REFS_RC" -eq 0 ] || die "ABORT — the release note for $VERSION refers to something a public reader cannot open ($(printf '%s' "$NOTE_REFS" | tr '\n' ';')). Reword its CHANGELOG public block (MAINTAINING.md section 3). Nothing published."
+[ "$NOTE_REFS_RC" -eq 0 ] || die "ABORT — the release note for $VERSION refers to something a public reader cannot open ($(printf '%s' "$NOTE_REFS" | tr '\n' ';')). Reword its CHANGELOG public block (docs/kit-internals/maintaining.md section 3). Nothing published."
 gitleaks detect --source "$NOTE_DIR" --no-git --redact --exit-code 1 >/dev/null 2>&1 \
   || die "ABORT — gitleaks found a secret in the release note for $VERSION. Nothing published."
 say "      release note: scanned clean"

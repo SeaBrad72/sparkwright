@@ -92,18 +92,14 @@ st_budget() {
 }
 
 # st_emit <row> <class> — acts 2, 4 and 5 on stdout, printed ONLY after a claim returned 0.
-#   * class = ordinary            -> the reduced TWO-key block (Kit-Row + Kit-Class), per the
-#                                    class-proportional required set (loop-state.sh:161-166).
-#   * class = sensitive|control-plane -> the FULL four-key block carrying the REAL derived class;
-#                                    Kit-Stage / Kit-Skill are placeholders you fill (start removes
-#                                    friction, not judgment — the honest ceiling).
-#   * class = "" (unknown, or --changed omitted) -> the FULL four-key block [C3] (degradation
-#                                    ESCALATES the requirement, per loop-state.sh:158-160), with the
-#                                    class rendered as the paste-FAILING placeholder `<derived class>`
-#                                    [C5]: the angle brackets are outside loop-state's Kit-Class
-#                                    charset, so a verbatim paste fails LOUDLY at the charset leg
-#                                    rather than smuggling an unverified class through. The derive
-#                                    command prints on its own line above it.
+#   * class = ordinary|sensitive|control-plane -> the TWO-key block (Kit-Row + Kit-Class) carrying
+#                                    the REAL derived class: every class owes the same two (SWAS-614).
+#   * class = "" (unknown, or --changed omitted) -> the same two keys, with the class rendered as
+#                                    the paste-FAILING placeholder `<derived class>` [C5]: the angle
+#                                    brackets are outside loop-state's Kit-Class charset, so a
+#                                    verbatim paste fails LOUDLY at the charset leg rather than
+#                                    smuggling an unverified class through. The derive command
+#                                    prints on its own line above it.
 st_emit() {
   _r=$1; _cls=$2
   echo "act 2 — read the governing skill for this surface before you code: skills/<name>/SKILL.md"
@@ -113,23 +109,15 @@ st_emit() {
   echo "Never self-assert the class — loop-state.sh re-derives it at promotion; the class here is provisional."
   echo ""
   case "$_cls" in
-    ordinary)
-      printf 'Kit-Row: %s\n' "$_r"
-      echo   "Kit-Class: ordinary"
-      ;;
-    sensitive|control-plane)
+    ordinary|sensitive|control-plane)
       printf 'Kit-Row: %s\n' "$_r"
       printf 'Kit-Class: %s\n' "$_cls"
-      echo   "Kit-Stage: <stage>"
-      echo   "Kit-Skill: skills/<name>"
       ;;
     *)
       echo   "# derive the class, then replace the placeholder below (do not self-assert it):"
       echo   "#   sh conformance/promotion-readiness.sh --class --changed <listing>"
       printf 'Kit-Row: %s\n' "$_r"
       echo   "Kit-Class: <derived class>"
-      echo   "Kit-Stage: <stage>"
-      echo   "Kit-Skill: skills/<name>"
       ;;
   esac
   echo ""
@@ -154,7 +142,7 @@ do_start() {
   done
   [ -n "$_row" ] || { echo "start: a row id is required" >&2; st_usage; return 2; }
 
-  # ── act 1: classify. Only when a listing is given; otherwise the class is unknown (four-key block).
+  # ── act 1: classify. Only when a listing is given; otherwise the class is unknown (the block carries a placeholder class).
   _class=""
   if [ "$_have_changed" = 1 ]; then
     # ABSOLUTIZE [C4]: promotion-readiness.sh `cd`s to the kit root before its `-f "$CHANGED"` test, so
@@ -306,18 +294,20 @@ selftest() {
   fi
   ST_CLASSIFIER=$_saved_classifier
 
-  # the block shapes: unknown -> four keys + paste-failing placeholder + derive command;
-  # ordinary -> two keys; control-plane -> four keys with the REAL class.
+  # the block shapes: every class (and the unknown one) is two keys; unknown keeps the paste-failing
+  # placeholder and the derive command; ordinary and control-plane carry their REAL class.
   _e_unknown=$(st_emit ROW-X "")
-  st_emit_has "$_e_unknown" "leg f/unknown-fourkey: unknown class emits the FULL four-key block" "Kit-Stage:"
+  st_emit_hasnt "$_e_unknown" "leg f/unknown-twokey: unknown class emits two keys (no Kit-Stage, no Kit-Skill)" "Kit-Stage:"
+  st_emit_hasnt "$_e_unknown" "leg f/unknown-twokey: unknown class emits two keys (no Kit-Skill)" "Kit-Skill:"
   st_emit_has "$_e_unknown" "leg f/placeholder: unknown class emits the paste-FAILING <derived class> placeholder" "Kit-Class: <derived class>"
   st_emit_has "$_e_unknown" "leg f/derive-cmd: the derive command is printed above the placeholder" "promotion-readiness.sh --class --changed"
   _e_ord=$(st_emit ROW-Y ordinary)
   st_emit_has   "$_e_ord" "leg f/ordinary-class: ordinary emits its real class" "Kit-Class: ordinary"
-  st_emit_hasnt "$_e_ord" "leg f/ordinary-twokey: ordinary is a REDUCED two-key block (no Kit-Stage)" "Kit-Stage:"
+  st_emit_hasnt "$_e_ord" "leg f/ordinary-twokey: ordinary is a two-key block (no Kit-Stage)" "Kit-Stage:"
   _e_cp=$(st_emit ROW-Z control-plane)
   st_emit_has "$_e_cp" "leg f/cp-class: control-plane emits its real class" "Kit-Class: control-plane"
-  st_emit_has "$_e_cp" "leg f/cp-fourkey: control-plane emits the FULL four-key block" "Kit-Stage:"
+  st_emit_hasnt "$_e_cp" "leg f/cp-twokey: control-plane is a two-key block (no Kit-Stage)" "Kit-Stage:"
+  st_emit_hasnt "$_e_cp" "leg f/cp-twokey: control-plane is a two-key block (no Kit-Skill)" "Kit-Skill:"
 
   if [ "$st_fail_n" -ne 0 ]; then
     echo "start --selftest: FAIL" >&2

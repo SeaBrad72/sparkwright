@@ -90,7 +90,10 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # the Seats sentence no longer says the grading is not active; it ends "review-lane grades the names and cannot
 # see the dispatch". The region measures 3260 bytes with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md
 # and the project template all agree). The cap was 3302 and is now 3263 = the measured 3260 + the 3-byte bite.
-EC_MAX_BYTES=3263
+# ⚠️ GOVERNED RE-MEASURE AT SWAS-614 (2026-11-02): the two-trailer rewrite of acts 2 and 4 shrank the region to 3062 bytes
+# with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all agree). The cap was 3263
+# and is now 3067 = the measured 3062 + the bite conformance/guard-wired.sh holds it to (GW_EC_BITE, 5).
+EC_MAX_BYTES=3067
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

@@ -139,7 +139,7 @@ Applies IF: always — every change is classified by risk × reversibility befor
 Why: An agent's freedom should scale with how much a mistake costs and how hard it is to undo. Low-risk,
   reversible work runs autonomously; irreversible or high-blast-radius actions (prod deploy, data
   migration, money) stay human-gated. Tiering autonomy by risk is what lets you grant speed where it's
-  cheap and keep a hand on the wheel where it isn't — and autonomy is *earned* by metrics, not assumed.
+  cheap and keep a hand on the wheel where it isn't — and autonomy is *earned* by a track record a person judges, not assumed.
 Enforced by: conformance/agent-autonomy.sh
 Read more: DEVELOPMENT-PROCESS.md §13
 

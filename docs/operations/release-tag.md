@@ -11,7 +11,7 @@
 3. Tag `v<VERSION>` if absent.
 4. Push the tag; on push failure, roll back the local tag.
 
-## The AGENT must not wait on CI. The TOOL may. (P1-CI)
+## The AGENT must not wait on CI. The TOOL may.
 
 These are different things, and conflating them is what cost us ~10 minutes a release.
 
@@ -29,14 +29,13 @@ points at a broken commit* — and it is worth its cost:
 - It **degrades open**, so a missing signal never blocks a release.
 - Cost truth (measured 2026-08-07, superseding the "~3 minutes" this line once claimed): run
   wall-clock is **10.9–12.4 min**, and its critical path is the `non-vacuity (2)` mutation shard
-  (639–725s) — the CI-cost story lives in `ci.yml`'s P1-CI header; the gate's poll is bounded at
+  (639–725s) — the CI-cost story lives in `ci.yml`'s header; the gate's poll is bounded at
   10 min (`RELEASE_TAG_CI_TIMEOUT`) and degrades open at the bound, so the ceremony stays cheap
-  regardless of the run's length. **Measured 2026-08-15 (the SHARD2-cure probe, design §1): that
+  regardless of the run's length. **Measured 2026-08-15: that
   shard had grown to 866–899s, pushing the run PAST the 10-min bound — so the CI wait had quietly
   become a degrade-open no-op on full runs. Whether the un-nesting cure restores the run under the
   bound is NOT YET MEASURED: the post-cure critical path becomes cf-doctor at 492–663s, whose top
-  of range still exceeds it; the figure is recorded in the cure design's amendment log once read
-  off a real run.** The RUNBOOK's ceremony ("wait for main CI green first, then the rung passes in
+  of range still exceeds it.** The RUNBOOK's ceremony ("wait for main CI green first, then the rung passes in
   seconds") sidesteps the bound either way and is the rehearsed route.
 
 *(An earlier draft of this section said "tag immediately, never wait" — full stop. That was wrong: it
@@ -75,7 +74,7 @@ After the CI gate, `provenance_gate` reads the **per-job** conclusions for the p
 `ci_gate` sees only the workflow-level verdict, which is blind to a job that silently *skipped*.
 
 Its dial is `RELEASE_TAG_PROVENANCE`, and since **v3.213.0 the kit's own tree carries
-`RELEASE_TAG_PROVENANCE=enforce`** in `.kit/dials.conf` (ruling `D-240811-2.1`). The conf value is
+`RELEASE_TAG_PROVENANCE=enforce`** in `.kit/dials.conf`. The conf value is
 authoritative; an environment variable of the same name may only **escalate** observe→enforce, never
 de-escalate — that is what makes the flip stick instead of being one `export` from undone. `.kit/dials.conf`
 is `export-ignore`d, so **an adopter export carries no conf and reads observe**: your first run is never red.
@@ -141,7 +140,7 @@ It is a poor fit for:
 
 Tags are hard to un-ring (especially if adopters have pulled them). Prefer the guarded-manual default when in doubt; opt into auto-tag only when the deployment model genuinely calls for it.
 
-## Published tags are immutable (P1.2-pre-b)
+## Published tags are immutable
 
 A tag in the **dev** repo names a commit for us. A tag on the **public mirror** is what an adopter
 **pins to** — and until v3.135.0 `publish-public.sh` **force-pushed** it (`git push --force origin

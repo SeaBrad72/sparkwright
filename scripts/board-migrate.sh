@@ -1316,7 +1316,7 @@ CSTUB
   printf '0' > "$bm_crd/rc"; : > "$bm_crd/log"
   bm_conf 200; KIT_TRACKER_USER=; KIT_TRACKER_TOKEN=
   bm_run --from board.md --plan plan.tsv $D $DT
-  if ! bm_has 'credentials:' && [ -s "$bm_crd/log" ] && ! grep -qF -- '-w' "$bm_crd/log"; then bm_pass "leg 5 stored credential: an empty environment plus a stored item passes the credential question with no -w"
+  if ! bm_has 'credentials:' && [ -s "$bm_crd/log" ] && ! grep -qE -- '(^| )-w( |$)' "$bm_crd/log"; then bm_pass "leg 5 stored credential: an empty environment plus a stored item passes the credential question with no -w"
   else bm_fail_ "leg 5 stored credential: rc=$bm_rc out=[$bm_all] store log=[$(cat "$bm_crd/log")]"; fi
   printf '44' > "$bm_crd/rc"; : > "$bm_crd/log"
   bm_reset; KIT_TRACKER_USER=; KIT_TRACKER_TOKEN=

@@ -4,7 +4,7 @@
 `builder ≠ reviewer` was satisfied without a second human (`../docs/operations/review-lane.md`).
 ⚠️ THE NEXT SENTENCE MUST STAY ON ONE LINE — `conformance/review-lane.sh` refuses a record that still
 carries it (`RL-RECORD-IS-TEMPLATE`), and it matches the phrase with `grep -F`, so a line wrap disarms
-the check silently. It was wrapped until 2026-09-04 and the marker never fired on the real file.
+the check silently. It was wrapped once and the marker never fired on the real file.
 Copy into your project (or attach to the PR/audit record), one per change. **Default-tier** changes need the
 top three sections; **high-risk** changes (control-plane · security/auth boundary · data/schema
 migration · prod deploy · money/irreversible) ALSO need the **Acknowledgments** section.
@@ -34,7 +34,7 @@ placeholder instead of your value (measured, 2026-09-04):
   Reviewer: <seat/model/identity>                       ← MUST differ from Builder
 ```
 
-**Seat roles (`SWAS-300`).** The first word of the `Builder:` line, of every Rounds seat cell and of the word after `seat` on the security line is a role declared by the kit's `agents/*.agent.md` (`builder`, `reviewer`, `security`, `conductor`). Every Rounds seat is `reviewer`; on a Sensitive or Control-plane change the security seat is `security`. The model or tier after the role word is free text and is never graded. The check grades that the record **names** declared seats; it cannot see that a seat ran.
+**Seat roles.** The first word of the `Builder:` line, of every Rounds seat cell and of the word after `seat` on the security line is a role declared by the kit's `agents/*.agent.md` (`builder`, `reviewer`, `security`, `conductor`). Every Rounds seat is `reviewer`; on a Sensitive or Control-plane change the security seat is `security`. The model or tier after the role word is free text and is never graded. The check grades that the record **names** declared seats; it cannot see that a seat ran.
 
 Builder: ___
 Reviewer: ___
@@ -69,7 +69,7 @@ the token appears on an **executable line**, not a comment — or says `not buil
 | ___ | `path::test-name` |
 
 ## Security review
-`D-240904-1` as amended by `D-241021-1`: the diff security review by a separate seat is the default, and this section is where its verdict lives (the PR body carries no security line); only that a verdict is present is graded. Waivers are counted in the slice retro from these sections. One of:
+`D-240904-1`: the diff security review by a separate seat is the default, and this section is where its verdict lives (the PR body carries no security line); only that a verdict is present is graded. Waivers are counted in the slice retro from these sections. One of:
 
 - `ran — seat <role>, verdict: <PASS | PASS-WITH-NOTES | FAIL>` (findings go in the table above; the role is `security` on a Sensitive or Control-plane change), or
 - `waived — no-untrusted-input · no-new-permission · no-control-plane-surface · no-operator-shell`
@@ -88,8 +88,8 @@ shape is unaffected either way.
 | 1. ___ | pending | ___ |
 
 > **The non-self-attested half needs nothing from you here.** The reviewer types no attestation: a
-> plain non-author **Approve** on the graded head *is* the attestation (`D-240904-2`). Since
-> `REVIEW-LANE-WAITING-IS-GREEN` (2026-09-05) **branch protection** is what enforces it — a non-author
+> plain non-author **Approve** on the graded head *is* the attestation.
+> **Branch protection** is what enforces it — a non-author
 > approval, dismissed by any later push, from someone who did not push the head — and `review-lane`
 > grades this file only. There is no line to paste and no `## Attestation` section — if you are working
 > from an older copy of this template, delete it.

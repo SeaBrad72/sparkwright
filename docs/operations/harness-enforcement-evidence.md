@@ -13,10 +13,10 @@ The kit asserts that the destructive-action deny-matrix enforces equally for any
 The floor blocks for any harness because every surface operates on **the invoking shell call** — not on which runtime issued it. A command piped through `kit-guard`, a push from any git client, and a PR diff in any CI system all hit the same deny-matrix (`guard-core.sh`) through the same interface. No runtime-specific wiring is required for the floor to hold.
 
 This is the maintainer-verified half of the split bar:
-- **Maintainer-verified (this doc):** the three surfaces deny, deterministically, for any caller — proven by CI-locked selftests in the kit's own CI. The named `codex`, `cursor`, and `gemini` adapters' **floor-conformance** is additionally maintainer-verified via `conformance/named-adapters.sh` (claims registry → 15): each adapter declares its own control surface (`.cursor/rules/`, `GEMINI.md`/`.gemini/`) so the `agent-boundary` gate protects the union across all harnesses in a shared repo.
+- **Maintainer-verified (this doc):** the three surfaces deny, deterministically, for any caller — proven by CI-locked selftests in the kit's own CI. The named `codex`, `cursor`, and `gemini` adapters' **floor-conformance** is additionally maintainer-verified via `conformance/named-adapters.sh`: each adapter declares its own control surface (`.cursor/rules/`, `GEMINI.md`/`.gemini/`) so the `agent-boundary` gate protects the union across all harnesses in a shared repo.
 - **Adopter-verified (live demo):** a specific third-party harness was driven through the surfaces end-to-end and the floor blocked as expected — proven by running the harness in a real repo. **This half stays adopter-owned — it is not a future maintainer-verified target.** No third-party harness has a native inline guard, so the kit cannot maintainer-claim a live cross-harness session; the live "this harness blocked a bad command" demo is the adopter's confirmatory run, folded into the pre-release living-reference-project validation.
 
-> **`codex` is now the one named adapter whose floor is *exercised* end-to-end, not merely declared.** In the CP-7 cold field test (kit `3.173.0`, vehicle `codex-pulse-6`, operator-run, no Claude assistance), Codex drove the surfaces live: the emitted `pre-push` guard refused a genuine six-commit `git push origin HEAD:main` (exit 1, `origin/main` unchanged), the caller-agnostic `control-plane-ratification` gate held a real control-plane PR blocked while GitHub rejected author self-approval, and the emitted required `ci` path was green on first run yet reddened and blocked a disposable negative PR. All five CP-7 acceptance criteria passed non-vacuously; the full AC-by-AC record is retained in the maintainer-internal design docs, archived on the history ref `history/archaeology-2026-08` (`git show origin/history/archaeology-2026-08:docs/architecture/2026-07-22-cp7-codex-recert-field-test-evidence.md` — the `origin/` prefix is required; `git fetch origin history/archaeology-2026-08` first if your clone predates the archive; the ref exists in the kit maintainers' repository only — the public mirror and adopter trees do not carry history branches; the full recovery convention is in `docs/kit-internals/retiring-conventions.md` §8). This promoted `codex` from `experimental` to **floor-verified** in the maturity surface. It remains floor-verified, not first-class: Codex has no inline `PreToolUse`-equivalent interception, and AC1 is the test that it discloses so.
+> **`codex` is the one named adapter whose floor is *exercised* end-to-end, not merely declared.** In an operator-run cold field test on kit 3.173.0, with no Claude assistance, Codex drove the surfaces live: the emitted `pre-push` guard refused a genuine six-commit `git push origin HEAD:main` (exit 1, `origin/main` unchanged), the caller-agnostic `control-plane-ratification` gate held a real control-plane PR blocked while GitHub rejected author self-approval, and the emitted required `ci` path was green on first run yet reddened and blocked a disposable negative PR. All five acceptance criteria passed non-vacuously; the criterion-by-criterion record is kept in the maintainers' internal design docs, which do not ship. This promoted `codex` from `experimental` to **floor-verified** in the maturity surface. It remains floor-verified, not first-class: Codex has no inline `PreToolUse`-equivalent interception, and the first acceptance criterion is the test that it discloses so.
 
 ---
 
@@ -41,11 +41,12 @@ All denies must block; all allows must pass. Any single failure makes the selfte
 
 ### 2. `sh hooks/pre-push --selftest` — the git-history surface
 
-The universal git pre-push hook — installed by `incept.sh` for every git client and humans. The selftest builds a hermetic two-commit repo (no ambient history dependency; works in shallow CI clones) and drives five ref-pair cases:
+The universal git pre-push hook — installed by `incept.sh` for every git client and humans. The selftest builds a hermetic two-commit repo (no ambient history dependency; works in shallow CI clones) and drives six ref-pair cases (plus the same pair for `master`):
 
 | Case | Expected |
 |------|----------|
-| Push to `refs/heads/main` (new branch) | deny |
+| Push that creates `refs/heads/main` on an empty remote, the first push (cell "create main on an empty remote") | allow |
+| Push to `refs/heads/main` that updates an existing main (cell "update an existing main") | deny |
 | Delete `refs/heads/main` | deny |
 | New feature branch | allow |
 | Fast-forward push to a feature branch | allow |
@@ -53,7 +54,7 @@ The universal git pre-push hook — installed by `incept.sh` for every git clien
 
 ### 3. `sh conformance/agent-boundary.sh --selftest` — the CI-gate surface
 
-The harness-independent control-plane ratification gate. A PR diff that touches a control-plane path (`.github/workflows/`, `CODEOWNERS`, `conformance/`, `.claude/hooks/`, the named `scripts/`, `adapters/`, and the governing docs `DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md` — see `guard-core.sh::is_control_plane_path`) must carry a **non-author approval** or the gate **waits** (yellow, still blocking — it does not fail; CP-9) — regardless of which harness opened the PR. (The self-appliable `ratified-control-plane` label was **removed in H1.3** as agent-forgeable; solo maintainers ratify via a logged `enforce_admins: false` admin-merge.) The selftest exercises both the `boundary_decide` logic in-process and the CLI end-to-end:
+The harness-independent control-plane ratification gate. A PR diff that touches a control-plane path (`.github/workflows/`, `CODEOWNERS`, `conformance/`, `.claude/hooks/`, the named `scripts/`, `adapters/`, and the governing docs `DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md` — see `guard-core.sh::is_control_plane_path`) must carry a **non-author approval** or the gate **waits** (blocking, and rendered red; see below) — regardless of which harness opened the PR. (There is no self-appliable `ratified-control-plane` label, because an agent could forge it; solo maintainers ratify via a logged `enforce_admins: false` admin-merge.) The selftest exercises both the `boundary_decide` logic in-process and the CLI end-to-end:
 
 | Case | Expected |
 |------|----------|
@@ -61,9 +62,9 @@ The harness-independent control-plane ratification gate. A PR diff that touches 
 | Workflow change (`.github/workflows/ci.yml`), unratified | fail (exit 1) |
 | Workflow change, ratified | pass |
 | `CODEOWNERS` change, unratified | fail (exit 1) |
-| `conformance/` script change, unratified (H1.1) | fail (exit 1) |
-| `DEVELOPMENT-STANDARDS.md` / `CLAUDE.md` change, unratified (H1.1) | fail (exit 1) |
-| `adapters/*/adapter.json` change, unratified (H1.1) | fail (exit 1) |
+| `conformance/` script change, unratified | fail (exit 1) |
+| `DEVELOPMENT-STANDARDS.md` / `CLAUDE.md` change, unratified | fail (exit 1) |
+| `adapters/*/adapter.json` change, unratified | fail (exit 1) |
 | Adopter's own `scripts/deploy.sh` (not kit machinery) | pass |
 | Empty diff | pass |
 | No `--changed` listing supplied, local (non-CI) | exit 2 (UNVERIFIED — not a pass) |
@@ -72,19 +73,13 @@ The harness-independent control-plane ratification gate. A PR diff that touches 
 | CLI: control-plane listing, ratified | exit 0 |
 | CLI: clean listing, unratified | exit 0 |
 
-**Dogfooded (H1.4 + D4):** the kit's own `.github/workflows/ratification.yml` runs the real `control-plane-ratification` job on every PR **and on every review** (an approval re-evaluates the gate, and only the gate — which is why it has its own workflow file). The **job key is the required status context**, and the **job's own conclusion is the verdict**: green when ratified or when there is nothing to ratify, red when unratified (WAITING) and red when the gate could not evaluate. Required in branch protection, so an unratified control-plane change is blocked pre-merge.
+**Dogfooded:** the kit's own `.github/workflows/ratification.yml` runs the real `control-plane-ratification` job on every PR **and on every review** (an approval re-evaluates the gate, and only the gate — which is why it has its own workflow file). The **job key is the required status context**, and the **job's own conclusion is the verdict**: green when ratified or when there is nothing to ratify, red when unratified (WAITING) and red when the gate could not evaluate. Required in branch protection, so an unratified control-plane change is blocked pre-merge.
 
-**What changed on 2026-08-27 (REQUIRED-CHECK-POSTED-VIA-API-NOT-MATCHED), and what it cost.** D4/CP-9 used to render the unratified state **yellow** — the job exited 0 and POSTED a check-run at `status: in_progress` with no conclusion — so an unratified PR blocked **without a red ❌ or a "run failed" email**. That mechanism broke: GitHub branch protection stopped matching the posted runs, and three PRs in nine days sat at "Expected — waiting for status to be reported" with every gate green, each cleared only by an admin merge. The poster was deleted. The honest trade: **a waiting gate now reads as a red check and does send a failure email**, because a job cannot be yellow. The compensation is prose, not colour — the check's title says "Awaiting ratification — a human must approve…" and its summary says no test failed and names the remedy. A merge gate that can be satisfied reliably is worth more than one that renders kindly.
+**Why a waiting gate reads as a red check.** The job's own conclusion is the verdict, and a job cannot be yellow, so **a waiting gate reads as a red check and does send a failure email**. The compensation is prose, not colour: the check's title says "Awaiting ratification — a human must approve…" and its summary says no test failed and names the remedy. A merge gate that can be satisfied reliably is worth more than one that renders kindly. Two things were tried and do not hold:
+- A check-run posted through the API and left at `status: in_progress` blocks the merge, but branch protection can stop matching such posted runs to the required context name. PRs then sit at "Expected — waiting for status to be reported" with every gate green, cleared only by an admin merge. That is why the verdict lives on the job's conclusion, where there is nothing to match.
+- `action_required` is **not** amber: GitHub renders it with the **same red ✗ as a failure**, and headlines the PR "Some checks were not successful". Asserting a rendering from the API value rather than the rendered pixels certified the opposite of what reviewers saw.
 
-**⚠️ CORRECTION (CP-9, 2026-07-13): the "amber" claim below was FALSE, and the error is instructive.** We asserted from the API value, never from the rendered pixels: `action_required` is **not** amber — GitHub renders it with the **same red ✗ as a failure**, and headlines the PR "Some checks were not successful". So for four weeks the kit shipped a gate that reported *waiting* as *broken*, while its own evidence doc certified the opposite. A second reviewer read a correctly-functioning gate as "checks failing" (#284) — the confusion was the evidence. **A green check attests that the test ran, never that the claim is true.** The blocking half below was, and remains, correct.
-
-**Live evidence (PR #114, 2026-06-18 — the D4 experiment, verified directly on GitHub):** an unratified control-plane PR produced `control-plane-ratification` = **`ACTION_REQUIRED`** (~~amber~~ — **in fact rendered RED**; see the correction above); the workflow run completed **`success`** (so **no "run failed" email**); and with the check **required** in branch protection, the PR's merge state was **`BLOCKED`** until ratified.
-
-**Live evidence, 2026-07-13 (probe PR #305) — HISTORICAL, and read it for what it did and did not prove.** A required check held at **`status: in_progress`** (conclusion `null`) **blocked**: with a non-author approval present and every other required check green, `mergeStateStatus` was **`BLOCKED`**; when the gate flipped to `success` it became **`UNSTABLE`** (mergeable). Same PR, same SHA, same reviews — only the check moved. That probe proved the *blocking* semantics of a non-success check, and it is still true. What it could not prove was **durability**: it was a point-in-time observation of how branch protection resolved an API-posted run, and roughly six weeks later protection stopped matching those runs at all (see above). The stated "honest ceiling — this pins *today's* rendering; the kit controls the status it posts, not the pixels" was the right caveat, and it is the caveat that came due.
-
-**Live evidence, 2026-08-19 → 2026-08-27 — the failure that retired the poster.** Three PRs, nine days: all required contexts green or posted, and the merge box read "Expected — waiting for status to be reported" on the posted `control-plane-ratification` / `ceremony-binding` / `backlog-presence` contexts. Each was cleared only by an `--admin` merge. Cause: branch protection did not match the API-posted check-run to the required context name. ⇒ the verdict moved onto the job's own conclusion, where there is nothing to match.
-
-(We also found, back at D4, that the prior job was never a *required* check — it rendered red + emailed but did not actually block.) Adopters: add `control-plane-ratification` to your `main` required status checks; the job key already carries that exact name.
+**A green check attests that the test ran, never that the claim is true.** Honest ceiling: the kit controls the status it posts, not how the forge renders or matches it. A required check that is not `success` leaves the PR `BLOCKED` (measured once on GitHub, 2026-07-13, a point-in-time reading), and it becomes mergeable when the gate passes. Adopters: add `control-plane-ratification` to your `main` required status checks; the job key already carries that exact name.
 
 ---
 
@@ -109,9 +104,9 @@ sh scripts/kit-guard --selftest >/dev/null 2>&1 \
 
 ---
 
-## The harness `cwd` contract — what was measured, and what was NOT (2026-09-02)
+## The harness `cwd` contract — what was measured, and what was NOT
 
-`GUARD-CWD-CONFIDENCE-UNKNOWN` Face C makes the guard read a **top-level `cwd`** field from
+The guard reads a **top-level `cwd`** field from
 PreToolUse stdin (a sibling of `tool_name`, not a member of `tool_input` — which is precisely why it
 is trustworthy: the model authors `tool_input`, the harness authors `cwd`). Two things follow, and
 they are recorded separately because only one of them is measured.
@@ -123,9 +118,9 @@ call 1:  cd /private/tmp/kit-s38c/conformance && pwd   ->  /private/tmp/kit-s38c
 call 2:  pwd                                           ->  <repo-root>
 ```
 
-In a **sub-agent thread the cwd is reset between calls**. The cross-call hole Face C closes is
+In a **sub-agent thread the cwd is reset between calls**. The cross-call hole the `cwd` read closes is
 therefore a **main-agent** property, and a sub-agent seat cannot exhibit it. That matches the
-design's own statement (§3-C, "sub-agent threads reset cwd per call") and is stated here as a
+guard's design assumption that sub-agent threads reset cwd per call, and is stated here as a
 measurement rather than inherited as an assumption.
 
 **NOT MEASURED, and named rather than assumed.** Whether the harness's `cwd` field *tracks the main
@@ -134,10 +129,10 @@ established. Doing so requires capturing PreToolUse stdin from the **live** hook
 control-plane edit to the running repository and outside the scope any build seat may take. Until
 that capture is made by an operator, the honest statement is:
 
-- If the field tracks the persisted cwd, Face C closes the cross-call route.
-- If it always reports the session root, Face C is **inert** on that route and costs nothing — the
-  absent/root case is today's behaviour byte for byte — while Faces A and B (the in-string `cd`
-  spellings) are unaffected either way and are what the fixture battery proves.
+- If the field tracks the persisted cwd, the `cwd` read closes the cross-call route.
+- If it always reports the session root, the `cwd` read is **inert** on that route and costs nothing — the
+  absent/root case is plain behaviour byte for byte — while the in-string `cd`
+  spellings are unaffected either way and are what the fixture battery proves.
 
 **The measurement an operator should make**, once, and record here: install a stdin-tee alongside the
 PreToolUse hook, issue `cd conformance` in one call and `pwd` in the next, and read the `cwd` value

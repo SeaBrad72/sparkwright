@@ -1,9 +1,5 @@
 # Maintaining the Kit
 
-How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it keeps its own changelog, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; `adopter-export.sh` ships it into an exported project and `incept.sh` rewrites its doc references at Inception, so it travels with the kit and is adapted to the adopting project.
-
----
-
 ## 1. The artifact convention: Contract · Reference · Conformance
 
 Every capability the kit ships has three parts. This is the same "universal standard + profile" split the kit already uses, generalized to every artifact.
@@ -16,9 +12,9 @@ Every capability the kit ships has three parts. This is the same "universal stan
 
 **The rule for adopters:** you may rewrite any reference implementation freely — change the CI file, swap the stack, restructure the scaffold — **as long as the matching conformance check still passes.** The contract is law; the implementation is yours.
 
-**Maintainer rule — cross-cutting per-stack tooling reaches *all* profiles or none.** The contract + the §14 gates are conformance-enforced across all 10 profiles (`profile-completeness.sh`, `ci-gates.sh`). But *recommended per-stack tooling* added to a section's content (e.g. test-quality, the inner loop) is **not** conformance-checked — so adding it to only the "representative" `typescript-node`/`python` profiles leaves the other stacks thinner without the net catching it. When you add a cross-cutting recommended practice, add its per-stack tooling line to **every applicable profile and `profiles/_TEMPLATE.md`** (the source for new stacks), or don't add it piecemeal.
+Container artifacts (`Dockerfile`, `compose.yaml`, `deploy/`) ship for the 7 *service* profiles only; `ml`, `data-engineering` and `terraform` ship a reference-pointer in §9 instead, by design.
 
-**Convention — deployable container artifacts ship for *service* profiles only.** The 7 service stacks (`typescript-node`, `go`, `rust`, `python`, `java-spring`, `kotlin`, `dotnet`) ship drop-in `Dockerfile` + `compose.yaml` + `deploy/` (k8s + Helm) and wire the conditional image gates (`gate-image-sbom` + digest-bound `gate-image-provenance`). The 3 non-service profiles (`ml`, `data-engineering`, `terraform`) deliberately ship a **reference-pointer in §9, not a generic Dockerfile**, because their deploy unit differs — a model-serving/batch image, an orchestrated job image, and "the `plan`/`apply` *is* the deploy" respectively. This asymmetry is intentional: `conformance/container-supply-chain.sh` is **conditional on a Dockerfile being present** (others are N/A, never failed), so a non-service profile without one is conformant by design — not a gap. If you add a Dockerfile to any profile, the check enforces multi-stage + non-root + the two image gates automatically.
+A recommended per-stack practice reaches every applicable profile and `profiles/_TEMPLATE.md`, or none.
 
 **Worked example (CI/CD):**
 - *Contract* — `DEVELOPMENT-STANDARDS.md` §14: "CI MUST run the seven required gates — lint, type-check, test+coverage≥80%, build, secret scan, dependency scan, supply-chain integrity (SBOM + provenance); `main` is protected; the builder is never the sole merger."
@@ -26,10 +22,6 @@ Every capability the kit ships has three parts. This is the same "universal stan
 - *Conformance* — `conformance/ci-gates.<ext>` that asserts each gate fires.
 
 A team on Python deletes the Node workflow, writes their own, and stays conformant because the gates still fire.
-
-**Retiring an artifact** (doc/template/claim) is the reverse move — keep it honest and reversible with the discipline in **`docs/kit-internals/retiring-conventions.md`** (kept with the kit maintainers' tree; not in the adopter export) (design-intent KEEP-default · find inbound refs · prove no gate depends on it · migrate distinct value · control-plane refs authored in a dev-clone).
-
----
 
 ## 2. Versioning
 
@@ -39,60 +31,8 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
   - **MINOR** — additive: a new reference implementation, a new profile, a new optional capability.
   - **PATCH** — clarifications, typo fixes, non-binding wording.
 - Adopting projects record the version they took in their `CLAUDE.md` (`Kit version adopted: vX.Y.Z`), so drift is visible.
+- On the 3.x line a release can carry acts you must take with no major bump, and the release note lists them (conduct, not enforced).
 
-## 3. Releasing (platform team)
+A downstream retro's kit-level learning goes in that project's own backlog, where its owner ratifies or declines it.
 
-1. Land the change on a feature branch via PR (the kit's own loop — see §5).
-2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version; run `sh conformance/conformance-mass-budget.sh` at the release commit and append the `next-baseline:` line it prints (the text after the label) to `conformance/mass-release-baseline.txt`. **Step 2b, the macOS boundary reading (before the merge and tag):** dispatch `boundary-redteam-macos.yml` with `profile=full` ONLY on a reviewed ref (the release branch; for a sandbox slice, the reviewed PR head), never on an unreviewed one (`gh workflow run boundary-redteam-macos.yml --ref <release-branch> -f profile=full`), and record the run id TOGETHER WITH the ref's commit sha in the release PR's review record (the record under `docs/reviews/` that the review lane grades). It is report-only: a red is a finding to read before the cut, never an automatic stop.
-   - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body. **Public-block rule:** `publish-public.sh --gate` (on every pull request) and the publish step that checks the release note refuse a public block that contains a `#` followed by digits (also as `PR#`, `owner/repo#` or an encoded `&#35;`), a `GH-` number, a forge `/pull(s)/`, `/issues/` or `/commit(s)/` URL, a github, gitlab or bitbucket URL (with or without a scheme or `www.`) under pull(s), issues, commit(s), compare, tree or blob, this project's tracker key with a number (any case; a space, `_` or `-` between), the word changelog, `[Unreleased]`, a path the export drops, or, in the block that ships, a marker that shares its line or opens twice. The aim beyond those shapes is conduct, not enforced: a public block names nothing a public reader cannot open. The public repo is a mirror with no PR history, so a PR number there links to nothing or to the wrong item.
-3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
-   - **`kit-current` on a scratch adopter tree is not performed by agents** (the guard refuses `incept` in a clone); a CI leg on the published tree is its own card.
-
-### 3·cadence — publishing to the public mirror (milestone-gated, ratified 2026-07-23)
-
-Steps 1–3 above are the **private** dev cadence: every slice merges + tags on the private repo. Publishing to
-the **public mirror** (`scripts/publish-public.sh` → `github.com/SeaBrad72/sparkwright`) is a **separate,
-milestone-gated act** — you do NOT publish per slice.
-
-- **Why no fork is needed:** the private-dev → public-mirror split already isolates public adopters from dev
-  velocity. Nothing you merge privately reaches the public repo until you run `publish-public.sh`.
-- **What a milestone is:** an owner-chosen release point — a completed feature/epic bundle, or a version-line
-  you want adopters on. Publish the *cumulative* diff as one public version; the private `VERSION` keeps
-  ticking per slice, the public version jumps at milestones.
-- **The current baseline is the latest release on the public mirror** (GitHub Releases; the private `VERSION` runs ahead of it) — the labeled point adopters trust until the next milestone. It is deliberately not written here: a version literal in prose decays the moment the next milestone ships.
-- **How adopters learn of a new public release:** GitHub Releases + Watch (broadcast); `conformance/kit-current.sh`
-  in their `scripts/doctor.sh` (advisory "you're behind" nudge — fired only by a *public* release, not by
-  private per-slice dev); `kit-update.sh --from <kit>` (they pull when they choose). No telemetry, no push.
-- **When to publish per-slice instead:** only for a hotfix an adopter is actively blocked on. Otherwise
-  accumulate to the next milestone.
-- **Who types the public acts:** `sh scripts/publish-public.sh` and any `gh release edit` on the public mirror are
-  run by the owner in their own terminal. An agent session prepares them (the dry-run, the rollback record, the note
-  and command text for review), hands over the exact commands, and does the read-back after. At the 3.242.0 cut one
-  harness's permission mode (Claude Code's auto mode) refused these acts as a new public surface (observed once, not a
-  guarantee); on any harness, an agent does not route around such a refusal (conduct, not enforced).
-
-### 3a. Authoring a control-plane change (the dev-clone)
-
-Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits. They are authored in a **dev-clone** — a `git clone` of the **forge URL** into a literal temp path, never `git clone .` (recipe: `docs/operations/runtime-guards.md`, the dev clone) — where the agent edits directly while **the guard stays armed on the real repo**, and they are dual-reviewed. What the human ratifies is a **CI-green diff**, not a script whose writes they must predict. Three disciplines, each learned from a real incident:
-
-- **Fold version finishing into the slice.** The `VERSION` bump + README badge + `CHANGELOG` entry land in the slice's own commits — never a follow-up — so the release step cannot be skipped.
-- **Never `KIT_GUARD_SELFEDIT`.** It is a **global kill switch**, not a scalpel: it disarms the destructive-op and secret-read denials too, for the whole session. The dev-clone is the sanctioned route *because* it leaves the guard armed. (Its honest limit: the clone relaxes `Edit`/`Write` only — `sed`/`cp`/`rm` against control-plane paths stay denied even inside it.)
-- **Prove in the clone, then prove the artifact — and don't mistake the clone for CI.** Run the gate in the dev-clone before asking for the GO, but remember: a local clone is **not** a faithful CI simulation (it carries tags `actions/checkout` does not — see `skills/verification/SKILL.md`, dry-run parity), and local "conformance + shellcheck green" is TRUE and INSUFFICIENT — the emitted artifact is a larger surface (CI's SAST on the *artifact* has caught what a local run structurally could not).
-
-## 4. Contributing back (the closed loop, applied to the kit)
-
-The kit flows out to its adopters; nothing is asked back. When a downstream team's **L3 process retro** (`DEVELOPMENT-PROCESS.md` §8) surfaces a kit-level improvement — a clearer standard, a better reference impl, a missing conformance check — it lands in **that project's own backlog**, where its owner ratifies or declines it.
-
-1. **Agents propose, humans ratify** — the kit's standing rule applies in every adopting project.
-2. A team that *chooses* to share an improvement may contribute it to the canonical kit; that is optional and opt-in, never a default step of the loop.
-3. Accepted kit changes ship in the next release and flow to every adopter via §2.
-
-The MD files, scripts, and reference impls are all subject to the same retrospective-and-refactor loop the kit prescribes for product code. A retro that changes nothing is theater — so each project routes its own kit-level learning into its own backlog.
-
-## 5. The kit dogfoods its own loop
-
-The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (the Jira project SWAS since 2026-10-09, long-range planning included; `BACKLOG.md` is frozen history after the migration run); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
-
----
-
-**Last Updated:** 2026-09-11
+The kit maintainers' own rules are in `docs/kit-internals/maintaining.md` (kept with the kit maintainers' tree; not in your export).

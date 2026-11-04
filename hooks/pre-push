@@ -263,9 +263,9 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
   fi
   # M-1 FIX (review round 2): the early `return 0` here on _SEAM_TRACKER_UNVERIFIED used to skip
   # loop-state ENTIRELY — but loop-state's one invocation also runs the backend-independent legs
-  # (check_declaration/class/skill/scope), which a tracker-unverified push still owes. ALWAYS run
+  # (check_declaration/class/scope), which a tracker-unverified push still owes. ALWAYS run
   # loop-state below; the UNVERIFIED downgrade (C1/A2) is now applied AFTER the predicate runs, and
-  # ONLY to a genuine "NOT ENFORCED" verdict — never to a class/skill/scope refusal.
+  # ONLY to a genuine "NOT ENFORCED" verdict — never to a class/scope refusal.
   # Capture stderr only (the predicate's reasons); its stdout success line is not this leg's business.
   # </dev/null: this runs inside the caller's stdin `while read` loop over the git push protocol
   # lines. Without isolating the child's stdin, a predicate that reads stdin (deliberately or by
@@ -312,7 +312,7 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
     # "NOT ENFORCED" (a hosted-tracker backend the kit cannot read) AND the local reader could not
     # verify locally (no token / unreachable / S-2 mismatch / no origin copy). A tracker adopter
     # whose token lives only in CI must never have every local push refused for a condition no
-    # commit can fix. Every OTHER refusal (missing Kit-Class/Kit-Skill, bad scope) keeps its rc 1 —
+    # commit can fix. Every OTHER refusal (missing Kit-Row/Kit-Class, bad scope) keeps its rc 1 —
     # loop-state's backend-independent legs are never skipped by an unverified token.
     # THE DISCRIMINANT: every non-blank, non-boilerplate line of the verdict must be PART OF the
     # row leg's own NOT ENFORCED sentence — a combined refusal (e.g. a missing Kit-Class ALONGSIDE
@@ -374,11 +374,10 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
     esac
     case "$_decl_kind" in
       also)
-        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
-        printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
-        printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
-        printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
-        printf 'kit pre-push:            then push again.\n' >&2
+        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. EVERY CLASS owes\n' >&2
+        printf 'kit pre-push:            Kit-Row + Kit-Class; a Kit-Plan, Kit-Review or Kit-Scope you carry\n' >&2
+        printf 'kit pre-push:            is checked too, any other Kit-* field is ignored.\n' >&2
+        printf 'kit pre-push:            git commit --amend, then push again.\n' >&2
         case "$_decl_pre_epilogue" in
           *"NOT ENFORCED"*)
             printf 'kit pre-push:   and the row check is ALSO NOT ENFORCED on this repo: after the trailers, bind tracker-board-gates on jira (--replace the first time, on an unprotected main), or ratify a board-governance waiver, or move the board to BACKLOG.md.\n' >&2 ;;
@@ -394,11 +393,10 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
       rowalone)
         printf 'kit pre-push:   remedy: the other Entry Declaration legs passed. Act on the row reason above (board the row, correct Kit-Row, or fix the board/backend), then push again.\n' >&2 ;;
       *)
-        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
-        printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
-        printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
-        printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
-        printf 'kit pre-push:            then push again.\n' >&2 ;;
+        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. EVERY CLASS owes\n' >&2
+        printf 'kit pre-push:            Kit-Row + Kit-Class; a Kit-Plan, Kit-Review or Kit-Scope you carry\n' >&2
+        printf 'kit pre-push:            is checked too, any other Kit-* field is ignored.\n' >&2
+        printf 'kit pre-push:            git commit --amend, then push again.\n' >&2 ;;
     esac
     printf '  override (deliberate): git push --no-verify\n' >&2
     return 1
@@ -1117,7 +1115,10 @@ if [ "${1:-}" = "--selftest" ]; then
     if ( cd "$T" && guard_check_push "$2" "$3" "$4" ) >/dev/null 2>&1; then got=allow; else got=deny; fi
     if [ "$got" = "$5" ]; then echo "PASS $5: $1"; else echo "FAIL (wanted $5): $1"; fail=1; fi
   }
-  check "push to main"        refs/heads/main "$HEAD" "$Z"   deny
+  check "create main on an empty remote"    refs/heads/main "$HEAD" "$Z"    allow
+  check "update an existing main"           refs/heads/main "$HEAD" "$PREV" deny
+  check "create master on an empty remote"  refs/heads/master "$HEAD" "$Z"    allow
+  check "update an existing master"         refs/heads/master "$HEAD" "$PREV" deny
   check "delete main"         refs/heads/main "$Z"    "$HEAD" deny
   check "new feature branch"  refs/heads/feature/x "$HEAD" "$Z" allow
   check "fast-forward push"   refs/heads/feature/x "$HEAD" "$PREV" allow
@@ -1461,8 +1462,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # and never read this file's grammar, so the extra fields cost them nothing).
   printf 'version=1\nbackend=jira\nbase_url=https://example.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\nstate.in-progress=In Progress\n' \
     > "$T/.kit/tracker.conf"
-  # A head whose trailer carries a real Kit-Row and NOTHING ELSE — no Kit-Class/Kit-Stage/
-  # Kit-Skill, on purpose: this head is reused by the M-1 class-refusal leg below, where the
+  # A head whose trailer carries a real Kit-Row and NOTHING ELSE — no Kit-Class, on purpose: this head is reused by the M-1 class-refusal leg below, where the
   # missing Kit-Class must refuse regardless of the tracker's own verdict. AB-1 matches the
   # tracker.conf's `project=AB` (the jira id grammar the real backlog-lib.sh enforces).
   TRACKER_HEAD=$(cd "$T" && printf 'tracker fixture\n\nKit-Row: AB-1\n' | git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -F - \
@@ -1572,7 +1572,7 @@ EOF_READER
   # repo's own tree (never a stub). A stubbed predicate always answers whatever rc it is scripted
   # with, so a caller that forgets to bind KIT_TRACKER_RECORD is invisible to it — this is what hid
   # H-1 for a whole review round. Every leg below uses a head with a FULL, matching entry
-  # declaration (Kit-Row + Kit-Class ordinary + Kit-Stage Build + Kit-Skill skills/build, plus a
+  # declaration (Kit-Row + Kit-Class ordinary, plus a
   # real file change so the live classifier derives 'ordinary' deterministically rather than
   # falling back on the empty-changeset fail-safe) EXCEPT the M-1 class-refusal leg, which reuses
   # TRACKER_HEAD (Kit-Row only) precisely because it must NOT carry a valid declaration.
@@ -1604,7 +1604,7 @@ EOF_READER
   tracker_plant_real
 
   FULL_HEAD=$(cd "$T" && printf 'x\n' > NOTES.md && git add NOTES.md \
-    && printf 'tracker fixture full\n\nKit-Row: AB-1\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\n' \
+    && printf 'tracker fixture full\n\nKit-Row: AB-1\nKit-Class: ordinary\n' \
        | git -c user.email=t@kit -c user.name=kit commit -q -F - && git rev-parse HEAD)
 
   # 1. BIND (H-1, mandatory de-vacuified leg): a valid, pin-matching record for the pushed head's
@@ -1660,7 +1660,7 @@ EOF_READER
   # 5. malformed Kit-Row -> row_id_ok refuses BEFORE the reader is ever invoked (the token is not
   # spent on a value that cannot resolve against any board) -> loop-state runs for real and refuses
   # the id itself once it reaches the row leg's own resolution.
-  MALFORMED_HEAD=$(cd "$T" && printf 'malformed row\n\nKit-Row: tbg-test\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\n' \
+  MALFORMED_HEAD=$(cd "$T" && printf 'malformed row\n\nKit-Row: tbg-test\nKit-Class: ordinary\n' \
     | git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -F - && git rev-parse HEAD)
   tracker_run "sh $TRACKER_READER_REAL" "refs/heads/feature/x $MALFORMED_HEAD refs/heads/feature/x $Z"
   [ -f "$TRACKER_READER_CALLED" ] \
@@ -1683,7 +1683,7 @@ EOF_READER
   # (M-2's fix) back to an export reproduces exactly that refusal, RED as expected.
   CP_HEAD=$(cd "$T" && mkdir -p conformance && printf 'x\n' > conformance/m2-fixture.sh \
     && git add conformance/m2-fixture.sh \
-    && printf 'tracker fixture control-plane\n\nKit-Row: AB-1\nKit-Stage: Build\nKit-Class: control-plane\nKit-Skill: skills/build\n' \
+    && printf 'tracker fixture control-plane\n\nKit-Row: AB-1\nKit-Class: control-plane\n' \
        | git -c user.email=t@kit -c user.name=kit commit -q -F - && git rev-parse HEAD)
   m2_out=$(cd "$T" && printf '%s\n' "refs/heads/feature/m2 $CP_HEAD refs/heads/feature/m2 $Z" \
     | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce KIT_PUSH_PRESENCE=enforce \
@@ -1759,7 +1759,7 @@ EOF_READER
   } > "$T/conformance/loop-state.sh"
   chmod +x "$T/conformance/loop-state.sh"
   stdin_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
-      "$HEAD" "$Z" "$HEAD" "$Z" \
+      "$HEAD" "$Z" "$HEAD" "$PREV" \
     | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
   stdin_leak_rc=$?
   if [ "$stdin_leak_rc" -ne 0 ] && printf '%s' "$stdin_leak_out" | grep -q 'pushing directly to main'; then
@@ -2071,7 +2071,7 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z"
   } > "$T/conformance/ceremony-binding.sh"
   chmod +x "$T/conformance/ceremony-binding.sh"
   go_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
-      "$HEAD" "$Z" "$HEAD" "$Z" \
+      "$HEAD" "$Z" "$HEAD" "$PREV" \
     | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
   go_leak_rc=$?
   if [ "$go_leak_rc" -ne 0 ] && printf '%s' "$go_leak_out" | grep -q 'pushing directly to main'; then
@@ -2357,7 +2357,7 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   } > "$T/conformance/citation-live.sh"
   chmod +x "$T/conformance/citation-live.sh"
   cite_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
-      "$HEAD" "$Z" "$HEAD" "$Z" \
+      "$HEAD" "$Z" "$HEAD" "$PREV" \
     | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
   cite_leak_rc=$?
   if [ "$cite_leak_rc" -ne 0 ] && printf '%s' "$cite_leak_out" | grep -q 'pushing directly to main'; then

@@ -1,7 +1,6 @@
 # Model-tiering economics — the fan-out measurement
 
-**Date of measurement:** 2026-07-16 · **Type:** measurement record (not a doctrine page) ·
-**Boarded as:** `ECONOMICS-RECEIPT-INTO-REPO` (the B9 Δ3 rider; the old `T5-10`)
+**Date of measurement:** 2026-07-16 · **Type:** measurement record (not a doctrine page)
 
 This is the evidence behind the kit's model-tiering doctrine. The doctrine itself lives where it is
 executable: the per-task **Model tier (dispatch)** field in
@@ -9,12 +8,11 @@ executable: the per-task **Model tier (dispatch)** field in
 the fan-out/serialize marking discipline in [`skills/plan/SKILL.md`](../../skills/plan/SKILL.md),
 the tier declarations in `.kit/model-tiers.conf`, and the CI lock
 [`conformance/model-tiering-plan-wired.sh`](../../conformance/model-tiering-plan-wired.sh) that
-keeps a plan from shipping without them. The tiers are **presented** in the plan's team table
-(`D-241021-2`, which amends `D-240804-5`): the human may change a row and nothing waits for a
+keeps a plan from shipping without them. The tiers are **presented** in the plan's team table: the human may change a row and nothing waits for a
 ratification; tiers are never set per dispatch.
 
-The receipt is written down here because until now it lived only in session memory — a doctrine
-whose justifying measurement is not in the repo is a doctrine the next reader has to take on trust.
+The receipt is written down here because a doctrine whose justifying measurement is not in the repo
+is a doctrine the next reader has to take on trust.
 
 ## The experiment
 
@@ -23,7 +21,6 @@ whose justifying measurement is not in the repo is a doctrine the next reader ha
 - **Slices:** 4, deliberately **disjoint** — create/redirect · analytics · rate-limit · TTL-expiry.
 - **Run A — MIXED:** 4 builders on the **fast** tier, reassembly on the **deep** tier.
 - **Run B — BASELINE:** everything on the **deep** tier.
-- Closed the `P1.3-spike` and `P1.5` rows.
 
 ## The headline: cost and speed DIVERGE
 
