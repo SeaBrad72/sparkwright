@@ -1924,6 +1924,46 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     _le_judge "$1" "$_axm" "$_axr"
     rm -rf "$D" 2>/dev/null || true
   }
+  # SWAS-730: the two evidence reads ask for 30 per page and page (`--paginate`). A 65-job run answered HTTP 502 on every try at 100 per page.
+  # The default forge records each evidence call's argv; one light land through the gate (or a COPY, for a mutant) is read back for the line
+  # of the read named (`runs`: the workflow-run listing, `jobs`: a run's jobs). A cell with a trailing sed script is a MUTANT, as above.
+  _le_pin() {  # <label> <runs|jobs> [<sed-script> = a mutant] : the argv of that read must carry per_page=30 and --paginate
+    if [ -z "${3:-}" ] && [ "$(_fxkind)" = adopter ]; then _fxskip "$1"; return 0; fi
+    _mkland_fx || { fail "$1: fixture build"; return 0; }
+    _pyv="$VERIFY"; _pym=0
+    if [ -n "${3:-}" ]; then
+      _pym=1; _le_pvcopy "$LDR/pv" 1 1; _fxlay "$LDR/c" 1 1
+      if ! _le_mutate "$LDR/pv/scripts/promotion-verify.sh" "$3"; then fail "$1: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$LDR" 2>/dev/null || true; return 0; fi
+      VERIFY="$LDR/pv/scripts/promotion-verify.sh"
+    fi
+    _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+    rm -f "$EVD/argv"; printf light > "$EVD/mode"; _land_run "$_lg" reviewer-login SeaBrad72
+    VERIFY="$_pyv"
+    case "$2" in runs) _pyk='/actions/workflows/' ;; *) _pyk='/actions/runs/' ;; esac
+    _pyl=""; if _pyl="$(grep -F -e "$_pyk" "$EVD/argv" 2>/dev/null)"; then :; fi
+    if [ -z "$_pyl" ] && [ "$_pym" = 1 ]; then   # a read never reached is not a kill: only a recorded line that fails the check is
+      fail "$1: the mutant's land never reached the $2 read"; rm -rf "$LDR" "$_lg" 2>/dev/null || true; return 0
+    fi
+    _pyn="$(printf '%s\n' "$_pyl" | grep -c . || true)"
+    # exactly one recorded line for the read; the page size is matched whole (a trailing space, so 300 is not 30) and `--paginate` follows it
+    if [ "$_pyn" = 1 ] && _has "$_pyl" 'per_page=30 --paginate '; then _pyr=0; else _pyr=1; fi
+    OUT="the $2 read asked ($_pyn line(s)): [$_pyl]"
+    _le_judge "$1" "$_pym" "$_pyr"
+    rm -rf "$LDR" "$_lg" 2>/dev/null || true
+  }
+  _le_pin "PG1-runs-read-asks-30-per-page-and-paginates" runs
+  _le_pin "PG2-jobs-read-asks-30-per-page-and-paginates" jobs
+  _le_pin "PGm1-mutant-runs-read-back-to-100" runs 's/event=pull_request&per_page=30"/event=pull_request\&per_page=100"/'
+  _le_pin "PGm2-mutant-jobs-read-back-to-100" jobs 's/filter=latest&per_page=30"/filter=latest\&per_page=100"/'
+  _le_pin "PGm3-mutant-runs-read-stops-paginating" runs "s/--paginate --jq '.workflow_runs/--jq '.workflow_runs/"
+  _le_pin "PGm4-mutant-jobs-read-stops-paginating" jobs "s/--paginate --jq '.jobs/--jq '.jobs/"
+  _le_pin "PGm5-mutant-jobs-read-asks-300-per-page" jobs 's/filter=latest&per_page=30"/filter=latest\&per_page=300"/'
+  # A later page of the jobs read that fails (the forge answers a first page, then a non-zero exit) is unreadable, never a short list of jobs.
+  _le_land "LE6e-land-jobs-later-page-fails" jobspartial refuse "forge-unreadable"
+  _le_land "LE6f-land-runs-later-page-fails" runspartial refuse "forge-unreadable"
+  _le_act "LE8i-actuate-jobs-later-page-fails" jobspartial refuse "forge-unreadable"
+  _le_lay "LE6em1-mutant-jobs-failure-ignored" 1 1 jobspartial refuse "forge-unreadable" 's#\(jobs\.nd" 2>/dev/null\) || return 0#\1#'
+  _le_lay "LE6em2-mutant-runs-failure-ignored" 1 1 runspartial refuse "forge-unreadable" 's#\(runs\.nd" 2>/dev/null\) || return 0#\1#'
   _NA='exact-head CI evidence: N/A (not the kit'"'"'s own CI pipeline)'
   # H1: the four layouts, then one mutant per branch (and one per fact). Fix round 2: the layout is read at TWO locations (the copy's own
   # checkout, and the repository the verb runs in: _le_lay gives the land repository the copy's layout unless told otherwise), so the
@@ -2210,7 +2250,10 @@ _fxskip_note() { echo "($1 SKIPPED: not a kit tree, counted per skip line above)
 
 # _mkevgh -> echoes a throwaway dir holding the DEFAULT forge for the SWAS-537 exact-head evidence reads. Mode (the file
 # `mode` beside it; light when absent) shapes the answer: light | draft | stale | fork | cheap | nogate | pending | norun | apierr |
-# apierr-pr | partial | nonjson. The head sha is the fixture's `feat` ref (else HEAD), or the file `sha`. Any call that is
+# apierr-pr | partial | runspartial | jobspartial | nonjson (runspartial, jobspartial: the read answers a first page, then fails, as a
+# failing later page does; jobspartial answers the full light job set, `gate` included, all success).
+# Every evidence call's argv is appended to the file `argv` beside it, so a cell can pin what was asked.
+# The head sha is the fixture's `feat` ref (else HEAD), or the file `sha`. Any call that is
 # not an evidence read fails, as an unreachable forge does, so the cells that never asked the forge keep their fallbacks.
 _mkevgh() {
   _ev=$(mktemp -d)
@@ -2219,6 +2262,7 @@ _mkevgh() {
 d=$(dirname "$0"); mode=$(cat "$d/mode" 2>/dev/null || echo light)
 sha=$(cat "$d/sha" 2>/dev/null || git rev-parse -q --verify refs/heads/feat 2>/dev/null || git rev-parse HEAD 2>/dev/null)
 job() { printf '{"name":"%s","conclusion":"%s"}\n' "$1" "$2"; }
+case "$*" in */actions/*) printf '%s\n' "$*" >> "$d/argv" ;; esac
 case "$*" in
   *draft*)
     [ "$mode" != apierr-pr ] || exit 1
@@ -2227,11 +2271,13 @@ case "$*" in
   */actions/workflows/*)
     case "$mode" in apierr) exit 1 ;; partial) printf '{"id":1,'; exit 1 ;; nonjson) echo 'not json'; exit 0 ;; norun) exit 0 ;; esac
     st=completed; cc=success; [ "$mode" != pending ] || { st=in_progress; cc=; }
-    printf '{"id":900,"path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s","head_branch":"feat","head_repository":{"full_name":"acme/kit"},"event":"pull_request"}\n' "$st" "$cc" "$sha" ;;
+    printf '{"id":900,"path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s","head_branch":"feat","head_repository":{"full_name":"acme/kit"},"event":"pull_request"}\n' "$st" "$cc" "$sha"
+    [ "$mode" != runspartial ] || exit 1 ;;
   */actions/runs/*)
     c=success; [ "$mode" != cheap ] || c=skipped
     for n in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam conformance-docs docs-links; do job "$n" "$c"; done
-    job conformance success; job 'non-vacuity (1)' "$c"; [ "$mode" = nogate ] || job gate success ;;
+    job conformance success; job 'non-vacuity (1)' "$c"; [ "$mode" = nogate ] || job gate success
+    [ "$mode" != jobspartial ] || exit 1 ;;
   *) exit 1 ;;
 esac
 EVSHIM

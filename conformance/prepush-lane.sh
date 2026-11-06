@@ -2454,12 +2454,13 @@ run_lane() {
 main() {
   # NO ARGUMENT is THE RUN (`sparkwright prepush`); --help is rc 2 — the kit's usage convention,
   # locked live by conformance/sparkwright-verbs.sh ("`prepush --help` exits 2 through the router").
-  _mode=""; _ci=${KIT_CI_FILE:-$CI_DEFAULT}; _strict=0
+  _mode=""; _ci=${KIT_CI_FILE:-$CI_DEFAULT}; _strict=0; _ci_given=0
+  [ -z "${KIT_CI_FILE:-}" ] || _ci_given=1
   while [ $# -gt 0 ]; do
     case $1 in
       --derive|--census|--selftest|--refresh-times) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
       --plan) PLAN=1 ;;                           # SWAS-468: print the touched-readers selection, execute nothing
-      --ci-file) [ $# -ge 2 ] || die2 "--ci-file needs a path"; _ci=$2; shift ;;
+      --ci-file) [ $# -ge 2 ] || die2 "--ci-file needs a path"; _ci=$2; _ci_given=1; shift ;;
       --base) [ $# -ge 2 ] || die2 "--base needs a ref"; BASE=$2; shift ;;
       --require) _strict=1 ;;                     # the explicit spelling of the DEFAULT: a no-op
       --best-effort) BEST=1 ;;
@@ -2493,6 +2494,8 @@ main() {
   case $_mode in
     --selftest) selftest; exit $? ;;
     --run)      root_or_die; cd "$ROOT"
+                [ "$_ci_given" -eq 1 ] || [ -e "$CI_DEFAULT" ] || [ -L "$CI_DEFAULT" ] ||
+                  die2 "this tree has no GitHub Actions CI file ($CI_DEFAULT). The pre-push lane derives its checks from GitHub Actions only, so it checks nothing here; run sh conformance/verify.sh before you push."
                 _rel=$(resolve_ci "$_ci") || exit $?
                 run_lane "$_rel" ;;
     --census)   root_or_die; cd "$ROOT"
@@ -2555,7 +2558,7 @@ selftest() {
               cache_filter_applied lock_kill_zero \
               tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv \
               orphan_ceiling orphan_unconfirmed orphan_trap orphan_leftover orphan_noperl orphan_guard orphan_parent orphan_leader orphan_reuse orphan_perl_env \
-              touched_failclosed tr8_gate touched_replay touched_budget touched_output touched_refresh \
+              touched_failclosed tr8_gate tr8_gitlab touched_replay touched_budget touched_output touched_refresh \
               preflight_case_variant crash
   do "selftest_$_leg"; done
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
@@ -4794,6 +4797,52 @@ tr8_gate() {
   if ! ( cd "$_g" && off_kit ); then echo kit; return 0; fi
   if grep -q '^# Kit-own CI' "$_g/$CI_DEFAULT" 2>/dev/null; then echo spoofed; else echo offkit; fi
 }
+# tr8_noci <root> — rc 0 when the tree is off-kit AND has no default CI file (a GitLab adopter): TR8 then N/As.
+# The existence test mirrors the lane's own (-e or -L), so a dangling symlink is not "no CI file".
+tr8_noci() {
+  _nr=$1
+  [ "$(tr8_gate "$_nr")" = offkit ] || return 1
+  [ -e "$_nr/$CI_DEFAULT" ] || [ -L "$_nr/$CI_DEFAULT" ] || return 0
+  return 1
+}
+selftest_tr8_gitlab() {
+  # cell 1: the refusal sentence, on a tree with .github/workflows but no ci.yml, and on a tree with no .github/ at all
+  _g1=$(mkrepo); _g2=$(mkrepo); rm -r "$_g2/.github"
+  for _t in "$_g1" "$_g2"; do
+    DVOUT=$( cd "$_t" && unset KIT_CI_FILE && sh "$LANE" 2>&1 ) && DVRC=0 || DVRC=$?
+    sfx "GL1: no default CI file and no --ci-file is rc 2" 2 "$DVRC"
+    want "GL1: and it says plainly there is no GitHub Actions CI file" 'no GitHub Actions CI file'
+  done
+  DVOUT=$( cd "$_g1" && unset KIT_CI_FILE && sh "$LANE" --ci-file nope.yml 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "GL1: an explicit --ci-file naming nothing is rc 2" 2 "$DVRC"
+  want "GL1: and it keeps today's message" 'ci-file: no such file'
+  wantnot "GL1: without the new sentence" 'no GitHub Actions CI file'
+  # cell 2: tr8_noci graded directly on three fixtures
+  _n1=$(mktemp -d "${TMPDIR:-/tmp}/tr8n-XXXXXX"); _n2=$(mktemp -d "${TMPDIR:-/tmp}/tr8n-XXXXXX"); _n3=$(mktemp -d "${TMPDIR:-/tmp}/tr8n-XXXXXX")
+  mkdir -p "$_n2/${CI_DEFAULT%/*}"; printf 'name: fx\n' > "$_n2/$CI_DEFAULT"
+  mkdir -p "$_n3/docs"; : > "$_n3/docs/ROADMAP-KIT.md"
+  sfx "GL2: off-kit with no CI file is yes" yes "$(tr8_noci "$_n1" && echo yes || echo no)"
+  sfx "GL2: off-kit with a CI file is no" no "$(tr8_noci "$_n2" && echo yes || echo no)"
+  sfx "GL2: a kit-marker tree with no CI file is no" no "$(tr8_noci "$_n3" && echo yes || echo no)"
+  # MUTANTS GL1/GL3: the mutated helper's own text is extracted from a lane copy and run.
+  trmut gl1 -e 's/^  \[ -e "\$_nr\/\$CI_DEFAULT" \].*$/  return 0/'
+  [ -z "$TRM" ] || { sed -n '/^tr8_noci() {$/,/^}$/p' "$TRM" > "$WORK/tr8noci-a.sh"
+    _res=$( . "$WORK/tr8noci-a.sh"; tr8_noci "$_n2" && echo yes || echo no )
+    sfx "GL mutant M-GL1: the CI-file test removed -> off-kit with a CI file reads yes (the cell is RED)" yes "$_res"; }
+  trmut gl3 -e 's/^  \[ "\$(tr8_gate "\$_nr")" = offkit \].*$/  :/'
+  [ -z "$TRM" ] || { sed -n '/^tr8_noci() {$/,/^}$/p' "$TRM" > "$WORK/tr8noci-b.sh"
+    _res=$( . "$WORK/tr8noci-b.sh"; tr8_noci "$_n3" && echo yes || echo no )
+    sfx "GL mutant M-GL3: the off-kit test removed -> the kit-marker tree reads yes (the cell is RED)" yes "$_res"; }
+  # MUTANTS GL2/GL2b: main is not selftest-only code, so the whole mutated copy runs in the fixture.
+  trmut gl2 -e 's/^                \[ "\$_ci_given" -eq 1 \] || \[ -e "\$CI_DEFAULT" \].*$/                true ||/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$_g1" && unset KIT_CI_FILE && sh "$TRM" 2>&1 ) && DVRC=0 || DVRC=$?
+    wantnot "GL mutant M-GL2: the default check removed -> no new sentence (the cell is RED)" 'no GitHub Actions CI file'
+    sfx "GL mutant M-GL2: and it still stops with rc 2" 2 "$DVRC"
+    want "GL mutant M-GL2: and it reaches resolve_ci's message" 'ci-file: no such file'; }
+  trmut gl2b -e 's/_ci=\$2; _ci_given=1; shift/_ci=$2; shift/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$_g1" && unset KIT_CI_FILE && sh "$TRM" --ci-file nope.yml 2>&1 ) && DVRC=0 || DVRC=$?
+    want "GL mutant M-GL2b: _ci_given never set by the flag -> the soft sentence (the cell is RED)" 'no GitHub Actions CI file'; }
+}
 selftest_tr8_gate() {
   _ga=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX"); _gk=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX"); _gs=$(mktemp -d "${TMPDIR:-/tmp}/tr8g-XXXXXX")
   for _r in "$_ga" "$_gk" "$_gs"; do mkdir -p "$_r/${CI_DEFAULT%/*}"; printf 'name: fx\n' > "$_r/$CI_DEFAULT"; done
@@ -4817,9 +4866,15 @@ selftest_touched_replay() {
   [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
     { echo "PASS: TR8: N/A - not the kit tree"; return 0; }
   _pb=$(git -C "$KROOT" rev-parse HEAD~1 2>/dev/null) || { echo "PASS: TR8: N/A - no parent commit to take a listing from"; return 0; }
-  DVOUT=$( cd "$KROOT" && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  if tr8_noci "$KROOT"; then
+    sfx "TR8: a tree with no GitHub CI file refuses the plan, rc 2" 2 "$DVRC"
+    want "TR8: and says there is no GitHub Actions CI file" 'no GitHub Actions CI file'
+    echo "PASS: TR8: N/A - no GitHub CI file to plan from (the lane derives from .github/workflows/ci.yml only)"
+    return 0
+  fi
   sfx "TR8: the plan on the real tree is rc 0" 0 "$DVRC"
-  echo "PASS: TR8: measured on this tree [M] — $(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: \([0-9]* candidate.*\) · budget.*$/\1/p')"
+  [ "$DVRC" -ne 0 ] || echo "PASS: TR8: measured on this tree [M] — $(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: \([0-9]* candidate.*\) · budget.*$/\1/p')"
   case $(tr8_gate "$KROOT") in
     kit) ;;
     offkit)   # rc 0 above is the twin-table assertion (a MALFORMED row makes --plan return 1); the greps are a belt

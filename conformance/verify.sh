@@ -26,18 +26,19 @@
 # the credential seam (B4): its OFFLINE declaration-integrity leg (--declared-only — no gh, no
 # network) IS registered below; its LIVE forge-comparison leg still needs repo-admin gh and runs
 # operator-side, not here. "aggregate" means representative.
-#   usage: sh conformance/verify.sh [--require] [--changed <listing-file>] [--summary-file <path>] [--timing-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
+#   usage: sh conformance/verify.sh [--require] [--kit-selftests-on-change] [--kit-selftests] [--changed <listing-file>] [--summary-file <path>] [--timing-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
 #
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE — `--changed <listing>` (a newline-delimited changed-paths file) lets an
 # ADOPTER's pull-request run, or its push to the default branch (the emitted pipeline builds the listing for
 # both), skip the rows flagged `--kitselftest` (the kit's own selftests, whose subject
-# cannot have changed) and render them N-A. A scheduled run never gets a listing, so it runs the full battery.
+# cannot have changed) and render them N-A. A scheduled run never gets a listing, so it runs the full battery, unless the run
+# passes --kit-selftests-on-change (an adopter's CI): then ONLY an absent --changed skips, and a given-but-unusable one runs everything.
 # The skip fires ONLY when the listing is a readable, non-empty
 # file AND `conformance/promotion-readiness.sh --class --changed <listing>` exits 0 and answers `ordinary` or
 # `sensitive`. Everything else — no --changed, an empty/unreadable listing, a classifier failure or unknown
 # answer, class `control-plane` — runs the FULL battery: every unknown costs time, never coverage. One notice
-# line `kit selftests not re-run: …` precedes the Summary; `--summary-file <path>` also receives it. A run with no --changed is
-# byte-for-byte the old behaviour. Design: docs/architecture/2026-10-01-adopter-kit-selftests-on-change-design.md.
+# line `kit selftests not re-run: …` precedes the Summary; `--summary-file <path>` also receives it. A run with no --changed and no
+# --kit-selftests-on-change is byte-for-byte the old behaviour. Design: docs/architecture/2026-10-01-adopter-kit-selftests-on-change-design.md.
 # A LITERAL FORCED-FULL FLOOR (below, _ks_floor_hit) sits in front of the classifier: any listed control-plane-shaped path
 # (.claude/, conformance/, scripts/, hooks/, adapters/, profiles/, .github/, .kit/, a .gitattributes / .shellcheckrc basename,
 # docs/roadmap-kit.md, case-folded, plus any CR byte) forces the full battery without consulting the classifier.
@@ -629,6 +630,7 @@ if [ "$_of_cnt" -gt 0 ]; then
   if [ "$_of_cnt" -gt 1 ]; then echo "verify: usage error — --output-file given twice" >&2; exit 2; fi
   if [ "$_of_take" = 1 ] || [ -z "$_of_path" ]; then echo "verify: usage error — --output-file needs a path" >&2; exit 2; fi
   if [ "$_of_first" = "--selftest" ]; then echo "verify: usage error — --output-file cannot be combined with --selftest" >&2; exit 2; fi
+  for _of_f in "$@"; do if [ "$_of_f" = "--kit-selftests-on-change" ]; then echo "verify: usage error — --kit-selftests-on-change cannot be combined with --output-file (the record would claim a full enforced run)" >&2; exit 2; fi; done   # E2:of
   for _of_seam in VERIFY_SELFTEST_REGISTRY VERIFY_CLASSIFIER VERIFY_SKIP_PREFLIGHT; do
     eval "_of_sv=\${$_of_seam:-}"
     if [ -n "$_of_sv" ]; then
@@ -675,10 +677,15 @@ REQUIRE=0
 [ -n "${CI:-}" ] && REQUIRE=1
 [ "${1:-}" = "--require" ] && REQUIRE=1
 if [ "$MERGE" = 1 ]; then REQUIRE=1; fi
-# --changed / --summary-file may sit anywhere after the first word; a missing value leaves them empty,
-# which means "no listing" = the full battery (the safe direction). Values are made absolute BEFORE use.
+# --changed / --summary-file may sit anywhere after the first word; a missing value leaves them empty.
+# An empty or unusable listing never skips: a run without --kit-selftests-on-change runs the full battery, and under that flag
+# only an ABSENT --changed skips (a given-but-unusable one runs everything, errata 2). Values are made absolute BEFORE use.
 KS_CHANGED=""; KS_SUMMARY=""; KS_TIMING=""; _ks_prev=""; RS_SPEC=""
+KS_ON_CHANGE=0; KS_ALL=0; KS_NOLIST=0; KS_GIVEN=0   # E2:init
 for _ks_a in "$@"; do
+  [ "$_ks_a" = "--kit-selftests-on-change" ] && KS_ON_CHANGE=1
+  [ "$_ks_a" = "--kit-selftests" ] && KS_ALL=1
+  [ "$_ks_a" = "--changed" ] && KS_GIVEN=1
   case "$_ks_prev" in
     --changed) KS_CHANGED=$_ks_a ;;
     --summary-file) KS_SUMMARY=$_ks_a ;;
@@ -2033,6 +2040,161 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   grep -q 'kit v' "$_ksd/k2.summary" || _ks_die "K7: the --summary-file notice lacks the kit version"
   [ ! -s "$_ksd/k1.summary" ] || _ks_die "K7: --summary-file was written although NO row was skipped (guard-only listing)"
 
+  # ── E-C1..E-C5 (SWAS-720, errata 2026-11-04-adopter-ci-kit-tests-out-errata.md E2/E5) — `--kit-selftests-on-change` ──
+  # An adopter's CI passes the flag; with no usable listing (a first push, the weekly run, a non-default branch) the --kitselftest rows
+  # render N-A. A kit-touching listing still runs everything, `--kit-selftests` overrides, a kit tree refuses the flag, and a run
+  # WITHOUT the flag is unchanged. Each cell is a function over a SOURCE script that builds a fresh temp tree around a COPY of it
+  # (an adopter tree has no kit marker; the kit tree gets docs/ROADMAP-KIT.md), so the SAME cell runs on the shipped file (must pass)
+  # and on a MUTANT of it (must fail): a cell no mutant can redden is vacuous. Mutants select their line by its `# E2:<tag>` end-of-line tag.
+  _ke_mk() {  # <src-script> <dir> [kit] -> a tree whose conformance/verify.sh is a copy of <src-script>
+    rm -rf "$2"; mkdir -p "$2/conformance" || return 1
+    cp "$1" "$2/conformance/verify.sh" || return 1
+    if [ "${3:-}" = kit ]; then mkdir -p "$2/docs" && : > "$2/docs/ROADMAP-KIT.md" || return 1; fi
+  }
+  _ke_run() {  # <tree> <classifier-or-empty> [verify args...] -> the combined output (rc ignored: the stub registry is a seam run)
+    _ke_t=$1; _ke_c=$2; shift 2
+    env -u CI -u GITHUB_ACTIONS VERIFY_SKIP_PREFLIGHT=1 VERIFY_SELFTEST_REGISTRY="$_ksd/registry.sh" VERIFY_CLASSIFIER="$_ke_c" sh "$_ke_t/conformance/verify.sh" "$@" 2>&1 || true
+  }
+  _ke_full() {  # <output> : both stub rows PASS and no skip notice (the full battery ran); sets _ke_why on failure
+    _ks_row "$1" kst-marked PASS || { _ke_why="the --kitselftest row did not RUN to PASS"; return 1; }
+    _ks_row "$1" kst-plain PASS || { _ke_why="the plain row did not run to PASS"; return 1; }
+    [ "$(_ks_noticelines "$1")" = 0 ] || { _ke_why="a skip notice was printed although everything ran"; return 1; }
+  }
+  _ke_na() {  # <output> : the marked row is N-A, the plain row still runs, ONE notice names the cause and never says "passed"
+    _ks_row "$1" kst-marked 'N-A' || { _ke_why="the --kitselftest row did not render N-A"; return 1; }
+    _ks_row "$1" kst-plain PASS || { _ke_why="the plain row stopped running"; return 1; }
+    [ "$(_ks_noticelines "$1")" = 1 ] || { _ke_why="want exactly ONE skip notice"; return 1; }
+    _ke_n=$(printf '%s\n' "$1" | grep '^kit selftests not re-run:')
+    printf '%s\n' "$_ke_n" | grep -q 'kit selftests not re-run: 1 rows .* no changed-path listing' || { _ke_why="the notice does not name the count and the cause (no changed-path listing)"; return 1; }
+    if printf '%s\n' "$_ke_n" | grep -qi 'passed'; then _ke_why="the notice says 'passed'"; return 1; fi
+  }
+  _ke_c1() {  # E-C1 (re-cut by errata 2): flag + NO --changed at all => N-A + notice
+    _ke_mk "$1" "$_ksd/ke1" || { _ke_why="no tree"; return 1; }
+    _ke_na "$(_ke_run "$_ksd/ke1" "" --kit-selftests-on-change)" || return 1
+  }
+  _ke_c6() {  # R-C4 (errata 2): flag + a --changed that is GIVEN but empty, missing or valueless => everything runs; only an absent one skips
+    _ke_mk "$1" "$_ksd/ke6" || { _ke_why="no tree"; return 1; }
+    : > "$_ksd/ke6.empty"
+    _ke_full "$(_ke_run "$_ksd/ke6" "" --kit-selftests-on-change --changed "$_ksd/ke6.empty")" || { _ke_why="empty listing: $_ke_why"; return 1; }
+    _ke_full "$(_ke_run "$_ksd/ke6" "" --kit-selftests-on-change --changed "$_ksd/ke6.none")" || { _ke_why="missing listing: $_ke_why"; return 1; }
+    _ke_full "$(_ke_run "$_ksd/ke6" "" --kit-selftests-on-change --changed)" || { _ke_why="valueless --changed: $_ke_why"; return 1; }
+  }
+  _ke_c7() {  # F9: the flag with --output-file is a usage error (exit 2) before anything runs; the registry seam makes a missing refusal a DIFFERENT exit-2 message, never a long recorded run
+    _ke_mk "$1" "$_ksd/ke7" || { _ke_why="no tree"; return 1; }
+    if _ke_o=$(env -u CI -u GITHUB_ACTIONS VERIFY_SKIP_PREFLIGHT=1 VERIFY_SELFTEST_REGISTRY="$_ksd/registry.sh" sh "$_ksd/ke7/conformance/verify.sh" --kit-selftests-on-change --output-file "$_ksd/ke7.rec" 2>&1); then _ke_rc=0; else _ke_rc=$?; fi
+    [ "$_ke_rc" = 2 ] || { _ke_why="exit $_ke_rc, not 2"; return 1; }
+    printf '%s\n' "$_ke_o" | grep -q '^verify: usage error — --kit-selftests-on-change cannot be combined with --output-file' || { _ke_why="no usage-error line"; return 1; }
+    if [ -e "$_ksd/ke7.rec" ]; then _ke_why="a record was written"; return 1; fi
+  }
+  _ke_c2() {  # E-C2: flag + a floor listing, or a listing the classifier calls control-plane => everything runs
+    _ke_mk "$1" "$_ksd/ke2" || { _ke_why="no tree"; return 1; }
+    printf '.github/workflows/ci.yml\n' > "$_ksd/ke2.floor"
+    _ke_full "$(_ke_run "$_ksd/ke2" "$_ksd/okclass.sh" --kit-selftests-on-change --changed "$_ksd/ke2.floor")" || return 1
+    printf 'src/app.ts\n' > "$_ksd/ke2.app"
+    _ke_full "$(_ke_run "$_ksd/ke2" "$_ksd/cpclass.sh" --kit-selftests-on-change --changed "$_ksd/ke2.app")" || return 1
+  }
+  _ke_c3() {  # E-C3: flag + --kit-selftests => everything runs, with no listing and with an app-only one
+    _ke_mk "$1" "$_ksd/ke3" || { _ke_why="no tree"; return 1; }
+    _ke_full "$(_ke_run "$_ksd/ke3" "" --kit-selftests-on-change --kit-selftests)" || return 1
+    printf 'src/app.ts\n' > "$_ksd/ke3.app"
+    _ke_full "$(_ke_run "$_ksd/ke3" "$_ksd/okclass.sh" --kit-selftests-on-change --kit-selftests --changed "$_ksd/ke3.app")" || return 1
+  }
+  _ke_c4() {  # E-C4: flag on a KIT tree => exit 2, the refusal, and not one row (the stub registry's own seam exit is 2 too, so rows are the tell)
+    _ke_mk "$1" "$_ksd/ke4" kit || { _ke_why="no tree"; return 1; }
+    if _ke_o=$(env -u CI -u GITHUB_ACTIONS VERIFY_SKIP_PREFLIGHT=1 VERIFY_SELFTEST_REGISTRY="$_ksd/registry.sh" sh "$_ksd/ke4/conformance/verify.sh" --kit-selftests-on-change 2>&1); then _ke_rc=0; else _ke_rc=$?; fi
+    [ "$_ke_rc" = 2 ] || { _ke_why="exit $_ke_rc, not 2"; return 1; }
+    printf '%s\n' "$_ke_o" | grep -q '^verify: --kit-selftests-on-change is refused on a kit tree' || { _ke_why="no refusal line"; return 1; }
+    if printf '%s\n' "$_ke_o" | grep -q '\[control\]'; then _ke_why="a row ran on a kit tree under the flag"; return 1; fi
+  }
+  _ke_c5() {  # E-C5: WITHOUT the flag an adopter tree with no listing runs everything (the kit's own artifact-gate run)
+    _ke_mk "$1" "$_ksd/ke5" || { _ke_why="no tree"; return 1; }
+    _ke_full "$(_ke_run "$_ksd/ke5" "")" || return 1
+  }
+  _ke_mut() {  # <label> <cell> <sed-script> : the cell must FAIL on the mutant
+    sed "$3" "$_SELF" > "$_ksd/ke-mut.sh" || _ks_die "$1: sed failed"
+    if cmp -s "$_SELF" "$_ksd/ke-mut.sh"; then _ks_die "$1: the mutant changed nothing — its tag moved; retarget the sed"; fi
+    if "$2" "$_ksd/ke-mut.sh"; then _ks_die "$1: the mutant SURVIVED — the cell passed on a file with the behaviour removed (vacuous)"; fi
+  }
+  for _kec in c1:E-C1 c2:E-C2 c3:E-C3 c4:E-C4 c5:E-C5 c6:R-C4 c7:F9; do
+    "_ke_${_kec%%:*}" "$_SELF" || _ks_die "${_kec#*:}: $_ke_why"
+  done
+  _ke_mut E-C1 _ke_c1 '/# E2:nolist$/s/.*/:/'
+  _ke_mut E-C2 _ke_c2 '/# E2:nolist$/s/ && \[ "\$KS_GIVEN" = 0 \]//'
+  _ke_mut E-C3 _ke_c3 '/# E2:all$/s/.*/:/'
+  _ke_mut E-C4 _ke_c4 '/# E2:kit$/s/.*/:/'
+  _ke_mut E-C5 _ke_c5 '/# E2:init$/s/KS_ON_CHANGE=0/KS_ON_CHANGE=1/'
+  _ke_mut R-C4 _ke_c6 '/# E2:nolist$/s/\[ "\$KS_GIVEN" = 0 \]/[ ! -s "$KS_CHANGED" ]/'
+  _ke_mut F9 _ke_c7 '/# E2:of$/s/.*/:/'
+
+  # ── R-C1 / R-C5 (SWAS-720 errata 2, R1) — a refused listing runs everything ──
+  # The listing step's OWN script text (taken from each shipped GitHub profile) is run against a fixture repository: a diff that names a
+  # path holding a newline, an empty diff, and a non-hex or too-short sha must each leave KIT_CHANGED pointing at the one-line listing
+  # `.github/kit-listing-refused`, and verify's literal floor then runs every row; a normal diff lists its path; the all-zero first-push
+  # before writes nothing. The cell runs on the shipped text (must pass) and on mutants of it (must fail).
+  _rc_ext() {  # <profile-ci.yml> <out-script> : the listing step's run: block, de-indented by 10
+    awk '
+      /^      - name: Changed-path listing/ { st = 1; next }
+      st == 1 && /^        run: \|[[:space:]]*$/ { st = 2; next }
+      st == 2 { if ($0 ~ /^[[:space:]]*$/) { print ""; next } if (substr($0, 1, 10) == "          ") { print substr($0, 11); next } exit }
+    ' "$1" > "$2" && [ -s "$2" ]
+  }
+  _rc_fix() {  # a fixture repository: c0, c1 (adds a path holding a newline), c2 (adds src/app.ts)
+    rm -rf "$_ksd/rc"; mkdir -p "$_ksd/rc/repo" "$_ksd/rc/tmp" || return 1
+    _rcr="$_ksd/rc/repo"
+    git -C "$_rcr" init -q || return 1
+    printf 'a\n' > "$_rcr/app.txt"; git -C "$_rcr" add app.txt || return 1
+    git -C "$_rcr" -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=t commit -q -m c0 || return 1
+    _rc_c0=$(git -C "$_rcr" rev-parse HEAD) || return 1
+    : > "$_rcr/$(printf 'x\ny')"; git -C "$_rcr" add -A || return 1
+    git -C "$_rcr" -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=t commit -q -m c1 || return 1
+    _rc_c1=$(git -C "$_rcr" rev-parse HEAD) || return 1
+    mkdir -p "$_rcr/src"; printf 'b\n' > "$_rcr/src/app.ts"; git -C "$_rcr" add -A || return 1
+    git -C "$_rcr" -c commit.gpgsign=false -c user.email=t@example.invalid -c user.name=t commit -q -m c2 || return 1
+    _rc_c2=$(git -C "$_rcr" rev-parse HEAD) || return 1
+    _ke_mk "$_SELF" "$_ksd/rctree"
+  }
+  _rc_go() {  # <script> <pull_request|push> <base-or-before-sha> : run the step in the fixture repo; _rc_kc = the KIT_CHANGED it wrote ('' if none)
+    : > "$_ksd/rc/env"; rm -f "$_ksd/rc/tmp/kit-changed.txt" "$_ksd/rc/tmp/kit-changed.z"
+    if [ "$2" = push ]; then _rcb=""; _rca="$3"; else _rcb="$3"; _rca=""; fi
+    ( cd "$_ksd/rc/repo" && env -i PATH="$PATH" HOME="$_ksd/rc" GITHUB_EVENT_NAME="$2" BASE_SHA="$_rcb" BEFORE_SHA="$_rca" GITHUB_SHA="$_rc_c2" RUNNER_TEMP="$_ksd/rc/tmp" GITHUB_ENV="$_ksd/rc/env" sh -e "$1" ) > /dev/null 2>&1 || true
+    _rc_kc=$(sed -n 's/^KIT_CHANGED=//p' "$_ksd/rc/env")
+  }
+  _rc_refused() {  # <label> : the last _rc_go wrote the floor-hitting listing, and verify then runs every row off it
+    [ -n "$_rc_kc" ] || { _ke_why="$1: no KIT_CHANGED was assigned, so verify would skip"; return 1; }
+    [ "$(cat "$_rc_kc" 2>/dev/null)" = ".github/kit-listing-refused" ] || { _ke_why="$1: the listing is not the refusal line"; return 1; }
+    _ke_full "$(_ke_run "$_ksd/rctree" "$_ksd/okclass.sh" --kit-selftests-on-change --changed "$_rc_kc")" || { _ke_why="$1: $_ke_why"; return 1; }
+  }
+  _rc_cell() {  # <listing-step-script>
+    _rc_fix || { _ke_why="no fixture repository"; return 1; }
+    _rc_go "$1" pull_request "$_rc_c0"; _rc_refused "newline path" || return 1
+    _rc_go "$1" pull_request "$_rc_c2"; _rc_refused "empty diff" || return 1
+    _rc_go "$1" pull_request "zzzzzzzz"; _rc_refused "non-hex sha" || return 1
+    _rc_go "$1" pull_request "abc123"; _rc_refused "short sha" || return 1
+    _rc_go "$1" pull_request "$_rc_c1"
+    [ "$(cat "${_rc_kc:-/nonexistent}" 2>/dev/null)" = "src/app.ts" ] || { _ke_why="a normal diff did not list its path"; return 1; }
+    _rc_go "$1" push "0000000000000000000000000000000000000000"
+    if [ -n "$_rc_kc" ] || [ -e "$_ksd/rc/tmp/kit-changed.txt" ]; then _ke_why="the all-zero first-push before wrote a listing"; return 1; fi
+  }
+  _rc_n=0
+  for _rcp in profiles/*/ci.yml; do
+    [ -f "$_rcp" ] || continue
+    _rc_ext "$_rcp" "$_ksd/rc-step.sh" || _ks_die "R-C1: $_rcp has no extractable 'Changed-path listing' run: block"
+    _rc_cell "$_ksd/rc-step.sh" || _ks_die "R-C1 ($_rcp): $_ke_why"
+    _rc_n=$((_rc_n+1))
+  done
+  if [ -f docs/ROADMAP-KIT.md ] && [ "$_rc_n" -lt 1 ]; then _ks_die "R-C1: no profile ci.yml was exercised on the kit tree"; fi
+  if [ "$_rc_n" -ge 1 ]; then
+    _rc_ext profiles/typescript-node/ci.yml "$_ksd/rc-good.sh" || _ks_die "R-C1: the typescript-node profile has no extractable listing step"
+    _rc_mut() {  # <label> <sed-script> : the cell must FAIL on the mutated step text
+      sed "$2" "$_ksd/rc-good.sh" > "$_ksd/rc-mut.sh" || _ks_die "$1: sed failed"
+      if cmp -s "$_ksd/rc-good.sh" "$_ksd/rc-mut.sh"; then _ks_die "$1: the mutant changed nothing — retarget the sed"; fi
+      if _rc_cell "$_ksd/rc-mut.sh"; then _ks_die "$1: the mutant SURVIVED — the cell passed on a step text with the behaviour removed (vacuous)"; fi
+    }
+    _rc_mut R-C1 '/^ *else$/,/^ *fi$/{/^ *fi$/!d;}'
+    _rc_mut R-C5 "s/|'') refuse ;; esac/|'') exit 0 ;; esac/"
+    _rc_mut R-C5-length 's/-eq 64 \] || refuse/-eq 64 ] || exit 0/'
+  fi
+
   # ROWTIMES (SWAS-372) — `--timing-file <file>` appends one `<name>\t<seconds>\t<verdict>` line per row; absent = no file,
   # and the printed rows are byte-identical either way. Stub registry (the two rows plus one that sleeps 2 s), so it costs
   # ~2 s. The sleeper is the non-vacuity row (design 2026-10-24-ci-shaping §7): it must record >= 2, so a constant-0
@@ -2243,6 +2405,12 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   echo "                       + KSOC K1-K4/K6/K7: --kitselftest rows skip (N-A + notice + --summary-file) only on a"
   echo "                         readable non-empty non-control-plane --changed listing; the guard, a renamed-away"
   echo "                         control-plane path, no/empty/unreadable listing and a failing classifier all run full"
+  echo "                         (WITHOUT --kit-selftests-on-change; with it only an ABSENT --changed skips, SWAS-720)"
+  echo "                       + E-C1..E-C5, R-C4, F9: --kit-selftests-on-change skips on no --changed, runs full on a floor/control-plane"
+  echo "                         or given-but-unusable listing, is overridden by --kit-selftests, is refused on a kit tree and with"
+  echo "                         --output-file; each has a mutant that goes red"
+  echo "                       + R-C1/R-C5: the shipped profiles' listing step writes the floor-hitting refusal listing for a newline path,"
+  echo "                         an empty diff and a bad sha; the all-zero first-push before writes none"
   echo "                       + VP: the renderer probe prints ONE 'renderer probe: agent-autonomy <verdict>' line, read from the"
   echo "                         whole-name rendered row (a longer or [doc] row never counts), kept in variables everywhere else"
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
@@ -2264,6 +2432,12 @@ if [ -z "${VERIFY_SKIP_PREFLIGHT:-}" ] && git rev-parse --git-dir >/dev/null 2>&
   echo "verify: this repository has no commits yet — commit the incepted baseline first (git add -A && git commit -m \"chore: incept baseline\"), then re-run. Nothing below can be evaluated against an empty history."
   exit 1
 fi
+
+# ── --kit-selftests-on-change (SWAS-720, errata E2) is an ADOPTER's CI flag: a kit tree (the same marker test the registry uses below)
+# refuses it and runs nothing, so the kit's own artifact-gate run (which passes no flag) keeps running everything.
+_ks_kitmark=""
+if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then _ks_kitmark=1; fi
+if [ "$KS_ON_CHANGE" = 1 ] && [ -n "$_ks_kitmark" ]; then echo "verify: --kit-selftests-on-change is refused on a kit tree (it is an adopter's CI flag; the kit runs every row)" >&2; exit 2; fi   # E2:kit
 
 # ── TEST SEAMS NEVER PRODUCE A VERDICT (ADOPTER-KIT-SELFTESTS-ON-CHANGE, security). The two env seams the
 # selftest drives (a replacement registry; a stub classifier) would, in a real CI run, let whoever sets an
@@ -2320,6 +2494,12 @@ if [ -n "$KS_CHANGED" ] && [ -f "$KS_CHANGED" ] && [ -r "$KS_CHANGED" ] && [ -s 
     case "$_ks_cls" in ordinary|sensitive) SKIP_KS=1 ;; esac
   fi
 fi
+# SWAS-720 (errata E2, errata 2): under --kit-selftests-on-change a run with NO --changed at all (a first push, the weekly run, another
+# branch: the CI step wrote no listing by design) skips the rows too. A --changed that is GIVEN decides above (floor / classifier) and, when
+# it is empty, missing or unreadable, runs everything: the CI step writes a floor-hitting listing for a refused diff, and this is the same
+# fail-closed rule in depth. --kit-selftests overrides every skip. Without the flag nothing here fires.
+if [ "$KS_ON_CHANGE" = 1 ] && [ "$SKIP_KS" = 0 ] && [ "$KS_GIVEN" = 0 ]; then SKIP_KS=1; KS_NOLIST=1; fi   # E2:nolist
+if [ "$KS_ALL" = 1 ]; then SKIP_KS=0; KS_NOLIST=0; fi   # E2:all
 
 # SWAS-393: a --merge validates its records and grades the battery row BEFORE it prints anything (a refused merge prints no rows).
 if [ "$MERGE" = 1 ]; then
@@ -2717,6 +2897,10 @@ if [ -n "$SKIPPED_KS" ]; then
   [ -n "$_ks_ver" ] || _ks_ver=unknown
   _ks_names=${SKIPPED_KS# }
   _ks_note="kit selftests not re-run: $_ks_names — this change names no control-plane path, so their subject is byte-identical to the base; they run in full on the scheduled run and whenever a control-plane path changes (kit v$_ks_ver)"
+  if [ "$KS_NOLIST" = 1 ]; then
+    _ks_n=0; for _ks_w in $SKIPPED_KS; do _ks_n=$((_ks_n+1)); done
+    _ks_note="kit selftests not re-run: $_ks_n rows — this CI run has no changed-path listing (first push, schedule, or a non-default branch); the kit's own CI ran them on the released kit bytes; run with --kit-selftests to run them"
+  fi
   printf '%s\n' "$_ks_note"
   if [ -n "$KS_SUMMARY" ]; then ( printf '%s\n' "$_ks_note" >> "$KS_SUMMARY" ) 2>/dev/null || true; fi
 fi

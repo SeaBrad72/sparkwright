@@ -373,12 +373,17 @@ _judge() {
 # schedule), whose shas (the PR base, and the push's `before`) are ENV-BOUND (never interpolated into a `run:`
 # line), shape-checked (40 or 64 hex, never all zero), with a TWO-dot push range, and which refuses a
 # newline-bearing path set; (2) the ONE verify.sh line passes `--changed` only through
-# `${KIT_CHANGED:+…}`, so a schedule / any unknown event / a failed or refused diff run plain
-# `verify.sh --require` (the full battery); and (3) GitHub also passes `--summary-file "$GITHUB_STEP_SUMMARY"`,
+# `${KIT_CHANGED:+…}`, with `--kit-selftests-on-change`: a schedule / a first push / another branch (no listing by design) skips the
+# kit's own selftests, while a default-branch event whose listing was REFUSED (a failed or empty diff, a newline path, a bad sha) writes
+# the floor-hitting `.github/kit-listing-refused` and runs everything (SWAS-720 errata 2); and (3) GitHub also passes `--summary-file "$GITHUB_STEP_SUMMARY"`,
 # plus a WEEKLY `schedule:` cron. The verify.sh line stays ONE line on purpose: _ep_github/_ep_gitlab above read a
 # single-line `run:`/script item. Comment lines are ignored. Each helper prints one reason per violation.
 # The listing is GITHUB's. The GitLab variant builds none (SWAS-650), so its helper below is a negative check.
-_KST_GH_LINE='run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}'
+_KST_GH_LINE='run: sh conformance/verify.sh --require --kit-selftests-on-change ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}'
+# SWAS-720 (errata E2, E-C6): every GitHub profile passes --kit-selftests-on-change and installs the pinned shellcheck first (the two exact
+# installer lines of ci.yml / drift-watch.yml, before the verify line); the GitLab variant passes no such flag (it builds no listing).
+_KST_GH_INST='run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"'
+_KST_GH_CHK='run: sh scripts/install-shellcheck.sh --check'
 # SWAS-650: the GitLab job has NO changed-path listing, so its verify line is the plain one and the lock is negative.
 _KST_GL_LINE='- sh conformance/verify.sh --require'
 # SWAS-650 / SWAS-670: the line directly above the verify line clears the one variable that can make the guard
@@ -388,9 +393,15 @@ _KST_GL_UNSET='- unset KIT_GUARD_BATTERY_REF'
 # branch in the gating if:, a fourth case arm, a sha refusal reworded — is not the reviewed block.
 _KST_GH_IF="if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))"
 _KST_GH_CASE=$(printf '%s\n%s\n%s\n%s\n%s\n' 'case "$GITHUB_EVENT_NAME" in' 'pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;' 'push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;' '*) exit 0 ;;' 'esac')
-_KST_GH_HEX="case \"\$base\" in *[!0-9a-f]*|'') exit 0 ;; esac"
-_KST_GH_LEN='[ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0'
-_KST_GH_ZERO='case "$base" in *[!0]*) : ;; *) exit 0 ;; esac'
+_KST_GH_HEX="case \"\$base\" in *[!0-9a-f]*|'') refuse ;; esac"
+_KST_GH_LEN='[ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || refuse'
+_KST_GH_ZERO="case \"\$base\" in *[!0]*|'') : ;; *) exit 0 ;; esac"
+# SWAS-720 errata 2 (R1, R2, R3): a default-branch event whose listing cannot be built (a bad sha, a failed or empty diff, a newline path) writes
+# the one-line listing `.github/kit-listing-refused`, which verify's literal floor reads as a control-plane path, so that run is FULL; only the
+# all-zero before of a first push (and an event with no listing by design) skips. KIT_CHANGED is cleared by a step AFTER the installers and
+# BEFORE the listing step, so nothing an earlier step wrote can survive; the installer steps cannot carry continue-on-error or an if:.
+_KST_GH_REFUSE="refuse() { printf '%s\\n' '.github/kit-listing-refused' > \"\$RUNNER_TEMP/kit-changed.txt\" && echo \"KIT_CHANGED=\$RUNNER_TEMP/kit-changed.txt\" >> \"\$GITHUB_ENV\" && exit 0; exit 1; }"
+_KST_GH_CLEAR='run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"'
 _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
   _kw_t=$(grep -v '^[[:space:]]*#' "$1") || _kw_t=""; _kw_rc=0
   printf '%s\n' "$_kw_t" | grep -Eq '^  schedule:' || { echo "K5: $1 has no 'schedule:' trigger"; _kw_rc=1; }
@@ -419,8 +430,11 @@ _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
   printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_HEX" || { echo "K5: $1 does not refuse a non-hex sha: want the line: $_KST_GH_HEX"; _kw_rc=1; }
   printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_LEN" || { echo "K5: $1 does not refuse a sha that is not 40 or 64 hex: want the line: $_KST_GH_LEN"; _kw_rc=1; }
   printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_ZERO" || { echo "K5: $1 does not refuse an all-zero before sha: want the line: $_KST_GH_ZERO"; _kw_rc=1; }
-  # M1: the diff is the condition of an `if`, so a failed diff falls back to the full battery rather than aborting.
-  printf '%s\n' "$_kw_t" | grep -qE '^[[:space:]]*if git diff ' || { echo "K5: $1's listing must use the 'if git diff … then … fi' form (a bare git diff aborts the step under bash -e instead of falling back to the full battery)"; _kw_rc=1; }
+  # M1: the diff is the condition of an `if`, so a failed diff takes the else branch (the refusal listing) rather than aborting the step.
+  printf '%s\n' "$_kw_t" | grep -qE '^[[:space:]]*if git diff ' || { echo "K5: $1's listing must use the 'if git diff … then … else refuse … fi' form (a bare git diff aborts the step under bash -e instead of writing the refusal listing)"; _kw_rc=1; }
+  # SWAS-720 errata 2 (R1): the refusal helper is pinned whole, and the `if git diff` carries an else branch that calls it.
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_REFUSE" || { echo "K5: $1 lacks the pinned refusal helper: $_KST_GH_REFUSE"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | awk '/^if git diff / { s = 1; next } s == 1 && $0 == "else" { s = 2; next } s == 2 && $0 == "refuse" { s = 3 } END { exit s == 3 ? 0 : 1 }' || { echo "K5: $1 lacks the pinned refusal branch: the 'if git diff' must be followed by 'else' then 'refuse' (a failed or empty diff or a newline path must write the floor-hitting listing, not nothing)"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | awk '
     function flush() { if (d) { if (g && p && nl && !sc) good = 1; else bad = 1 } d = 0; g = 0; p = 0; nl = 0; sc = 0 }
     /^[[:space:]]*-[[:space:]]+name:/ { flush() }
@@ -432,6 +446,16 @@ _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
     END { flush(); exit(good && !bad ? 0 : 1) }' || { echo "K5: $1 has no 'git diff -z --no-renames' listing step gated by ONE if: line allowing only (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) (S2), never a schedule, that refuses a newline-bearing path set (tr -cd '\\n', R6)"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | grep -q 'GITHUB_ENV' || { echo "K5: $1's listing step never exports KIT_CHANGED via GITHUB_ENV"; _kw_rc=1; }
   printf '%s\n' "$_kw_t" | grep -qF -- "$_KST_GH_LINE" || { echo "K5: $1 lacks the single verify line: $_KST_GH_LINE"; _kw_rc=1; }
+  # SWAS-720 errata 2 (R2, R3): installer, check, the KIT_CHANGED clear, the gating if: of the listing step, then the verify line — in that order.
+  printf '%s\n' "$_kw_s" | awk -v a="$_KST_GH_INST" -v b="$_KST_GH_CHK" -v d="$_KST_GH_CLEAR" -v g="$_KST_GH_IF" -v c="$_KST_GH_LINE" '$0 == a { s = 1 } $0 == b && s == 1 { s = 2 } $0 == d && s == 2 { s = 3 } $0 == g && s == 3 { s = 4 } $0 == c && s == 4 { s = 5 } END { exit s == 5 ? 0 : 1 }' || { echo "K5: $1 lacks the pinned shellcheck install ('$_KST_GH_INST', then '$_KST_GH_CHK') before the KIT_CHANGED clear, the listing step and the verify line"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_CLEAR" || { echo "K5: $1 lacks the pinned KIT_CHANGED clear: $_KST_GH_CLEAR (nothing an earlier step wrote may survive to the verify step)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_s" | awk -v a="$_KST_GH_INST" -v b="$_KST_GH_CHK" '
+    function flush() { if (inst && soft) bad = 1; inst = 0; soft = 0 }
+    /^- / { flush() }
+    { l = $0; sub(/^- /, "", l) }
+    l == a || l == b { inst = 1 }
+    l ~ /^continue-on-error:/ || l ~ /^if:/ { soft = 1 }
+    END { flush(); exit bad ? 1 : 0 }' || { echo "K5: $1's shellcheck installer step is softened (a continue-on-error or an if: inside it): the lint could quietly run on the image's shellcheck 0.9.0"; _kw_rc=1; }
   _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -e '--changed') || true
   [ "$_kw_n" = 1 ] || { echo "K5: $1 mentions --changed on $_kw_n non-comment line(s), want exactly the one verify line"; _kw_rc=1; }
   return "$_kw_rc"
@@ -444,7 +468,7 @@ _kst_wiring_gitlab() {  # <file> -> 0 conforming; else 1 with reasons
   printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GL_LINE" || { echo "K5: $1 lacks the pinned verify line: $_KST_GL_LINE"; _kw_rc=1; }
   _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -F -e 'verify.sh') || true
   [ "$_kw_n" = 1 ] || { echo "K5: $1 has $_kw_n non-comment lines running verify.sh, want exactly one non-comment line running verify.sh (the pinned line)"; _kw_rc=1; }
-  for _kw_k in '--changed' 'KIT_CHANGED' 'git diff'; do
+  for _kw_k in '--changed' 'KIT_CHANGED' 'git diff' '--kit-selftests-on-change'; do
     ! printf '%s\n' "$_kw_t" | grep -qF -e "$_kw_k" || { echo "K5: $1 names '$_kw_k' on a non-comment line: the GitLab variant builds no changed-path listing (whether a pipeline variable can override the CI_* values a listing reads was not checked, and the job has never been run)"; _kw_rc=1; }
   done
   # The markers are comments, so they are read on the raw file, anchored as the fleet's own marker scan anchors them.
@@ -810,6 +834,12 @@ jobs:
   ci:
     steps:
       # >>> kit:owned changed-listing
+      - name: Install pinned shellcheck
+        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"
+      - name: Pinned shellcheck check
+        run: sh scripts/install-shellcheck.sh --check
+      - name: Clear the changed-path listing
+        run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"
       - name: Changed-path listing
         if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
         env:
@@ -817,18 +847,21 @@ jobs:
           BEFORE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: |
           z="$RUNNER_TEMP/kit-changed.z"
+          refuse() { printf '%s\n' '.github/kit-listing-refused' > "$RUNNER_TEMP/kit-changed.txt" && echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV" && exit 0; exit 1; }
           case "$GITHUB_EVENT_NAME" in
             pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;
             push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;
             *) exit 0 ;;
           esac
-          case "$base" in *[!0-9a-f]*|'') exit 0 ;; esac
-          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0
-          case "$base" in *[!0]*) : ;; *) exit 0 ;; esac
+          case "$base" in *[!0]*|'') : ;; *) exit 0 ;; esac
+          case "$base" in *[!0-9a-f]*|'') refuse ;; esac
+          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || refuse
           if git diff -z --name-only --no-renames "$range" > "$z" \
             && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
             tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
             echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          else
+            refuse
           fi
       - name: Conformance aggregate
 KSTGHEOF
@@ -894,6 +927,25 @@ KSTGLOLDEOF
     [ "$_km_rc" != 0 ] || { echo "FAIL: K5 — mutant '$1' was ACCEPTED (that property is not checked)"; st=1; return 0; }
     [ -z "${3:-}" ] || printf '%s\n' "$_km_out" | grep -qF -e "$3" || { echo "FAIL: K5 — mutant '$1' went red but NOT for its own reason ('$3')"; st=1; }
   }
+  # SWAS-720 (E-C6): the flag and the pinned shellcheck install are each locked; each mutant carries its own refusal text.
+  _kst_mut no-kit-flag        's/ --kit-selftests-on-change//' 'lacks the single verify line'
+  _kst_mut no-shellcheck-install '/install-shellcheck.sh "/d' 'lacks the pinned shellcheck install'
+  _kst_mut no-shellcheck-check   '/install-shellcheck.sh --check$/d' 'lacks the pinned shellcheck install'
+  # SWAS-720 errata 2 (R-C2, R-C3, R-C5): a refused listing runs everything (the else branch and the sha refusals call `refuse`), the
+  # installer steps run before the clear and the listing, the listing variable is cleared, and an installer step cannot be softened.
+  _kst_mut no-refusal-branch      '/^ *else$/,/^ *fi$/{/^ *fi$/!d;}' 'lacks the pinned refusal branch'
+  _kst_mut bad-hex-skips          "s/|'') refuse ;; esac/|'') exit 0 ;; esac/" 'does not refuse a non-hex sha'
+  _kst_mut bad-length-skips       's/-eq 64 \] || refuse/-eq 64 ] || exit 0/' 'is not 40 or 64 hex'
+  _kst_mut installer-after-listing '/install-shellcheck.sh "/d
+/install-shellcheck.sh --check$/d
+/--kit-selftests-on-change/a\
+        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"\
+        run: sh scripts/install-shellcheck.sh --check' 'lacks the pinned shellcheck install'
+  _kst_mut installer-continue-on-error '/install-shellcheck.sh --check$/i\
+        continue-on-error: true' 'is softened'
+  _kst_mut installer-if            '/install-shellcheck.sh "/i\
+        if: always()' 'is softened'
+  _kst_mut no-kit-changed-clear   '/echo "KIT_CHANGED=" >>/d' 'lacks the pinned KIT_CHANGED clear'
   _kst_mut no-schedule      '/^  schedule:/d;/cron:/d'
   _kst_mut daily-cron       's/\* \* 1/* * */'
   _kst_mut no-pr-gate       '/^        if: /d'
@@ -936,6 +988,7 @@ KSTGLOLDEOF
   # that reds for a neighbouring reason fails its leg. The pinned verify line is proven only by listing-restored:
   # the others red through the --changed / KIT_CHANGED / git diff refusals, which would hide a dropped pin.
   _kst_mutgl listing-restored    's/--require$/--require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}/' 'lacks the pinned verify line'
+  _kst_mutgl kit-flag-restored   's/--require$/--require --kit-selftests-on-change/' "names '--kit-selftests-on-change' on a non-comment line"
   _kst_mutgl listing-unconditional 's/--require$/--require --changed list.txt/' "names '--changed' on a non-comment line"
   _kst_mutgl kit-changed-exported '/^  script:$/i\
   before_script: [export KIT_CHANGED=x]' "names 'KIT_CHANGED' on a non-comment line"

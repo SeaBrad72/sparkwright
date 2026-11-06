@@ -19,9 +19,9 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Weekly FULL run of the kit's own selftests. A pull request or a push to main that changes no control-plane
-  # path skips them (see the "Changed-path listing" step); this cron, and any run the listing cannot vouch
-  # for, still run them in full.
+  # The weekly run does NOT re-run the kit's own selftests: the aggregate below passes --kit-selftests-on-change, so a
+  # run with no changed-path listing (a first push, this cron, a push to another branch) skips them. A change
+  # that names a control-plane path still runs them in full (see the "Changed-path listing" step).
   # It also carries this profile's ONLY all-branches secret sweep (the secret-scan step scans a PR's
   # own commits and main's history, and every ref on a schedule): removing the schedule removes that
   # sweep. Its cadence is yours to tune.
@@ -64,34 +64,45 @@ jobs:
           fetch-depth: 0   # full history so the secret scan sees all commits
 
       # >>> kit:owned changed-listing
+      - name: Install pinned shellcheck v0.11.0 (sha256-verified; the runner image's 0.9.0 can run out of memory on the aggregate's lint)
+        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"
+      - name: Shellcheck is the pinned v0.11.0 (fail loudly if not)
+        run: sh scripts/install-shellcheck.sh --check
+      - name: Clear the changed-path listing (nothing an earlier step wrote may survive to the verify step)
+        run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"
+
       - name: Changed-path listing (default-branch pull request or push)
         # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the run's changed paths so verify.sh can skip the kit's own
         # selftests when none of them is a control-plane path. A pull request into the default branch lists
         # BASE...HEAD; a push to the default branch lists the TWO-dot BEFORE..SHA (two trees, so a force-push
         # over-lists, the safe direction). Both shas are ENV-BOUND, never interpolated into the script, and
-        # must be 40 or 64 hex; an all-zero before (a first push) is refused. No listing (a refusal, a failed
-        # diff, an empty diff, or a path containing a newline) means the aggregate below runs the FULL battery.
-        # A schedule run, or any other event, never gets a listing: the weekly run stays the full battery.
-        # Default branch only (security S2): a PR into any other base branch, or a push to any other branch,
-        # always runs the full battery.
+        # must be 40 or 64 hex. The all-zero before of a first push writes no listing and exits here, so that run skips
+        # the kit's own selftests (--kit-selftests-on-change). Past that check, a bad sha, a failed diff, an empty diff or a
+        # path containing a newline writes the one-line listing `.github/kit-listing-refused`, which verify's literal floor
+        # reads as a control-plane path: that run is FULL. A schedule run or any other event gets no listing and skips them.
+        # Default branch only (security S2): a PR into another base branch, or a push to another branch, gets no listing,
+        # so it skips them too. The clear step above empties KIT_CHANGED, so nothing an earlier step wrote can survive.
         if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: |
           z="$RUNNER_TEMP/kit-changed.z"
+          refuse() { printf '%s\n' '.github/kit-listing-refused' > "$RUNNER_TEMP/kit-changed.txt" && echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV" && exit 0; exit 1; }
           case "$GITHUB_EVENT_NAME" in
             pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;
             push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;
             *) exit 0 ;;
           esac
-          case "$base" in *[!0-9a-f]*|'') exit 0 ;; esac
-          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || exit 0
-          case "$base" in *[!0]*) : ;; *) exit 0 ;; esac
+          case "$base" in *[!0]*|'') : ;; *) exit 0 ;; esac
+          case "$base" in *[!0-9a-f]*|'') refuse ;; esac
+          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || refuse
           if git diff -z --name-only --no-renames "$range" > "$z" \
             && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
             tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
             echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          else
+            refuse
           fi
 
       - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
@@ -102,9 +113,10 @@ jobs:
         # no toolchain dependency; identical placement across every emitted pipeline is what makes
         # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
         # KIT_CHANGED is set only by the listing step above (a default-branch pull request or push); empty on
-        # a schedule or any unknown, so those run plain `verify.sh --require` (the full battery). Keep this
-        # ONE line (verify-enforced-wired reads it).
-        run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
+        # a schedule or any unknown. --kit-selftests-on-change makes a run with no listing skip the kit's own
+        # selftests (rows N-A, one notice); a listing that names a control-plane path still runs them all.
+        # Keep this ONE line (verify-enforced-wired reads it).
+        run: sh conformance/verify.sh --require --kit-selftests-on-change ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
       # <<< kit:owned changed-listing
 
       # HITL obligation — the threat-model gate runs HERE, in PR context, NOT inside verify.sh --require.

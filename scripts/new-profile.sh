@@ -47,8 +47,9 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Weekly FULL run of the kit's own selftests (a PR that changes no control-plane path skips them; see
-  # the "Changed-path listing" step). It also carries this profile's ONLY all-branches secret sweep (the
+  # The weekly run does NOT re-run the kit's own selftests (the aggregate passes --kit-selftests-on-change, so a run
+  # with no changed-path listing skips them; a control-plane change runs them in full; see the "Changed-path
+  # listing" step). It also carries this profile's ONLY all-branches secret sweep (the
   # secret-scan step scans a PR's own commits and main's history, and every ref on a schedule): removing
   # the schedule removes that sweep. Its cadence is yours to tune.
   schedule:
@@ -64,26 +65,50 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
-      - name: Changed-path listing (pull_request only)
-        # ADOPTER-KIT-SELFTESTS-ON-CHANGE (mirrors profiles/typescript-node/ci.yml; locked by
-        # conformance/verify-enforced-wired.sh --fleet, leg K5). The base sha is ENV-BOUND, never
-        # interpolated into the script; no listing (failed/empty diff, newline in a path) = full battery.
-        # Default-branch PRs only (security S2): a PR into any other base branch always runs the full battery.
-        if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch
+      - name: Install pinned shellcheck v0.11.0 (sha256-verified; the runner image's 0.9.0 can run out of memory on the aggregate's lint)
+        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"
+      - name: Shellcheck is the pinned v0.11.0 (fail loudly if not)
+        run: sh scripts/install-shellcheck.sh --check
+      - name: Clear the changed-path listing (nothing an earlier step wrote may survive to the verify step)
+        run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"
+
+      - name: Changed-path listing (default-branch pull request or push)
+        # ADOPTER-KIT-SELFTESTS-ON-CHANGE (the same step as profiles/typescript-node/ci.yml; locked by
+        # conformance/verify-enforced-wired.sh --fleet, leg K5). A pull request into the default branch lists
+        # BASE...HEAD; a push to the default branch lists the TWO-dot BEFORE..SHA. Both shas are ENV-BOUND, never
+        # interpolated into the script. The all-zero before of a first push writes no listing and exits here, so that run
+        # skips the kit's own selftests (--kit-selftests-on-change). Past that check, a bad sha, a failed diff, an empty
+        # diff or a path containing a newline writes the one-line listing `.github/kit-listing-refused`, which verify's
+        # literal floor reads as a control-plane path: that run is FULL. A schedule run or any other event gets no listing
+        # and skips them. Default branch only (security S2): a PR into another base branch, or a push to another branch,
+        # gets no listing, so it skips them too.
+        if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
         run: |
           z="$RUNNER_TEMP/kit-changed.z"
-          if git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$z" \
+          refuse() { printf '%s\n' '.github/kit-listing-refused' > "$RUNNER_TEMP/kit-changed.txt" && echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV" && exit 0; exit 1; }
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) base="$BASE_SHA"; range="$BASE_SHA...HEAD" ;;
+            push) base="$BEFORE_SHA"; range="$BEFORE_SHA..$GITHUB_SHA" ;;
+            *) exit 0 ;;
+          esac
+          case "$base" in *[!0]*|'') : ;; *) exit 0 ;; esac
+          case "$base" in *[!0-9a-f]*|'') refuse ;; esac
+          [ "${#base}" -eq 40 ] || [ "${#base}" -eq 64 ] || refuse
+          if git diff -z --name-only --no-renames "$range" > "$z" \
             && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
             tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
             echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          else
+            refuse
           fi
 
       - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
-        # KIT_CHANGED is set only by the listing step above; empty on push / schedule, so those run the
-        # plain full battery. Keep this ONE line (verify-enforced-wired reads it).
-        run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
+        # KIT_CHANGED is set only by the listing step above; empty on a first push / schedule, so those skip the
+        # kit's own selftests (--kit-selftests-on-change). Keep this ONE line (verify-enforced-wired reads it).
+        run: sh conformance/verify.sh --require --kit-selftests-on-change ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
 
       # TODO: add your language/runtime setup action (SHA-pin it, e.g. actions/setup-go@<sha>  # vX)
       - name: Lint

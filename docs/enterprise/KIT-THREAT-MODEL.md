@@ -4,7 +4,7 @@
 > kit's security posture — **NOT a template**. Write your own from
 > [`templates/THREAT-MODEL-TEMPLATE.md`](../../templates/THREAT-MODEL-TEMPLATE.md).
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.244.0 · **Date:** 2026-10-23
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.245.0 · **Date:** 2026-10-23
 
 <!-- The phrase "Sparkwright — an agentic SDLC kit" on the line above is the K4 copy-denial
      fingerprint conformance/threat-obligation.sh checks for (OBL_KIT_FINGERPRINT_1) — do not

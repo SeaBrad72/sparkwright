@@ -2111,7 +2111,7 @@ pv_ev_read_in() {
     "$_pe_a"*) ;;
     *) _pv_ev_verdict=refused; _pv_ev_reason='stale-head'; return 0 ;;
   esac
-  gh api "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=$_pe_live&event=pull_request&per_page=100" \
+  gh api "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=$_pe_live&event=pull_request&per_page=30" \
       --paginate --jq '.workflow_runs[]' >"$_pe_d/runs.nd" 2>/dev/null || return 0
   jq -s '.' "$_pe_d/runs.nd" >"$_pe_d/runs.json" 2>/dev/null || return 0
   # First pass with an EMPTY jobs listing: it settles every run-level answer, and reaches `no-jobs` only for a completed,
@@ -2131,7 +2131,7 @@ pv_ev_read_in() {
   case "$_pe_rid" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  gh api "repos/{owner}/{repo}/actions/runs/$_pe_rid/jobs?filter=latest&per_page=100" \
+  gh api "repos/{owner}/{repo}/actions/runs/$_pe_rid/jobs?filter=latest&per_page=30" \
       --paginate --jq '.jobs[]' >"$_pe_d/jobs.nd" 2>/dev/null || return 0
   jq -s '.' "$_pe_d/jobs.nd" >"$_pe_d/jobs.json" 2>/dev/null || return 0
   _pe_v="$(sh "$_pe_c" --head-evidence "$_pe_d/runs.json" "$_pe_d/jobs.json" "$_pe_live" "$_pe_br" "$_pe_repo")" || return 0
