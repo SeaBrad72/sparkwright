@@ -2709,7 +2709,9 @@ check control uat-obligation-selftest    sh conformance/uat-obligation.sh --self
 check control a11y-obligation-selftest   --kitselftest sh conformance/a11y-obligation.sh --selftest
 # ceremony-binding follows the SAME split as the three obligations above: the selftest is
 # base-independent (every leg builds its own git fixture repos, each hermetic w.r.t. the surrounding
-# repository and its notes ref) and belongs here; the diff-relative REAL gate lives in ci.yml's PR-context job, where
+# repository and its notes ref; SWAS-741: a leg that runs the production entry as a subprocess runs the
+# authority copy inside its own fixture, so the class is derived from the fixture, never from the host
+# checkout) and belongs here; the diff-relative REAL gate lives in ci.yml's PR-context job, where
 # `origin/main` and refs/notes/promotions both resolve.
 check control ceremony-binding-selftest  sh conformance/ceremony-binding.sh --selftest
 # selftest-hermetic (PHASE-B-HYGIENE H2) — the fixture-hermeticity lane. ONLY the --selftest is

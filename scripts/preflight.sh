@@ -121,8 +121,10 @@ check_git_capability() {  # advisory: does the installed git support `merge-tree
 
 # --- the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX) -------------------------------------
 # Claude Code's OS sandbox (shipped on) keeps the enforcement layer read-only to the agent's shell.
-# With `failIfUnavailable:false` (by design) a machine where it cannot start runs the session
-# UNSANDBOXED, so this reports that loudly. WARN-only: it never sets `miss`.
+# The shipped default sets no `failIfUnavailable`, so a machine where the sandbox cannot start runs the
+# session UNSANDBOXED, and this reports that loudly. The optional deny-only overlay
+# (templates/sandbox-overlay.settings.local.json) sets `failIfUnavailable: true` to refuse instead.
+# WARN-only: it never sets `miss`.
 # FLAG-NOT-ENV, like the git seam above: the PREFLIGHT_SANDBOX_* seams are honored only under a seam flag.
 # SANDBOX_REASON is set (not printed) so the selftest can assert it without parsing output.
 sandbox_unavailable_reason() {  # prints a reason and returns 1 when the sandbox cannot start; 0 if it can
@@ -187,10 +189,10 @@ check_sandbox() {
     echo "  ok   agent OS sandbox can start here"
   else
     printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
-    echo "       The sandbox is configured but Claude Code will run WITHOUT it: the guard still runs,"
+    echo "       The sandbox is configured but the default runs WITHOUT it: the guard still runs,"
     echo "       but the guard files (.claude/, hooks/, .kit/, .git/hooks, .git/config) are not read-only to the shell."
     echo "       Fix: install the missing piece (Linux/WSL2: bubblewrap and socat), or accept the reduced"
-    echo "       protection. See docs/operations/runtime-guards.md, section \"Below the text layer: the strict profile (opt-in)\"."
+    echo "       protection (the optional overlay sets failIfUnavailable to refuse instead). See docs/operations/runtime-guards.md, section \"Below the text layer: the OS sandbox and the deny-only overlay\"."
     rec=1
   fi
 }

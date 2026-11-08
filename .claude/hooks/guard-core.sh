@@ -63,8 +63,10 @@ _guard_stop_pointer() {
 # HOT PATH: this runs on every PreToolUse, twice per path. The literal `case` below is tried FIRST and
 # decides every all-lowercase path with zero subprocesses; only a path that actually contains an
 # uppercase byte AND missed the literal match pays one `tr`. `LC_ALL=C` + the explicit `A-Z`/`a-z`
-# ranges keep it byte-safe: under a Turkish locale `[:upper:]` maps I->ı, which would then fail to
-# match `i` in the patterns.
+# ranges keep it byte-safe against a `tr` that maps I->dotless-i under a Turkish locale (a GNU or busybox
+# single-byte build; not measured here). Measured: macOS `tr` does NOT mis-map `I` there, and its UTF-8
+# fold maps Kelvin (U+212A) and dotted I (U+0130). `_kitbase_ref_denied` runs BOTH folds, so neither
+# behaviour opens a hole.
 #
 # CEILING: closes CASE variance only. It does NOT close Unicode normalization (NFC/NFD) or homoglyphs —
 # a related class, deliberately not claimed. Do not read this green as closing those.
@@ -9765,6 +9767,15 @@ _kitbase_ref_denied() {
       esac
       case "$_kbs_cl" in
         *kit-base*|*refs/kit*) _kbs_cn=1 ;;
+      esac
+      # pinned twin (SWAS-717): a `tr` that maps I->dotless-i under a Turkish locale folds KIT-BASE to k-dotless-i-t-base; the byte
+      # fold cannot. Both run, deny if EITHER names it — the locale fold above is kept (it folds Kelvin / dotted I).
+      _kbs_cp=$(printf '%s' "$2" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault kitbase-lower-c
+      case "$2" in
+        *[[:alnum:]]*) _guard_vanished kitbase-lower-c "$2" "$_kbs_cp" ;;
+      esac
+      case "$_kbs_cp" in
+        *kit-base*|*refs/kit*) _kbs_cn=1 ;;
       esac ;;
   esac
   _cp8b_walk_load "$1"   # faults (exit 2) on a failed/vanished stage, as the CP arms do
@@ -9805,6 +9816,12 @@ _kitbase_ref_denied() {
       *[[:alnum:]]*) _guard_vanished kitbase-seg "$_seg" "$_kbs_s" ;;
     esac
     if _kbs_seg_denied "$_kbs_s" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then printf '%s' "$_kbs_tip"; return 0; fi
+    # pinned twin (SWAS-717): the same pipeline with the byte fold and a byte-range sed; deny if EITHER denies
+    _kbs_sc=$(printf '%s' "$_seg" | LC_ALL=C tr -d '"$\\'"'" | LC_ALL=C tr '()`' '   ' | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed -e 's#refs/kit/claim-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/notes-remote-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/promotions-presync-[a-z0-9_.-]*#claimscratch#g') || _guard_fault kitbase-seg-c
+    case "$_seg" in
+      *[[:alnum:]]*) _guard_vanished kitbase-seg-c "$_seg" "$_kbs_sc" ;;
+    esac
+    if _kbs_seg_denied "$_kbs_sc" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then printf '%s' "$_kbs_tip"; return 0; fi
   done
   return 1
 }
@@ -11436,7 +11453,11 @@ _kbr_strip_hd() {
 _kbr_any_hit() {
   _kah_s=$(printf '%s' "$1" | tr -d "\"\$\\\\'" | tr '()`' '   ' | tr '[:upper:]' '[:lower:]') || _guard_fault kbr-hit
   _guard_vanished kbr-hit "$1" "$_kah_s"
+  # the byte-pinned twin (SWAS-717): a locale `tr` can mis-map I (Turkish) and miss the flag text; either view hitting denies
+  _kah_c=$(printf '%s' "$1" | LC_ALL=C tr -d "\"\$\\\\'" | LC_ALL=C tr '()`' '   ' | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault kbr-hit-c
+  _guard_vanished kbr-hit-c "$1" "$_kah_c"
   if _kbr_text_hit "$_kah_s"; then return 0; fi
+  if _kbr_text_hit "$_kah_c"; then return 0; fi
   _kbr_text_doubt "$1"
 }
 

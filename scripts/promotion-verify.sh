@@ -4,7 +4,9 @@
 #
 # Three modes:
 #   record  --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> --class <c> \
-#           --scope <pr> --token "<explicit approval string>" [--basis <text> (required with --gate design)]
+#           --scope <pr> (--token "<explicit approval string>" | --token-file <path>) [--basis <text> (required with --gate design)]
+#          The token is the owner's words VERBATIM, never re-spelled. `--token-file` (SWAS-724) reads them from
+#          a file so they stay off the command line; it records the same note bytes as `--token`.
 #       -> BIND a structured GO record to the approved commit as a git NOTE under
 #          refs/notes/promotions (tree-invariant: the commit's tree/SHA is unchanged, so `check`
 #          can NEVER false-fail because of the record). The `approved-by` line is written with a
@@ -234,7 +236,7 @@ _pv_unwind() {
 usage() {
   echo "usage:" >&2
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
-  echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t> (required with --gate design)]" >&2
+  echo "                             --rung <r> --class <c> --scope <pr> (--token <str> | --token-file <path>) [--basis <t> (required with --gate design)]" >&2
   echo "                             [--go-by <name>] [--no-push]" >&2
   echo "        record is a TRANSACTION: it fetches refs/notes/<ref> from origin first, refuses if" >&2
   echo "        the local ledger has diverged, writes the note, PUBLISHES it, and unwinds its own" >&2
@@ -253,7 +255,10 @@ usage() {
   echo "        --go-by       the person who GAVE the GO, by name (usually the owner, who is NOT the forge" >&2
   echo "                      reviewer). Recorded '[self-asserted]' BY DESIGN: the kit authenticates only the" >&2
   echo "                      forge review. Omitted -> 'go-by: (none recorded)'. REQUIRED by land (control-plane)." >&2
-  echo "        --token       their words, verbatim (the owner's own GO sentence)." >&2
+  echo "        --token       their words, verbatim (the owner's own GO sentence), never re-spelled." >&2
+  echo "        --token-file  the same words read from a file instead (instead of --token, never with it): one line," >&2
+  echo "                      1..4096 raw bytes (the trailing newline counts), a regular file (no symlink) under the repo root or \$TMPDIR (default /tmp) with no dot" >&2
+  echo "                      component, no secret shape. Use it when the words must stay off the command line." >&2
   echo "        --class must be one of: ordinary | sensitive | control-plane (case-insensitive)" >&2
   echo "  promotion-verify.sh log [--unpushed]" >&2
   echo "        --unpushed lists only the records the remote ledger does not have; it fails CLOSED" >&2
@@ -297,6 +302,11 @@ usage() {
   echo "        (a named --go-by, the tree, a non-design/plan gate) on the note read back from origin. An UNDECLARED" >&2
   echo "        one-account repo reads team: land refuses; record the GO with 'record' and the HUMAN merges (admin" >&2
   echo "        merge is the human's act, never the agent's). docs/adoption/vc-hosts.md explains declaring solo." >&2
+  echo "        GO_ACT (.kit/dials.conf on origin's default branch; team mode only; design and plan GOs stay typed): absent = the two acts" >&2
+  echo "        above, exactly. separate = the same plus --go-by must differ from --approved-by (land and actuate). review = an APPROVED" >&2
+  echo "        forge review on the exact head by a GO_GIVERS login IS the GO: land takes NO --token and NO --go-by, records go-act: review," >&2
+  echo "        go-by = approved-by, token forge-review:<id>, and takes any class; actuate refuses and points here. An approval that carries" >&2
+  echo "        a comment is HELD (rc 2, the words printed): release it with --token and --go-by together (recorded go-act: separate)." >&2
   echo "        land is ONE transactional verb for the direct/control-plane path: it RECORDS the GO" >&2
   echo "        (record's own args + transaction), CONFIRMS the note reached origin, then MERGES then" >&2
   echo "        leaves the branch INTACT. If the record does not complete or the note is not on" >&2
@@ -361,7 +371,8 @@ derive_assurance() {
 # a stronger label. It NEVER substitutes an identity: the recorded id stays the already-sanitised
 # caller string, and the label is a FIXED LITERAL. NO BYTE OF API OUTPUT IS EVER WRITTEN INTO THE
 # NOTE, so this opens no new injection surface into a line-structured body (the S5a class stays closed
-# by construction, not by escaping).
+# by construction, not by escaping). ONE EXCEPTION, ADDED BY SWAS-727 AND ONLY IN REVIEW MODE: the review id, accepted only as
+# 1-20 digits, and the review body, which is made safe (control characters out, quotes escaped, capped) before it is kept.
 #
 # FAIL DIRECTION. It can only ever UPGRADE. Any gap — no PR scope, no gh, an API error, no qualifying
 # review, an unresolvable author — keeps the git-native label and prints a notice naming the reason
@@ -375,15 +386,136 @@ derive_assurance() {
 # protection + required review. It also proves only that a qualifying review existed WHEN ASKED —
 # a later dismissal is not re-checked here (the forge re-judges at merge time; layered, not doubled).
 #
+# REVIEW MODE (SWAS-727, GO_ACT=review): a fifth argument, the GO_GIVERS list, widens the read for `land` only. The same
+# fixed-literal label comes back, and the call ALSO has to find the reviewer on that list, a digits-only review id, and the
+# review's body (read through `gh --jq` into a variable and kept as DATA: it never reaches a label, a token or a shell). Those
+# three come back in globals (a caller that wants them calls this function WITHOUT a command substitution, redirecting stdout to
+# a file, because a substitution would drop them): PV_FR_WHY (the last fallback reason, empty on success), PV_FR_ID, PV_FR_BODY
+# and PV_FR_HELD (1 when the body holds anything but whitespace: the approval carries a comment, so it is not a one-act GO).
+# SWAS-747: a review of any posted state (not a PENDING draft) by a GO_GIVERS login, other than the chosen approval, that is not provably BEFORE the chosen approval holds it too (words or line comments;
+# a read that fails, or an id that is not digits, holds). PV_FR_OWN is 1 when the approval itself holds, PV_FR_LATER the digits-only ids of
+# the later rows that held on their words or line comments, PV_FR_LATERERR the ones held because a read failed (an id, `bad` for an id that is not digits, `scan` for a failed scan); PV_FR_BODY is then the approval's body and each
+# holding later body, joined by one line feed.
+PV_FR_WHY=""; PV_FR_ID=""; PV_FR_BODY=""; PV_FR_HELD=0; PV_FR_OWN=0; PV_FR_LATER=""; PV_FR_LATERERR=""
+
 # _fr_fallback <reason> <label> — print the fixed-enumeration notice, echo the unchanged label.
 _fr_fallback() {
+  PV_FR_WHY="$1"
   echo "forge-review derivation: $1 — recording [$2]" >&2
   printf '%s\n' "$2"
 }
 
-# forge_review_upgrade <scope> <approved-sha> <approved-by> <fallback-label> -> the label to record.
+# _fr_body_read <pr number> <review id> — one review's body, raw, into _fb_body: the sentinel x keeps trailing newlines, gh's own
+# final newline is removed once. rc 1 = the read failed, or came back without gh's final newline.
+_fr_body_read() {
+  if ! _fb_body="$(gh api "repos/{owner}/{repo}/pulls/$1/reviews/$2" --jq '.body // ""' 2>/dev/null && printf x)"; then return 1; fi
+  _fb_body="${_fb_body%x}"
+  _fb_nl='
+'
+  # gh always ends the answer with ONE newline, even for an empty body; an answer with none is no answer, and an unread body must
+  # never read as an empty one (that would turn a held approval into a one-act GO).
+  case "$_fb_body" in
+    *"$_fb_nl") _fb_body="${_fb_body%"$_fb_nl"}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _fr_later_ids <rows> <approval id> <givers> — one token per row, of any posted state (not a PENDING draft) and other than the chosen
+# approval itself, by a GO_GIVERS login (folded) that is NOT provably before the approval: `D<digits>` for a row whose id is digits, else `X`; plus one `DUP` when the approval's id is on two rows. Provably before = earlier in the list AND both rows carry a well-formed
+# submitted_at with the row's strictly earlier (the fixed shape makes string order the time order); any other case counts as later.
+# The id and the givers go in through the ENVIRONMENT, never `awk -v`. These rows never choose or cancel an approval (that is
+# the awk in forge_review_upgrade); this only decides whether the chosen one is held. A second giver's APPROVED, CHANGES_REQUESTED or
+# DISMISSED row holds on its words like a COMMENTED one (SWAS-756); an empty one holds nothing.
+_fr_later_ids() {
+  printf '%s\n' "$1" | FR_ID="$2" FR_GIV="$3" LC_ALL=C awk -F'\t' '
+    function stamp(t) { return t ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/ }
+    { n++; st[n] = $1; lg[n] = tolower($3); id[n] = $5; tm[n] = $6; if (("" $5) == ("" ENVIRON["FR_ID"])) { ap = n; at = $6; hits++ } }
+    END {
+      if (hits > 1) print "DUP"
+      k = split(tolower(ENVIRON["FR_GIV"]), gv, " "); for (j = 1; j <= k; j++) on[gv[j]] = 1
+      for (i = 1; i <= n; i++) {
+        if (st[i] == "PENDING" || i == ap) continue
+        if (!on[lg[i]]) continue
+        if (i < ap && stamp(tm[i]) && stamp(at) && ("" tm[i]) < ("" at)) continue
+        print (id[i] ~ /^[0-9]+$/ ? "D" id[i] : "X")
+      }
+    }'
+}
+
+# _fr_later_holds <pr number> <review id> — does one later comment row hold the approval? rc 0 = it holds on its words (the body in
+# _lh_body) or its line comments; rc 1 = it does not (an empty review); rc 2 = it holds because a read failed.
+_fr_later_holds() {
+  _lh_body=""
+  if ! _fr_body_read "$1" "$2"; then return 2; fi
+  if [ -n "$(printf '%s' "$_fb_body" | LC_ALL=C tr -d '[:space:]')" ]; then _lh_body="$_fb_body"; return 0; fi
+  # A lone line comment is filed as a COMMENTED review with an empty body and one comment (a review's own line comments likewise): any count but 0 holds.
+  if ! _lh_c="$(gh api "repos/{owner}/{repo}/pulls/$1/reviews/$2/comments" --jq 'length' 2>/dev/null)"; then return 2; fi
+  [ "$_lh_c" = 0 ] || return 0
+  return 1
+}
+
+# _fr_later_scan <pr number> <approval id> <givers> <rows> — read every later comment row; each one that holds sets PV_FR_HELD and is
+# recorded in PV_FR_LATER (+ PV_FR_LATERERR when unread) and its words joined to PV_FR_BODY. An id that is not 1-20 digits holds.
+_fr_later_scan() {
+  _ls_nl='
+'
+  # A failed scan is a hold, never a one-act GO: the rows could not be read for later comments.
+  if ! _ls_late="$(_fr_later_ids "$4" "$2" "$3")"; then PV_FR_HELD=1; PV_FR_LATERERR="${PV_FR_LATERERR:+$PV_FR_LATERERR }scan"; return 0; fi
+  for _ls_t in $_ls_late; do
+    _ls_id="${_ls_t#D}"; _lh_body=""; _ls_kind=bad
+    case "$_ls_t" in
+      D[0-9]*) if [ "${#_ls_id}" -gt 20 ]; then _ls_id="?"; fi ;;
+      DUP) _ls_id="?"; _ls_kind=dup ;;
+      *) _ls_id="?" ;;
+    esac
+    _ls_rc=2
+    if [ "$_ls_id" != "?" ]; then _ls_rc=0; _fr_later_holds "$1" "$_ls_id" || _ls_rc=$?; fi
+    if [ "$_ls_rc" = 1 ]; then continue; fi
+    PV_FR_HELD=1
+    if [ "$_ls_rc" = 2 ]; then PV_FR_LATERERR="${PV_FR_LATERERR:+$PV_FR_LATERERR }$(if [ "$_ls_id" = "?" ]; then echo "$_ls_kind"; else echo "$_ls_id"; fi)"
+    else PV_FR_LATER="${PV_FR_LATER:+$PV_FR_LATER }$_ls_id"; fi
+    if [ -z "$_lh_body" ]; then continue; fi
+    # non-empty parts only: an approval body of whitespace is cleared before the words are joined to it
+    if [ -z "$(printf '%s' "$PV_FR_BODY" | LC_ALL=C tr -d '[:space:]')" ]; then PV_FR_BODY=""; fi
+    PV_FR_BODY="${PV_FR_BODY:+$PV_FR_BODY$_ls_nl}$_lh_body"
+  done
+}
+
+# _fr_review_go <row> <folded login> <pr number> <givers> <fallback label> <rows> — review mode's extra conditions, after every
+# check above has passed. rc 0 = all hold (PV_FR_* set); rc 1 = a fallback was printed (label already on stdout).
+_fr_review_go() {
+  _rg_row="$1"; _rg_login="$2"; _rg_n="$3"; _rg_giv="$4"; _rg_lab="$5"; _rg_rows="$6"; _rg_ok=1
+  for _rg_g in $_rg_giv; do
+    if [ "$(printf '%s' "$_rg_g" | LC_ALL=C tr 'A-Z' 'a-z')" = "$_rg_login" ]; then _rg_ok=0; fi
+  done
+  if [ "$_rg_ok" != 0 ]; then _fr_fallback giver-not-listed "$_rg_lab"; return 1; fi
+  # The review id is the only new value taken from the API: accepted only as 1-20 digits, else it is not an id.
+  _rg_id="$(printf '%s' "$_rg_row" | cut -f5)"
+  case "$_rg_id" in
+    ''|*[!0-9]*) _fr_fallback review-id-invalid "$_rg_lab"; return 1 ;;
+  esac
+  if [ "${#_rg_id}" -gt 20 ]; then _fr_fallback review-id-invalid "$_rg_lab"; return 1; fi
+  # The body, raw. A failed read is a fallback.
+  if ! _fr_body_read "$_rg_n" "$_rg_id"; then _fr_fallback api-error "$_rg_lab"; return 1; fi
+  _rg_b="$_fb_body"
+  PV_FR_ID="$_rg_id"; PV_FR_BODY="$_rg_b"
+  if [ -n "$(printf '%s' "$_rg_b" | LC_ALL=C tr -d '[:space:]')" ]; then PV_FR_HELD=1; fi
+  # LINE COMMENTS hold the approval too: they are the review's comments on the diff, and may hold a condition as a body does. The
+  # count is read as DATA (digits only); a failed or unparsable read is a HOLD, never a one-act GO (an unread comment is not "none").
+  if _rg_c="$(gh api "repos/{owner}/{repo}/pulls/$_rg_n/reviews/$_rg_id/comments" --jq 'length' 2>/dev/null)"; then
+    if [ "$_rg_c" != 0 ]; then PV_FR_HELD=1; fi
+  else
+    PV_FR_HELD=1
+  fi
+  PV_FR_OWN="$PV_FR_HELD"
+  _fr_later_scan "$_rg_n" "$_rg_id" "$_rg_giv" "$_rg_rows"
+  return 0
+}
+
+# forge_review_upgrade <scope> <approved-sha> <approved-by> <fallback-label> [<go-givers>] -> the label to record.
 forge_review_upgrade() {
-  _fr_scope="$1"; _fr_sha="$2"; _fr_by="$3"; _fr_lab="$4"; _fr_n=""
+  _fr_scope="$1"; _fr_sha="$2"; _fr_by="$3"; _fr_lab="$4"; _fr_givers="${5:-}"; _fr_n=""
+  PV_FR_WHY=""; PV_FR_ID=""; PV_FR_BODY=""; PV_FR_HELD=0; PV_FR_OWN=0; PV_FR_LATER=""; PV_FR_LATERERR=""
   # 1. TRIGGER — a PR number, DIGITS-ANCHORED. The number is interpolated into an API path, so the
   #    remainder after a recognised prefix must be ALL digits or the scope is simply not a PR scope.
   #    `branch/<name>` skips outright: the design-GO path binds BEFORE a PR exists and must not be
@@ -423,7 +555,7 @@ forge_review_upgrade() {
   #    would trade a rare hang for a new portability failure on the commonest developer platform. The
   #    fail-SAFE direction is preserved either way — a hang never produces a wrong label, only no label.
   if _fr_rows="$(gh api "repos/{owner}/{repo}/pulls/$_fr_n/reviews" --paginate \
-        --jq '.[]|[(.state//""),(.commit_id//""),(.user.login//""),(.user.type//"")]|@tsv' 2>/dev/null)"; then
+        --jq '.[]|[(.state//""),(.commit_id//""),(.user.login//""),(.user.type//""),((.id//"")|tostring),(.submitted_at//"")]|@tsv' 2>/dev/null)"; then
     :
   else
     _fr_fallback api-error "$_fr_lab"; return 0
@@ -490,6 +622,9 @@ forge_review_upgrade() {
   _fr_l1="$(printf '%s' "$_fr_login"  | LC_ALL=C tr 'A-Z' 'a-z')"
   _fr_l2="$(printf '%s' "$_fr_author" | LC_ALL=C tr 'A-Z' 'a-z')"
   [ "$_fr_l1" != "$_fr_l2" ] || { _fr_fallback reviewer-is-pr-author "$_fr_lab"; return 0; }
+  # 10. REVIEW MODE only (SWAS-727): the reviewer is on GO_GIVERS, the review id is digits, the body is read. Every check above
+  #     is the one a team-mode read already makes; these are what a one-act GO adds (SWAS-747: and a later GO-giver comment holds). A fallback ends the call here.
+  if [ -n "$_fr_givers" ]; then _fr_review_go "$_fr_row" "$_fr_l1" "$_fr_n" "$_fr_givers" "$_fr_lab" "$_fr_rows" || return 0; fi
   # THE LABEL IS A FIXED LITERAL — assembled from nothing the API said.
   printf '%s\n' "authenticated: github-review"
 }
@@ -529,9 +664,121 @@ _pv_scope_shape() {
   return 0
 }
 
+# pv_token_file_load <path> — SWAS-724. Reads the owner's GO words from a file into $token, or refuses (rc 2,
+# ONE fixed sentence, no byte of the file or its path echoed). The rules are board.sh's file-form rules,
+# rewritten here without its trap (board.sh is not a library, and its loader's `trap - EXIT INT TERM` would
+# wipe this script's own traps). A speed bump, as board's is: the re-check after the read narrows the
+# check-then-read window, it does not close it. The window covers EVERY path component, not only the file (a
+# directory swapped for a symlink after the check is not seen), and a swap of the file to a FIFO between the
+# check and the read can hang `head`. Containment and the dot rule are checks on the path as it was, not a lock.
+_pv_tf_under() {   # <physical-path> <root>: under the root, no dot component below it; `/` is never a root
+  [ "$2" != / ] || return 1
+  case "$1" in
+    "$2"/*) : ;;
+    *) return 1 ;;
+  esac
+  case "/${1#"$2"/}" in
+    */.*) return 1 ;;
+  esac
+  return 0
+}
+_pv_tf_contained() {   # <physical-path>: under the repo root or under ${TMPDIR:-/tmp}, both resolved physically
+  _tc_root=$(CDPATH='' cd -- "$ROOT" 2>/dev/null && pwd -P) || _tc_root=""
+  case "${TMPDIR:-}" in
+    /*) _tc_t=$TMPDIR ;;
+    *) _tc_t=/tmp ;;
+  esac
+  _tc_tmp=$(CDPATH='' cd -- "$_tc_t" 2>/dev/null && pwd -P) || _tc_tmp=""
+  if [ -n "$_tc_root" ] && _pv_tf_under "$1" "$_tc_root"; then return 0; fi
+  if [ -n "$_tc_tmp" ] && _pv_tf_under "$1" "$_tc_tmp"; then return 0; fi
+  return 1
+}
+_pv_tf_secret() {   # <text>: 0 when it holds a private-key header or a well-known token shape (board.sh's list)
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq \
+    -e '-----BEGIN [A-Z ]*PRIVATE KEY' \
+    -e 'gh[pousr]_[A-Za-z0-9]{30,}' \
+    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e 'AKIA[0-9A-Z]{16}' \
+    -e 'xox[abprs]-[A-Za-z0-9-]{10,}' \
+    -e 'ATATT[A-Za-z0-9_=-]{20,}' \
+    -e 'sk-ant-[A-Za-z0-9_-]{20,}' \
+    -e 'AIza[0-9A-Za-z_-]{35}' \
+    -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.'
+}
+pv_token_file_load() {
+  _tf_pre="record: --token-file"
+  _tf_p=$1
+  [ -n "$_tf_p" ] && [ "$(printf '%s' "$_tf_p" | LC_ALL=C tr -cd '\040-\176' | wc -c | tr -d ' ')" = "$(printf '%s' "$_tf_p" | wc -c | tr -d ' ')" ] \
+    || { echo "$_tf_pre needs a path of printable ASCII characters (no newline or control byte)." >&2; return 2; }
+  _tf_dir=$(CDPATH='' cd -- "$(dirname -- "$_tf_p")" 2>/dev/null && pwd -P) \
+    || { echo "$_tf_pre must be a readable regular file." >&2; return 2; }
+  _tf_phys="$_tf_dir/$(basename -- "$_tf_p")"
+  if [ -L "$_tf_phys" ]; then echo "$_tf_pre must not be a symlink." >&2; return 2; fi
+  { [ -f "$_tf_phys" ] && [ -r "$_tf_phys" ]; } || { echo "$_tf_pre must be a readable regular file." >&2; return 2; }
+  _pv_tf_contained "$_tf_phys" \
+    || { echo "$_tf_pre must sit under the repo root or \$TMPDIR, and no path component below that may start with a dot." >&2; return 2; }
+  # ONE read, verbatim: the sentinel x keeps every trailing newline (the trim below removes exactly one), and the
+  # tr maps a NUL to \001 because command substitution drops NUL silently (the control check refuses \001).
+  _tf_v=$(head -c 4097 -- "$_tf_phys" 2>/dev/null | LC_ALL=C tr '\000' '\001'; printf x)
+  _tf_v=${_tf_v%x}
+  if [ -L "$_tf_phys" ] || [ ! -f "$_tf_phys" ]; then echo "$_tf_pre must be a readable regular file." >&2; return 2; fi
+  _tf_n=$(printf '%s' "$_tf_v" | wc -c | tr -d ' ')
+  { [ "$_tf_n" -ge 1 ] && [ "$_tf_n" -le 4096 ]; } || { echo "$_tf_pre must be 1..4096 bytes." >&2; return 2; }
+  _tf_nl=$(printf '\nx'); _tf_nl=${_tf_nl%x}
+  _tf_v=${_tf_v%"$_tf_nl"}
+  case "$_tf_v" in
+    *"$_tf_nl"*) echo "$_tf_pre must hold exactly one line." >&2; return 2 ;;
+  esac
+  if [ "$(printf '%s' "$_tf_v" | LC_ALL=C tr -d '[:cntrl:]')" != "$_tf_v" ]; then
+    echo "$_tf_pre holds a control character." >&2; return 2
+  fi
+  if _pv_tf_secret "$_tf_v"; then
+    echo "$_tf_pre holds a private-key header or a token shape; remove it and retry." >&2; return 2
+  fi
+  [ -n "$_tf_v" ] || { echo "$_tf_pre holds no content." >&2; return 2; }
+  token=$_tf_v
+  return 0
+}
+
+# THE GO'S ACT, RECORDED (SWAS-727). `land` alone sets these before it calls do_record, and they are plain assignments here at
+# the top of the script so that no environment variable of the same name can pre-set them (the public `record` verb leaves them
+# empty and writes the note it always wrote). PV_REC_GOACT is `review` for a one-act GO (a GO_GIVERS login's empty-body approval
+# was the GO) or `separate` for a held approval released by a typed GO; PV_REC_GOWORDS / PV_REC_GOSHA are the held review's words,
+# made safe, and the sha256 of the raw body.
+PV_REC_GOACT=""; PV_REC_GOWORDS=""; PV_REC_GOSHA=""
+
+# pv_record_goact — add the go-act lines to the note being composed (do_record's locals: assurance, goby, goby_line, _rec_extra).
+# A one-act note is written only if the forge STILL shows the authenticated approval at record time, and its go-by then carries the
+# same fixed label as approved-by: one authenticated identity in two fields.
+pv_record_goact() {
+  case "$PV_REC_GOACT" in
+    review)
+      if [ "$assurance" != "authenticated: github-review" ]; then
+        echo "record: the forge no longer shows the authenticated approval (it derives [$assurance]) — a one-act GO is not recorded on anything less. Nothing was written." >&2
+        return 2
+      fi
+      goby_line="$goby [authenticated: github-review]"
+      _rec_extra="go-act: review" ;;
+    separate)
+      # The words come from land's made-safe copy, but this arm is the last door before a line-structured body: any control
+      # character (a newline would forge a note line) refuses rc 2, before anything is written.
+      if [ "$(printf '%s' "$PV_REC_GOWORDS" | LC_ALL=C tr -d '[:cntrl:]')" != "$PV_REC_GOWORDS" ]; then
+        echo "record: go-words holds a control character — rejected (fail closed). Nothing was written." >&2
+        return 2
+      fi
+      _rec_extra="go-act: separate
+go-words: \"$PV_REC_GOWORDS\"
+go-words-sha256: $PV_REC_GOSHA" ;;
+    *)
+      echo "record: unrecognised go-act — nothing was written." >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
 do_record() {
   asha=""; aby=""; gate=""; rung=""; cls=""; scope=""; token=""; basis=""; nopush=0
-  goby=""; goby_given=0
+  goby=""; goby_given=0; tok_arg=0; tok_file=0; tokpath=""
   while [ $# -gt 0 ]; do
     case "$1" in
       # ARGUMENT ONLY, never an env var (security vet T3): the offline escape must be visible in the
@@ -548,11 +795,25 @@ do_record() {
       --rung)         rung="${2:-}"; shift 2 ;;
       --class)        cls="${2:-}";  shift 2 ;;
       --scope)        scope="${2:-}"; shift 2 ;;
-      --token)        token="${2:-}"; shift 2 ;;
+      --token)        tok_arg=1; token="${2:-}"; shift 2 ;;
+      # THE TOKEN FROM A FILE (SWAS-724). The owner's words go in verbatim and are never re-spelled; a
+      # file keeps them off the command line, where the agent guard reads every word. Loaded after this
+      # loop (pv_token_file_load), so argument order does not matter.
+      --token-file)
+        if [ "$tok_file" = 1 ]; then echo "record: --token-file was given twice; give it once." >&2; return 2; fi
+        if [ $# -lt 2 ]; then echo "record: --token-file needs a path." >&2; return 2; fi
+        case "$2" in
+          -*) echo "record: --token-file needs a path that does not start with '-'." >&2; return 2 ;;
+        esac
+        tok_file=1; tokpath="$2"; shift 2 ;;
       --basis)        basis="${2:-}"; shift 2 ;;
       *) echo "record: unknown arg '$1'" >&2; usage; return 2 ;;
     esac
   done
+  if [ "$tok_arg" = 1 ] && [ "$tok_file" = 1 ]; then
+    echo "record: give the token one way: --token or --token-file, not both." >&2; return 2
+  fi
+  if [ "$tok_file" = 1 ]; then pv_token_file_load "$tokpath" || return 2; fi
   for pair in "approved-sha=$asha" "approved-by=$aby" "gate=$gate" "rung=$rung" \
               "change-class=$cls" "scope=$scope" "approval-token=$token"; do
     _v="${pair#*=}"
@@ -727,6 +988,10 @@ do_record() {
   # it above any of those arms would hand unvalidated bytes to the comparison. It can only upgrade the
   # label; it never changes aby_id, never blocks, never fails the record.
   assurance="$(forge_review_upgrade "$scope" "$asha" "$aby_id" "$assurance")"
+  # SWAS-727: `land` alone sets PV_REC_GOACT (review | separate) for a one-act or a held-then-typed note; here it adds the go-act
+  # line (and go-words, go-words-sha256) after recorded-at. Empty for every other note, which stays byte-identical to before.
+  _rec_extra=""
+  if [ -n "$PV_REC_GOACT" ]; then pv_record_goact || return 2; fi
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
   # Bind the structured record to the approved commit as a note (tree-invariant). `-f` overwrites a
   # prior note on the same commit (re-record supersedes) — honest: notes are mutable (see ceiling).
@@ -763,6 +1028,8 @@ do_record() {
       "approval-token: \"$token\"" \
       "basis: $basis" \
       "recorded-at: $ts")"
+  if [ -n "$_rec_extra" ]; then nbody="$nbody
+$_rec_extra"; fi
 
   _pv_rec_rc=0; _pv_record_txn || _pv_rec_rc=$?
   _pv_crit_leave    # a signal deferred inside the transaction stops the run HERE, published or unwound
@@ -998,9 +1265,17 @@ do_trace() {
     _trow="$(printf '%s' "$_trow" | LC_ALL=C tr -d '[:cntrl:]')"; _tgate="$(printf '%s' "$_tgate" | LC_ALL=C tr -d '[:cntrl:]')"
     _tscope="$(printf '%s' "$_tscope" | LC_ALL=C tr -d '[:cntrl:]')"; _taby="$(printf '%s' "$_taby" | LC_ALL=C tr -d '[:cntrl:]')"
     _tgo="$(printf '%s' "$_tgo" | LC_ALL=C tr -d '[:cntrl:]')"
-    printf '%s  kit-row: %s  approved-sha: %s  gate: %s  scope: %s  approved-by: %s  go-by: %s\n' \
+    # A ONE-ACT NOTE (SWAS-727, `go-act: review`) names the act that was the GO: the review id (the token is `forge-review:<id>`,
+    # digits only, else nothing is printed) and the login (approved-by's id). Appended at the END, so the prefix stays byte-stable.
+    _tgx=""
+    if [ "$(printf '%s\n' "$_tn" | sed -n 's/^go-act: //p' | head -1)" = review ]; then
+      _tgid="$(printf '%s\n' "$_tn" | sed -n 's/^approval-token: "forge-review:\([0-9]*\)"$/\1/p' | head -1)"
+      _tglogin="$(printf '%s' "${_taby%% \[*}" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)"
+      if [ -n "$_tgid" ] && [ "${#_tgid}" -le 20 ]; then _tgx="  GO = forge review $_tgid by $_tglogin"; fi
+    fi
+    printf '%s  kit-row: %s  approved-sha: %s  gate: %s  scope: %s  approved-by: %s  go-by: %s%s\n' \
       "$(printf '%s' "$_tc" | cut -c1-12)" "$_trow" "$(printf '%s' "$_ta" | cut -c1-12)" \
-      "${_tgate:-"(none)"}" "${_tscope:-"(none)"}" "${_taby:-"(none)"}" "${_tgo:-"(none recorded)"}"
+      "${_tgate:-"(none)"}" "${_tscope:-"(none)"}" "${_taby:-"(none)"}" "${_tgo:-"(none recorded)"}" "$_tgx"
     return 0
   }
 
@@ -1907,9 +2182,14 @@ pv_rel_team() {
 }
 
 # pv_merge_relationship <verb> -> sets PV_REL (`solo` | `team`) and prints ONE line saying which, and why when it is team.
+# It also keeps what it read for pv_go_dials (SWAS-727), which reads the GO dials from the SAME origin tip: PV_REL_TIP (empty when
+# the tip was not read), PV_REL_DIALRC (pv_rel_blob's rc for .kit/dials.conf) and PV_REL_DIALTXT (its text). Plain assignments at
+# the top of the script, so no environment variable of these names reaches a verb.
 PV_REL=team
+PV_REL_TIP=""; PV_REL_DIALRC=1; PV_REL_DIALTXT=""
+PV_GO_ACT=absent; PV_GO_GIVERS=""
 pv_merge_relationship() {
-  _mrv="$1"; PV_REL=team
+  _mrv="$1"; PV_REL=team; PV_REL_TIP=""; PV_REL_DIALRC=1; PV_REL_DIALTXT=""
   _mrhd="$(GIT_TERMINAL_PROMPT=0 git -C "$ROOT" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)"
   case "$_mrhd" in
     refs/heads/?*) ;;
@@ -1927,6 +2207,7 @@ pv_merge_relationship() {
     pv_rel_team "$_mrv" "origin/$_mrbr tip not fetched, so the declaration is unreadable and reads team until: git fetch origin"; return 0
   fi
   _mrrc=0; _mrdial="$(pv_rel_blob "$_mrtip" .kit/dials.conf)" || _mrrc=$?
+  PV_REL_TIP="$_mrtip"; PV_REL_DIALRC="$_mrrc"; PV_REL_DIALTXT="$_mrdial"
   if [ "$_mrrc" = 2 ]; then
     pv_rel_team "$_mrv" ".kit/dials.conf on origin/$_mrbr is not a regular file (a symlink or other entry), so it is not read"; return 0
   fi
@@ -1962,6 +2243,100 @@ pv_merge_relationship() {
   fi
   PV_REL=solo
   printf '%s: merge relationship: solo (origin/%s %s) — the recorded GO is the control\n' "$_mrv" "$_mrbr" "$(printf '%s' "$_mrtip" | cut -c1-8)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# THE MERGE GO'S ACT (SWAS-727; design 2026-11-06-one-act-approval-727-design.md). TEAM MODE ONLY: under `solo` neither dial is
+# read. Two dials in .kit/dials.conf, read from the SAME origin default-branch tip as MERGE_RELATIONSHIP (never the approved tree,
+# never an environment variable), with the same ceiling (origin can be redirected in the agent's own clone):
+#   GO_ACT     absent | unrecognised | unreadable  -> TODAY'S TWO ACTS, exactly (a REVERSED default: the weaker-change value, so
+#                                                    nothing breaks for an adopter or a note in flight)
+#              separate -> two acts, plus G1 (go-by != approved-by, folded) and G2 (an `actuate` note needs a go-by)
+#              review   -> an APPROVED forge review on the exact head by a GO_GIVERS login is the GO (`land` only)
+#   GO_GIVERS  space-separated forge logins; EMPTY or unreadable: `review` refuses every merge (it fails closed).
+# A CLAUDE.md `**Merge GO**: separate` line can only TIGHTEN to `separate`; no line turns `review` on. Design and plan GOs (the
+# gates design* and plan*) stay typed in every mode (pv_go_gate_typed). A DRIFT CONTROL at the note's own tier, not a boundary.
+# ---------------------------------------------------------------------------------------------------------------------
+# pv_dial_rest <dial text> <KEY> -> the text after `KEY =` on the LAST such line (comment and quotes removed, trimmed).
+pv_dial_rest() {
+  printf '%s\n' "$1" | grep -E "^[[:space:]]*$2[[:space:]]*=" | tail -n1 \
+    | sed -E "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]]*$//" || true
+}
+# pv_go_gov_separate <CLAUDE.md text> -> 0 when an anchored `**Merge GO**: separate` field line is present (the first word counts).
+pv_go_gov_separate() {
+  printf '%s\n' "$1" | grep -qE '^[-*+[:space:]]*\*\*Merge GO\*\*: separate([[:space:]]|$)'
+}
+# pv_go_gate_typed <gate text> -> 0 when the gate is a design or plan gate (folded, trimmed): exactly `design` or `plan`, or
+# `design` / `plan` followed by a character that is not a lowercase letter (`design-x`, `design review`, `plan.v2`; so
+# `planned-release` is a merge gate); the typed GO stays, in every mode. land and actuate both ask this one function.
+pv_go_gate_typed() {
+  case "$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
+    design|plan|design[!a-z]*|plan[!a-z]*) return 0 ;;
+  esac
+  return 1
+}
+# pv_go_dials <verb> -> sets PV_GO_ACT (absent | separate | review) and PV_GO_GIVERS, and says so in ONE line unless absent.
+# Call it right after pv_merge_relationship. Reads nothing else from the network: it uses what that call kept.
+pv_go_dials() {
+  _gdv="$1"; PV_GO_ACT=absent; PV_GO_GIVERS=""
+  [ "$PV_REL" = team ] || return 0
+  [ -n "$PV_REL_TIP" ] || return 0
+  _gdact=""; _gdgiv=""
+  if [ "$PV_REL_DIALRC" = 0 ]; then
+    _gdact="$(pv_dial_rest "$PV_REL_DIALTXT" GO_ACT | sed 's/[[:space:]].*$//')"
+    _gdgiv="$(pv_dial_rest "$PV_REL_DIALTXT" GO_GIVERS)"
+  fi
+  case "$_gdact" in
+    review|separate) PV_GO_ACT="$_gdact" ;;
+    '') ;;
+    *) printf "%s: merge GO: GO_ACT='%s' in .kit/dials.conf on origin is not a recognised value (review|separate), so it reads absent (today's two acts)\n" \
+         "$_gdv" "$(printf '%s' "$_gdact" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-40)" ;;
+  esac
+  # A GO_GIVERS entry outside A-Za-z0-9- is not a forge login: the whole list reads empty (review then refuses), never a partial list.
+  _gdgiv="$(printf '%s' "$_gdgiv" | LC_ALL=C tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+  case "$_gdgiv" in
+    *[!A-Za-z0-9' '-]*) _gdgiv="" ;;
+  esac
+  _gdgrc=0; _gdgtxt="$(pv_rel_blob "$PV_REL_TIP" CLAUDE.md)" || _gdgrc=$?
+  _gdforced=""
+  if [ "$_gdgrc" = 0 ]; then
+    if pv_go_gov_separate "$_gdgtxt"; then _gdforced=" (CLAUDE.md says Merge GO: separate)"; PV_GO_ACT=separate; fi
+  elif [ "$_gdgrc" != 1 ] && [ "$PV_GO_ACT" = review ]; then
+    _gdforced=" (CLAUDE.md could not be read as a regular file, so review reads separate)"; PV_GO_ACT=separate
+  fi
+  PV_GO_GIVERS="$_gdgiv"
+  case "$PV_GO_ACT" in
+    review)   printf '%s: merge GO: review (an APPROVED forge review on the exact head by one of %s GO_GIVERS login(s) is the GO; land only)\n' "$_gdv" "$(printf '%s\n' "$PV_GO_GIVERS" | wc -w | tr -d ' ')" ;;
+    separate) printf '%s: merge GO: separate (two acts; the GO-giver must differ from the reviewer)%s\n' "$_gdv" "$_gdforced" ;;
+  esac
+  return 0
+}
+# _pv_fold <text> -> lowercase, whitespace runs collapsed to one space, trimmed (pv_sod_author_check's fold, ASCII only).
+_pv_fold() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'; }
+# pv_note_goby_name <note> -> the GO-giver's name on the note's go-by line (the label dropped); empty for `(none recorded)` or none.
+pv_note_goby_name() {
+  _ngn="$(printf '%s\n' "$1" | sed -n 's/^go-by: //p' | head -1)"
+  case "$_ngn" in
+    '(none recorded)') _ngn="" ;;
+    *' ['*) _ngn="${_ngn% \[*}" ;;
+  esac
+  printf '%s' "$_ngn"
+}
+# pv_separate_ok <verb> <go-by name> <approved-by id> -> 0 | 1 REFUSED (printed). GO_ACT=separate's two closed gaps: G2 (the GO
+# records a giver at all) and G1 (the giver is not the reviewer, folded like pv_sod_author_check). WHAT THIS PROVES, plainly: that a
+# different NAME was typed. go-by stays self-asserted, so this guards a mistake; it is not proof a second person decided.
+pv_separate_ok() {
+  _soV="$(printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z')"
+  _sof="$(_pv_fold "$2")"
+  if [ -z "$_sof" ]; then
+    echo "$_soV REFUSED (GO_ACT=separate): the GO records no GO-giver (go-by is empty or '(none recorded)'). In separate mode the person whose judgment this GO is must be named, and be someone other than the reviewer. Nothing was merged." >&2
+    return 1
+  fi
+  if [ "$_sof" = "$(_pv_fold "$3")" ]; then
+    printf '%s\n' "$_soV REFUSED (GO_ACT=separate): the GO-giver ('$(printf '%s' "$2" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-60)') is the reviewer in approved-by (compared folded). In separate mode they must be different people; go-by is self-asserted, so this guards a mistake, it does not prove a second person decided. Nothing was merged." >&2
+    return 1
+  fi
   return 0
 }
 
@@ -2337,6 +2712,18 @@ do_actuate() {
 
   # 1c. THE MERGE RELATIONSHIP (D-241014-1), read from origin's default branch and said in ONE line before anything merges.
   pv_merge_relationship actuate
+  #     SWAS-727: the merge GO's act. In REVIEW mode `actuate` merges NOTHING: it trusts a label `record` wrote earlier and never re-reads
+  #     the forge, so only `land` (which reads it live) can honour a later Request changes as the NO-GO. A design or plan gate stays typed
+  #     in every mode, so it is judged as before. SEPARATE adds G1 and G2 below, in the team arm, once the approver id is known.
+  pv_go_dials actuate
+  _act_mode="$PV_GO_ACT"
+  if pv_go_gate_typed "$(printf '%s\n' "$note" | sed -n 's/^gate: //p' | head -1)"; then _act_mode=absent; fi
+  if [ "$_act_mode" = review ]; then
+    echo "ACTUATE REFUSED (GO_ACT=review): in review mode an APPROVED forge review by a GO_GIVERS login is the merge GO and only \`land\` reads it live, so actuate merges nothing. Nothing was merged. Run:" >&2
+    echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class <the class> --scope \"PR #<PR number>\" --approved-by <the GO-giver's reviewer login> --gate <gate> --rung <rung>" >&2
+    echo "land's --ref is the PR NUMBER (it must equal --scope), not actuate's head branch; an empty-body approval takes no --token or --go-by." >&2
+    return 1
+  fi
 
   # 2. SOLO: the solo bar (the owner's named GO, bound to the sha, the tree and origin; pv_solo_go_ok) REPLACES the label bar
   #    below and the author SoD at step 3 — with one forge account the approver is the author by construction. TEAM (the default,
@@ -2382,6 +2769,8 @@ do_actuate() {
   #    The author read, its fail-closed refusals (commit absent from this clone / unreadable author) and the
   #    case- and whitespace-insensitive compare live in pv_sod_author_check (shared with `land`).
   pv_sod_author_check actuate "$asha" "$aby_id" || return 1
+  #    GO_ACT=separate (SWAS-727): G2 (the note records a GO-giver) and G1 (the giver is not the approver), judged on the note.
+  if [ "$_act_mode" = separate ]; then pv_separate_ok actuate "$(pv_note_goby_name "$note")" "$aby_id" || return 1; fi
   fi   # closes the team arm (steps 2-3); the metering gate below runs in BOTH relationships
 
   # 3b. THE PER-SLICE METERING GATE (RUNAWAY-METERING-LANDING-GATE): after SoD, BEFORE the merge, so a
@@ -2452,6 +2841,111 @@ do_actuate() {
   return "$crc"
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# REVIEW-MODE `land` HELPERS (SWAS-727). The review body is UNTRUSTED PROSE: it is kept only as DATA, in a variable, and goes
+# into the note only through pv_words_safe (and only on a held approval that a typed GO releases). It never enters
+# `approval-token`, a label or a shell word.
+# ---------------------------------------------------------------------------------------------------------------------
+# pv_sha256 -> the hex sha256 of stdin (sha256sum, else shasum, else openssl).
+pv_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  else openssl dgst -sha256 2>/dev/null | sed 's/^.*= //'
+  fi
+}
+# pv_words_safe <raw body> -> the words, made safe, on one line: every control character (C0, DEL and the C1 pair C2 80..C2 9F)
+# becomes a space, whitespace runs collapse to one space, the ends are trimmed, a backslash is doubled (\\) and then a double quote escaped (\"), so the form is unambiguous, and the result is
+# capped at 1000 bytes ON A UTF-8 BOUNDARY, with "…[truncated]" (14 bytes) counted inside the 1000. The raw body is hashed by the
+# caller; this is the readable copy. (A lone 0x80..0x9F byte is a UTF-8 continuation byte, never a C1 character, and is kept.)
+pv_words_safe() {
+  _ws_c1="$(printf '\302[\200-\237]')"
+  _ws_t="$(printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' ' ' | LC_ALL=C sed "s/$_ws_c1/ /g" | LC_ALL=C tr -s ' ' \
+           | LC_ALL=C sed 's/^ *//; s/ *$//' | LC_ALL=C sed 's/\\/\\\\/g; s/"/\\"/g')"
+  if [ "$(printf '%s' "$_ws_t" | wc -c | tr -d ' ')" -gt 1000 ]; then
+    _ws_n=986
+    while [ "$_ws_n" -gt 0 ]; do   # the first byte left out must not be a continuation byte (10xxxxxx = 128..191), else back up
+      _ws_b="$(printf '%s' "$_ws_t" | LC_ALL=C tail -c +"$((_ws_n + 1))" | head -c 1 | od -An -tu1 | tr -d ' \n')"
+      case "$_ws_b" in
+        12[89]|1[3-8][0-9]|19[01]) _ws_n=$((_ws_n - 1)) ;;
+        *) break ;;
+      esac
+    done
+    _ws_t="$(printf '%s' "$_ws_t" | head -c "$_ws_n")$(printf '\342\200\246[truncated]')"
+  fi
+  printf '%s' "$_ws_t"
+}
+# pv_land_held_why -> the clause(s) saying why the approval is held: its own comment, and/or a later comment by a GO_GIVERS login.
+pv_land_held_why() {
+  _hw=""
+  if [ "$PV_FR_OWN" = 1 ]; then _hw=" but carries a comment"; fi
+  if [ -n "$PV_FR_LATER" ]; then _hw="$_hw, and a later comment holds it (review $PV_FR_LATER)"; fi
+  _hw_ids=""
+  for _hw_t in $PV_FR_LATERERR; do   # ids whose read failed; bad = an id that is not digits; scan = the scan itself failed
+    case "$_hw_t" in
+      bad) _hw="$_hw, and a later review id is not digits, so it holds" ;;
+      dup) _hw="$_hw, and the approval's id is on two rows, so it holds" ;;
+      scan) _hw="$_hw, and the later reviews could not be scanned, so it holds" ;;
+      *) _hw_ids="${_hw_ids:+$_hw_ids }$_hw_t" ;;
+    esac
+  done
+  if [ -n "$_hw_ids" ]; then _hw="$_hw, and a later review ($_hw_ids): its comment could not be read, so it holds"; fi
+  printf '%s' "$_hw"
+}
+# pv_land_review_derive — review mode's step 0d(ii), in place of the team label derivation. Sets _land_pre (the label) and
+# _land_rkind (`oneact` | `held`), and refuses (rc 1, or rc 2 for the cases the design names) BEFORE any note is written. Needs
+# land's locals: asha, land_aby, land_scope, land_goby, land_goby_given, land_tok_given. The forge read runs WITHOUT a command
+# substitution (stdout to a file) so PV_FR_* survive.
+pv_land_review_derive() {
+  _land_rkind=""
+  if [ -z "$PV_GO_GIVERS" ]; then
+    echo "LAND REFUSED (GO_ACT=review): GO_GIVERS is empty or unreadable in .kit/dials.conf on origin's default branch, so no review can be a GO and every merge is refused. Add the reviewer's login there (a control-plane change), or set GO_ACT=separate. Nothing was written or merged." >&2
+    return 2
+  fi
+  _lr_f="$(mktemp 2>/dev/null)" || { echo "LAND REFUSED (GO_ACT=review): no scratch file for the forge read." >&2; return 2; }
+  _lr_lab="$(derive_assurance "$asha" "$land_aby")"
+  forge_review_upgrade "$land_scope" "$asha" "$land_aby" "$_lr_lab" "$PV_GO_GIVERS" >"$_lr_f" || :
+  _land_pre="$(cat "$_lr_f")"; rm -f "$_lr_f"
+  if [ "$PV_FR_WHY" = review-id-invalid ]; then
+    echo "LAND REFUSED (GO_ACT=review): the forge returned a review id that is not 1-20 digits, so it is not recorded as the GO. Nothing was written or merged." >&2
+    return 2
+  fi
+  if ! printf '%s' "$_land_pre" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
+    echo "LAND REFUSED (GO_ACT=review): the GO is an APPROVED forge review on $asha by a login on GO_GIVERS, and --approved-by '$(printf '%s' "$land_aby" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)' derives [$_land_pre] (the reason is on the line above). No note was written and nothing was merged." >&2
+    return 1
+  fi
+  if [ "$PV_FR_HELD" = 1 ]; then
+    _lr_w="$(pv_words_safe "$PV_FR_BODY")"
+    echo "LAND HELD: review $PV_FR_ID by '$(printf '%s' "$land_aby" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)' approves ${asha}$(pv_land_held_why), and a comment may hold a condition no check can enforce, so the click alone does not merge it." >&2
+    printf '%s\n' "           the owner's words (made safe): $_lr_w" >&2   # printf, never echo: dash's echo would expand a \c or \0NNN in the words
+    if [ "$land_tok_given" != 1 ] || [ -z "$land_goby" ]; then
+      echo "           Give the typed GO to release it: land ... --token \"<the owner's words>\" --go-by <the GO-giver> (both). Nothing was written or merged." >&2
+      return 2
+    fi
+    PV_REC_GOACT=separate; PV_REC_GOWORDS="$_lr_w"; PV_REC_GOSHA="$(printf '%s' "$PV_FR_BODY" | pv_sha256)"
+    if [ "${#PV_REC_GOSHA}" != 64 ]; then
+      echo "LAND REFUSED (GO_ACT=review): no sha256 tool (sha256sum, shasum, openssl) is available to hash the held review's words. Nothing was written or merged." >&2
+      return 2
+    fi
+    _land_rkind=held
+    return 0
+  fi
+  if [ "$land_tok_given" = 1 ] || [ "$land_goby_given" = 1 ]; then
+    echo "LAND REFUSED (GO_ACT=review): this approval has no comment, so it is the whole GO: land takes no --token and no --go-by (the modes do not mix; the review id is recorded as the act). Re-run without them. Nothing was written or merged." >&2
+    return 2
+  fi
+  PV_REC_GOACT=review
+  _land_rkind=oneact
+  return 0
+}
+# pv_land_class_refuse <class> — land's allowlist refusal for ordinary / sensitive (they actuate), printed and rc 2 by the caller.
+pv_land_class_refuse() {
+  echo "LAND REFUSED: --class '$1' — land is the control-plane/direct-path verb. Ordinary" >&2
+  echo "              and sensitive promotions actuate through \`promotion-verify.sh actuate\`," >&2
+  echo "              which carries the forge-review label bar and the SoD for those classes. Use" >&2
+  echo "              \`actuate\` for this class (land never had their label bar; the CP/direct path" >&2
+  echo "              does not)." >&2
+}
+
 # do_land — ONE transactional actuation verb for the DIRECT / control-plane path (SESSION-SURFACE
 # slice 3d F3, design 2026-09-10 §3 F3, Option A; owner GO 2026-09-10).
 #
@@ -2495,6 +2989,10 @@ do_actuate() {
 # the GO (`record`) and the HUMAN merges (an admin merge is the human's act; the guard denies the agent --admin).
 do_land() {
   ref=""; merge_cmd=""; asha=""; land_cls=""; land_aby=""; land_goby=""; land_goby_given=0; land_scope=""
+  # SWAS-727: land_gate and land_tok_given are PEEKED, never consumed (the pass-through arm still moves them on to record), so the
+  # S2-1 argv reading below is unchanged. PV_REC_* are reset here so nothing from an earlier call in this process reaches record.
+  land_gate=""; land_tok_given=0; _land_noncp=0; _land_rkind=""
+  PV_REC_GOACT=""; PV_REC_GOWORDS=""; PV_REC_GOSHA=""
   # Strip land's OWN two flags (--ref, --merge-cmd) and PEEK --approved-sha / --class / --approved-by /
   # --go-by / --scope (shared with record: record binds the note to the sha, the merge pins
   # --match-head-commit to it; land derives its CP-path decision from --class, its SoD check from
@@ -2512,13 +3010,23 @@ do_land() {
   _argc=$#
   while [ "$_argc" -gt 0 ]; do
     case "$1" in
-      --approved-sha|--class|--approved-by|--go-by|--scope)
-        case "${2:-}" in
+      --approved-sha|--class|--approved-by|--go-by|--scope|--gate)
+        # only an ORIGINAL argument has a value to check: with fewer than two left, $2 is a moved-back argument, never this flag's value
+        _land_pv=""; if [ "$_argc" -ge 2 ]; then _land_pv="${2:-}"; fi
+        case "$_land_pv" in
           -*) echo "land: $1 value '$(printf '%s' "$2" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-40)' starts with '-' — refused (a flag-shaped value for $1 is how a record-only flag's value gets swallowed; land and record would then judge different arguments)" >&2
               return 2 ;;
         esac ;;
     esac
     case "$1" in
+      --token|--token-file) land_tok_given=1 ;;
+    esac
+    case "$1" in
+      --gate)
+        # CONSUMED, like the other peeked flags (a bare peek let `--gate design --basis --gate` read an EMPTY gate here while record
+        # read `design`): last wins, as in record, and the whole-note check below compares the recorded gate with this value.
+        [ "$_argc" -ge 2 ] || { echo "land: --gate needs a value" >&2; usage; return 2; }
+        land_gate="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
       --ref)
         [ "$_argc" -ge 2 ] || { echo "land: --ref needs a value" >&2; usage; return 2; }
         ref="$2"; shift 2; _argc=$((_argc-2)) ;;
@@ -2585,12 +3093,9 @@ do_land() {
   case "$_land_cls_lc" in
     control-plane) ;;
     ordinary|sensitive)
-      echo "LAND REFUSED: --class '$land_cls' — land is the control-plane/direct-path verb. Ordinary" >&2
-      echo "              and sensitive promotions actuate through \`promotion-verify.sh actuate\`," >&2
-      echo "              which carries the forge-review label bar and the SoD for those classes. Use" >&2
-      echo "              \`actuate\` for this class (land never had their label bar; the CP/direct path" >&2
-      echo "              does not)." >&2
-      return 2 ;;
+      # SWAS-727: in review mode `actuate` refuses (it never re-reads the forge), so `land` is the only route for EVERY class. The
+      # dial is read at step 0a, so this refusal moves there (pv_land_class_refuse) unless the mode turns out to be review.
+      _land_noncp=1 ;;
     *)
       echo "LAND REFUSED: unrecognised or missing --class '$land_cls' — land proceeds ONLY for an" >&2
       echo "              explicitly recorded 'control-plane' class (allowlist). An unjudgeable class is" >&2
@@ -2606,6 +3111,15 @@ do_land() {
   #     both relationships: --go-by, scope == ref, the whole-note match, --no-push refused, the origin confirm, the vet and the
   #     pin. TEAM (the default, and every undeclared or unreadable case) is exactly what it always was.
   pv_merge_relationship land
+  #     SWAS-727: the merge GO's act (GO_ACT / GO_GIVERS), from the same origin tip; absent under solo and for a design or plan gate
+  #     (those stay typed in every mode). `_land_mode` is the mode THIS land runs under.
+  pv_go_dials land
+  _land_mode="$PV_GO_ACT"
+  if pv_go_gate_typed "$land_gate"; then _land_mode=absent; fi
+  if [ "$_land_noncp" = 1 ] && [ "$_land_mode" != review ]; then
+    pv_land_class_refuse "$land_cls"
+    return 2
+  fi
 
   # 0b. SoD (builder != ratifier) — RUN BEFORE do_record (N2). Team only (the arm is not re-indented, to keep its diff empty). It sits beside the class gate, which
   #     already runs pre-record with $asha/$land_aby in hand, so a self-approval NEVER publishes a GO
@@ -2650,12 +3164,16 @@ do_land() {
     echo "land: --go-by is empty or whitespace-only — rejected (name the person who gave the GO)" >&2
     return 2
   fi
-  if [ -z "$land_goby" ]; then
+  #     In REVIEW mode (SWAS-727) the approval itself is the GO and the typed --go-by is judged by pv_land_review_derive below (an
+  #     empty-body approval takes none; a held one takes it with --token), so this requirement is skipped there.
+  if [ -z "$land_goby" ] && [ "$_land_mode" != review ]; then
     echo "LAND REFUSED: land records the owner's GO by name: add \`--go-by <the GO-giver>\` (the person whose" >&2
     echo "              judgment this GO is; recorded [self-asserted] by design — the kit never authenticates" >&2
     echo "              the GO-giver). --approved-by is a DIFFERENT identity: the forge login of the reviewer." >&2
     return 1
   fi
+  #     GO_ACT=separate (SWAS-727): the GO-giver is not the reviewer (G1; folded like the commit-author SoD). Before the record.
+  if [ "$_land_mode" = separate ]; then pv_separate_ok land "$land_goby" "$land_aby" || return 1; fi
   #     (i-b) THE MERGED PR IS THE JUDGED PR (security S2-2). The forge derivation reads the reviews of the PR
   #     --scope names; the merge acts on --ref. Normalise --scope to its digits with the SAME four shapes
   #     forge_review_upgrade accepts (`PR #N`, `PR-N`, `#N`, `N`) and require them to equal --ref (digits too),
@@ -2688,7 +3206,16 @@ do_land() {
   #     Bot, a withdrawn or dismissed approval and a stale-sha one, and prints its fixed-enumeration reason
   #     on stderr (e.g. reviewer-not-in-reviews, reviewer-is-pr-author), which stays visible above.
   #     Team only: a solo-declared repo has no second approver to derive (the arm is not re-indented, to keep its diff empty).
-  if [ "$PV_REL" != solo ]; then
+  if [ "$_land_mode" = review ]; then
+    #     SWAS-727 REVIEW MODE: the same read, widened (GO_GIVERS, the digits-only review id, the body), in place of the team one.
+    #     It refuses with its own lines, so the team refusal below is not reached. A one-act GO takes no --token / --go-by: the
+    #     review id is the recorded act; here the arguments record will receive are completed.
+    pv_land_review_derive || return $?
+    if [ "$_land_rkind" = oneact ]; then
+      set -- "$@" --token "forge-review:$PV_FR_ID" --go-by "$land_aby"
+      land_goby="$land_aby"
+    fi
+  elif [ "$PV_REL" != solo ]; then
   _land_pre="$(derive_assurance "$asha" "$land_aby")"
   _land_pre="$(forge_review_upgrade "$land_scope" "$asha" "$land_aby" "$_land_pre")"
   if ! printf '%s' "$_land_pre" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
@@ -2790,8 +3317,25 @@ do_land() {
   _land_bad=""
   [ "$_land_bl" = "$land_aby [$_land_blab]" ] || _land_bad="$_land_bad approved-by"
   [ "$(_land_nf scope)" = "$land_scope" ] || _land_bad="$_land_bad scope"
-  [ "$(_land_nf change-class | LC_ALL=C tr 'A-Z' 'a-z')" = control-plane ] || _land_bad="$_land_bad change-class"
-  [ "$(_land_nf go-by)" = "$land_goby [self-asserted]" ] || _land_bad="$_land_bad go-by"
+  [ "$(_land_nf change-class | LC_ALL=C tr 'A-Z' 'a-z')" = "$_land_cls_lc" ] || _land_bad="$_land_bad change-class"
+  # SWAS-727: the recorded gate is the gate land judged, in EVERY mode (what the mode was read from), and a review-mode note never
+  # carries a design or plan gate.
+  [ "$(_land_nf gate)" = "$land_gate" ] || _land_bad="$_land_bad gate"
+  if [ -n "$_land_rkind" ] && pv_go_gate_typed "$(_land_nf gate)"; then _land_bad="$_land_bad gate"; fi
+  if [ "$_land_rkind" = oneact ]; then
+    # SWAS-727: a one-act note says exactly what the review derivation judged: the act, one authenticated identity in both fields,
+    # and the review id (digits, from the same read) as the token.
+    [ "$(_land_nf go-by)" = "$land_aby [authenticated: github-review]" ] || _land_bad="$_land_bad go-by"
+    [ "$(_land_nf go-act)" = review ] || _land_bad="$_land_bad go-act"
+    [ "$(_land_nf approval-token)" = "\"forge-review:$PV_FR_ID\"" ] || _land_bad="$_land_bad approval-token"
+  else
+    [ "$(_land_nf go-by)" = "$land_goby [self-asserted]" ] || _land_bad="$_land_bad go-by"
+  fi
+  if [ "$_land_rkind" = held ]; then
+    [ "$(_land_nf go-act)" = separate ] || _land_bad="$_land_bad go-act"
+    [ "$(_land_nf go-words)" = "\"$PV_REC_GOWORDS\"" ] || _land_bad="$_land_bad go-words"
+    [ "$(_land_nf go-words-sha256)" = "$PV_REC_GOSHA" ] || _land_bad="$_land_bad go-words-sha256"
+  fi
   if [ -n "$_land_bad" ]; then
     echo "LAND REFUSED: the GO note on origin does not say what land judged (mismatched:$_land_bad) — land and record read" >&2
     echo "              the arguments differently. The note IS recorded; land will not merge on it. Fix the arguments" >&2
@@ -2922,9 +3466,17 @@ do_land() {
   # recoverable by this verb — not that recordless merges are impossible (they are detected later by
   # the CI backstop, which stays the friction-test gate).
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
-  echo "OK: land recorded the GO note on $asha, CONFIRMED it on origin, and merged $ref — control-plane"
-  echo "    merged on an authenticated non-author forge approval; the GO-giver is recorded by name,"
-  echo "    self-asserted. The record was published BEFORE the merge and verified on origin, so this merge"
+  echo "OK: land recorded the GO note on $asha, CONFIRMED it on origin, and merged $ref — $_land_cls_lc"
+  if [ "$_land_rkind" = oneact ]; then
+    printf '%s\n' "    GO = forge review $PV_FR_ID by $(printf '%s' "$land_aby" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80) (go-act: review): the approval on the exact head was the GO; no typed GO."
+  fi
+  if [ "$_land_rkind" = oneact ]; then
+    echo "    merged on an authenticated non-author forge approval; go-by is that same login, authenticated (github-review), not self-asserted."
+    echo "    The record was published BEFORE the merge and verified on origin, so this merge"
+  else
+    echo "    merged on an authenticated non-author forge approval; the GO-giver is recorded by name,"
+    echo "    self-asserted. The record was published BEFORE the merge and verified on origin, so this merge"
+  fi
   echo "    is recoverable. HONEST CEILING: the approval label was derived over the local gh credential at"
   echo "    record time (a drift control at the note's own tier), so server-side branch protection +"
   echo "    required review is what binds; the net for a recordless merge is the CI recordless-merge"
@@ -3024,6 +3576,9 @@ _pv_sync_same_identity() {
   # GO. A LEGACY note carries no go-by line and counts as `(none recorded)`, the same as a new note without one.
   _ig1="$(_pv_sync_field "$1" go-by)"; _ig2="$(_pv_sync_field "$2" go-by)"
   [ "${_ig1:-"(none recorded)"}" = "${_ig2:-"(none recorded)"}" ] || return 1
+  # go-act (SWAS-727) is an IDENTITY field too: a one-act GO and a typed GO on the same commit are different GOs. A note without
+  # it (every legacy and every ordinary note) reads empty on both sides.
+  [ "$(_pv_sync_field "$1" go-act)" = "$(_pv_sync_field "$2" go-act)" ] || return 1
   _ia="$(_pv_sync_field "$1" approved-sha)"; _ib="$(_pv_sync_field "$2" approved-sha)"
   [ "$_ia" = "$_ib" ] && return 0
   _ia="$(_pv_sync_resolve "$_ia")" || return 1
@@ -3256,16 +3811,21 @@ _pv_vc_fail() { # <field> <why>
   echo "                or re-issue the GO properly with promotion-verify.sh record" >&2
   return 1
 }
-# The keys, in `record`'s order (line 1 is the literal header, checked separately). TWO SHAPES, because
+# The keys, in `record`'s order (line 1 is the literal header, checked separately). FOUR SHAPES, because
 # GO-IDENTITY-AND-LAND-SOD added `go-by` at line 5 and a ledger holds both: a NEW note is 13 lines
-# (_vc_fmt=13) and a LEGACY note (written before) is 12 lines with no go-by (_vc_fmt=12). The shape is
-# read from line 5 itself (see _pv_vc_grammar), never guessed from a count alone.
+# (_vc_fmt=13) and a LEGACY note (written before) is 12 lines with no go-by (_vc_fmt=12). SWAS-727 adds two more, each the 13
+# lines plus lines AFTER recorded-at: a ONE-ACT note (_vc_fmt=14, line 14 `go-act: review`) and a HELD-THEN-TYPED note
+# (_vc_fmt=16, `go-act: separate`, `go-words`, `go-words-sha256`). The shape is read from the lines themselves (see
+# _pv_vc_grammar), never guessed from a count alone.
 _pv_vc_key() {
-  if [ "$_vc_fmt" = 13 ]; then
+  if [ "$_vc_fmt" = 13 ] || [ "$_vc_fmt" = 14 ] || [ "$_vc_fmt" = 16 ]; then
     case "$1" in
       2) echo approved-sha ;; 3) echo approved-tree ;; 4) echo approved-by ;; 5) echo go-by ;;
       6) echo gate ;; 7) echo rung ;; 8) echo change-class ;; 9) echo kit-row ;; 10) echo scope ;;
       11) echo approval-token ;; 12) echo basis ;; 13) echo recorded-at ;;
+      14) if [ "$_vc_fmt" != 13 ]; then echo go-act; fi ;;
+      15) if [ "$_vc_fmt" = 16 ]; then echo go-words; fi ;;
+      16) if [ "$_vc_fmt" = 16 ]; then echo go-words-sha256; fi ;;
     esac
     return 0
   fi
@@ -3290,6 +3850,15 @@ _pv_vc_grammar() {
   case "$(printf '%s\n' "$_vc_body" | sed -n '5p')" in
     "go-by: "*) _vc_fmt=13 ;;
   esac
+  # SWAS-727: a 13-line note whose line 14 is `go-act: ...` is a one-act (review) or a held-then-typed (separate) note.
+  _vc_goact=""; _vc_gow=""; _vc_gosha=""
+  if [ "$_vc_fmt" = 13 ]; then
+    case "$(printf '%s\n' "$_vc_body" | sed -n '14p')" in
+      "go-act: review") _vc_fmt=14 ;;
+      "go-act: separate") _vc_fmt=16 ;;
+      "go-act: "*) _pv_vc_fail grammar "go-act is neither 'review' nor 'separate'"; return 1 ;;
+    esac
+  fi
   _vc_goby="(none recorded)"
   _vc_n=0
   # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
@@ -3316,16 +3885,18 @@ _pv_vc_grammar() {
       go-by) _vc_goby="$_vc_v" ;; gate) _vc_gate="$_vc_v" ;; rung) _vc_rung="$_vc_v" ;;
       change-class) _vc_cls="$_vc_v" ;; kit-row) _vc_row="$_vc_v" ;; scope) _vc_scope="$_vc_v" ;;
       approval-token) _vc_tok="$_vc_v" ;; basis) _vc_basis="$_vc_v" ;; recorded-at) _vc_ts="$_vc_v" ;;
+      go-act) _vc_goact="$_vc_v" ;; go-words) _vc_gow="$_vc_v" ;; go-words-sha256) _vc_gosha="$_vc_v" ;;
     esac
   done <<EOF
 \
 $_vc_body
 EOF
-  [ "$_vc_n" = "$_vc_fmt" ] || { _pv_vc_fail grammar "$_vc_n lines, record writes exactly $_vc_fmt for this note's shape (12 legacy, 13 with go-by)"; return 1; }
+  [ "$_vc_n" = "$_vc_fmt" ] || { _pv_vc_fail grammar "$_vc_n lines, record writes exactly $_vc_fmt for this note's shape (12 legacy, 13 with go-by, 14 one-act review, 16 held-then-typed)"; return 1; }
   for _vc_f in "$_vc_asha" "$_vc_tree" "$_vc_by" "$_vc_goby" "$_vc_gate" "$_vc_rung" "$_vc_cls" "$_vc_row" "$_vc_scope" "$_vc_tok" "$_vc_basis" "$_vc_ts"; do
     [ -n "$_vc_f" ] || { _pv_vc_fail grammar "an empty field"; return 1; }
   done
   _pv_vc_goby || return 1
+  _pv_vc_goact || return 1
   # F4(c): recorded-at is what `record` composes: `date -u +%Y-%m-%dT%H:%M:%SZ`, or the literal `unknown`.
   case "$_vc_ts" in
     unknown|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
@@ -3341,6 +3912,7 @@ EOF
 # [authenticated: github-review], [committer], [signed: gpg]) is not one `record` could have written NOW.
 # Checked inside V1 (pure string checks, no API call), so it runs before V7's forge derivation.
 _pv_vc_goby() {
+  [ "$_vc_fmt" != 14 ] || return 0   # a one-act note's go-by carries the authenticated label: _pv_vc_goact judges it
   [ "$_vc_goby" != "(none recorded)" ] || return 0
   case "$_vc_goby" in
     *' [self-asserted]') ;;
@@ -3351,6 +3923,52 @@ _pv_vc_goby() {
   case "$_vc_gid" in
     *'['*|*']'*) _pv_vc_fail go-by "a bracket inside the name (the label is a fixed literal, never supplied)"; return 1 ;;
   esac
+  return 0
+}
+# V1c — the go-act shapes (SWAS-727). No API call; pure string checks. A ONE-ACT note (_vc_fmt=14) is accepted only when go-act is
+# `review`, go-by and approved-by are the SAME login and both carry the fixed `[authenticated: github-review]` label, and the token is
+# exactly "forge-review:<digits>" (no other byte). A HELD-THEN-TYPED note (_vc_fmt=16) only when go-act is `separate`, go-words-sha256 is
+# 64 lowercase hex, go-words is one quoted line of at most 1000 bytes, and a named GO-giver (self-asserted, V1b) is recorded. The
+# approved-by label is then re-derived by V7 like any other note's.
+_pv_vc_goact() {
+  case "$_vc_fmt" in
+    14|16) ;;
+    *) return 0 ;;
+  esac
+  if [ "$_vc_fmt" = 14 ]; then
+    [ "$_vc_goact" = review ] || { _pv_vc_fail go-act "not 'review' in a one-act note"; return 1; }
+    case "$_vc_goby" in
+      *' [authenticated: github-review]') ;;
+      *) _pv_vc_fail go-by "a one-act note's go-by must carry the fixed [authenticated: github-review] label"; return 1 ;;
+    esac
+    _vc_gid="${_vc_goby%' [authenticated: github-review]'}"
+    [ -n "$_vc_gid" ] || { _pv_vc_fail go-by "empty login"; return 1; }
+    case "$_vc_gid" in
+      *'['*|*']'*|*' '*) _pv_vc_fail go-by "a bracket or a space inside the login (the label is a fixed literal)"; return 1 ;;
+    esac
+    [ "$_vc_by" = "$_vc_gid [authenticated: github-review]" ] || { _pv_vc_fail go-by "a one-act note's go-by must equal its approved-by (one authenticated identity in two fields)"; return 1; }
+    case "$_vc_tok" in
+      '"forge-review:'*'"') ;;
+      *) _pv_vc_fail approval-token "a one-act note's token is exactly \"forge-review:<digits>\""; return 1 ;;
+    esac
+    _vc_tid="${_vc_tok#'"forge-review:'}"; _vc_tid="${_vc_tid%'"'}"
+    case "$_vc_tid" in
+      ''|*[!0-9]*) _pv_vc_fail approval-token "the review id is not digits"; return 1 ;;
+    esac
+    [ "${#_vc_tid}" -le 20 ] || { _pv_vc_fail approval-token "the review id is longer than 20 digits"; return 1; }
+    return 0
+  fi
+  [ "$_vc_goact" = separate ] || { _pv_vc_fail go-act "not 'separate' in a held-then-typed note"; return 1; }
+  [ "$_vc_goby" != "(none recorded)" ] || { _pv_vc_fail go-by "a held-then-typed note names its GO-giver"; return 1; }
+  case "$_vc_gosha" in
+    *[!0-9a-f]*|'') _pv_vc_fail go-words-sha256 "not 64 lowercase hex characters"; return 1 ;;
+  esac
+  [ "${#_vc_gosha}" = 64 ] || { _pv_vc_fail go-words-sha256 "not 64 lowercase hex characters"; return 1; }
+  case "$_vc_gow" in
+    '"'*'"') ;;
+    *) _pv_vc_fail go-words "not a quoted line"; return 1 ;;
+  esac
+  [ "$(printf '%s' "$_vc_gow" | wc -c | tr -d ' ')" -le 1002 ] || { _pv_vc_fail go-words "more than 1000 bytes"; return 1; }
   return 0
 }
 # V7 — approved-by: `<id> [<label>]`; the label must equal one `record` could derive NOW. Runs LAST (I5):

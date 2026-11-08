@@ -2127,6 +2127,232 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   if _fxskip_ok "$(_fxfacts "$(dirname "$VERIFY")/..")" "$_FXSKIPS"; then pass "FXS-kit: this tree skipped $_FXSKIPS cell group(s) and reads $(_fxkind)"
   else fail "FXS-kit: a KIT tree skipped $_FXSKIPS cell group(s)"; fi
 
+  # =====================================================================================
+  # SWAS-727 — ONE-ACT APPROVAL (GO_ACT / GO_GIVERS; design 2026-11-06-one-act-approval-727-design.md, tests 1-12). The origin default
+  # branch carries the dials; `land` is the only route in review mode. Every cell asserts the notes and the merge marker, and each
+  # mutant (a sed-rewritten gate COPY in a kit layout) must make its cell FAIL. The mutants the design lists, and the cell that kills each:
+  # no GO_GIVERS check (RVm1 on RV2) · dials from the approved tree (RVm2 on RV-TREE) · absent read as review (RVm3 on RV-ABSENT) · no exact-sha
+  # check (RVm4 on RV4a) · no G1 inequality (RVm5 on RV9a) · body copied into the token (RVm6 on RV7c) · no hold (RVm7 on RV7a) · no control
+  # fold (RVm8 on RV7d) · no 1000-byte cap (RVm9 on RV7f). The two dial-state mutants (a flipped value, a deleted line) live in dial-state.sh.
+  # =====================================================================================
+  _rvp() { _RV_POST="$1"; shift; _rv_cell "$@"; _RV_POST=""; }
+  _RV_APP='[{"id":5551,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""}]'
+  _RV_OTHER='[{"id":5552,"user":{"login":"other-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""}]'
+  _RV_OLD='[{"id":5553,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"0123456789012345678901234567890123456789","body":""}]'
+  _RV_WITHDRAWN='[{"id":5554,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""},{"id":5555,"user":{"login":"owner-rev","type":"User"},"state":"CHANGES_REQUESTED","commit_id":"@SHA@","body":"no"}]'
+  _RV_BADID='[{"id":"12x","user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""}]'
+  _RV_NOID='[{"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""}]'
+  _RV_HELD='[{"id":5557,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":"GO, with the full security read"}]'
+  _RV_WS='[{"id":5551,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":"  \t \n "}]'
+  _RV_CTRLJSON='[{"id":5559,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":"a\nb\tc\u001bd\u0085e \"q\""}]'
+  _RV_LONGJSON="[{\"id\":5560,\"user\":{\"login\":\"owner-rev\",\"type\":\"User\"},\"state\":\"APPROVED\",\"commit_id\":\"@SHA@\",\"body\":\"$(i=0; while [ "$i" -lt 600 ]; do printf 'abc\\u00e9\\u20ac'; i=$((i + 1)); done)\"}]"
+  _RV_INERTJSON='[{"id":5561,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":"$(touch sentinel-727) `touch sentinel-727b` ; rm -rf sentinel-727c"}]'
+  _RV_REVB='[{"id":5562,"user":{"login":"reviewer-login","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":""}]'
+  _RV_NOGO='--go-by <the GO-giver>'
+  # 1. a GO_GIVERS login's APPROVED review on the head is the merge GO: go-act review, one authenticated identity in two fields, the id as the token
+  _rvp _rv_post_oneact RV1-oneact-review-is-the-GO - 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _RVCLS=ordinary; _rv_cell RV1a-review-mode-land-takes-an-ordinary-class - 0 'merged 260 — ordinary' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVCLS=""
+  _rv_cell RV1b-absent-ordinary-is-still-actuates-not-lands - 2 'land is the control-plane/direct-path verb' NONE NONE "$_RV_APP" '"SeaBrad72"' owner-rev --go-by owner --token 'GO: land #260' --class ordinary
+  # 2. an approval by a non-author who is NOT on GO_GIVERS is no GO (W5)
+  _rv_cell RV2-not-on-GO_GIVERS-refused - 1 'giver-not-listed' "$_RV_DIAL" NONE "$_RV_OTHER" '"SeaBrad72"' other-rev
+  _rv_cell RVm1-mutant-GO_GIVERS-check-dropped 's/if \[ "\$_rg_ok" != 0 \]; then _fr_fallback giver-not-listed/if false; then _fr_fallback giver-not-listed/' 1 'giver-not-listed' "$_RV_DIAL" NONE "$_RV_OTHER" '"SeaBrad72"' other-rev
+  # 3. GO_GIVERS empty, absent or not a list of logins: review refuses every merge (rc 2), naming the dial
+  _rv_cell RV3a-empty-GO_GIVERS-refuses-every-merge - 2 'GO_GIVERS is empty' 'GO_ACT=review
+GO_GIVERS=' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rv_cell RV3b-no-GO_GIVERS-line-refuses-every-merge - 2 'GO_GIVERS is empty' 'GO_ACT=review' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rv_cell RV3c-GO_GIVERS-with-a-non-login-reads-empty - 2 'GO_GIVERS is empty' 'GO_ACT=review
+GO_GIVERS=own;er' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  # 4. an approval of an older sha, and an approval later withdrawn by the same login, are no GO
+  _rv_cell RV4a-approval-on-an-older-sha-refused - 1 'review-sha-mismatch' "$_RV_DIAL" NONE "$_RV_OLD" '"SeaBrad72"' owner-rev
+  _rv_cell RVm4-mutant-exact-sha-check-skipped 's/\[ "\$_fr_cid" = "\$_fr_full" \] || { _fr_fallback review-sha-mismatch/true || { _fr_fallback review-sha-mismatch/' 1 'review-sha-mismatch' "$_RV_DIAL" NONE "$_RV_OLD" '"SeaBrad72"' owner-rev
+  _rv_cell RV4b-approved-then-changes-requested-refused - 1 'review-not-approved' "$_RV_DIAL" NONE "$_RV_WITHDRAWN" '"SeaBrad72"' owner-rev
+  # 5. the review by the PR's author is no GO, even on the list
+  _rv_cell RV5-the-PR-author-is-no-GO - 1 'reviewer-is-pr-author' "$_RV_DIAL" NONE "$_RV_APP" '"owner-rev"' owner-rev
+  # 6. the modes do not mix: an empty-body approval takes neither --token nor --go-by; a held one needs both
+  _rv_cell RV6a-token-on-an-empty-body-approval-refused - 2 'takes no --token and no --go-by' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --token 'GO: land #260'
+  _rv_cell RV6b-go-by-on-an-empty-body-approval-refused - 2 'takes no --token and no --go-by' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --go-by owner
+  _rv_cell RV6c-held-with-only-a-token-refused - 2 'Give the typed GO' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev --token 'GO: land #260'
+  _rv_cell RV6d-held-with-only-a-go-by-refused - 2 'Give the typed GO' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev --go-by owner
+  # 7. the review id is digits, else rc 2
+  _rv_cell RV7-non-digit-review-id-refused - 2 'not 1-20 digits' "$_RV_DIAL" NONE "$_RV_BADID" '"SeaBrad72"' owner-rev
+  _rv_cell RV7-no-review-id-refused - 2 'not 1-20 digits' "$_RV_DIAL" NONE "$_RV_NOID" '"SeaBrad72"' owner-rev
+  # 7a. a comment holds the approval: rc 2, the id and the words (made safe) printed, no note, no merge
+  _rv_cell RV7a-held-names-the-review-id - 2 'LAND HELD: review 5557' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev
+  _rv_cell RV7a-held-prints-the-words-made-safe - 2 'words (made safe): GO, with the full security read' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev
+  _rv_cell RVm7-mutant-comment-let-through-without-the-hold 's/then PV_FR_HELD=1; fi/then PV_FR_HELD=0; fi/' 2 'LAND HELD: review 5557' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev
+  # 7b. the held PR, then a typed GO: go-act separate, the held review as approved-by, the words and their hash kept
+  _rvp _rv_post_held RV7b-held-then-typed-GO-merges - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev --token 'GO #260: the full security read is on the record' --go-by 'the owner'
+  # 7c. a body of only whitespace is empty: one-act, no hold
+  _rvp _rv_post_oneact RV7c-whitespace-only-body-is-an-empty-body - 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_WS" '"SeaBrad72"' owner-rev
+  _rvp _rv_post_oneact RVm6-mutant-review-body-copied-into-the-token 's/--token "forge-review:\$PV_FR_ID" --go-by/--token "forge-review:$PV_FR_ID$PV_FR_BODY" --go-by/' 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_WS" '"SeaBrad72"' owner-rev
+  # 7d. control characters, a C1 character and a quote: one line, spaces, the quote escaped, the hash of the raw body
+  _rvp _rv_post_ctrl RV7d-control-characters-folded-and-quote-escaped - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_CTRLJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  _rvp _rv_post_ctrl RVm8-mutant-control-character-fold-skipped "s/tr '.000-.037.177' ' '/cat/" 0 'merged 260' "$_RV_DIAL" NONE "$_RV_CTRLJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  # 7f. a 4800-byte body: capped at 1000 bytes on a UTF-8 boundary with the mark; go-words-sha256 is the raw body's
+  _rvp _rv_post_long RV7f-long-body-capped-on-a-utf8-boundary - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_LONGJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  _rvp _rv_post_long RVm9-mutant-1000-byte-cap-skipped 's/-gt 1000 \]; then/-gt 100000000 ]; then/' 0 'merged 260' "$_RV_DIAL" NONE "$_RV_LONGJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  # 7e. a body of shell syntax is stored as text; nothing ran
+  _rvp _rv_post_inert RV7e-shell-syntax-in-the-body-stored-as-text - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_INERTJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  # 8. design and plan gates stay typed in every mode
+  _RVGATE=design; _rv_cell RV8a-design-gate-still-demands-the-typed-GO - 1 "$_RV_NOGO" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE=plan; _rvp _rv_post_plain RV8b-plan-gate-merges-on-the-typed-GO-as-today - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --token 'GO: land #260' --go-by 'the owner'; _RVGATE=""
+  # 9. separate: a go-by equal to the approver (folded) is refused (G1); a different name merges, 13 lines, no go-act
+  _rv_cell RV9a-separate-go-by-equals-approved-by-refused - 1 'GO_ACT=separate' 'GO_ACT=separate' NONE "$_RV_REVB" '"SeaBrad72"' reviewer-login --token 'GO: land #260' --go-by 'Reviewer-Login'
+  _rv_cell RVm5-mutant-G1-inequality-dropped 's/if \[ "\$_sof" = "\$(_pv_fold "\$3")" \]; then/if false; then/' 1 'GO_ACT=separate' 'GO_ACT=separate' NONE "$_RV_REVB" '"SeaBrad72"' reviewer-login --token 'GO: land #260' --go-by 'Reviewer-Login'
+  _rvp _rv_post_plain RV9b-separate-a-different-go-by-merges - 0 'merged 260' 'GO_ACT=separate' NONE "$_RV_REVB" '"SeaBrad72"' reviewer-login --token 'GO: land #260' --go-by 'the owner'
+  # 10. an absent dial is today's two acts: a GO_GIVERS line alone turns nothing on (no --go-by is refused), and the typed GO merges as before
+  _rv_cell RV-ABSENT-a-GO_GIVERS-line-alone-is-not-review - 1 "$_RV_NOGO" 'GO_GIVERS=owner-rev' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rv_cell RVm3-mutant-absent-read-as-review "/^pv_go_dials() {/,/^}/ s/^    '') ;;\$/    '') PV_GO_ACT=review ;;/" 1 "$_RV_NOGO" 'GO_GIVERS=owner-rev' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rvp _rv_post_plain RV10-absent-typed-GO-merges-as-today - 0 'merged 260' NONE NONE "$_RV_APP" '"SeaBrad72"' owner-rev --token 'GO: land #260' --go-by 'the owner'
+  # 11. an unrecognised value reads absent; no environment variable sets either dial; Governance can force separate and cannot turn review on
+  _rv_cell RV11a-unrecognised-GO_ACT-reads-absent - 1 'reads absent' 'GO_ACT=reveiw
+GO_GIVERS=owner-rev' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  GO_ACT=review; GO_GIVERS=owner-rev; export GO_ACT GO_GIVERS
+  _rv_cell RV11b-an-environment-variable-cannot-set-the-dials - 1 "$_RV_NOGO" NONE NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  unset GO_ACT GO_GIVERS
+  _rv_cell RV11c-a-Governance-line-forces-separate - 1 'CLAUDE.md says Merge GO: separate' "$_RV_DIAL" '- **Merge GO**: separate — two acts' "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rv_cell RV11d-a-Governance-line-cannot-turn-review-on - 1 "$_RV_NOGO" NONE '- **Merge GO**: review' "$_RV_APP" '"SeaBrad72"' owner-rev
+  # 12. solo: neither dial is read; the solo bar is unchanged
+  _rv_cell RV12a-solo-ignores-review-no-go-by-refused - 1 "$_RV_NOGO" 'MERGE_RELATIONSHIP=solo
+GO_ACT=review
+GO_GIVERS=owner-rev' NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rvp _rv_post_plain RV12b-solo-typed-GO-merges-as-before - 0 'merge relationship: solo' 'MERGE_RELATIONSHIP=solo
+GO_ACT=review
+GO_GIVERS=owner-rev' NONE "$_RV_APP" '"SeaBrad72"' owner-rev --token 'GO: land #260' --go-by 'the owner'
+  # 2'. the PR cannot choose its own bar: the head's tree declares review, origin's main does not, so the typed GO is still demanded
+  _RV_PRE=_rv_pre_treedial
+  _rv_cell RV-TREE-the-approved-tree-cannot-turn-review-on - 1 "$_RV_NOGO" NONE NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _rv_cell RVm2-mutant-dials-read-from-the-approved-tree 's#^  PV_REL_TIP="\$_mrtip"; PV_REL_DIALRC="\$_mrrc"; PV_REL_DIALTXT="\$_mrdial"#  PV_REL_TIP="$_mrtip"; PV_REL_DIALRC=0; PV_REL_DIALTXT="$(git -C "$ROOT" show "${asha}:.kit/dials.conf" 2>/dev/null)"#' 1 "$_RV_NOGO" NONE NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  _RV_PRE=""
+
+  # 6'. `actuate` in review mode merges nothing and points at land; separate adds G2 and G1; absent, solo, the environment and a plan gate keep today's bar.
+  _rv_act() {  # <label> <merge|refuse> <needle> <dial text|NONE> <note-kind: plain|go-equal|go-other|go-plan> — one actuate on a fresh fixture
+    D="$(mkrepo)" || { fail "$1: fixture build"; return 0; }
+    X="$(cat "$D/.X")"
+    case "$5" in
+      plain)    write_note "$D" "$X" "Reviewer B [authenticated: github-review]" ;;
+      go-equal) write_snote "$D" "$X" "reviewer b [self-asserted]" release-candidate AUTO ordinary "Reviewer B [authenticated: github-review]" ;;
+      go-other) write_snote "$D" "$X" "the owner [self-asserted]" release-candidate AUTO ordinary "Reviewer B [authenticated: github-review]" ;;
+      go-plan)  write_snote "$D" "$X" "the owner [self-asserted]" plan-record AUTO ordinary "Reviewer B [authenticated: github-review]" ;;
+    esac
+    _act_base "$D" "$4" NONE
+    run_actuate "$VERIFY" "$D" feat "$X" "$(_act_stub "$D" "$X")"
+    if [ "$2" = merge ]; then
+      if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && _has "$OUT" "$3"; then pass "$1: actuate merged"; else fail "$1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"; fi
+    elif [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && _has "$OUT" "$3"; then pass "$1: actuate refused on '$3', merge stub never ran"
+    else fail "$1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"; fi
+    rm -rf "$D" 2>/dev/null || true
+  }
+  _rv_act RV6e-actuate-refuses-review-mode-and-points-to-land refuse 'ACTUATE REFUSED (GO_ACT=review)' "$_RV_DIAL" plain
+  _rv_act RV6f-actuate-review-refusal-names-the-land-command refuse 'promotion-verify.sh land --ref <PR number>' "$_RV_DIAL" plain
+  _rv_act RV9c-actuate-separate-needs-a-go-by-G2 refuse 'records no GO-giver' 'GO_ACT=separate' plain
+  _rv_act RV9d-actuate-separate-go-by-equals-approved-by-G1 refuse 'is the reviewer in approved-by' 'GO_ACT=separate' go-equal
+  _rv_act RV9e-actuate-separate-a-different-go-by-merges merge 'OK: actuated' 'GO_ACT=separate' go-other
+  _rv_act RV10a-actuate-absent-dial-note-without-go-by-merges merge 'OK: actuated' NONE plain
+  _rv_act RV10b-actuate-absent-dial-with-a-GO_GIVERS-line-merges merge 'OK: actuated' 'GO_GIVERS=owner-rev' plain
+  GO_ACT=review; GO_GIVERS=owner-rev; export GO_ACT GO_GIVERS
+  _rv_act RV11e-an-environment-variable-cannot-turn-review-on-for-actuate merge 'OK: actuated' NONE plain
+  unset GO_ACT GO_GIVERS
+  _rv_act RV8c-actuate-plan-gate-stays-typed-in-review-mode merge 'OK: actuated' "$_RV_DIAL" go-plan
+  _rv_act RV12c-actuate-solo-ignores-both-dials merge 'merge relationship: solo' 'MERGE_RELATIONSHIP=solo
+GO_ACT=review
+GO_GIVERS=owner-rev' go-other
+
+  # SWAS-727 FIX PASS. H: `--gate` is consumed by land's argv peek (the shape `--gate design --basis --gate` once read an EMPTY gate in land and
+  # `design` in record), a flag-shaped value is rc 2, the recorded gate must equal the judged one, and only `design`, `plan`, `design-*` and
+  # `plan-*` are typed gates (`planned-release` is a merge gate).
+  _rv_cell RVH1-gate-flag-with-no-value-is-rc-2 - 2 'land: --gate needs a value' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --basis --gate
+  _RVGATE=-x; _rv_cell RVH2-flag-shaped-gate-value-is-rc-2 - 2 "land: --gate value '-x' starts with '-'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE=planned-release; _rvp _rv_post_oneact RVH3-planned-release-is-a-merge-gate-not-typed - 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE=design-review; _rv_cell RVH4-design-dash-gate-stays-typed - 1 "$_RV_NOGO" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE='design review'; _rv_cell RVH5-design-space-gate-stays-typed - 1 "$_RV_NOGO" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  # L: line comments on the review hold the approval; a failed comments read is a hold, never a one-act GO; zero comments is one-act.
+  _RV_COMMENTS='[{"id":1,"body":"x"}]'; _rv_cell RVL1-line-comments-hold-an-empty-body-approval - 2 'LAND HELD: review 5551' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RV_COMMENTS=""
+  _RV_COMMENTSERR=1; _rv_cell RVL2-failed-comments-read-is-a-hold - 2 'LAND HELD: review 5551' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RV_COMMENTSERR=0
+  _RV_COMMENTS='[]'; _rvp _rv_post_oneact RVL3-zero-line-comments-is-one-act - 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RV_COMMENTS=""
+  # SWAS-747 (design 2026-11-07-review-go-later-comment-747-design.md): a COMMENTED review by a GO_GIVERS login that is not provably BEFORE the
+  # approval holds it (words, or line comments; a failed or unparsable read holds); a new empty-body approval after it is one act again.
+  # The mutants (RVCm1-RVCm7, each a sed over ONE line of the gate copy) and the cell that kills each: the later read removed (RVC1) · the
+  # GO_GIVERS filter dropped (RVC6) · a body read error read as no comment (RVC4a) · the provably-before test dropped (RVC5) · list position
+  # only (RVC12) · time only (RVC13) · a failed comments read read as zero (RVC4b).
+  _rvc_r() {  # <id> <login> <state> <commit> <body> [<submitted_at>] -> one review row as JSON (@SHA@ stands for the head)
+    _rc_t=""; if [ -n "${6:-}" ]; then _rc_t=",\"submitted_at\":\"$6\""; fi
+    printf '{"id":%s,"user":{"login":"%s","type":"User"},"state":"%s","commit_id":"%s","body":"%s"%s}' "$1" "$2" "$3" "$4" "$5" "$_rc_t"
+  }
+  _rvc() {  # <label> <sed|-> <expect-rc> <needle> <reviews-json> [<dial> = $_RV_DIAL] [land args…] -> one review-mode land (the post-check, if any, is _RV_POST)
+    _rcl="$1"; _rcm="$2"; _rce="$3"; _rcn="$4"; _rcj="$5"; _rcd="${6:-$_RV_DIAL}"
+    if [ "$#" -gt 6 ]; then shift 6; else shift "$#"; fi
+    _rv_cell "$_rcl" "$_rcm" "$_rce" "$_rcn" "$_rcd" NONE "$_rcj" '"SeaBrad72"' owner-rev "$@"
+  }
+  _T0=2026-11-07T09:00:00Z; _T1=2026-11-07T10:00:00Z; _T2=2026-11-07T11:00:00Z
+  _RC_A="$(_rvc_r 5551 owner-rev APPROVED @SHA@ '' "$_T1")"
+  _RC_WORDS='wait, do not merge this yet'
+  _RC_LW='later comment holds it (review 5571)'; _RC_HELD='LAND HELD: review 5551'
+  _RC_LATER="$(_rvc_r 5571 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")"
+  _rvc RVC1-later-commented-with-words-holds - 2 "$_RC_LW" "[$_RC_A,$_RC_LATER]"
+  _rvc RVCm1-mutant-the-later-read-removed 's/^  if ! _ls_late="\$(_fr_later_ids .*$/  _ls_late=""/' 2 "$_RC_LW" "[$_RC_A,$_RC_LATER]"
+  _RV_C5571='[]'; _RC_EMPTY="$(_rvc_r 5571 owner-rev COMMENTED @SHA@ '  \t \n ' "$_T2")"
+  _RV_POST=_rv_post_oneact; _rvc RVC2-later-empty-commented-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$_RC_EMPTY]"; _RV_POST=""
+  _RV_C5571='[{"id":1,"body":"x"}]'; _rvc RVC3-later-line-comment-holds - 2 "$_RC_HELD" "[$_RC_A,$(_rvc_r 5571 owner-rev COMMENTED @SHA@ '' "$_T2")]"; _RV_C5571=""
+  _RV_BERR5571=1; _rvc RVC4a-later-body-read-error-holds - 2 "$_RC_HELD" "[$_RC_A,$_RC_LATER]"
+  _rvc RVCm3-mutant-body-read-error-read-as-no-comment 's/^  if ! _fr_body_read "\$1" "\$2"; then return 2; fi$/  if ! _fr_body_read "$1" "$2"; then return 1; fi/' 2 "$_RC_HELD" "[$_RC_A,$_RC_LATER]"; _RV_BERR5571=0
+  _RV_CERR5571=1; _rvc RVC4b-later-comments-read-error-holds - 2 "$_RC_HELD" "[$_RC_A,$_RC_EMPTY]"
+  _rvc RVCm7-mutant-failed-comments-read-counts-as-zero 's/^\(  if ! _lh_c=.*; then \)return 2; fi$/\1_lh_c=0; fi/' 2 "$_RC_HELD" "[$_RC_A,$_RC_EMPTY]"; _RV_CERR5571=0
+  _rvc RVC4c-later-row-non-digit-id-holds - 2 "$_RC_HELD" "[$_RC_A,$(_rvc_r '"55x1"' owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")]"
+  _RC_BEFORE="$(_rvc_r 5570 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T0")"
+  _RV_POST=_rv_post_oneact; _rvc RVC5-commented-before-the-approval-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_BEFORE,$_RC_A]"
+  _rvc RVCm4-mutant-provably-before-test-dropped 's/^        if (i < ap && stamp.*$/        if (0) continue/' 0 'GO = forge review 5551 by owner-rev' "[$_RC_BEFORE,$_RC_A]"
+  _rvc RVC6-commented-by-a-login-not-on-GO_GIVERS-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$(_rvc_r 5571 other-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")]"
+  _rvc RVCm2-mutant-GO_GIVERS-filter-dropped 's/^        if (!on\[lg\[i\]\]) continue$/        if (0) continue/' 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$(_rvc_r 5571 other-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")]"
+  _RV_POST=""
+  _RV_POST=_rv_post_later; _rvc RVC7-held-by-a-later-comment-then-typed-GO-merges - 0 'merged 260' "[$(_rvc_r 5551 owner-rev APPROVED @SHA@ 'GO, with the full security read' "$_T1"),$(_rvc_r 5571 owner-rev COMMENTED @SHA@ 'but wait for the schema check' "$_T2")]" "$_RV_DIAL" --token 'GO #260: the schema check is done' --go-by 'the owner'; _RV_POST=""
+  _RVID=5572; _RV_POST=_rv_post_oneact
+  _rvc RVC8-re-approval-after-the-comment-is-one-act - 0 'GO = forge review 5572 by owner-rev' "[$(_rvc_r 5551 owner-rev APPROVED @SHA@ '' "$_T0"),$(_rvc_r 5571 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T1"),$(_rvc_r 5572 owner-rev APPROVED @SHA@ '' "$_T2")]"
+  _RVID=""; _RV_POST=""
+  _rvc RVC9-later-comment-by-another-GO_GIVERS-login-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 second-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")]" 'GO_ACT=review
+GO_GIVERS=owner-rev second-rev'
+  _rvc RVC10-later-comment-on-an-older-commit-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 owner-rev COMMENTED "$_RV_SHA0" "$_RC_WORDS" "$_T2")]"
+  _rvc RVC11-earlier-in-the-list-but-no-time-holds - 2 'later comment holds it (review 5570)' "[$(_rvc_r 5570 owner-rev COMMENTED @SHA@ "$_RC_WORDS"),$_RC_A]"
+  _RC_LATE_FIRST="$(_rvc_r 5570 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")"
+  _rvc RVC12-earlier-in-the-list-later-time-holds - 2 "$_RC_HELD" "[$_RC_LATE_FIRST,$_RC_A]"
+  _rvc RVCm5-mutant-list-position-only 's/^        if (i < ap && stamp.*$/        if (i < ap) continue/' 2 "$_RC_HELD" "[$_RC_LATE_FIRST,$_RC_A]"
+  _RC_EARLY_LAST="$(_rvc_r 5571 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T0")"
+  _rvc RVC13-later-in-the-list-earlier-time-holds - 2 "$_RC_HELD" "[$_RC_A,$_RC_EARLY_LAST]"
+  _rvc RVCm6-mutant-time-only 's/^        if (i < ap && stamp.*$/        if (stamp(tm[i]) \&\& stamp(at) \&\& ("" tm[i]) < ("" at)) continue/' 2 "$_RC_HELD" "[$_RC_A,$_RC_EARLY_LAST]"
+  _RV_POST=_rv_post_oneact; _rvc RVC14-pending-with-words-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$(_rvc_r 5571 owner-rev PENDING @SHA@ "$_RC_WORDS" "$_T2")]"; _RV_POST=""
+  _rvc RVC15-case-different-GO_GIVERS-login-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 Owner-Rev COMMENTED @SHA@ "$_RC_WORDS" "$_T2")]"
+  # S2: the approval is found by id as a STRING; a row whose id only looks numerically equal (05551) is not the approval, and an id matched by two rows holds.
+  # Compared as numbers, the 05551 row would become the approval: the wait before it would read as provably before, and the land would be one act.
+  _RC_ZERO="$(_rvc_r '"05551"' owner-rev COMMENTED @SHA@ '' "$_T2")"
+  _RC_WAIT_EARLY="$(_rvc_r 5571 owner-rev COMMENTED @SHA@ "$_RC_WORDS" "$_T1")"
+  _rvc RVC16-approval-id-matched-twice-holds - 2 "$_RC_HELD" "[$_RC_A,$_RC_WAIT_EARLY,$_RC_ZERO]"
+  _rvc RVCm8-mutant-approval-id-compared-as-numbers 's/if (("" \$5) == ("" ENVIRON\["FR_ID"\])) { ap = n; at = \$6; hits++ }/if ($5 == ENVIRON["FR_ID"]) { ap = n; at = $6 }/' 2 "$_RC_HELD" "[$_RC_A,$_RC_WAIT_EARLY,$_RC_ZERO]"
+  _rvc RVC17-approval-id-on-two-rows-holds - 2 "$_RC_HELD" "[$_RC_A,$(_rvc_r 5551 owner-rev COMMENTED @SHA@ '' "$_T2")]"
+  # SWAS-756 (errata E1, folded into 747): a second GO_GIVERS login's later review of ANY posted state holds on its words, like a COMMENTED one.
+  # The selected approval is owner-rev's 5551; the dial lists two logins, so a cell passes only for the reason it states (the state, the login, the time).
+  _RC_DIAL2='GO_ACT=review
+GO_GIVERS=owner-rev second-rev'
+  _rvc RVC18-second-giver-later-approved-with-words-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 second-rev APPROVED @SHA@ "$_RC_WORDS" "$_T2")]" "$_RC_DIAL2"
+  _rvc RVCm9-mutant-scan-commented-only 's/^        if (st\[i\] == "PENDING" || i == ap) continue$/        if (st[i] != "COMMENTED") continue/' 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 second-rev APPROVED @SHA@ "$_RC_WORDS" "$_T2")]" "$_RC_DIAL2"
+  _RV_POST=_rv_post_oneact
+  _rvc RVC19-second-giver-later-approved-empty-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$(_rvc_r 5571 second-rev APPROVED @SHA@ '' "$_T2")]" "$_RC_DIAL2"
+  _rvc RVC20-non-giver-later-approved-with-words-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$_RC_A,$(_rvc_r 5571 other-rev APPROVED @SHA@ "$_RC_WORDS" "$_T2")]" "$_RC_DIAL2"
+  _rvc RVC21-second-giver-approved-with-words-before-the-approval-is-one-act - 0 'GO = forge review 5551 by owner-rev' "[$(_rvc_r 5570 second-rev APPROVED @SHA@ "$_RC_WORDS" "$_T0"),$_RC_A]" "$_RC_DIAL2"
+  _RV_POST=""
+  _rvc RVC22-second-giver-later-changes-requested-with-words-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 second-rev CHANGES_REQUESTED @SHA@ "$_RC_WORDS" "$_T2")]" "$_RC_DIAL2"
+  _rvc RVC23-second-giver-later-dismissed-with-words-holds - 2 "$_RC_LW" "[$_RC_A,$(_rvc_r 5571 second-rev DISMISSED @SHA@ "$_RC_WORDS" "$_T2")]" "$_RC_DIAL2"
+  # M1: the one-act OK text says go-by is authenticated, not self-asserted.
+  _rvp _rv_post_oneact RVM1-one-act-OK-text-says-go-by-is-authenticated - 0 'authenticated (github-review), not self-asserted' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev
+  # M2: a backslash in the body is doubled before the quote is escaped.
+  _RV_BSJSON='[{"id":5563,"user":{"login":"owner-rev","type":"User"},"state":"APPROVED","commit_id":"@SHA@","body":"a\\\"b"}]'
+  _rvp _rv_post_bs RVM2-backslash-then-quote-round-trips-unambiguously - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_BSJSON" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by 'the owner'
+  # M4 (E3): a held approval whose typed --go-by equals approved-by merges in review mode (no G1 on a held-then-typed note); --token-file on an
+  # empty-body approval is rc 2 like --token.
+  _rv_cell RVM4a-held-then-typed-go-by-equal-to-approved-by-merges - 0 'merged 260' "$_RV_DIAL" NONE "$_RV_HELD" '"SeaBrad72"' owner-rev --token 'GO #260' --go-by owner-rev
+  _rvtf="$(mktemp)"; printf 'GO #260\n' > "$_rvtf"
+  _rv_cell RVM4b-token-file-on-an-empty-body-approval-refused - 2 'takes no --token and no --go-by' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --token-file "$_rvtf"
+  rm -f "$_rvtf"
+
   _unv_end || st=1
   rm -f "$_unv_f"
   if [ "$st" = 0 ]; then
@@ -2322,6 +2548,21 @@ case "$_p" in
                _c="$(dirname "$0")/calls"; _n=$(( $(cat "$_c" 2>/dev/null || echo 0) + 1 )); echo "$_n" > "$_c"
                [ "$_n" -le 1 ] || _src="$(dirname "$0")/reviews2.json"
              fi ;;
+  # SWAS-727: ONE review by id (`.../reviews/<id>`), the body read of review mode: the caller's own filter, applied by real jq to the
+  # element of the list whose id matches. An id no review has answers nothing at all (the gate must not read that as an empty body).
+  # ... and its LINE COMMENTS (`.../reviews/<id>/comments`): the caller's filter over the file `comments.json` beside the shim (`[]` when
+  # absent), or a failed read when the file `commentserr` is there.
+  # SWAS-747: per-id files win over the shared ones: `commentserr-<id>` fails that id's comments read, `comments-<id>.json` answers it,
+  # and `bodyerr-<id>` fails that id's body read.
+  */reviews/*/comments) _gd="$(dirname "$0")"; _gi="${_p%/comments}"; _gi="${_gi##*/}"
+                        [ ! -f "$_gd/commentserr-$_gi" ] || exit 1
+                        if [ -f "$_gd/comments-$_gi.json" ]; then jq -r "$_f" < "$_gd/comments-$_gi.json"; exit $?; fi
+                        [ ! -f "$_gd/commentserr" ] || exit 1
+                        if [ -f "$_gd/comments.json" ]; then jq -r "$_f" < "$_gd/comments.json"; else printf '[]' | jq -r "$_f"; fi
+                        exit $? ;;
+  */reviews/*) [ ! -f "$(dirname "$0")/bodyerr-${_p##*/}" ] || exit 1
+               jq -r --arg id "${_p##*/}" ".[] | select((.id | tostring) == \$id) | $_f" < "$(dirname "$0")/reviews.json"
+               exit $? ;;
   *)         _src="$(dirname "$0")/pr.json" ;;
 esac
 [ -f "$_src" ] || exit 1
@@ -2547,6 +2788,122 @@ _land_run() {
 }
 _land_note()  { ( cd "$LDR/c" && git notes --ref=promotions show "$LDX" 2>/dev/null ) || true; }
 _land_onote() { git --git-dir="$LDR/origin.git" notes --ref=promotions show "$LDX" 2>/dev/null || true; }
+
+# ── SWAS-727 one-act-approval fixtures (GO_ACT / GO_GIVERS). Below the ^selftest() marker like the other fixtures. A cell builds the
+#    land fixture, publishes an origin main whose .kit/dials.conf (and CLAUDE.md) say what the cell is about, answers the forge with a
+#    `gh` PATH shim that serves the reviews (with ids and bodies) and the one-review body read, runs `land`, and asserts the notes and
+#    the merge marker, never a bare rc. A MUTANT cell runs the very same cell through a sed-rewritten COPY of the gate in a kit layout
+#    and passes only if the assertion then FAILS (the cell has teeth); the shipped gate is never switched.
+_RV_DIAL='GO_ACT=review
+GO_GIVERS=owner-rev'
+_RV_SHA0='0123456789012345678901234567890123456789'
+_RV_COMMENTS=""; _RV_COMMENTSERR=0
+_RV_C5571=""; _RV_CERR5571=0; _RV_BERR5571=0   # SWAS-747: the per-id files of review 5571 (its line comments, a failed comments read, a failed body read)
+_RV_POST=""; _RV_PRE=""; _RVV=""; _RVKIT=0; _RVGATE=""; _RVCLS=""
+# _rv_pre_treedial — the PR's own head commit declares `review` in its tree (a PR must not choose its own bar); LDX moves to that head.
+_rv_pre_treedial() {
+  ( cd "$LDR/c" && mkdir -p .kit && printf 'GO_ACT=review\nGO_GIVERS=owner-rev\n' > .kit/dials.conf && git add .kit/dials.conf \
+    && GIT_AUTHOR_NAME='Author A' GIT_AUTHOR_EMAIL='a@x' git commit -qm 'declare review in the PR' && git rev-parse HEAD > "$LDR/.X" ) >/dev/null 2>&1 \
+    && LDX="$(cat "$LDR/.X")"
+}
+_rv_sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+# _rv_fx <dial text|NONE> [<CLAUDE.md line|NONE>] — the land fixture, then origin's main replaced by a parentless base commit carrying them.
+_rv_fx() {
+  _mkland_fx || return 1
+  if [ "${_RVKIT:-0}" = 1 ]; then _fxlay "$LDR/c" 1 1 1; fi
+  _rvc="$(_act_mktip "$LDR/c" "$1" "${2:-NONE}")" && git -C "$LDR/c" push -q -f origin "$_rvc:refs/heads/main" >/dev/null 2>&1
+}
+# _rv_run <gh shim dir> <approved-by> [extra land args…] — one land through the gate under test (or the mutant copy). RC, OUT.
+_rv_run() {
+  _rvg="$1"; _rvb="$2"; shift 2
+  rm -f "$LDMARK"
+  if OUT="$( cd "$LDR/c" && PATH="$_rvg:$PATH" PROMOTION_NOTES_REF=promotions sh "${_RVV:-$VERIFY}" land --ref "${_LREF:-260}" \
+       --merge-cmd "$LDR/stub" --approved-sha "$LDX" --approved-by "$_rvb" --gate "${_RVGATE:-release-candidate}" \
+       --rung "Release candidate" --class "${_RVCLS:-control-plane}" --scope "PR #260" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
+}
+_rv_none() { [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ]; }
+# _rv_cell <label> <sed-script|-> <expect-rc> <needle> <dial|NONE> <CLAUDE.md line|NONE> <reviews-json> <pr-author-json> <approved-by> [land args…]
+#    expect-rc 0: land merged, the note is on origin, OUT carries the needle, and (when set) the function named in $_RV_POST also holds.
+#    any other rc: that rc, OUT carries the needle, and NOTHING was written or merged. A sed-script (not `-`) makes it a mutant cell.
+_rv_cell() {
+  _cl="$1"; _cm="$2"; _ce="$3"; _cn="$4"; _cdial="$5"; _cgov="$6"; _crev="$7"; _cau="$8"; _cby="$9"; shift 9
+  _RVV="$VERIFY"; _RVKIT=0; _cmut=0; _cd=""
+  if [ "$_cm" != - ]; then
+    _cmut=1; _cd="$(mktemp -d)"; _le_pvcopy "$_cd" 1 1 1; _RVKIT=1
+    if ! _le_mutate "$_cd/scripts/promotion-verify.sh" "$_cm"; then fail "$_cl: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$_cd" 2>/dev/null || true; return 0; fi
+    _RVV="$_cd/scripts/promotion-verify.sh"
+  fi
+  _rv_fx "$_cdial" "$_cgov" || { fail "$_cl: fixture build"; rm -rf "$LDR" "$_cd" 2>/dev/null || true; return 0; }
+  if [ -n "$_RV_PRE" ]; then "$_RV_PRE" || { fail "$_cl: pre-hook"; rm -rf "$LDR" "$_cd" 2>/dev/null || true; return 0; }; fi
+  _lg="$(_mkgh "$(_L_json "$_crev")" "$_cau")"
+  if [ -n "$_RV_COMMENTS" ]; then printf '%s' "$_RV_COMMENTS" > "$_lg/comments.json"; fi
+  if [ "$_RV_COMMENTSERR" = 1 ]; then : > "$_lg/commentserr"; fi
+  if [ -n "$_RV_C5571" ]; then printf '%s' "$_RV_C5571" > "$_lg/comments-5571.json"; fi
+  if [ "$_RV_CERR5571" = 1 ]; then : > "$_lg/commentserr-5571"; fi
+  if [ "$_RV_BERR5571" = 1 ]; then : > "$_lg/bodyerr-5571"; fi
+  _rv_run "$_lg" "$_cby" "$@"
+  if [ "$_ce" = 0 ]; then
+    if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ -n "$(_land_onote)" ] && _has "$OUT" "$_cn" && { [ -z "$_RV_POST" ] || "$_RV_POST"; }; then _cr=0; else _cr=1; fi
+  elif [ "$RC" = "$_ce" ] && _rv_none && _has "$OUT" "$_cn"; then _cr=0; else _cr=1; fi
+  _le_judge "$_cl" "$_cmut" "$_cr"
+  _RVV=""; _RVKIT=0
+  rm -rf "$LDR" "$_lg" "$_cd" 2>/dev/null || true
+}
+_rv_note_line() { printf '%s\n' "$_rvn" | sed -n "${1}p"; }
+# the post-checks of the cells that merge
+_rv_post_oneact() {
+  _rvn="$(_land_note)"
+  [ "$(printf '%s\n' "$_rvn" | wc -l | tr -d ' ')" = 14 ] \
+    && [ "$(_rv_note_line 4)" = 'approved-by: owner-rev [authenticated: github-review]' ] \
+    && [ "$(_rv_note_line 5)" = 'go-by: owner-rev [authenticated: github-review]' ] \
+    && [ "$(_rv_note_line 11)" = "approval-token: \"forge-review:${_RVID:-5551}\"" ] \
+    && [ "$(_rv_note_line 14)" = 'go-act: review' ] \
+    && _has "$OUT" "GO = forge review ${_RVID:-5551} by owner-rev"
+}
+_rv_post_later() {   # SWAS-747: held by a later comment, then a typed GO: the approval's words and the later words, joined by a line feed
+  _rvn="$(_land_note)"
+  [ "$(printf '%s\n' "$_rvn" | wc -l | tr -d ' ')" = 16 ] \
+    && [ "$(_rv_note_line 14)" = 'go-act: separate' ] \
+    && [ "$(_rv_note_line 15)" = 'go-words: "GO, with the full security read but wait for the schema check"' ] \
+    && [ "$(_rv_note_line 16)" = "go-words-sha256: $(printf '%s\n%s' 'GO, with the full security read' 'but wait for the schema check' | _rv_sha)" ]
+}
+_rv_post_held() {
+  _rvn="$(_land_note)"
+  [ "$(printf '%s\n' "$_rvn" | wc -l | tr -d ' ')" = 16 ] \
+    && [ "$(_rv_note_line 4)" = 'approved-by: owner-rev [authenticated: github-review]' ] \
+    && [ "$(_rv_note_line 5)" = 'go-by: the owner [self-asserted]' ] \
+    && [ "$(_rv_note_line 14)" = 'go-act: separate' ] \
+    && [ "$(_rv_note_line 15)" = 'go-words: "GO, with the full security read"' ] \
+    && [ "$(_rv_note_line 16)" = "go-words-sha256: $(printf '%s' 'GO, with the full security read' | _rv_sha)" ]
+}
+_rv_post_plain() {   # a merged note with no go-act at all (today's 13 lines)
+  _rvn="$(_land_note)"
+  [ "$(printf '%s\n' "$_rvn" | wc -l | tr -d ' ')" = 13 ] && ! _has "$_rvn" 'go-act'
+}
+_rv_post_ctrl() {   # a body with newlines, a tab, ESC, a C1 character and a double quote: one line, spaces, the quote escaped
+  _rvn="$(_land_note)"
+  [ "$(printf '%s\n' "$_rvn" | wc -l | tr -d ' ')" = 16 ] \
+    && [ "$(_rv_note_line 15)" = 'go-words: "a b c d e \"q\""' ] \
+    && [ "$(printf '%s' "$_rvn" | LC_ALL=C tr -d '\001-\010\013\014\016-\037\177' | wc -c | tr -d ' ')" = "$(printf '%s' "$_rvn" | wc -c | tr -d ' ')" ] \
+    && [ "$(_rv_note_line 16)" = "go-words-sha256: $(printf '%s' "$_RV_CTRLJSON" | jq -j '.[0].body' | _rv_sha)" ]
+}
+_rv_post_long() {   # a 4800-byte body: capped at 1000 bytes on a UTF-8 boundary with the truncation mark; the hash is the raw body's
+  _rvn="$(_land_note)"; _rvw="$(_rv_note_line 15)"; _rvi="${_rvw#go-words: \"}"; _rvi="${_rvi%\"}"
+  [ "$(printf '%s' "$_rvi" | wc -c | tr -d ' ')" -le 1000 ] \
+    && [ "$(printf '%s' "$_rvi" | tail -c 14 | od -An -tx1 | tr -d ' \n')" = e280a65b7472756e63617465645d ] \
+    && { ! command -v iconv >/dev/null 2>&1 || printf '%s' "$_rvi" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; } \
+    && [ "$(_rv_note_line 16)" = "go-words-sha256: $(printf '%s' "$_RV_LONGJSON" | jq -j '.[0].body' | _rv_sha)" ]
+}
+_rv_post_bs() {   # a body of a, backslash, quote, b: the backslash is doubled before the quote is escaped, so the form is unambiguous
+  _rvn="$(_land_note)"
+  [ "$(_rv_note_line 15)" = 'go-words: "a\\\"b"' ] \
+    && [ "$(_rv_note_line 16)" = "go-words-sha256: $(printf '%s' 'a\"b' | _rv_sha)" ]
+}
+_rv_post_inert() {   # a body of shell syntax is stored as text and nothing ran
+  _rvn="$(_land_note)"
+  [ "$(_rv_note_line 15)" = 'go-words: "$(touch sentinel-727) `touch sentinel-727b` ; rm -rf sentinel-727c"' ] \
+    && [ ! -e "$LDR/c/sentinel-727" ] && [ ! -e "$LDR/c/sentinel-727b" ] && [ ! -e sentinel-727 ] && [ ! -e sentinel-727b ]
+}
 
 # _rec_case <label> <auth|base> <reviews-json-template> <author-login-json> <notice-reason> [approver]
 #   The shared REC-* driver. `@SHA@` in the template is replaced by the fixture's REAL full X sha, so

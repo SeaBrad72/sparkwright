@@ -902,6 +902,114 @@ selftest() {
   rm -rf "$D/trlay" 2>/dev/null || true
 
   # =====================================================================================
+  # SWAS-724 — `record --token-file`: the owner's GO words from a file, verbatim, never re-spelled. The agent guard refuses
+  # one bare word on a command line wherever it sits, so a GO whose words hold that word ("...the full security read...")
+  # could not be recorded through --token. R27 reads command lines, not file contents, and the line that runs this check
+  # carries no such word, so cell 1 writes it literally here. Own throwaway repo (an own ledger) under $D/tfroot:
+  #   repo/ the work tree · t/ the TMPDIR every cell runs with · out/ a directory under NEITHER root.
+  # Every refusal cell asserts rc 2, the loader's OWN sentence and a byte-identical ledger ref. A cell with a sed script is a
+  # MUTANT (M-TF1..4): it rewrites a throwaway COPY of the producer and passes only if the same refusal cell then FAILS.
+  # =====================================================================================
+  TFB="$D/tfroot"; TFR="$TFB/repo"; TFT="$TFB/t"; TFO="$TFB/out"; TF_V="$VERIFY"
+  rm -rf "$TFB"; mkdir -p "$TFR" "$TFT/.hid" "$TFO"
+  ( set -e; cd "$TFR"; git init -q -b main; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+    printf 'a\n' > f.txt; git add f.txt; git commit -qm 'token-file fixture' ) >/dev/null 2>&1 || { echo "FAIL: could not build the token-file fixture"; st=1; }
+  TFC="$(git -C "$TFR" rev-parse HEAD 2>/dev/null)" || TFC=none
+  tf_ledger() { git -C "$TFR" rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none; }
+  tf_rec() {   # <TMPDIR for the run> <record args...> -> _tf_rc, _tf_out
+    _tf_td="$1"; shift
+    if _tf_out="$( cd "$TFR" && TMPDIR="$_tf_td" $VSH "$TF_V" record --no-push --approved-sha "$TFC" --approved-by "solo maintainer" \
+          --gate promotion --rung Ordinary --class Ordinary --scope "branch/tf724" "$@" 2>&1 )"; then _tf_rc=0; else _tf_rc=$?; fi
+  }
+  tf_note() { git -C "$TFR" notes --ref=promotions show "$TFC" 2>/dev/null | grep -v '^recorded-at:' || true; }
+  tf_refused() {   # <TMPDIR> <needle> <record args...>: 0 only when rc 2 + the needle + the ledger ref unchanged
+    _tfr_td="$1"; _tfr_nd="$2"; shift 2
+    _tfr_pre="$(tf_ledger)"; tf_rec "$_tfr_td" "$@"; _tfr_post="$(tf_ledger)"
+    [ "$_tf_rc" = 2 ] && [ "$_tfr_pre" = "$_tfr_post" ] && printf '%s' "$_tf_out" | grep -qF -e "$_tfr_nd"
+  }
+  tf_cell() {   # <label> <TMPDIR> <needle> <record args...>
+    _tfc_l="$1"; shift
+    if tf_refused "$@"; then echo "PASS: $_tfc_l (rc 2, the loader's sentence, ledger untouched)"
+    else echo "FAIL: $_tfc_l: want rc 2 + '$2' + an untouched ledger; got rc $_tf_rc; out=$_tf_out"; st=1; fi
+  }
+  tf_mut() {   # <label> <sed script> <TMPDIR> <needle> <record args...>: the same refusal cell must FAIL against the mutant
+    _tfm_l="$1"; _tfm_s="$2"; shift 2
+    rm -rf "$D/tfmut"; mkdir -p "$D/tfmut/scripts" "$D/tfmut/conformance"
+    cp "$VERIFY" "$D/tfmut/orig.sh"; cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$D/tfmut/conformance/ci-classify-changes.sh" 2>/dev/null || true
+    sed "$_tfm_s" "$D/tfmut/orig.sh" > "$D/tfmut/scripts/promotion-verify.sh"
+    if cmp -s "$D/tfmut/orig.sh" "$D/tfmut/scripts/promotion-verify.sh"; then echo "FAIL: $_tfm_l: the mutant script changed nothing (it no longer matches the producer)"; st=1; return 0; fi
+    TF_V="$D/tfmut/scripts/promotion-verify.sh"
+    # killed only when the cell fails AND the mutant run RECORDED (rc 0), not merely failed for another reason;
+    # TF_MUT_WANT (when set) is the approval-token the mutant must have written into the note.
+    _tfm_dead=1
+    if tf_refused "$@"; then _tfm_dead=0
+    elif [ "$_tf_rc" != 0 ]; then _tfm_dead=0
+    elif [ -n "${TF_MUT_WANT:-}" ] && [ "$(tf_note | sed -n 's/^approval-token: //p')" != "$TF_MUT_WANT" ]; then _tfm_dead=0; fi
+    if [ "$_tfm_dead" = 0 ]; then echo "FAIL: $_tfm_l: the mutant SURVIVED, or failed for another reason (rc $_tf_rc; want rc 0, a recorded note${TF_MUT_WANT:+ with approval-token $TF_MUT_WANT}); out=$_tf_out"; st=1
+    else echo "PASS: $_tfm_l: the mutant is killed (the refusal cell fails against it and the mutant recorded)"; fi
+    TF_V="$VERIFY"
+  }
+
+  # Cell 1: the owner's words, with the R27 word, recorded from a file and read back byte-identical.
+  printf '%s\n' 'GO 717 design, with the full security read, as recommended' > "$TFT/r27"
+  tf_rec "$TFT" --token-file "$TFT/r27"
+  _tf_got="$(tf_note | sed -n 's/^approval-token: //p')"; _tf_want="\"$(cat "$TFT/r27")\""
+  if [ "$_tf_rc" = 0 ] && [ "$_tf_got" = "$_tf_want" ]; then echo "PASS: TF1: a token holding the R27 word records from a file, byte-identical in the note"
+  else echo "FAIL: TF1: want rc 0 and the note's approval-token == $_tf_want; got rc $_tf_rc, '$_tf_got'; out=$_tf_out"; st=1; fi
+  # Cell 2: parity. The same words (no R27 word) by --token and by --token-file write the same note bytes (but the timestamp).
+  printf '%s\n' 'GO: merge #724 parity' > "$TFT/par"
+  tf_rec "$TFT" --token 'GO: merge #724 parity'; _tf_rc1=$_tf_rc; _tf_n1="$(tf_note)"
+  tf_rec "$TFT" --token-file "$TFT/par"; _tf_n2="$(tf_note)"
+  if [ "$_tf_rc1" = 0 ] && [ "$_tf_rc" = 0 ] && [ -n "$_tf_n1" ] && [ "$_tf_n1" = "$_tf_n2" ]; then echo "PASS: TF2: --token and --token-file write byte-identical notes"
+  else echo "FAIL: TF2: rc $_tf_rc1/$_tf_rc; notes differ or are empty: [$_tf_n1] vs [$_tf_n2]"; st=1; fi
+
+  # Cell 3: the refusals. Fixtures are built here at run time (no literal control byte, NUL or secret shape in this file).
+  printf '%s\n' 'GO fine' > "$TFT/good"; ln -s "$TFT/good" "$TFT/link"
+  printf '%s\n' 'GO fine' > "$TFO/tok"; printf '%s\n' 'GO fine' > "$TFT/.hid/tok"
+  printf 'GO\nGO\n' > "$TFT/nl"; printf 'GO\n\n' > "$TFT/nl2"; printf 'GO\000x\n' > "$TFT/nul"
+  : > "$TFT/empty"; head -c 4097 /dev/zero | LC_ALL=C tr '\000' 'a' > "$TFT/big"
+  printf 'GO\001x\n' > "$TFT/ctl"; printf 'GO ghp_%036d\n' 0 > "$TFT/sec"
+  tf_cell "TF3a: --token (even empty) and --token-file together" "$TFT" "give the token one way" --token "" --token-file "$TFT/good"
+  tf_cell "TF3b: --token-file given twice" "$TFT" "was given twice" --token-file "$TFT/good" --token-file "$TFT/good"
+  tf_cell "TF3c: a symlink" "$TFT" "must not be a symlink" --token-file "$TFT/link"
+  tf_cell "TF3d: a path under neither the repo root nor TMPDIR" "$TFT" "must sit under the repo root" --token-file "$TFO/tok"
+  tf_cell "TF3e: a dot component below the root" "$TFT" "must sit under the repo root" --token-file "$TFT/.hid/tok"
+  tf_cell "TF3f: an embedded newline" "$TFT" "must hold exactly one line" --token-file "$TFT/nl"
+  tf_cell "TF3g: two trailing newlines" "$TFT" "must hold exactly one line" --token-file "$TFT/nl2"
+  tf_cell "TF3h: a NUL byte (mapped, then refused as a control character)" "$TFT" "control character" --token-file "$TFT/nul"
+  tf_cell "TF3i: an empty file" "$TFT" "must be 1..4096 bytes" --token-file "$TFT/empty"
+  tf_cell "TF3j: 4097 bytes" "$TFT" "must be 1..4096 bytes" --token-file "$TFT/big"
+  tf_cell "TF3k: a control byte" "$TFT" "control character" --token-file "$TFT/ctl"
+  tf_cell "TF3l: a secret shape" "$TFT" "token shape" --token-file "$TFT/sec"
+  tf_cell "TF3m: --token-file with no value" "$TFT" "needs a path" --token-file
+  # Cell 3 additions (reviewer Minors): a lone newline holds no content; a path with a non-printable byte; a dot component
+  # below the REPO root; a file under the repo root accepted (TMPDIR points elsewhere, so only the repo root admits it).
+  printf '\n' > "$TFT/lone"
+  tf_cell "TF3n: a file holding only a newline" "$TFT" "holds no content" --token-file "$TFT/lone"
+  _tf_badp="$TFT/bad$(printf '\001')name"; printf '%s\n' 'GO fine' > "$_tf_badp"
+  tf_cell "TF3o: a path with a non-printable byte" "$TFT" "printable ASCII" --token-file "$_tf_badp"
+  mkdir -p "$TFR/.dot" "$TFR/docs"; printf '%s\n' 'GO fine' > "$TFR/.dot/tok"; printf '%s\n' 'GO in repo' > "$TFR/docs/tok"
+  tf_cell "TF3p: a dot component below the repo root" "$TFO" "must sit under the repo root" --token-file "$TFR/.dot/tok"
+  tf_rec "$TFO" --token-file "$TFR/docs/tok"
+  if [ "$_tf_rc" = 0 ] && [ "$(tf_note | sed -n 's/^approval-token: //p')" = '"GO in repo"' ]; then echo "PASS: TF3q: a file under the repo root is accepted (TMPDIR elsewhere)"
+  else echo "FAIL: TF3q: want rc 0 and 'GO in repo'; got rc $_tf_rc; out=$_tf_out"; st=1; fi
+  # Cell 4: the boundary. A 4095-byte line plus its newline is exactly 4096 raw bytes: accepted, the line verbatim.
+  head -c 4095 /dev/zero | LC_ALL=C tr '\000' 'a' > "$TFT/edge"; printf '\n' >> "$TFT/edge"
+  tf_rec "$TFT" --token-file "$TFT/edge"
+  _tf_got="$(tf_note | sed -n 's/^approval-token: //p')"; _tf_want="\"$(head -c 4095 "$TFT/edge")\""
+  if [ "$_tf_rc" = 0 ] && [ "$_tf_got" = "$_tf_want" ]; then echo "PASS: TF4: a 4096-byte file (4095-byte line + newline) records, the line verbatim"
+  else echo "FAIL: TF4: want rc 0 and the 4095-byte line verbatim; got rc $_tf_rc; out=$_tf_out"; st=1; fi
+  # Mutants. TF_MUT_WANT is reset first so an inherited environment value cannot leak into M-TF1 and M-TF2.
+  TF_MUT_WANT=
+  tf_mut "M-TF1: the sentinel removed (a plain command substitution eats every trailing newline)" 's/; printf x)$/)/;s/^  _tf_v=\${_tf_v%x}$/  _tf_v=$_tf_v/' "$TFT" "must hold exactly one line" --token-file "$TFT/nl2"
+  tf_mut "M-TF2: the containment test removed" 's/^  _pv_tf_contained "\$_tf_phys" \\$/  true \\/' "$TFT" "must sit under the repo root" --token-file "$TFO/tok"
+  TF_MUT_WANT='"GOx"'
+  tf_mut "M-TF3: the NUL mapping removed (a NUL is dropped silently: GOx)" 's/ | LC_ALL=C tr .\\000. .\\001.; printf x)$/; printf x)/' "$TFT" "control character" --token-file "$TFT/nul"
+  TF_MUT_WANT=
+  tf_mut "M-TF4: the secret-shape refusal removed" 's/^  if _pv_tf_secret "\$_tf_v"; then$/  if false; then/' "$TFT" "token shape" --token-file "$TFT/sec"
+  rm -rf "$D/tfmut" "$TFB" 2>/dev/null || true
+
+  # =====================================================================================
   # SWAS-207b — `land` in a SOLO-DECLARED repo. The base (origin's main) carries MERGE_RELATIONSHIP=solo, so the forge shim answers
   # NO reviews (one account) and `land` still records, confirms on origin and merges: step 0b (SoD) and 0d(ii) (the forge
   # pre-derivation) are skipped, `--go-by`, scope == ref, the whole-note match, the origin confirm and the vet stay, and step 2b
@@ -2827,6 +2935,91 @@ EOF
   lsync "$LF/B"
   if [ "$_anc" = 0 ] && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "twin-origin-wins $ASHA"; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync L8(d) (+): the same twin with the SAME go-by is a free-text twin -> twin-origin-wins (the identity field is not a refuse-all)" "anc=$_anc rc=$LRC out=$LOUT"
+
+  # SWAS-727 (test 13): `sync` gains two shapes, each the 13 lines plus lines after recorded-at: a ONE-ACT note (14 lines, `go-act: review`, one
+  # authenticated login in go-by and approved-by, the token exactly "forge-review:<digits>") and a HELD-THEN-TYPED note (16 lines, `go-act: separate`,
+  # `go-words` one quoted line of at most 1000 bytes, `go-words-sha256` 64 lowercase hex). A legacy note syncs unchanged (L8(a) above). The notes are
+  # written DIRECTLY (bypassing record) from a real record's body, so each cell damages exactly one thing. The one-act shape also needs the forge to
+  # re-derive its label (V7), so those cells put a `gh` shim on PATH that answers one APPROVED review by owner-rev on the sha under test.
+  lgo() {  # <clone> <sha> <sed-script> [<line to append>...]
+    _gc="$1"; _gs="$2"; _gsed="$3"; shift 3
+    { git -C "$_gc" notes --ref="$LR" show "$_gs" | sed "$_gsed"; for _gl in "$@"; do printf '%s\n' "$_gl"; done; } > "$LF/go.txt"
+    git -C "$_gc" notes --ref="$LR" add -f -F "$LF/go.txt" "$_gs"
+  }
+  _H64=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  _GH727="$LROOT/gh727"; mkdir -p "$_GH727"
+  printf '%s\n' '#!/bin/sh' 'd=$(dirname "$0")' 'case "$*" in' \
+    '  */reviews*) printf '"'"'APPROVED\t%s\towner-rev\tUser\t5551\n'"'"' "$(cat "$d/sha")" ;;' \
+    '  *) printf '"'"'SeaBrad72\n'"'"' ;;' 'esac' > "$_GH727/gh"
+  chmod +x "$_GH727/gh"
+  _RVSED='s/^approved-by: .*/approved-by: owner-rev [authenticated: github-review]/; s/^go-by: .*/go-by: owner-rev [authenticated: github-review]/; s/^approval-token: .*/approval-token: "forge-review:5551"/; s/^scope: .*/scope: PR #260/'
+  _HSED='s/^go-by: .*/go-by: owner-login [self-asserted]/'
+  # (+) the held-then-typed shape: 16 lines, accepted and published byte-identical
+  lfix s13held; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate' 'go-words: "GO, with the full security read"' "go-words-sha256: $_H64"
+  _l13n="$(git -C "$LF/B" notes --ref="$LR" show "$BSHA" | wc -l | tr -d ' ')"
+  if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
+  lsync "$LF/B"
+  if [ "$_anc" = 0 ] && [ "$_l13n" = 16 ] && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "published $BSHA" \
+     && [ "$(git --git-dir="$LF/remote.git" notes --ref="$LR" show "$BSHA" | sed -n '14p')" = 'go-act: separate' ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "sync 13(a) (+): a held-then-typed 16-line note (64-hex hash, one-line go-words) is accepted and published" "anc=$_anc lines=$_l13n rc=$LRC out=$LOUT"
+  # (−) the same note damaged in exactly one place: a 63-char hash, an uppercase hash, 1010 bytes of words, unquoted words, a bare go-act line, an unknown go-act, no named giver
+  lfix s13h63; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate' 'go-words: "GO"' "go-words-sha256: ${_H64%?}"
+  lvcase "sync 13(b) (−): a 63-character go-words-sha256 is refused naming it, nothing moved" 'go-words-sha256'
+  lfix s13hup; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate' 'go-words: "GO"' "go-words-sha256: $(printf '%s' "$_H64" | tr a-f A-F)"
+  lvcase "sync 13(b) (−): an uppercase go-words-sha256 is refused naming it, nothing moved" 'go-words-sha256'
+  lfix s13hlong; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate' "go-words: \"$(awk 'BEGIN { for (i = 0; i < 1010; i++) printf "x" }')\"" "go-words-sha256: $_H64"
+  lvcase "sync 13(b) (−): go-words of 1010 bytes is refused naming go-words, nothing moved" 'go-words'
+  lfix s13hunq; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate' 'go-words: GO unquoted' "go-words-sha256: $_H64"
+  lvcase "sync 13(b) (−): unquoted go-words is refused naming go-words, nothing moved" 'go-words'
+  lfix s13hbare; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: separate'
+  lvcase "sync 13(b) (−): go-act: separate with no go-words lines (14 lines) is refused as a grammar break, nothing moved" 'grammar'
+  lfix s13hunk; lgo "$LF/B" "$BSHA" "$_HSED" 'go-act: maybe'
+  lvcase "sync 13(b) (−): an unknown go-act value is refused naming go-act, nothing moved" 'go-act'
+  lfix s13hnone; lgo "$LF/B" "$BSHA" 's/^zzz//' 'go-act: separate' 'go-words: "GO"' "go-words-sha256: $_H64"
+  lvcase "sync 13(b) (−): a held-then-typed note with no named GO-giver is refused naming go-by, nothing moved" 'go-by'
+  # (+) the one-act shape under the three conditions (go-act review, both labels authenticated, go-by = approved-by) with the forge answering
+  lfix s13rev; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED" 'go-act: review'
+  _l13n="$(git -C "$LF/B" notes --ref="$LR" show "$BSHA" | wc -l | tr -d ' ')"
+  if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lsync "$LF/B"; PATH="$_ppath"
+  if [ "$_anc" = 0 ] && [ "$_l13n" = 14 ] && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "published $BSHA" \
+     && [ "$(git --git-dir="$LF/remote.git" notes --ref="$LR" show "$BSHA" | sed -n '14p')" = 'go-act: review' ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "sync 13(c) (+): a one-act 14-line note (go-act review, both labels authenticated, go-by = approved-by, token forge-review:<digits>) is accepted and published" "anc=$_anc lines=$_l13n rc=$LRC out=$LOUT"
+  # (−) the one-act shape is not a way to publish a label the forge does not give: the same note with NO forge answer is refused at V7 (approved-by)
+  lfix s13revnogh; lgo "$LF/B" "$BSHA" "$_RVSED" 'go-act: review'
+  lvcase "sync 13(c) (−): the one-act note when the forge does not show the review (no gh shim) is refused naming approved-by" 'approved-by'
+  # (−) each of the three conditions, one at a time (the forge answers throughout, so V7 is not the cause)
+  lfix s13revdiff; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED; s/^go-by: .*/go-by: someone-else [authenticated: github-review]/" 'go-act: review'
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lvcase "sync 13(d) (−): a review-shaped note whose go-by differs from approved-by is refused naming go-by, nothing moved" 'go-by'; PATH="$_ppath"
+  lfix s13revself; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED; s/^go-by: .*/go-by: owner-rev [self-asserted]/" 'go-act: review'
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lvcase "sync 13(d) (−): a review-shaped note whose go-by is [self-asserted] is refused naming go-by, nothing moved" 'go-by'; PATH="$_ppath"
+  lfix s13revtok; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED; s/^approval-token: .*/approval-token: \"GO: owner said so\"/" 'go-act: review'
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lvcase "sync 13(d) (−): a review-shaped note whose token is not forge-review:<digits> is refused naming approval-token, nothing moved" 'approval-token'; PATH="$_ppath"
+  lfix s13revtokx; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED; s/^approval-token: .*/approval-token: \"forge-review:55x1\"/" 'go-act: review'
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lvcase "sync 13(d) (−): a review-shaped note whose review id is not digits is refused naming approval-token, nothing moved" 'approval-token'; PATH="$_ppath"
+  lfix s13revmore; printf '%s\n' "$BSHA" > "$_GH727/sha"; lgo "$LF/B" "$BSHA" "$_RVSED" 'go-act: review' 'go-words: "GO"'
+  _ppath="$PATH"; PATH="$_GH727:$PATH"; lvcase "sync 13(d) (−): a one-act note with a 15th line is refused as a grammar break, nothing moved" 'grammar'; PATH="$_ppath"
+
+  # SWAS-727: `trace` prints "GO = forge review <id> by <login>" for a one-act note, and nothing extra for any other (the prefix stays byte-stable).
+  _T727="$D/trace727"; mkdir -p "$_T727"
+  ( cd "$_T727" && git init -q && git config user.email t@e && git config user.name t && git config commit.gpgsign false \
+      && printf 'a\n' > f.txt && git add f.txt && git commit -qm base ) >/dev/null 2>&1
+  _t727s="$(git -C "$_T727" rev-parse HEAD)"
+  ( cd "$_T727" && $VSH "$VERIFY" record --no-push --approved-sha "$_t727s" --approved-by owner-rev --gate release-candidate \
+      --rung RC --class control-plane --scope "PR #260" --token GO --go-by owner >/dev/null 2>&1 )
+  _t727o="$( cd "$_T727" && $VSH "$VERIFY" trace --ref "$_t727s" 2>&1 )" && _t727c=0 || _t727c=$?
+  if [ "$_t727c" = 0 ] && ! printf '%s' "$_t727o" | grep -q 'GO = forge review'; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "trace 727 (+): an ordinary note prints no 'GO = forge review' tail" "rc=$_t727c out=$_t727o"
+  { git -C "$_T727" notes --ref=promotions show "$_t727s" | sed "$_RVSED"; printf '%s\n' 'go-act: review'; } > "$_T727/.n"
+  git -C "$_T727" notes --ref=promotions add -f -F "$_T727/.n" "$_t727s"
+  _t727o="$( cd "$_T727" && $VSH "$VERIFY" trace --ref "$_t727s" 2>&1 )" && _t727c=0 || _t727c=$?
+  if [ "$_t727c" = 0 ] && printf '%s' "$_t727o" | grep -qF 'go-by: owner-rev [authenticated: github-review]  GO = forge review 5551 by owner-rev'; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "trace 727 (+): a one-act note prints 'GO = forge review 5551 by owner-rev' at the end of the line" "rc=$_t727c out=$_t727o"
+  { git -C "$_T727" notes --ref=promotions show "$_t727s" | sed 's/^approval-token: .*/approval-token: "forge-review:55x1"/'; } > "$_T727/.n"
+  git -C "$_T727" notes --ref=promotions add -f -F "$_T727/.n" "$_t727s"
+  _t727o="$( cd "$_T727" && $VSH "$VERIFY" trace --ref "$_t727s" 2>&1 )" && _t727c=0 || _t727c=$?
+  if [ "$_t727c" = 0 ] && ! printf '%s' "$_t727o" | grep -q 'GO = forge review'; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "trace 727 (−): a go-act review note whose token is not digits prints no GO tail (nothing is invented)" "rc=$_t727c out=$_t727o"
 
   # (−) T2-8: a non-fast-forward RACE. A holds a free-text twin of ASHA (so the run DROPS content and
   # makes a backup) plus a new record on a2; the racer (clone B, via A's reference-transaction hook)

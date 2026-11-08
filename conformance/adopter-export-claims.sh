@@ -108,7 +108,40 @@ registry_out() { ( cd "$1" && sh conformance/claims-registry.sh 2>&1 ); }
 #    prints `FAIL: <id> - ...` / `UNVERIFIED: <id> - ...` one per non-passing claim; its structural
 #    failures (a missing registry, a duplicate id) print a non-id second word, which simply never
 #    intersects the carve set.
+#    An `N-A: <id> - ...` line (SWAS-24: a verifier exited 0 but declared it verified nothing here) is NEITHER failing NOR passing,
+#    so it is deliberately not matched here: it can neither red face-0 nor satisfy face-r's carve-class assertion.
 failing_ids() { printf '%s\n' "$1" | awk '$1 == "FAIL:" || $1 == "UNVERIFIED:" { print $2 }'; }
+
+# ── na_ids <registry-output> : the claim ids the registry rendered N-A (verified nothing here). Informational only.
+na_ids() { printf '%s\n' "$1" | awk '$1 == "N-A:" { print $2 }'; }
+
+# TWIN of verify.sh's is_self_skip, copied verbatim (verify.sh runs code at load, so it cannot be sourced). The selftest locks this
+# body byte-identical to verify.sh's, so the check below cannot keep grading against a stale predicate.
+is_self_skip() {  # <captured-output> — 0 when the child DECLARED it verified nothing here
+  printf '%s\n' "$1" | grep -Eqi '^(N/A([^A-Za-z0-9]|$)|SKIP:|[A-Za-z0-9_.-]+:[[:space:]]*N/A([^A-Za-z0-9]|$))' || return 1
+  # ZERO-COUNT REFINEMENT (VERIFY-SKIP-IDIOM-RESIDUAL, face ii): a verdict line that SELF-REPORTS zero
+  # verified items suppresses nothing — `OK (0 profile(s) … checked)` is a skip wearing a verdict, and
+  # C6's own rule ("N-A means this check verified NOTHING here") says so. Dropped BEFORE the verdict
+  # test, so a run with a zero-count line AND a real one still passes on the real one.
+  # THE KEY IS THE WHOLE SENTENCE SHAPE, not a bare `(0 `: MEASURED, conformance/*.sh emits `(0 ` on 37
+  # lines — `(0 rows)`, `(0 find spawns…)`, `(0 foreign lines…)`, `(0 files)`, `(0 occurrence(s))` — and
+  # a loose key would demote every row that prints one. ZERO of the 37 match this key. That tightness is
+  # also what protects mechanism 3: a false N-A here would inflate the very `na` the CI walks' floor reads.
+  ! printf '%s\n' "$1" | grep -Ev '\(0 [A-Za-z-]+\(s\)[^)]*checked' \
+    | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'
+}
+
+# is_self_skip_body <file> / twin_lock <file-a> <file-b>: the same lock as claims-registry.sh's cr_twin_lock.
+is_self_skip_body() { awk '/^is_self_skip\(\) *\{/ { f = 1 } f { print } f && /^}$/ { exit }' "$1"; }
+twin_lock() {
+  [ -r "$1" ] || { echo "unreadable: $1"; return 1; }
+  [ -r "$2" ] || { echo "unreadable: $2"; return 1; }
+  _tl_a=$(is_self_skip_body "$1"); _tl_b=$(is_self_skip_body "$2")
+  [ "$(printf '%s\n' "$_tl_a" | wc -l | tr -d ' ')" -ge 3 ] || { echo "no is_self_skip body (3+ lines) in $1"; return 1; }
+  [ "$(printf '%s\n' "$_tl_b" | wc -l | tr -d ' ')" -ge 3 ] || { echo "no is_self_skip body (3+ lines) in $2"; return 1; }
+  [ "$_tl_a" = "$_tl_b" ] || { echo "is_self_skip bodies differ: $1 vs $2"; return 1; }
+  return 0
+}
 
 # ── carve_set <kit-claims-tsv> <face-0 tree> : the DERIVED carve list — every claim id the kit registers
 #    that the kit-marked export does NOT. Derived from the two artifacts, never declared here.
@@ -166,6 +199,8 @@ ae_verdict() {  # <armed 0|1> <kit-claims-tsv> <face-0 tree> <face-r tree>
   _rc0=0; _out0=$(registry_out "$_t0") || _rc0=$?
   if [ "$_rc0" -eq 0 ]; then
     echo "adopter-export-claims: face-0 PASS -- the KIT-MARKED export's own claims-registry passes ($_n0 claim(s) $SEP rc 0)"
+    _na0=$(na_ids "$_out0" | tr '\n' ' ')
+    [ -z "$_na0" ] || echo "adopter-export-claims: face-0 N-A ids seen -- $_na0 -- these verified nothing on the export; rc 0 does not mean they hold"
   else
     echo "adopter-export-claims: FAIL -- face-0, the KIT-MARKED export's own claims-registry does NOT pass ($_n0 claim(s) $SEP rc $_rc0). This is the orphaned maintainer-only claim guard: carve the claim in scripts/adopter-export.sh, or fix its verifier so it holds on an export. Claim(s) named: $(failing_ids "$_out0" | tr '\n' ' ')"
     printf '%s\n' "$_out0" | sed 's/^/    | /'
@@ -346,15 +381,41 @@ selftest() {
     echo "PASS: selftest -- and says N/A in the line-anchored idiom"
   else echo "FAIL: selftest -- the adopter face did not render the N/A idiom"; printf '%s\n' "$_naout" | sed 's/^/    /'; sfail=1; fi
 
-  # The predicate below is COPIED VERBATIM from verify.sh's is_self_skip (C6). If that idiom ever
-  # changes, this leg is what tells us this check silently started rendering PASS instead of N-A.
-  if printf '%s\n' "$_naout" | grep -Eqi '^(N/A([^A-Za-z0-9]|$)|SKIP:|[A-Za-z0-9_.-]+:[[:space:]]*N/A([^A-Za-z0-9]|$))' &&
-     ! printf '%s\n' "$_naout" | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'; then
+  # The predicate below is the FULL TWIN of verify.sh's is_self_skip (C6), defined above and locked byte-identical to verify.sh's
+  # by the lock cell below. If that idiom ever changes, the lock is what tells us this check silently started rendering PASS
+  # instead of N-A.
+  if is_self_skip "$_naout"; then
     echo "PASS: selftest -- the N/A output renders N-A under verify.sh's C6 classifier (never PASS)"
   else
     echo "FAIL: selftest -- the N/A output does NOT satisfy verify.sh's is_self_skip predicate"
     printf '%s\n' "$_naout" | sed 's/^/    /'; sfail=1
   fi
+
+  # ── THE TWIN LOCK: this file's is_self_skip body must equal verify.sh's, byte for byte, non-empty and 3+ lines.
+  _vsh=$(dirname "$_self")/verify.sh
+  if _lk=$(twin_lock "$_vsh" "$_self"); then echo "PASS: selftest -- is_self_skip is the locked twin of verify.sh's"
+  else echo "FAIL: selftest -- is_self_skip is not verify.sh's twin: $_lk"; sfail=1; fi
+  is_self_skip_body "$_self" > "$W/tw-a"; { echo "# h"; cat "$W/tw-a"; } > "$W/tw-a.sh"
+  sed 's/SKIP:/SKIq:/' "$W/tw-a.sh" > "$W/tw-b.sh"
+  sed 's/^is_self_skip/is_self_skip_x/' "$W/tw-a.sh" > "$W/tw-r.sh"
+  if twin_lock "$W/tw-a.sh" "$W/tw-b.sh" >/dev/null; then echo "FAIL: selftest -- the twin lock passed one byte of drift"; sfail=1
+  else echo "PASS: selftest -- the twin lock reds on one byte of drift"; fi
+  if twin_lock "$W/tw-r.sh" "$W/tw-r.sh" >/dev/null; then echo "FAIL: selftest -- the twin lock passed two renamed (empty) bodies"; sfail=1
+  else echo "PASS: selftest -- the twin lock reds when the function is renamed"; fi
+  if twin_lock "$W/no-such-verify.sh" "$W/tw-a.sh" >/dev/null; then echo "FAIL: selftest -- the twin lock passed an unreadable verify.sh"; sfail=1
+  else echo "PASS: selftest -- the twin lock reds on an unreadable verify.sh"; fi
+
+  # ── N-A IS NEITHER FAILING NOR PASSING (SWAS-24). failing_ids ignores an `N-A:` line; face-0 lists the N-A ids it saw; and a
+  # face-r whose only line for a carved id is `N-A:` does not satisfy the carve-class assertion.
+  _fids=$(failing_ids "$(printf 'N-A: beta -- x\nFAIL: gamma -- y\nUNVERIFIED: delta -- z\nPASS: alpha\n')" | tr '\n' ' ')
+  if [ "$_fids" = "gamma delta " ]; then echo "PASS: selftest -- failing_ids keeps FAIL: and UNVERIFIED: only (N-A: is neither)"
+  else echo "FAIL: selftest -- failing_ids returned [$_fids], want [gamma delta ]"; sfail=1; fi
+  ae_fx "$W/f0na" 'echo "PASS: alpha"; echo "N-A: beta -- nothing to verify here"; exit 0' alpha beta
+  ae_expect "a face-0 N-A row still exits the check at rc 0" 0 1 "$W/kit.tsv" "$W/f0na" "$W/fr"
+  ae_says "and face-0 lists the N-A ids it saw" "N-A ids seen -- beta" 1 "$W/kit.tsv" "$W/f0na" "$W/fr"
+  ae_fx "$W/frna" 'echo "N-A: drift-watch -- nothing to verify here"; exit 1' alpha beta drift-watch golden-path
+  ae_expect "a face-r whose only line for a carved id is N-A does not pass" 1 1 "$W/kit.tsv" "$W/f0" "$W/frna"
+  ae_says "and says zero carve-class claims were named" "ZERO carve-class" 1 "$W/kit.tsv" "$W/f0" "$W/frna"
 
   if [ "$sfail" = 0 ]; then
     echo "OK: adopter-export-claims selftest (both faces asserted at their true polarities, the"

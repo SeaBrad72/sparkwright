@@ -17,17 +17,17 @@ REF_ADOPTER_GATES="profiles/adopter-gates.yml"  # B6 board/loop gates; the singl
 REF_ADOPTER_TRACKER_GATES="profiles/adopter-tracker-gates.yml"  # TBG-TRUSTED-JOB; pull_request_target, contents: read
 KIT_WORKFLOWS=".github/workflows"                         # the workflows the kit itself runs
 
-# has_uses <workflow>: 0 if the file declares at least one real `uses:` step.
-has_uses() { grep -Eq '^[[:space:]]*-?[[:space:]]*uses:' "$1"; }
+# has_uses <workflow>: 0 if uses_scan counts a `uses` key outside block bodies (plain form or one of the refused spellings it lists), 1 if none, 2 if the scan itself failed (S6).
+has_uses() { _hs=$(uses_scan "$1") || return 2; _hu=$(printf '%s\n' "$_hs" | sed -n 's/^C //p'); [ "${_hu#* }" -gt 0 ]; }
 
 # check_pinned <workflow>: print PASS/FAIL per `uses:`; return 1 if any is not a 40-hex SHA.
-# Extraction is comment-safe: only lines whose YAML key is `uses:` (optionally after `- `) count,
-# so a "# pin uses: to a SHA" guidance COMMENT is never mistaken for a real action ref. Trailing
-# `# vX` comments are stripped before reading the ref (awk's last field).
+# Extraction is comment-safe: only plain-form `uses:` lines are read as refs (uses_scan skips comments and block bodies), so a guidance COMMENT is never an action ref; a `uses` key it counts in any other spelling is a FAIL.
+# uses_scan (SWAS-554, below) reads a body to the measured key column, as check_yaml_forms does in ci-gates.sh.
+# Trailing `# vX` comments are stripped before reading the ref. SWAS-554: a `uses` in a form the plain reader cannot see (flow-style, quoted key, space before the colon) is a FAIL, not a skipped line.
 check_pinned() {
   wf=$1; f=0
   if [ ! -f "$wf" ]; then echo "FAIL: missing $wf"; return 1; fi
-  refs=$(grep -E '^[[:space:]]*-?[[:space:]]*uses:' "$wf" | sed 's/#.*//' | awk '{print $NF}')
+  _us=$(uses_scan "$wf") || { echo "FAIL: $wf: the uses scan did not run (an unreadable file or a broken awk is not 'no actions to pin')"; return 1; }; refs=$(printf '%s\n' "$_us" | sed -n 's/^R //p'); _uc=$(printf '%s\n' "$_us" | sed -n 's/^C //p'); if [ "${_uc% *}" != "${_uc#* }" ]; then echo "FAIL: $wf: a uses: is written in a form this check cannot read (flow-style, quoted key or a space before the colon); write it as a plain block key"; return 1; fi
   if [ -z "$refs" ]; then echo "FAIL: no uses: found in $wf"; return 1; fi
   for r in $refs; do
     case "$r" in
@@ -49,7 +49,7 @@ check_pinned() {
 check_target() {
   _wf=$1; _strict=$2
   if [ ! -f "$_wf" ]; then echo "FAIL: missing $_wf"; return 1; fi
-  if ! has_uses "$_wf"; then
+  _hr=0; has_uses "$_wf" || _hr=$?; if [ "$_hr" = 2 ]; then echo "FAIL: $_wf: the uses scan did not run (an unreadable file or a broken awk is not 'no actions to pin')"; return 1; fi; if [ "$_hr" != 0 ]; then
     if [ "$_strict" = 1 ]; then echo "FAIL: $_wf declares no uses: (expected the canonical reference to pin actions)"; return 1; fi
     echo "OK: $_wf (no actions to pin)"; return 0
   fi
@@ -74,6 +74,30 @@ check_fleet() {
     check_target "$_p/ci.yml" 1 || _ffail=1
   done
   return $_ffail
+}
+
+# uses_scan <workflow> (SWAS-554): "R <ref>" per plain-form `uses:` line, then "C <plain> <any>". Block-scalar bodies (`|` or `>` under any key) are skipped: a body ends at the first
+# non-blank line indented at or below the MEASURED column of its key (for `- run: |` the key's column, not the dash's), the same rule as check_yaml_forms in ci-gates.sh. Whole-line
+# comments are dropped and a trailing comment is cut. plain = lines of the form `[- ]uses: <ref>`. any = plain lines plus every line that, after an optional `- `, has `uses` (any case, optionally
+# quoted, optional space before the colon) at a KEY position (the line start, or right after a `{`, `[` or `,`), where a key position may be preceded by any run of `? `, tag (`!...`) and anchor (`&...`)
+# prefixes; or a quoted key holding a backslash at a key position (an escape can spell uses); or a line that opens with `?`, `&`, `*` or `!`; or any `!` or `&` right after `{`, `[` or `,` (whatever follows it,
+# so a verbatim tag with a comma cannot hide a key). A `${{ ... }}` expression is replaced by one letter first, so `${{ !cancelled() }}` is no tag. A quoted VALUE that merely mentions `uses:` is not at a key position and does not count (a quoted value with a brace before it still would: fails closed).
+uses_scan() {
+  LC_ALL=C awk '
+    { l = $0; sub("\015$", "", l) }
+    inb { if (l ~ /^[ \t]*$/) next; match(l, /^[ \t]*/); if (RLENGTH > bk) next; inb = 0 }
+    l ~ /^[ \t]*#/ { next }
+    { match(l, /^[ \t]*/); col = RLENGTH; t = substr(l, col + 1); dcol = col
+      if (t ~ /^-[ \t]+/) { sub(/^-[ \t]+/, "", t); col = length(l) - length(t) }
+      if (t ~ /^[|>][-+0-9]*[ \t]*(#.*)?$/) { inb = 1; bk = dcol }
+      else if (t ~ /^[^ \t]+:[ \t]*[|>][-+0-9]*[ \t]*(#.*)?$/) { inb = 1; bk = col }
+      c = t; sub(/[ \t]+#.*$/, "", c)
+      while ((p = index(c, "${{")) > 0) { q = index(substr(c, p), "}}"); if (q == 0) { c = substr(c, 1, p - 1); break }; c = substr(c, 1, p - 1) "X" substr(c, p + q + 1) }  # an expression like ${{ !cancelled() }} is not a tag at a key position
+      lc = tolower(c)
+      isplain = (l ~ /^[[:space:]]*-?[[:space:]]*uses:/)
+      if (isplain || lc ~ /(^|[{,[][ \t]*)([?][ \t]+|[!&][^ \t,{}]*[ \t]+)*["\047]?uses["\047]?[ \t]*:/ || c ~ /(^|[{,[][ \t]*)([?][ \t]+|[!&][^ \t,{}]*[ \t]+)*["\047][^"\047]*\\[^"\047]*["\047][ \t]*:/ || c ~ /^\?([ \t]|$)/ || c ~ /^[&*!]/ || c ~ /[{,[][ \t]*[!&]/) any++
+      if (isplain) { plain++; sub(/#.*/, "", l); n = split(l, w, /[ \t]+/); while (n > 0 && w[n] == "") n--; print "R " w[n] } }
+    END { print "C " plain + 0, any + 0 }' "$1"
 }
 
 # check_labels <file>...: label coherence (ACTION-PIN-COHERENCE, #803). Read every
@@ -234,6 +258,83 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "FAIL: selftest — label (f) CRLF handling wrong"; sfail=1
   fi
 
+  # SWAS-554 (design §7): a `uses` written as a flow mapping, a quoted key, a key with a space before the colon, or inside a flow sequence is REFUSED, not skipped.
+  # Each fixture holds a pinned plain step too, so the old line reader passed it; a cell that stays green with the refusal removed is a defect.
+  pin_yf=1111111111111111111111111111111111111111
+  yn=0
+  for ysp in '- {uses: x@main}' '- "uses": x@main' "- 'uses': x@main" '- uses : x@main' 'steps: [{uses: x@main}]'; do
+    yn=$((yn + 1))
+    printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      %s\n' "$pin_yf" "$ysp" > "$lc/form$yn.yml"
+    yo=$(check_pinned "$lc/form$yn.yml" 2>&1) && yrc=0 || yrc=1
+    if [ "$yrc" -ne 0 ] && printf '%s' "$yo" | grep -q "form$yn.yml: a uses: is written in a form this check cannot read"; then
+      echo "PASS: selftest — AP$yn yaml form ($ysp) refused, not skipped"
+    else
+      echo "FAIL: selftest — AP$yn yaml form ($ysp) was not refused"; sfail=1
+    fi
+  done
+  # a file whose ONLY uses is flow-style is not "no actions to pin": the kit-workflow (strict=0) path must FAIL too.
+  printf 'jobs:\n  x:\n    steps:\n      - {uses: x@main}\n' > "$lc/onlyflow.yml"
+  if check_target "$lc/onlyflow.yml" 0 >/dev/null 2>&1; then echo "FAIL: selftest — a file with only a flow-style uses passed as no actions to pin"; sfail=1; else echo "PASS: selftest — AP6 a file with only a flow-style uses fails (not vacuously pinned)"; fi
+  # the in-body positive: uses: text inside a run: | body (any depth, one flow-style line among it) is shell text, not a step; a key right after the body (column 8 of a `- run:` step) ends it
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      - run: |\n          echo hi\n          uses: x@v4\n          - {uses: y@main}\n        shell: bash\n' "$pin_yf" > "$lc/inbody.yml"
+  if check_pinned "$lc/inbody.yml" >/dev/null 2>&1; then echo "PASS: selftest — AP7 uses: text inside a run: body is skipped"; else echo "FAIL: selftest — uses: text inside a run: body wrongly read"; sfail=1; fi
+  # the body-end differential: the same text AFTER the body ends (a column-8 key, then a flow-style uses at column 8) is read, and refused
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      - run: |\n          echo hi\n        env: {uses: y@main}\n' "$pin_yf" > "$lc/afterbody.yml"
+  if check_pinned "$lc/afterbody.yml" >/dev/null 2>&1; then echo "FAIL: selftest — a flow-style uses after a body ended was skipped"; sfail=1; else echo "PASS: selftest — AP8 a flow-style uses right after a body is read and refused"; fi
+  # AP9-AP12 (S4, R7): spellings the first scan did not count; each fixture holds a pinned plain step too, so the old reader passed it
+  yn=8
+  for ysp in '- "u\x73es": evil/a@main' '- ? uses' '- *u : x' '- Uses: evil/a@main'; do
+    yn=$((yn + 1))
+    printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      %s\n' "$pin_yf" "$ysp" > "$lc/form$yn.yml"
+    case "$ysp" in '- ? uses') printf '        : evil/a@main\n' >> "$lc/form$yn.yml" ;; esac
+    yo=$(check_pinned "$lc/form$yn.yml" 2>&1) && yrc=0 || yrc=1
+    if [ "$yrc" -ne 0 ] && printf '%s' "$yo" | grep -q "form$yn.yml: a uses: is written in a form this check cannot read"; then
+      echo "PASS: selftest — AP$yn yaml form ($ysp) refused, not skipped"
+    else
+      echo "FAIL: selftest — AP$yn yaml form ($ysp) was not refused"; sfail=1
+    fi
+  done
+  # AP17-AP20 (security F2): a tag, an explicit-key marker or an anchor before the key, and a backslash-quoted key after { or ,
+  yn=16
+  for ysp in '- !!str uses: evil/a@main' '- {? uses: evil/a@main}' '- {"u\x73es": evil/a@main}' '- {a: b, &k uses: x}'; do
+    yn=$((yn + 1))
+    printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      %s\n' "$pin_yf" "$ysp" > "$lc/form$yn.yml"
+    yo=$(check_pinned "$lc/form$yn.yml" 2>&1) && yrc=0 || yrc=1
+    if [ "$yrc" -ne 0 ] && printf '%s' "$yo" | grep -q "form$yn.yml: a uses: is written in a form this check cannot read"; then
+      echo "PASS: selftest — AP$yn yaml form ($ysp) refused, not skipped"
+    else
+      echo "FAIL: selftest — AP$yn yaml form ($ysp) was not refused"; sfail=1
+    fi
+  done
+  # AP21 (automated security review of 76232e02): a verbatim tag holding a comma before the key
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s\n      - !<tag:yaml.org,2002:str> uses: evil/a@main\n' "$pin_yf" > "$lc/form21.yml"
+  yo=$(check_pinned "$lc/form21.yml" 2>&1) && yrc=0 || yrc=1
+  if [ "$yrc" -ne 0 ] && printf '%s' "$yo" | grep -q "form21.yml: a uses: is written in a form this check cannot read"; then echo "PASS: selftest — AP21 a verbatim tag with a comma before uses is refused"; else echo "FAIL: selftest — AP21 a verbatim tag with a comma before uses was not refused"; sfail=1; fi
+  # AP13 (R8): a quoted VALUE that mentions uses: is not a key and is not counted; AP13b: a pinned file with a mention in a comment and a name: stays clean
+  printf 'jobs:\n  x:\n    steps:\n      - name: "pin uses: to a SHA"\n        uses: actions/checkout@%s\n      - run: echo "uses: x"\n' "$pin_yf" > "$lc/mention.yml"
+  if check_pinned "$lc/mention.yml" >/dev/null 2>&1; then echo "PASS: selftest — AP13 a quoted value mentioning uses: is not counted"; else echo "FAIL: selftest — AP13 a quoted value mentioning uses: wrongly refused"; sfail=1; fi
+  # AP14 (S6): a scan that did not run (a failing awk on the PATH) is a FAIL, never "no actions to pin", on both entry points
+  mkdir -p "$lc/stub"; printf '#!/bin/sh\nexit 2\n' > "$lc/stub/awk"; chmod +x "$lc/stub/awk"
+  yo=$( (PATH="$lc/stub:$PATH"; check_target "$lc/inbody.yml" 0) 2>&1) && yrc=0 || yrc=1
+  yp=$( (PATH="$lc/stub:$PATH"; check_pinned "$lc/inbody.yml") 2>&1) && yprc=0 || yprc=1
+  if [ "$yrc" -ne 0 ] && [ "$yprc" -ne 0 ] && printf '%s' "$yo" | grep -q "the uses scan did not run" && printf '%s' "$yp" | grep -q "the uses scan did not run"; then
+    echo "PASS: selftest — AP14 a failing scan is a FAIL on check_target and check_pinned"
+  else echo "FAIL: selftest — AP14 a failing scan read as clean (check_target rc=$yrc, check_pinned rc=$yprc)"; sfail=1; fi
+  # AP15/AP16 (S5, S9): the main run reads dot-named kit workflows, including one named exactly .yml; a scratch tree is run through the real entry point
+  self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+  mkdir -p "$lc/tree/profiles/a" "$lc/tree/.github/workflows"
+  printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@%s  # v4\n' "$pin_yf" > "$lc/tree/profiles/a/ci.yml"
+  for rf in ratification adopter-gates adopter-tracker-gates; do cp "$lc/tree/profiles/a/ci.yml" "$lc/tree/profiles/$rf.yml"; done
+  if (cd "$lc/tree" && sh "$self" >/dev/null 2>&1); then echo "PASS: selftest — AP15 control: the scratch tree with no dot-named workflow is clean"; else echo "FAIL: selftest — AP15 control: the scratch tree is not clean"; sfail=1; fi
+  tn=0
+  for dn in .evil.yml .yml; do
+    tn=$((tn + 1)); mkdir -p "$lc/tree$tn/profiles/a" "$lc/tree$tn/.github/workflows"
+    for rf in a/ci ratification adopter-gates adopter-tracker-gates; do cp "$lc/tree/profiles/a/ci.yml" "$lc/tree$tn/profiles/$rf.yml"; done
+    printf 'jobs:\n  x:\n    steps:\n      - uses: actions/checkout@v4\n' > "$lc/tree$tn/.github/workflows/$dn"
+    if (cd "$lc/tree$tn" && sh "$self" >"$lc/tree$tn.out" 2>&1); then echo "FAIL: selftest — AP16 an unpinned uses in .github/workflows/$dn was not read"; sfail=1
+    else echo "PASS: selftest — AP16 an unpinned uses in .github/workflows/$dn reds"; fi
+  done
+
   [ "$sfail" -eq 0 ] && { echo "OK: action-pinning selftest"; exit 0; } || { echo "FAIL: action-pinning selftest"; exit 1; }
 fi
 
@@ -259,7 +360,7 @@ check_target "$REF_ADOPTER_GATES" 1 || rc=1
 check_target "$REF_ADOPTER_TRACKER_GATES" 1 || rc=1
 # 2) the kit's OWN workflows (broadened in H4b): every actually-run workflow pins its actions
 if [ -d "$KIT_WORKFLOWS" ]; then
-  for wf in "$KIT_WORKFLOWS"/*.yml "$KIT_WORKFLOWS"/*.yaml; do
+  for wf in "$KIT_WORKFLOWS"/*.yml "$KIT_WORKFLOWS"/*.yaml "$KIT_WORKFLOWS"/.*.yml "$KIT_WORKFLOWS"/.*.yaml "$KIT_WORKFLOWS"/.yml "$KIT_WORKFLOWS"/.yaml; do  # dot-named files too (SWAS-554 S5, S9): a plain * skips them, and .*.yml needs a name
     [ -f "$wf" ] || continue
     check_target "$wf" 0 || rc=1
   done

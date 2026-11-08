@@ -104,16 +104,28 @@ Each surface is a speed bump for honest mistakes, not containment of a hostile p
 >
 > **What stays open**, and is not contained: until the user-level step is done, egress to an unlisted host rests on a prompt, OPEN in any permission mode that approves prompts without a person (auto, bypass); a forge comment or gist made with the agent's own credential; an attacker-supplied token sent to an allowed host; the session environment (`env` and `printenv` read credentials no path deny covers); MCP and browser tools, which run outside the sandbox (account-level connectors included: disable every connector the work does not need); deferred execution (a poisoned cache or hook that runs later). Contract and per-harness status: [`agent-boundary-contract.md`](agent-boundary-contract.md).
 
-## Below the text layer: the strict profile (opt-in)
+## Below the text layer: the OS sandbox and the deny-only overlay
 
 The guard reads the TEXT of a command. It cannot see what a script it never read will write, or what a patch it
 never opened contains. Claude Code's **OS sandbox** judges the write, not the command: whatever the spelling, a write
 to the protected set fails. The shipped `.claude/settings.json` has that sandbox **on** (what it holds: "The agent
-boundary: on by default", below). It makes the enforcement layer read-only to the agent's shell. The older
-opt-in template, `templates/sandbox-strict.settings.local.json`, predates the default and is wider on network and
-write (`allowedDomains: ["*"]`, the home directory in `allowWrite`, Docker sockets, none of the default's
-`denyRead`); the grader now refuses a local file that merges it as-is ("How it is checked", below), so this section
-describes it for history: do not apply it.
+boundary: on by default", below). It makes the enforcement layer read-only to the agent's shell.
+
+**The optional overlay.** `templates/sandbox-overlay.settings.local.json` is a deny-only overlay (SWAS-462). It adds
+denies and pins tight values; it holds no key that grants. Apply it by copying it to `.claude/settings.local.json`:
+that is a human act, because agents never edit settings. Today it adds one thing the default does not,
+`failIfUnavailable: true`: a machine that cannot start the sandbox then refuses to run sandboxed commands instead of
+running them unsandboxed (Claude Code's documented behaviour; the kit does not measure whether the refusal is per command or per
+session). It also pins `enabled`, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands` to their tight values and
+repeats the 14 enforcement-layer `denyWrite` rows the default already carries. Its other job is to be the place extra
+deny rows go, yours and the kit's later ones. `conformance/guard-wired.sh` refuses an overlay that holds any key that
+grants or weakens, and on the kit's own tree checks that the default merged with the overlay passes the full grader. A
+`denyRead` row you add under the default's `allowRead` carve-out (`**/.env.example`, `**/.env.sample`) may not bind
+there; it still cannot widen anything. The overlay relies on the temp roots in the release's default
+`.claude/settings.json`; on an older settings file without them a bare `mktemp` fails on macOS, and `guard-wired.sh`
+reds the effective block naming the temp root. The older `templates/sandbox-strict.settings.local.json` was replaced by
+this file: it was wider than the default, and a local file that merged it fails the grader (see the CHANGELOG SECURITY
+line for what to remove).
 
 **When the sandbox is off, and what it costs in protection.** This is the state of a settings file without the
 `sandbox` block, or of a scope that sets `enabled: false` (an opt-out, which is a committed declaration in
@@ -149,15 +161,15 @@ unsandboxed retry off; the shipped default, now on, has the same property. For t
 edit too, install the shipped default `sandbox` block from `.claude/settings.json` as managed settings (the hardening
 tier below).
 
-**What the strict profile protects (read-only to the agent's shell):** the session's own enforcement layer: `.claude/`
+**What the sandbox protects (read-only to the agent's shell):** the session's own enforcement layer: `.claude/`
 (the guard, its wiring, `settings.local.json`), `hooks/` (the tracked pre-push hook), `.kit/` (every dial and conf,
 present and future), `.git/hooks`, `.git/config`, `.mcp.json`, and in your home directory the global git config
 (`~/.gitconfig`, `~/.config/git`) and shell rc files (`~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.bashrc`,
-`~/.bash_profile`, `~/.profile`). `conformance/guard-wired.sh` requires the Edit rules in every profile, checks the
-template's load-bearing keys in the kit's own tree, and checks the same keys on an adopter's effective block when their
-`settings.local.json` turns the sandbox on; `sh conformance/guard-wired.sh --sandbox-enforce` applies the strict
-profile through the pinned sandbox runtime and judges by file hashes (a SKIP, exit 3, means the runtime could not
-start on this machine: it is never a pass). It judges the shipped settings merged with the template by Claude Code's documented merge rule; that merge is documented behaviour, not something the kit measures at runtime.
+`~/.bash_profile`, `~/.profile`). `conformance/guard-wired.sh` requires the Edit rules in every profile, grades the
+overlay as a closed schema (and, in the kit's own tree, the default merged with it), and checks the load-bearing keys on an adopter's effective block when their
+`settings.local.json` turns the sandbox on; `sh conformance/guard-wired.sh --sandbox-enforce` applies the default merged
+with the overlay through the pinned sandbox runtime and judges by file hashes (a SKIP, exit 3, means the runtime could not
+start on this machine: it is never a pass; an overlay that grants exits 1 before the runtime starts). It judges the shipped settings merged with the overlay by Claude Code's documented merge rule; that merge is documented behaviour, not something the kit measures at runtime.
 
 **On Ubuntu 23.10 or later** the sandbox cannot start under the default AppArmor restriction on unprivileged user
 namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`): bubblewrap fails with `Failed RTM_NEWADDR: Operation
@@ -181,8 +193,9 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
 which is simpler but lifts the restriction for every program on the machine.
 
 **What is deliberately open, and why.** The sandbox protects the enforcement layer; it is not general confinement.
-- **Your home directory** is writable (minus the files above): toolchain caches live there (npm, go, gradle, dotnet),
-  and without it five of eight stacks fail.
+- **Your home directory** is not writable as a whole. The default opens the named toolchain caches only (`~/.npm`,
+  `~/.cache`, `~/go`, `~/.gradle`, `~/.m2`, `~/.cargo`, `~/.rustup`, `~/.nuget`, `~/Library/Caches`), and the files
+  above stay denied. A tool that writes elsewhere under your home fails with `Operation not permitted`.
 - **`/tmp` and `/private/tmp`** are writable: the dev-clone workflow below needs them.
 - **`/var/folders` and `/private/var/folders`** are writable: on macOS a bare `mktemp` writes the per-user temp root
   (`getconf DARWIN_USER_TEMP_DIR`, `/var/folders/<xx>/<hash>/T`) even with `TMPDIR` set, and a shipped file cannot
@@ -190,19 +203,17 @@ which is simpler but lifts the restriction for every program on the machine.
   `X/`), where app caches live: a poisoned cache is the same deferred-execution class your home directory already
   opens. None of the enforcement layer lives there. Linux has no such directory, so the entries do nothing there.
   `guard-wired.sh` requires both entries; `--sandbox-enforce` proves the opening on macOS only.
-- **The network**, in the strict template, is unrestricted (`allowedDomains: ["*"]`; the shipped default lists hosts instead, and its hard deny is the user-level `strictAllowlist` act). Egress is a separate control; the sandbox is no exfiltration defense.
-- **Docker** is reachable (`network.allowUnixSockets` names the two standard socket paths), so local-database
-  integration tests keep working. The Docker daemon runs outside the sandbox, so a session that can reach it has a
-  deliberate route around this protection. **The stricter form:** remove the `allowUnixSockets` entry from your
-  `.claude/settings.local.json` copy of the template (`guard-wired.sh` stays green without it) and Docker
-  becomes unreachable from the agent.
+- **The network**: the shipped default lists five GitHub hosts in `allowedDomains`, and its hard deny is the user-level `strictAllowlist` act. Egress is a separate control; the sandbox is no exfiltration defense.
+- **Docker** is not reachable from the agent's shell: the default has `network.allowUnixSockets: []`, because the
+  Docker daemon runs outside the sandbox and a session that can reach it has a route around this protection. A test
+  that needs the Docker daemon runs where a human runs it, or in the container tier. The overlay may not add a socket.
 - **A dev-clone outside the project** is writable by design: the protection is scoped to the session's own project,
   and that is what lets control-plane work happen there (next section).
 
 **What an `Operation not permitted` means.** The OS refused a write to the protected set. There is no kit signpost on
 an OS error (the guard fires first on the text it can see). Do the work in a dev-clone or worktree outside the
 project, or hand the step to a human. On macOS a bare `mktemp` used to cause it (the per-user temp root was not
-writable); the strict template opens it, and a script should still pass an explicit template
+writable); the shipped default opens it, and a script should still pass an explicit template
 (`mktemp -d "${TMPDIR:-/tmp}/name.XXXXXX"`), because macOS `mktemp` ignores `TMPDIR`.
 
 **Recovery card (two frictions a checkout has while the sandbox is on, which the shipped default now is: its `denyWrite` names `./.git/config` and `./.claude`).**
@@ -217,8 +228,8 @@ writable); the strict template opens it, and a script should still pass an expli
 
 **Where the sandbox cannot start.** Linux and WSL2 need `bubblewrap` and `socat`; hosts and containers that block
 unprivileged user namespaces cannot run it; native Windows and any harness other than Claude Code get no OS layer
-from this block. With `failIfUnavailable: false` (the template's value) the session then runs as it did before the
-sandbox, the guard still runs, and `scripts/preflight.sh` says so: `FAIL boundary: OFF (cannot start: <reason>)` for
+from this block. The shipped default sets no `failIfUnavailable`, so the session then runs as it did before the
+sandbox (the overlay sets `failIfUnavailable: true` to refuse instead), the guard still runs, and `scripts/preflight.sh` says so: `FAIL boundary: OFF (cannot start: <reason>)` for
 the default, and a `warn` naming the reason (`agent OS sandbox cannot start here`) whenever the sandbox is on, the default included (with the sandbox off there is nothing to start). The container tier
 (`docs/operations/containment.md`) is the harness-neutral answer.
 

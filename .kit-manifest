@@ -1063,4 +1063,4 @@ templates/TRACKER-SETUP-TEMPLATE.md
 templates/UAT-SIGNOFF-TEMPLATE.md
 templates/WAIVER-REGISTER.md
 templates/gitattributes-evidence
-templates/sandbox-strict.settings.local.json
+templates/sandbox-overlay.settings.local.json

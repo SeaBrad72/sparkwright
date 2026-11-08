@@ -54,7 +54,7 @@ N/A and the template is not yours.
 | `A11Y-SIGNOFF-TEMPLATE.md` | `conformance/a11y-obligation.sh` | a user-facing surface |
 | `BIA-TEMPLATE.md` | `sh conformance/readiness.sh dr-ready` | a data service — RTO/RPO and a restore drill |
 | `WAIVER-REGISTER.md` | `conformance/waivers-valid.sh` | you are riding a deferrable gate on the waiver ramp |
-| `sandbox-strict.settings.local.json` | `sh conformance/guard-wired.sh` | older, wider opt-in template; not recommended; the kit's settings check refuses it merged as-is (see `docs/operations/runtime-guards.md`, "Below the text layer: the strict profile (opt-in)") |
+| `sandbox-overlay.settings.local.json` | `sh conformance/guard-wired.sh` | optional deny-only overlay for `.claude/settings.local.json`: adds denies and pins `failIfUnavailable: true`, holds no key that grants; the kit's settings check refuses one that does (see `docs/operations/runtime-guards.md`, "Below the text layer: the OS sandbox and the deny-only overlay") |
 
 ## Upstream of the board
 

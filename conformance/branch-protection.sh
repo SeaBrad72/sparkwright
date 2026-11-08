@@ -173,6 +173,15 @@ read_governance() {
   return 0
 }
 
+# go_act_review <root> — 0 when <root>/.kit/dials.conf carries `GO_ACT=review` (SWAS-727; parsed, never sourced; the last
+# line wins and the first word is the value, like the other dial readers). Any other value, an absent file or a symlink is no.
+go_act_review() {
+  [ -f "$1/.kit/dials.conf" ] && [ ! -L "$1/.kit/dials.conf" ] || return 1
+  _gar=$(grep -E '^[[:space:]]*GO_ACT[[:space:]]*=' "$1/.kit/dials.conf" 2>/dev/null | tail -n1 \
+    | sed -E 's/^[[:space:]]*GO_ACT[[:space:]]*=[[:space:]]*//; s/#.*$//; s/["'"'"']//g; s/[[:space:]].*$//')
+  [ "$_gar" = review ]
+}
+
 # MM_JQ — reads the three TOP-LEVEL merge fields with gh's built-in jq (S-1). A text scan of the repo JSON
 # took the first occurrence of each key, which a `template_repository` object (listed BEFORE the top-level
 # keys, repeating them) would shadow: a false squash-only. jq's `.allow_*` is the top-level field, always.
@@ -533,8 +542,15 @@ classify() {
     # pre-existing count arms above keep their own `--apply` line: that one is about establishing
     # protection on a fresh repo, which is `--replace`'s job and their own history.
     _bp_rc_flat=$(printf '%s' "$body" | tr -d ' \t\n')
+    # ONE-ACT GO (SWAS-727): when this tree's dial file sets GO_ACT=review, an APPROVED review on the head IS the merge GO, and
+    # this setting is what lets a later push retire it. The assertion above is unconditional (it already was); the FAIL says why
+    # it matters more under `review`. The reader is the dial file's own, parsed and never sourced.
+    _bp_goact=""
+    if go_act_review "$REPO_ROOT"; then
+      _bp_goact=" This tree's .kit/dials.conf sets GO_ACT=review: there an APPROVED review on the head is the merge GO, so a push that does not dismiss it leaves the GO standing on a head nobody approved."
+    fi
     printf '%s' "$_bp_rc_flat" | grep -q '"dismiss_stale_reviews":true' \
-      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F dismiss_stale_reviews=true — or the Settings UI, Branches, edit the rule, 'Dismiss stale pull request approvals when new commits are pushed'."; ok=1; }
+      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F dismiss_stale_reviews=true — or the Settings UI, Branches, edit the rule, 'Dismiss stale pull request approvals when new commits are pushed'.${_bp_goact}"; ok=1; }
     printf '%s' "$_bp_rc_flat" | grep -q '"require_last_push_approval":true' \
       || { printf '%s\n' "FAIL: $BRANCH does not set require_last_push_approval to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting replaces review-lane's deleted rl_role_swap heuristic, which guessed at the role swap by matching an approver's forge login against the head commit's author/committer identity. As a server-side rule it is stronger and it is the only control left for the property: without it whoever pushed the head can approve their own push. Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F require_last_push_approval=true — or the Settings UI, Branches, edit the rule, 'Require approval of the most recent reviewable push'."; ok=1; }
     printf '%s' "$body" | grep -q '"required_status_checks"' || { printf '%s\n' "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
@@ -777,6 +793,27 @@ selftest() {
   clsd 1 "FAIL: declared-context comparison SKIPPED" 1 0 \
     '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/empty.md" "empty/de-fenced (zero active contexts) declaration + --require -> escalates to FAIL (R-1)"
+
+  # ── SWAS-727 (test 14): dismiss_stale_reviews OFF is a FAIL in every mode (it already was: REVIEW-LANE-WAITING-IS-GREEN), and
+  # under GO_ACT=review the FAIL also says why it matters most. The design said "print-only when the dial is absent"; this tree
+  # asserts it unconditionally, so the cell pins that the assertion was NOT weakened as well as that the reason text appears.
+  _goon="$_bpdir/goact-on"; mkdir -p "$_goon/.kit"; printf 'GO_ACT=review\nGO_GIVERS=owner-login\n' > "$_goon/.kit/dials.conf"
+  _gooff="$_bpdir/goact-off"; mkdir -p "$_gooff/.kit"; printf 'MERGE_RELATIONSHIP=team\n' > "$_gooff/.kit/dials.conf"
+  _gosep="$_bpdir/goact-sep"; mkdir -p "$_gosep/.kit"; printf 'GO_ACT=separate\n' > "$_gosep/.kit/dials.conf"
+  gact() {  # want-the-GO_ACT-sentence(yes|no) root label
+    out=$( ( REQUIRE=0; REPO=selftest; REPO_ROOT="$2"; DECLARATION="/nonexistent-required-checks-$$"
+             classify 0 '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":false,"require_last_push_approval":true},"required_status_checks":{}}' ) 2>&1 ) && g=0 || g=$?
+    has=no; printf '%s\n' "$out" | grep -qF -e 'GO_ACT=review: there an APPROVED review' && has=yes
+    if [ "$g" = 1 ] && printf '%s\n' "$out" | grep -qF -e 'does not set dismiss_stale_reviews' && [ "$has" = "$1" ]; then
+      echo "selftest PASS: $3 -> exit $g"
+    else
+      echo "selftest FAIL: $3 want rc=1 + sentence=$1 got rc=$g sentence=$has out=[$out]"; st=1
+    fi
+  }
+  gact yes "$_goon" "dismiss_stale_reviews off + GO_ACT=review -> FAIL, naming why it matters under the one-act GO"
+  gact no "$_gooff" "dismiss_stale_reviews off + the dial absent -> still FAIL (not weakened), without the GO_ACT sentence"
+  gact no "$_gosep" "dismiss_stale_reviews off + GO_ACT=separate -> still FAIL, without the GO_ACT=review sentence"
+  gact no "$_bpdir/no-such-root" "dismiss_stale_reviews off + no dial file at all -> still FAIL"
 
   clsdo() {  # expect_rc needle file label — declared_only() direct
     e=$1; needle=$2; f=$3; lbl=$4

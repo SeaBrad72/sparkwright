@@ -4157,6 +4157,112 @@ else
 fi
 
 # =============================================================================================
+# GUARD-TURKISH-FOLD (SWAS-717) — a locale-class `tr` fold is paired with its byte-pinned twin.
+# `tr '[:upper:]' '[:lower:]'` follows the locale: a `tr` that maps I to dotless-i under a Turkish locale folds KIT-BASE
+# to kit-base's look-alike and misses the deny, while the same fold under UTF-8 on macOS maps Kelvin (U+212A) and dotted
+# I (U+0130) to k and i, which a byte fold does not. Pinning ONE of them removes a deny, so the guard runs BOTH and denies
+# if either matches (`LC_ALL=C tr 'A-Z' 'a-z'` is the twin). A plain pin of a single site is never the fix.
+#
+# BYTE LEG (always on, every host): in guard-core.sh and hooks/pre-push, (1) every function holds at least as many
+# `LC_ALL=C tr 'A-Z' 'a-z'` stages as it holds `tr` stages with `[:upper:]` or `[:lower:]` in their arguments, and
+# (2) no `tr` stage carries an `A-Z` or `a-z` range without the `LC_ALL=C` pin. The sites on the allowlist below decide
+# nothing that an extra deny could reach, or are not guard decisions; each carries its reason.
+# ⚠️ CEILINGS, stated: a `tr` stage is read as the text from `tr` to the next pipe, semicolon or second `tr` on ONE
+# line, so a stage whose arguments sit on a continued line is not read; a comment-only line (first byte `#`) and a trailing
+# ` # ` comment are not read; the function name is the last `name() {` line seen above the stage. A stage counts as a
+# twin only when its arguments are the A-Z set then the a-z set (quoted or not); a `tr` written with a path (`/usr/bin/tr`)
+# is read as `tr`. Stated ceiling: `command tr` and `env tr` are not resolved, they are read as a bare `tr` stage.
+# ALLOWLIST: ` file|function|TWIN|N ` (N class folds without a twin) or ` file|function|RANGE|N ` (N unpinned ranges), each with
+# its reason; EMPTY means none. N is the exact count the entry admits: the leg reds when the function holds more OR fewer,
+# so a new site in an allowed function, or an entry gone stale, is never silent.
+_TF_ALLOW=''
+# RANGE entries (shared reason): ASCII range: folds as LC_ALL=C on Darwin tr under en_US and tr_TR UTF-8 [M]; GNU tr ranges are byte ranges [E].
+# Keyed by function name, never by line number, so a later edit cannot silently shift an entry.
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|_cp8b_gh_order|RANGE|1 "
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|_s6_http_get_words|RANGE|2 "
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|_s6_http_seg_admin|RANGE|1 "
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|_s6_api_endpoint_walk|RANGE|2 "
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|guard_check_mcp|RANGE|2 "
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|guard_check_skill|RANGE|3 "
+# TWIN entry: _kbr_replace_denied's fold feeds only _cp8b_group_peel and _cp8b_lead (the segment's lead word). A mis-folded lead
+# fails the reader-lead list and the xargs early return, so the segment goes on to _kbr_any_hit (which holds the twin) or
+# to `return 0` (deny): it can only add a deny, never remove one.
+_TF_ALLOW="$_TF_ALLOW guard-core.sh|_kbr_replace_denied|TWIN|1 "
+dt_tr_fold_ok() {   # <guard-core path> — also reads hooks/pre-push
+  _tfrc=0
+  for _tff in "$1" hooks/pre-push; do
+    [ -r "$_tff" ] || { echo "  cannot read $_tff" >&2; _tfrc=1; continue; }
+    _tfhits=$(LC_ALL=C awk '
+      { l=$0; sub(/^[ \t]+/, "", l)
+        if (l ~ /^#/) next
+        if (l ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{/) { fn=l; sub(/\(\).*/, "", fn) }
+        cut=match(l, /[ \t]#[ \t]/); if (cut) l=substr(l, 1, cut)
+        rest=l; base=0
+        while (match(rest, /(^|[ \t|(`;&])(\/[^ \t|(`;&]*\/)?tr[ \t]+[^ \t]/)) {
+          s0=RSTART; tail=substr(rest, s0, RLENGTH)
+          match(tail, /tr[ \t]+[^ \t]$/); t=s0+RSTART-1
+          pre=substr(l, 1, base+t-1); args=substr(rest, t+2)
+          base=base+t+1; rest=args
+          p=index(args, "|"); if (p) args=substr(args, 1, p-1)
+          p=index(args, ";"); if (p) args=substr(args, 1, p-1)
+          if (match(args, /[ \t]tr[ \t]/)) args=substr(args, 1, RSTART)
+          pin=(pre ~ /LC_ALL=C[ \t]+(\/[^ \t]*\/)?$/)
+          cls=(args ~ /\[:(upper|lower):\]/)
+          if (cls) { c[fn]++; cl[fn]=cl[fn] " " NR }
+          else if (args ~ /A-Z|a-z/) {
+            if (!pin) { rc[fn]++; rl[fn]=rl[fn] " " NR }
+            else if (args ~ /^[ \t]*["\047]?A-Z["\047]?[ \t]+["\047]?a-z["\047]?([ \t)`;&}].*)?$/) tw[fn]++
+          }
+        }
+      }
+      END {
+        for (f in rc) print "RANGE|" f "|" rc[f] "|" rl[f]
+        for (f in c) if (c[f] > tw[f]+0) print "TWIN|" f "|" (c[f] - tw[f]) "|" cl[f]
+      }' "$_tff") || { echo "  awk failed on $_tff" >&2; _tfrc=1; continue; }
+    _tfbase=$(basename "$_tff")
+    # each hit is judged against its entry: no entry, or an entry with a different count, is reported
+    _tfbad=$(printf '%s\n' "$_tfhits" | while IFS='|' read -r _tfk _tfn _tfa _tfc; do
+      [ -n "$_tfk" ] || continue
+      _tfwant=''
+      for _tfe in $_TF_ALLOW; do
+        case "$_tfe" in
+          "$_tfbase|$_tfn|$_tfk|"*) _tfwant=${_tfe##*|} ;;
+        esac
+      done
+      if [ "$_tfwant" = "$_tfa" ]; then continue; fi
+      if [ -n "$_tfwant" ]; then
+        echo "  TR: $_tff: function $_tfn holds $_tfa $_tfk site(s) (line$_tfc) but its allowlist entry admits $_tfwant"; continue
+      fi
+      case "$_tfk" in
+        TWIN) echo "  TR: $_tff: function $_tfn has $_tfa locale-class tr fold(s) (line$_tfc) with no pinned LC_ALL=C tr 'A-Z' 'a-z' twin" ;;
+        *) echo "  TR: $_tff: function $_tfn has $_tfa tr letter range(s) with no LC_ALL=C pin (line$_tfc)" ;;
+      esac
+    done)
+    # an entry for this file whose function no longer holds that kind of site is stale (count 0 against its entry)
+    for _tfe in $_TF_ALLOW; do
+      case "$_tfe" in
+        "$_tfbase|"*) ;;
+        *) continue ;;
+      esac
+      _tfrest=${_tfe#*|}; _tfn=${_tfrest%%|*}; _tfrest=${_tfrest#*|}; _tfk=${_tfrest%%|*}
+      if printf '%s\n' "$_tfhits" | grep -qF "$_tfk|$_tfn|"; then continue; fi
+      _tfbad="$_tfbad
+  TR: $_tff: allowlist entry $_tfe admits ${_tfe##*|} site(s) but function $_tfn holds none"
+    done
+    [ -z "$_tfbad" ] && continue
+    printf '%s\n' "$_tfbad" >&2
+    echo "  $(printf '%s\n' "$_tfbad" | grep -c 'TR:') site(s) reported in $_tff" >&2
+    _tfrc=1
+  done
+  return $_tfrc
+}
+if dt_tr_fold_ok ".claude/hooks/guard-core.sh"; then
+  echo "PASS tr-fold-bytes : every locale-class tr fold in guard-core.sh and hooks/pre-push has its LC_ALL=C twin in the same function, and no tr letter range is unpinned"
+else
+  echo "FAIL tr-fold-bytes : a tr fold in guard-core.sh or hooks/pre-push is unpaired or an unpinned letter range (detail above)"; fail=1
+fi
+
+# =============================================================================================
 # GUARD-CWD-CONFIDENCE-UNKNOWN Face B — while LOST, a relative WRITE pays for the lost confidence.
 #
 # Face A records that the tracker could not follow; on its own that changes no verdict. These cells
@@ -4912,6 +5018,123 @@ if [ "${GPAB_G:-}" != "" ]; then
     's@if \[ "\$_scp_cwreal" = 1 \] && { _scp_unparse "\$_scp_segtxt" || _scp_wild "\$_scp_segtxt"; }; then@if false; then@' "$(scpj '$(echo cp) .env notes.txt')" allow
   gpab_mutant "SC-M36: the resolved secrets-directory form dropped -> cp -r vault x flips to ALLOW" \
     's@^  elif \[ -d "\$_scp_res" \] && _is_secret_path "\$_scp_res/"; then$@  elif false; then@' "$(scpc "$GPAB_ROOT/scp-d" 'cp -r vault x')" allow
+
+  # === GUARD-TURKISH-FOLD (SWAS-717) — the kit-base folds run BOTH ways; the behaviour leg (every host) and its mutants ===
+  # No host we run carries a `tr` that mis-maps I, so a locale-only probe would pass trivially everywhere. The cell puts a STUB
+  # `tr` first on PATH for the guard call ONLY. It is test fixture code built here at run time: nothing in the shipped guard reads
+  # it. It is the real `tr`, except that when LC_ALL is not exactly C and the call is a class fold (`[:upper:]` in its arguments)
+  # it maps the capital I to dotless i (the Turkish case), so KIT-BASE folds to a look-alike that matches nothing.
+  # PATH: the guard resolves `tr` through the caller's PATH; guard.sh and the span of guard-core.sh from the load to the kit-base
+  # fold do not reset it, and the baseline cells below prove the stub is reached (they would not flip otherwise).
+  # PAIRING, each probe decided by ONE fold and by _kitbase_ref_denied, not by an earlier arm:
+  #   probe A  git update-ref refs/heads/KIT-BASE HEAD            lead git, resolved sub update-ref. _kbs_seg_denied denies only if
+  #            the folded SEGMENT names kit-base (_kbs_names); the whole-command flag _kbs_cn is read only for an `xargs` lead, so the
+  #            per-SEGMENT pipelines decide it alone.   M-TR2 (segment twin removed) -> ALLOW.
+  #   probe B  echo REFS/HEADS/KIT-BASE | xargs git update-ref HEAD   the second segment has no kit text, so its own fold finds
+  #            nothing; with an xargs lead _kbs_cn=1 sets _kbs_names, so the whole-COMMAND fold decides it alone.
+  #            M-TR3 (whole-command twin removed) -> ALLOW.
+  #   Kelvin   git update-ref refs/heads/<U+212A>it-base HEAD under en_US.UTF-8 with the REAL tr (Darwin): only the segment
+  #            LOCALE fold maps the Kelvin sign to k (the pinned byte fold leaves it).   M-TR4 (segment locale fold removed) -> ALLOW.
+  #   probe C  sh scripts/incept.sh --KIT-BASE-REPLACE   lead sh (not git): _kitbase_ref_denied returns at its `_kbs_git` test (no git
+  #            token), and the lead is not a reader, so the arm that denies is _kbr_replace_denied, whose verdict rests on
+  #            _kbr_any_hit (whole command and segment): the flag text is case-sensitive, so only a working fold finds it, and
+  #            _kah_c is the byte twin of that fold.   M-TR5 (_kah_c fold removed) -> ALLOW; M-TR5 reaching ALLOW is itself the
+  #            proof that no other arm denies the probe, so it needs no separate baseline cell.
+  #   Baseline (TR-BASE): both pinned twins removed, the stub still first on PATH: each probe ALLOWS. If a probe still denies the
+  #            stub is not reaching the fold (or an earlier arm denies it) and the cell reds as vacuous.
+  _tf_dir="$GPAB_TMP/trstub"; mkdir -p "$_tf_dir"
+  _tf_real=$(command -v tr)
+  _tf_dl=$(printf '\304\261')
+  {
+    printf '#!/bin/sh\n'
+    printf "REAL='%s'\n" "$_tf_real"
+    printf "DL='%s'\n" "$_tf_dl"
+    printf 'SOH=$(printf "\\001")\n'
+    printf 'case "$*" in *"[:upper:]"*) FOLD=1 ;; *) FOLD=0 ;; esac\n'
+    printf 'if [ "$FOLD" = 1 ] && [ "${LC_ALL:-}" != C ]; then\n'
+    printf '  "$REAL" I "$SOH" | "$REAL" "$@" | LC_ALL=C sed "s/$SOH/$DL/g"\n'
+    printf 'else\n'
+    printf '  exec "$REAL" "$@"\n'
+    printf 'fi\n'
+  } > "$_tf_dir/tr"
+  chmod +x "$_tf_dir/tr"
+  tf_verdict() {   # <json> <stub dir or ''> <LC_ALL value> -> _tv = deny | allow | fault(rc=N), for the (possibly mutated) core copy
+    AA_SRC=0
+    _tv_o=$(printf '%s' "$1" | PATH="${2:+$2:}$PATH" LC_ALL="$3" sh "$GPAB_G" 2>/dev/null) || AA_SRC=$?
+    case "$_tv_o" in
+      *'"permissionDecision":"deny"'*) _tv=deny; return 0 ;;
+    esac
+    if [ "$AA_SRC" = 0 ]; then _tv=allow; else _tv="fault(rc=$AA_SRC)"; fi
+    return 0
+  }
+  tf_cell() {   # <label> <json> <want: allow|deny> <stub dir or ''> <LC_ALL value>
+    aa_cell_skip "$1" && return 0
+    tf_verdict "$2" "$4" "$5"
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    if [ "$_tv" = "$3" ]; then echo "PASS tr-fold : $1 ($_tv)"; else echo "FAIL tr-fold : $1 - wanted $3, got $_tv"; fail=1; fi
+  }
+  tf_mutant() {   # <label> <sed-expr> <json> <want-after-mutation: allow|deny> <stub dir or ''> <LC_ALL value>
+    aa_cell_skip "$1" && return 0
+    tf_verdict "$3" "$5" "$6"; _tpv=$_tv
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    if ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 - the mutant does not parse (sh -n); a no-JSON 'flip' is a lockout, not a kill"; fail=1; return
+    fi
+    tf_verdict "$3" "$5" "$6"; _tmv=$_tv
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    if [ "$_tpv" = "$_tmv" ]; then
+      echo "FAIL mutant : $1 - verdict did not change ($_tpv before and after); the leg is vacuous (is the stub reaching the fold?)"; fail=1
+    elif [ "$_tmv" = "$4" ] && { [ "$4" != allow ] || [ "$_tpv" = deny ]; }; then echo "PASS mutant : $1 ($_tpv -> $_tmv, killed the leg as required)"
+    else echo "FAIL mutant : $1 - got $_tpv -> $_tmv, wanted $4 after the mutation (and deny before it, for an allow)"; fail=1; fi
+  }
+  _tf_pa='{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/heads/KIT-BASE HEAD"}}'
+  _tf_pb='{"tool_name":"Bash","tool_input":{"command":"echo REFS/HEADS/KIT-BASE | xargs git update-ref HEAD"}}'
+  _tf_rg='/^_kitbase_ref_denied() {/,/^}/'
+  _tf_m2="$_tf_rg"' s@| LC_ALL=C tr .A-Z. .a-z. | LC_ALL=C sed@| cat | LC_ALL=C sed@'
+  _tf_m3="$_tf_rg"' s@\(_kbs_cp=\$(printf .%s. "\$2" | \)LC_ALL=C tr .A-Z. .a-z.)@\1cat)@'
+  _tf_m4="$_tf_rg"' s@| tr .\[:upper:]. .\[:lower:]. | sed -e@| cat | sed -e@'
+  _tf_pc='{"tool_name":"Bash","tool_input":{"command":"sh scripts/incept.sh --KIT-BASE-REPLACE"}}'
+  _tf_m5='/^_kbr_any_hit() {/,/^}/ s@| LC_ALL=C tr .A-Z. .a-z.) ||@| cat) ||@'
+  tf_cell "TR-A the stub tr: git update-ref refs/heads/KIT-BASE denies (the segment pipelines)" "$_tf_pa" deny "$_tf_dir" ''
+  tf_cell "TR-C the stub tr: sh scripts/incept.sh --KIT-BASE-REPLACE denies (the _kbr_any_hit byte twin)" "$_tf_pc" deny "$_tf_dir" ''
+  tf_mutant "TR-M5: the _kbr_any_hit byte-twin fold removed -> probe C (stub tr) flips to ALLOW" "$_tf_m5" "$_tf_pc" allow "$_tf_dir" ''
+  tf_cell "TR-B the stub tr: a wrapper reaching the whole-command fold denies (echo | xargs git update-ref)" "$_tf_pb" deny "$_tf_dir" ''
+  tf_mutant "TR-M2: the segment pinned twin removed -> probe A (stub tr) flips to ALLOW" "$_tf_m2" "$_tf_pa" allow "$_tf_dir" ''
+  tf_mutant "TR-M3: the whole-command pinned twin removed -> probe B (stub tr) flips to ALLOW" "$_tf_m3" "$_tf_pb" allow "$_tf_dir" ''
+  tf_mutant "TR-BASE-A: both pinned twins removed, stub tr on PATH -> probe A ALLOWS (else the stub is not reaching the fold)" "$_tf_m2; $_tf_m3" "$_tf_pa" allow "$_tf_dir" ''
+  tf_mutant "TR-BASE-B: both pinned twins removed, stub tr on PATH -> probe B ALLOWS (else the stub is not reaching the fold)" "$_tf_m2; $_tf_m3" "$_tf_pb" allow "$_tf_dir" ''
+  # KELVIN SIGN (Darwin, where en_US.UTF-8 exists: FAIL, never SKIP): the REAL tr under a UTF-8 locale maps U+212A to k, so the
+  # kit-base deny must survive the change. It proves the locale fold was KEPT beside the pin; M-TR4 removes it.
+  if [ "$(uname -s)" = Darwin ] && locale -a 2>/dev/null | grep -qx 'en_US.UTF-8'; then
+    _tf_json=$(printf '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/heads/%sit-base HEAD"}}' "$(printf '\342\204\252')")
+    tf_cell "TR-K the real tr under en_US.UTF-8: a ref spelled with the Kelvin sign still denies" "$_tf_json" deny '' en_US.UTF-8
+    tf_mutant "TR-M4: the segment locale fold removed (the pin alone) -> the Kelvin ref flips to ALLOW" "$_tf_m4" "$_tf_json" allow '' en_US.UTF-8
+  else
+    echo "N/A  tr-fold Kelvin cell and TR-M4 : need Darwin with en_US.UTF-8 (host: $(uname -s)); the stub cells above ran on this host"
+  fi
+  # BYTE-LEG MUTANT (M-TR1): the segment pinned twin removed from a COPY of the core -> the byte leg reds (pristine control first).
+  if aa_cell_skip "TR-M1"; then :; else
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    mkdir -p "$GPAB_TMP/trbyte"
+    if ! dt_tr_fold_ok ".claude/hooks/guard-core.sh" 2>/dev/null; then
+      echo "FAIL mutant : TR-M1 - the byte leg does not pass on the unmutated core, so the mutant proves nothing"; fail=1
+    else
+      sed "$_tf_m2" .claude/hooks/guard-core.sh > "$GPAB_TMP/trbyte/guard-core.sh"
+      if cmp -s .claude/hooks/guard-core.sh "$GPAB_TMP/trbyte/guard-core.sh"; then
+        echo "FAIL mutant : TR-M1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1
+      elif dt_tr_fold_ok "$GPAB_TMP/trbyte/guard-core.sh" 2>/dev/null; then
+        echo "FAIL mutant : TR-M1 - the byte leg still passes with the segment pinned twin removed"; fail=1
+      else
+        echo "PASS mutant : TR-M1 (the byte leg passes on the core and reds with the segment pinned twin removed)"
+      fi
+    fi
+  fi
 
   # SC-T1 (security M4, X12t-style): the arm's own cost. Per-call time is the sourced core's guard_check_command with the arm and with
   # the arm neutered (SC-M1's expression), over N calls and whole seconds, so the added time is the difference; the worst case is

@@ -251,6 +251,24 @@ if [ "${1:-}" = "--selftest" ]; then
   _kt_run "$_ktC" ""
   printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+FAIL$' \
     || { echo "doctor --selftest: FAIL (row C: golden-path.yml alone did not arm the claims dimension)"; sfail=1; }
+  #   Row E (SWAS-24): the claims row carries the N-A count read from the registry's closing line, on both the real arm (a stub
+  #   registry on a kit-marked tree) and the seam arm; a closing line with 0 N-A reads (0 N-A); no closing line leaves row D's text.
+  _dot=$(printf '\302\267')
+  _ktE=$(_kt_tree 0); mkdir -p "$_ktE/docs"; : > "$_ktE/docs/ROADMAP-KIT.md"
+  printf 'echo "claims: 40 pass %s 2 N-A %s 0 unverified %s 0 fail"\nexit 0\n' "$_dot" "$_dot" "$_dot" > "$_ktE/conformance/claims-registry.sh"
+  _kt_run "$_ktE" ""
+  printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+PASS \(2 N-A: verified nothing here' \
+    || { echo "doctor --selftest: FAIL (row E: the claims row did not show the registry's N-A count)"; sfail=1; }
+  printf 'echo "claims: 42 pass %s 0 N-A %s 0 unverified %s 0 fail"\nexit 0\n' "$_dot" "$_dot" "$_dot" > "$_ktE/conformance/claims-registry.sh"
+  _kt_run "$_ktE" ""
+  printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+PASS \(0 N-A\)$' \
+    || { echo "doctor --selftest: FAIL (row E: a closing line with 0 N-A did not render (0 N-A))"; sfail=1; }
+  stubd_e=$(mktemp -d); mkstub_claims="$stubd_e/c"
+  printf '#!/bin/sh\necho "claims: 3 pass %s 1 N-A %s 0 unverified %s 0 fail"\nexit 0\n' "$_dot" "$_dot" "$_dot" > "$mkstub_claims"
+  _seamE=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD="sh $mkstub_claims" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_seamE" | grep -qE '^  claims[[:space:]]+PASS \(1 N-A: verified nothing here' \
+    || { echo "doctor --selftest: FAIL (row E: the seam arm did not show the N-A count)"; sfail=1; }
+  rm -rf "$_ktE" "$stubd_e" 2>/dev/null || true
   rm -rf "$_ktA" "$_ktB" "$_ktC" "$_ktD" 2>/dev/null || true
 
   # — permission-local-accretion legs (HERMETIC mktemp fixtures ONLY — the reader is pointed at throwaway
@@ -2149,7 +2167,7 @@ _fg_rel_skipwhy() {  # sets FG_REL_WHY: the cause of the skip, for the one row t
   fi
 }
 _fg_rel_read() {
-  FG_REL_READ=0; FG_REL_WHY=net; FG_REL_DIAL=undeclared; FG_REL_GOV=undeclared
+  FG_REL_READ=0; FG_REL_WHY=net; FG_REL_DIAL=undeclared; FG_REL_GOV=undeclared; _rr_govbad=0
   if [ "$SEAMS" -eq 1 ]; then
     [ -n "$DOCTOR_FORGE_DIALS$DOCTOR_FORGE_GOV" ] || return 0
     _rr_dial=''; _rr_gov=''
@@ -2179,7 +2197,7 @@ _fg_rel_read() {
     _rr_rc=0; _rr_dial=$(_fg_rel_blob "$_rr_tip" .kit/dials.conf) || _rr_rc=$?
     [ "$_rr_rc" -ne 2 ] || { FG_REL_WHY=tip; return 0; }
     _rr_rc=0; _rr_gov=$(_fg_rel_blob "$_rr_tip" CLAUDE.md) || _rr_rc=$?
-    if [ "$_rr_rc" -ne 0 ] && [ "$_rr_rc" -ne 1 ]; then _rr_gov='- **Governance** (§ solo/team): team'; fi
+    if [ "$_rr_rc" -ne 0 ] && [ "$_rr_rc" -ne 1 ]; then _rr_gov='- **Governance** (§ solo/team): team'; _rr_govbad=1; fi
   fi
   FG_REL_READ=1
   _rr_v=$(printf '%s\n' "$_rr_dial" | grep -E '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=' | tail -n1 | sed -E "s/^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//" || true)
@@ -2195,6 +2213,38 @@ _fg_rel_read() {
       FG_REL_GOV=solo
     fi
   fi
+  _fg_go_read "$_rr_dial" "$_rr_gov" "$_rr_govbad"
+}
+# _fg_go_read <dial text> <CLAUDE.md text>: SWAS-727. Sets FG_GO_ACT (absent | separate | review) and FG_GO_N (the GO_GIVERS login count),
+# read the way pv_go_dials reads them: the last GO_ACT line wins, an unrecognised value is absent, a `**Merge GO**: separate` line can
+# only tighten, and a GO_GIVERS list with a character outside A-Za-z0-9- counts as empty (the verbs refuse every merge then).
+_fg_go_read() {
+  FG_GO_ACT=absent; FG_GO_N=0
+  _gr_a=$(printf '%s\n' "$1" | grep -E '^[[:space:]]*GO_ACT[[:space:]]*=' | tail -n1 | sed -E "s/^[[:space:]]*GO_ACT[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//" || true)
+  case "$_gr_a" in
+    review|separate) FG_GO_ACT=$_gr_a ;;
+  esac
+  _gr_l=$(printf '%s\n' "$1" | grep -E '^[[:space:]]*GO_GIVERS[[:space:]]*=' | tail -n1 | sed -E "s/^[[:space:]]*GO_GIVERS[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g" | tr -s '[:space:]' ' ' || true)
+  case "$_gr_l" in
+    *[!A-Za-z0-9' '-]*) _gr_l='' ;;
+  esac
+  FG_GO_N=$(printf '%s\n' "$_gr_l" | wc -w | tr -d ' ')
+  if printf '%s\n' "$2" | grep -qE '^[-*+[:space:]]*\*\*Merge GO\*\*: separate([[:space:]]|$)'; then FG_GO_ACT=separate; fi
+  # a CLAUDE.md that is not a regular file reads review as separate, as pv_go_dials does (an unreadable file can only tighten)
+  if [ "${3:-0}" = 1 ] && [ "$FG_GO_ACT" = review ]; then FG_GO_ACT=separate; fi
+}
+_fg_go_tail() {  # the `; merge GO: ...` clause for the relationship line; empty under solo and when GO_ACT is absent (so adopter output is unchanged)
+  FG_GO_TAIL=''
+  if [ "$FG_REL_DIAL" = solo ] && [ "$FG_REL_GOV" != team ]; then return 0; fi
+  case "$FG_GO_ACT" in
+    review)
+      if [ "$FG_GO_N" -ge 1 ]; then
+        FG_GO_TAIL="; merge GO: review, $FG_GO_N GO-giver(s) in GO_GIVERS (an APPROVED forge review on the exact head by one of them is the GO; land only)"
+      else
+        FG_GO_TAIL="; merge GO: review, but GO_GIVERS is empty, so every merge is refused until a reviewer login is added to .kit/dials.conf"
+      fi ;;
+    separate) FG_GO_TAIL="; merge GO: separate (two acts; --go-by must differ from the reviewer)" ;;
+  esac
 }
 _fg_rel_why_line() {  # the one INFO row for a read that did not happen (FG_REL_READ=2) or failed (0), by cause. Never a warn, never an exit.
   _rw_end='This says nothing about what the verbs read.'
@@ -2215,17 +2265,18 @@ _fg_rel_lines() {
     _fg_rel_why_line
     return 0
   fi
+  _fg_go_tail
   case "$FG_REL_DIAL:$FG_REL_GOV" in
     solo:team)
-      printf 'merge relationship: CLAUDE.md says Governance: team, .kit/dials.conf says solo — reads team\n' ;;
+      printf 'merge relationship: CLAUDE.md says Governance: team, .kit/dials.conf says solo — reads team%s\n' "$FG_GO_TAIL" ;;
     team:solo)
-      printf 'merge relationship: CLAUDE.md says Governance: solo, .kit/dials.conf says team — reads team\n' ;;
+      printf 'merge relationship: CLAUDE.md says Governance: solo, .kit/dials.conf says team — reads team%s\n' "$FG_GO_TAIL" ;;
     solo:*)
       printf "merge relationship: solo — the owner's recorded GO, bound to the head sha, is the merge control for every class\n" ;;
     team:*)
-      printf "merge relationship: team — a non-author forge approval plus the owner's recorded GO\n" ;;
+      printf "merge relationship: team — a non-author forge approval plus the owner's recorded GO%s\n" "$FG_GO_TAIL" ;;
     *)
-      printf 'merge relationship: undeclared — reads team; one forge account? declare MERGE_RELATIONSHIP=solo in .kit/dials.conf, record your GO on that PR (promotion-verify.sh record), then merge it yourself (docs/adoption/vc-hosts.md)\n' ;;
+      printf 'merge relationship: undeclared — reads team; one forge account? declare MERGE_RELATIONSHIP=solo in .kit/dials.conf, record your GO on that PR (promotion-verify.sh record), then merge it yourself (docs/adoption/vc-hosts.md)%s\n' "$FG_GO_TAIL" ;;
   esac
 }
 # _fg_prot_line: `branch protection: enforced on <branch>` or `unprotected: convention tier — <reason>`. The reason is matched on GitHub's
@@ -2778,6 +2829,14 @@ else
 fi
 
 # 2. claims [GATING]
+# _claims_na_note <registry-output>: ` (<N> N-A)` read from the registry's closing line (`claims: <P> pass · <N> N-A · …`), else
+# nothing (a registry or stub that prints no closing line leaves the row unchanged). N-A means a claim verified nothing here: it
+# never reads as holding, so the count rides on the row instead of being folded into PASS.
+_claims_na_note() {
+  _cn_n=$(printf '%s\n' "$1" | sed -n 's/^claims: .* \([0-9][0-9]*\) N-A .*/\1/p' | tail -n 1)
+  [ -n "$_cn_n" ] || return 0
+  [ "$_cn_n" -eq 0 ] && printf ' (0 N-A)' || printf ' (%s N-A: verified nothing here, see the registry output)' "$_cn_n"
+}
 if [ "$QUICK" = "1" ] && { [ -n "$DOCTOR_CLAIMS_CMD" ] || _pg_kit_tree; }; then
   # --quick on the kit's tree: skipped, so UNVERIFIED. On an unmarked (adopter) tree the dimension stays N/A below, because it does
   # not apply there skip or not (SWAS-199 takes precedence).
@@ -2791,7 +2850,7 @@ elif [ -n "$DOCTOR_CLAIMS_CMD" ]; then
     0) _cstatus="PASS" ;;
     *) _cstatus="FAIL" ;;
   esac
-  printf '  %-14s %s\n' "claims" "$_cstatus"
+  printf '  %-14s %s%s\n' "claims" "$_cstatus" "$(_claims_na_note "$_cout")"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
 elif ! _pg_kit_tree; then
   # kit-self (SWAS-199): the registry grades the KIT's own headline claims. Neither kit marker (the same
@@ -2808,7 +2867,7 @@ elif [ -f "conformance/claims-registry.sh" ]; then
     *) _cstatus="FAIL" ;;
   esac
   _pg_end
-  printf '  %-14s %s\n' "claims" "$_cstatus"
+  printf '  %-14s %s%s\n' "claims" "$_cstatus" "$(_claims_na_note "$_cout")"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
 else
   _pg_skip "claims registry: conformance/claims-registry.sh is not present, skipped"

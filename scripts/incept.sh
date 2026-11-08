@@ -104,6 +104,63 @@ if [ "${1:-}" = "__emit-epilogue" ]; then
   print_epilogue; exit 0
 fi
 
+# Inception replaces the kit's OWN reference/dogfooding files (expected in a greenfield kit copy) but
+# must NEVER clobber a genuine adopter file in a brownfield merge. A kit-own file is identified by a
+# marker; an ABSENT destination is also safe to write. (go/no-go #2 — a bare cp silently overwrote an
+# adopter's CI/CODEOWNERS.) Brownfield adopters merge per docs/adoption/brownfield.md.
+cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
+  if [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; then
+    cp "$1" "$2"
+  else
+    echo "warning: $2 exists and is not a kit reference file — NOT overwritten (brownfield-safe). Merge $1 into it per docs/adoption/brownfield.md." >&2
+  fi
+}
+
+# CP7R5-GATE-AUTHORITY §4 — the RATIFIED provenance mechanism (option P2): stamp an ORIGIN MARKER into
+# the CI pipeline incept INSTALLS. It lets conformance/verify-enforced-wired.sh tell DRIFT (the kit
+# installed this pipeline and someone stripped a required step) apart from an UNMET DOCUMENTED MERGE
+# OBLIGATION (a brownfield adopter owns their pipeline and merges the gate-ids by hand, exactly as
+# docs/adoption/brownfield.md instructs). Nothing in an adopter tree recorded which of the two it was:
+# .kit-manifest lists the EXPORT's files (workflows are export-ignored), never an installed path.
+# Provenance written by the ACT of installation travels IN the artifact it describes, so it cannot go
+# stale relative to that artifact and survives a rename.
+#
+# TWO PROPERTIES ARE LOAD-BEARING — both locked by conformance/pipeline-origin.sh:
+#  1. NON-COLLISION. The marker must match NEITHER kit-own ERE passed below ('Kit-own CI|Sparkwright',
+#     'Sparkwright'). If it did, installing it would silently flip a LATER cp_kit_replace from PRESERVE
+#     to OVERWRITE and clobber an adopter's edited CI — a data-safety regression by the back door.
+#  2. ONLY STAMP A FILE WE WROTE. cp_kit_replace returns 0 whether it copied or preserved, so a blind
+#     post-call prepend would stamp a brownfield-PRESERVED adopter pipeline as kit-emitted — precisely
+#     the false-FAIL class this design exists to remove. Mirror its write condition up front instead,
+#     the same way install_codeowners does ("only transform a file WE wrote").
+# The marker goes at the TOP of the file, not inside it: curate_db_backed -> strip_db_region runs AFTER
+# the §5 wiring block and deletes the bounded `# >>> kit:db-backed` … `# <<< kit:db-backed` region, so a
+# marker placed inside that region would vanish on a --no-db incept.
+# HONEST CEILING: an adopter can delete this line. Under §4 that is an accepted self-assertion of
+# ownership — it downgrades enforcement to a DISCLOSED N/A, never to a silent pass.
+PIPELINE_ORIGIN_MARKER='# kit-pipeline-origin: emitted'
+install_pipeline() {  # <src> <dst> <kit-own-marker-ERE> — brownfield-safe copy + origin stamp
+  _ip_write=0
+  { [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; } && _ip_write=1
+  cp_kit_replace "$1" "$2" "$3"
+  [ "$_ip_write" -eq 1 ] || return 0     # brownfield-preserved — their file, not ours to label
+  [ -f "$2" ] || return 0
+  if ! grep -qF "$PIPELINE_ORIGIN_MARKER" "$2" 2>/dev/null; then   # idempotent: never double-stamp
+    # Unpredictable temp name beside the target (same idiom as install_codeowners) — avoids following
+    # a pre-placed symlink at a predictable path.
+    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || _ip_tmp="$2.origin.$$"
+    { printf '%s\n' "$PIPELINE_ORIGIN_MARKER"; cat "$2"; } > "$_ip_tmp" && mv "$_ip_tmp" "$2"
+  fi
+}
+# Internal/testing seam: run ONLY install_pipeline SRC DST (incept's own copy + origin stamp), then exit.
+# ci-gates.sh --selftest's YF-incept cell drives this; argument-borne, never an env var.
+if [ "${1:-}" = "__install-pipeline" ]; then
+  [ $# -eq 3 ] || { echo "incept: __install-pipeline takes SRC DST" >&2; exit 2; }
+  case "$2" in -*) echo "incept: __install-pipeline: SRC must not start with -" >&2; exit 2 ;; esac
+  case "$3" in -*) echo "incept: __install-pipeline: DST must not start with -" >&2; exit 2 ;; esac
+  install_pipeline "$2" "$3" 'Kit-own CI|Sparkwright'; exit 0
+fi
+
 NAME="${INCEPT_NAME:-}"; OWNER="${INCEPT_INTENT_OWNER:-}"
 STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTERACTIVE=1
 # A stack chosen via INCEPT_STACK is deliberate too — only an un-set stack is a silent default.
@@ -311,55 +368,6 @@ sedi() {
   for last in "$@"; do :; done
   sed -i.bak "$@" && rm -f "${last}.bak"
 }
-# Inception replaces the kit's OWN reference/dogfooding files (expected in a greenfield kit copy) but
-# must NEVER clobber a genuine adopter file in a brownfield merge. A kit-own file is identified by a
-# marker; an ABSENT destination is also safe to write. (go/no-go #2 — a bare cp silently overwrote an
-# adopter's CI/CODEOWNERS.) Brownfield adopters merge per docs/adoption/brownfield.md.
-cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
-  if [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; then
-    cp "$1" "$2"
-  else
-    echo "warning: $2 exists and is not a kit reference file — NOT overwritten (brownfield-safe). Merge $1 into it per docs/adoption/brownfield.md." >&2
-  fi
-}
-
-# CP7R5-GATE-AUTHORITY §4 — the RATIFIED provenance mechanism (option P2): stamp an ORIGIN MARKER into
-# the CI pipeline incept INSTALLS. It lets conformance/verify-enforced-wired.sh tell DRIFT (the kit
-# installed this pipeline and someone stripped a required step) apart from an UNMET DOCUMENTED MERGE
-# OBLIGATION (a brownfield adopter owns their pipeline and merges the gate-ids by hand, exactly as
-# docs/adoption/brownfield.md instructs). Nothing in an adopter tree recorded which of the two it was:
-# .kit-manifest lists the EXPORT's files (workflows are export-ignored), never an installed path.
-# Provenance written by the ACT of installation travels IN the artifact it describes, so it cannot go
-# stale relative to that artifact and survives a rename.
-#
-# TWO PROPERTIES ARE LOAD-BEARING — both locked by conformance/pipeline-origin.sh:
-#  1. NON-COLLISION. The marker must match NEITHER kit-own ERE passed below ('Kit-own CI|Sparkwright',
-#     'Sparkwright'). If it did, installing it would silently flip a LATER cp_kit_replace from PRESERVE
-#     to OVERWRITE and clobber an adopter's edited CI — a data-safety regression by the back door.
-#  2. ONLY STAMP A FILE WE WROTE. cp_kit_replace returns 0 whether it copied or preserved, so a blind
-#     post-call prepend would stamp a brownfield-PRESERVED adopter pipeline as kit-emitted — precisely
-#     the false-FAIL class this design exists to remove. Mirror its write condition up front instead,
-#     the same way install_codeowners does ("only transform a file WE wrote").
-# The marker goes at the TOP of the file, not inside it: curate_db_backed -> strip_db_region runs AFTER
-# the §5 wiring block and deletes the bounded `# >>> kit:db-backed` … `# <<< kit:db-backed` region, so a
-# marker placed inside that region would vanish on a --no-db incept.
-# HONEST CEILING: an adopter can delete this line. Under §4 that is an accepted self-assertion of
-# ownership — it downgrades enforcement to a DISCLOSED N/A, never to a silent pass.
-PIPELINE_ORIGIN_MARKER='# kit-pipeline-origin: emitted'
-install_pipeline() {  # <src> <dst> <kit-own-marker-ERE> — brownfield-safe copy + origin stamp
-  _ip_write=0
-  { [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; } && _ip_write=1
-  cp_kit_replace "$1" "$2" "$3"
-  [ "$_ip_write" -eq 1 ] || return 0     # brownfield-preserved — their file, not ours to label
-  [ -f "$2" ] || return 0
-  if ! grep -qF "$PIPELINE_ORIGIN_MARKER" "$2" 2>/dev/null; then   # idempotent: never double-stamp
-    # Unpredictable temp name beside the target (same idiom as install_codeowners) — avoids following
-    # a pre-placed symlink at a predictable path.
-    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || _ip_tmp="$2.origin.$$"
-    { printf '%s\n' "$PIPELINE_ORIGIN_MARKER"; cat "$2"; } > "$_ip_tmp" && mv "$_ip_tmp" "$2"
-  fi
-}
-
 warn_codeowners_active_placeholder() {  # <dst> — G11: warn ONLY on an ACTIVE (uncommented) @your-org rule
   if [ -f "$1" ] && grep -Eq '^[[:space:]]*[^#].*@your-org' "$1" 2>/dev/null; then
     echo "warning: $1 has an ACTIVE @your-org/* placeholder — replace it with REAL teams/users" >&2

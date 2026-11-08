@@ -432,16 +432,17 @@ check_runner_pins_tree() {  # <root> -> 0 ok; 1 an unpinned label, or the leg re
 # the bytes in a whole file: CR (its own alternative), the other C0 controls except TAB and LF, DEL, the C1 controls (NEL named), LS
 # and PS. NUL is found separately (awk cannot see it portably) and named by file. Octal escapes only: no banned byte in this source.
 # Each hit prints one line (file, LF line number, name, hex bytes) to stderr and adds to _lb_hits; rc 1 on any hit.
-# WHAT IT PROVES: no judged file holds a banned byte at scan time. It does not parse YAML (SWAS-445 is the parser grade). Scope: the kit's
-# own workflows and the templates it ships (check_line_breaks_tree); adopter trees are out of scope, so adopter-side RES-1 stays open until
-# SWAS-445. Not judged: dependabot.yml, conformance/fixtures/*/ci.yml, invalid UTF-8 (a parser rejects it). It reads the worktree, so a
+# WHAT IT PROVES: no judged file holds a banned byte at scan time. It does not parse YAML (check_yaml_forms, SWAS-554, refuses the forms the line
+# locks misread). Scope: the kit's own workflows and the templates it ships (check_line_breaks_tree); adopter trees are in scope in the CRLF-tolerant
+# form `check_line_breaks <file> crlf` (a CR directly before the LF is no hit, everything else is), which closes adopter-side RES-1 (SWAS-554).
+# Not judged: dependabot.yml, conformance/fixtures/*/ci.yml, invalid UTF-8 (a parser rejects it). It reads the worktree, so a
 # core.autocrlf=true checkout reds locally on LF blobs. CEILING: the --own-tree call runs inside the workflow it judges, so a hidden key on
 # that job can neuter it; the --shard-join calls are independent runners, and a local --own-tree or --line-breaks run is outside the YAML.
 # Call sites: own_tree_run (kit trees, first in the kit block), shard_join_run (before the shape judge), and --line-breaks [<root>].
 _lb_hits=0
 check_line_breaks() {  # <file> -> 0 no banned byte; 1 any banned byte (every hit is reported)
   _lb_rc=0
-  if _lb_o=$(LC_ALL=C awk -v file="$1" '
+  if _lb_o=$(LC_ALL=C awk -v file="$1" -v lbmode="${2:-}" '
     function hex(s,   i, h) { h = ""; for (i = 1; i <= length(s); i++) h = h (i > 1 ? " " : "") sprintf("%02x", ord[substr(s, i, 1)]); return h }
     function scan(re, name,   s, b, nm) {
       s = $0
@@ -455,6 +456,7 @@ check_line_breaks() {  # <file> -> 0 no banned byte; 1 any banned byte (every hi
     }
     BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
     {
+      if (lbmode == "crlf") sub("\015$", "")  # SWAS-554: a CR directly before the LF is the line ending of a CRLF file, not a hit
       scan("\\015", "C0")
       scan("[\\001-\\010\\013\\014\\016-\\037\\177]", "C0")
       scan("\\302\\205", "NEL")
@@ -483,7 +485,7 @@ check_line_breaks() {  # <file> -> 0 no banned byte; 1 any banned byte (every hi
 # GitLab templates). Liveness: zero .github/workflows files read is a FAIL. Sets _lb_files and _lb_hits for the caller.
 check_line_breaks_tree() {  # <root> -> 0 ok; 1 any banned byte, or no workflow file was read
   _lt_rc=0; _lb_files=0; _lb_wf=0; _lb_hits=0
-  for _lt_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml; do  # the dot globs: a plain * skips dot-named files
+  for _lt_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml "$1"/.github/workflows/.yml "$1"/.github/workflows/.yaml; do  # the dot globs: a plain * skips dot-named files; .*.yml needs a name, so .yml and .yaml are listed (SWAS-554 S9)
     [ -f "$_lt_f" ] || continue
     _lb_files=$((_lb_files + 1)); _lb_wf=$((_lb_wf + 1))
     check_line_breaks "$_lt_f" || _lt_rc=1
@@ -500,6 +502,192 @@ check_line_breaks_tree() {  # <root> -> 0 ok; 1 any banned byte, or no workflow 
   done
   [ "$_lt_rc" != 0 ] || echo "OK: line-break ban — $_lb_files file(s) read under $1"
   return "$_lt_rc"
+}
+
+# check_yaml_forms <file> <kit|adopter> (SWAS-554, YF): the structural refusal. GitHub reads a workflow with a YAML parser; every lock in this file reads one line at a time.
+# This refuses each form the line locks cannot read (flow mappings, flow sequences beyond plain or simply quoted items, anchors, aliases, merge keys, tags, quoted or
+# spaced keys, `?` keys, directives, document markers, repeated keys, indentation indicators, tabs, a CR inside a line, an unbounded `${{`, a dash with extra spaces, a
+# line shape it cannot classify), so what remains is text where the line reader and the parser agree. It is NOT a parser and proves nothing about what GitHub accepts.
+# Skipped, not read: `${{ ... }}` spans (one placeholder each) and block scalar bodies (`|` `>` under any key). A body ends at the first non-blank line indented at or
+# below the MEASURED column of its key (for `- run: |` that is the key's column, not the dash's), so a key right after a body is read as a key. Modes: `kit` = every
+# form is a FAIL; `adopter` = only the forms no hand-written workflow needs (marked "both" in the design) print a disclosed `N/A (ADOPTER-OWNED)` line, never a red.
+# Output: one line per refusal (file:line: form: the line cut to 80), then rc 1 on any FAIL. Sets the counters _yf_lines, _yf_bodies, _yf_refused for the caller.
+_yf_lines=0; _yf_bodies=0; _yf_refused=0
+check_yaml_forms() {  # <file> <kit|adopter> -> 0 clean or disclosed only; 1 any FAIL
+  if _yf_o=$(LC_ALL=C awk -v file="$1" -v mode="$2" '
+    BEGIN { pend = -1 }
+    function bad(form, kitonly,   shown) {
+      if (mode != "kit" && kitonly) return
+      nbad++
+      shown = substr(orig, 1, 80); gsub("[\001-\037\177]", "?", shown)  # R9: no control byte reaches the report
+      printf "%s %s:%d: %s: %s\n", (mode == "kit" ? "FAIL:" : "N/A (ADOPTER-OWNED):"), file, NR, form, shown
+    }
+    function qclosed(v) {  # one closed quoted scalar, then at most a comment (the shape() rule of _sj_allow)
+      if (v ~ /^"/) return (v ~ /^"([^"\\]|\\.)*"([ \t]+#.*)?$/)
+      return (v ~ ("^\047([^\047]|\047\047)*\047([ \t]+#.*)?$"))
+    }
+    function qseq(s,   m, body, i, ch, c1) {  # a flow sequence of closed quoted items, none holding a comma, bracket, brace, quote or backslash (Q2)
+      while (s !~ /^[ \t]*$/) {
+        if (!match(s, /^[ \t]*\047[^\047]*\047[ \t]*(,|$)/) && !match(s, /^[ \t]*"[^"]*"[ \t]*(,|$)/)) {
+          c1 = s; sub(/^[ \t]*/, "", c1); c1 = substr(c1, 1, 1)  # R3: an unquoted item that opens with a both-mode form is still named as that form
+          if (c1 == "{") bad("flow sequence holding a flow mapping", 0); else if (c1 == "&") bad("flow sequence holding an anchor", 0); else if (c1 == "*") bad("flow sequence holding an alias", 0)
+          else bad("flow sequence holding a quote that is not a closed simple item", 1)
+          return
+        }
+        m = substr(s, 1, RLENGTH); s = substr(s, RLENGTH + 1)
+        sub(/^[ \t]*[\047"]/, "", m); sub(/[\047"][ \t]*,?$/, "", m)
+        for (i = 1; i <= 8; i++) { ch = substr("[]{},\\\047\"", i, 1); if (index(m, ch) > 0) { bad("flow sequence holding a quote that is not a closed simple item", 1); return } }
+      }
+    }
+    function flow(v,   inner, np, parts, i, item, c) {
+      if (hadx) { bad("`${{` inside a flow sequence (it parses as a flow mapping)", 0); return }
+      sub(/[ \t]+#.*$/, "", v)
+      if (v !~ /^\[.*\]$/) { bad("flow sequence that does not close on its line", 1); return }
+      inner = substr(v, 2, length(v) - 2)
+      if (inner ~ /^[ \t]*$/) return
+      if (inner ~ /[\047"]/) { qseq(inner); return }
+      np = split(inner, parts, ",")
+      for (i = 1; i <= np; i++) {
+        item = parts[i]; gsub(/^[ \t]+/, "", item); gsub(/[ \t]+$/, "", item); c = substr(item, 1, 1)
+        if (c == "{") { bad("flow sequence holding a flow mapping", 0); return }
+        if (c == "[") { bad("flow sequence holding a bracket", 1); return }
+        if (c == "&") { bad("flow sequence holding an anchor", 0); return }
+        if (c == "*") { bad("flow sequence holding an alias", 0); return }
+        if (c == "" || index("-?:,]}#!|>%@`", c) > 0) { bad("a refused first character in a flow item", 0); return }
+        if (index(item, ":") || index(item, "{") || index(item, "}") || index(item, "[") || index(item, "]")) { bad("flow sequence holding a colon in a plain item", 1); return }
+      }
+    }
+    function value(v, k, isitem, ind, c,   f, p) {
+      sub(/^[ \t]+/, "", v)
+      if (v == "" || v ~ /^#/) return
+      f = substr(v, 1, 1)
+      if (f == "|" || f == ">") {
+        if (v ~ /^[|>][-+]?[0-9]/) { bad("an explicit indentation indicator", 0); return }
+        if (v !~ /^[|>][-+]?[ \t]*(#.*)?$/) { bad("a line shape the reader cannot classify", 1); return }
+        inbody = 1; bodykey = (isitem && k == "") ? ind : c; bodyind = -1; bodies++; return
+      }
+      pend = (isitem && k == "") ? ind : c  # S2: a non-empty scalar or flow value; a deeper next line would continue it
+      if (f == "\""|| f == "\047") { if (!qclosed(v)) bad("a quoted scalar that does not close on its line", 1); return }
+      if (f == "[") { flow(v); return }
+      if (f == "{") { bad(isitem && k == "" ? "a flow mapping at a node start" : "a flow mapping as a value", 0); return }
+      if (f == "&") { bad(isitem && k == "" ? "an anchor on a sequence item" : "an anchor on a value", 0); return }
+      if (f == "*") { bad(isitem && k == "" ? "an alias as a sequence item" : "an alias as a value", 0); return }
+      if (f == "!") { bad(isitem && k == "" ? "a tag on a sequence item" : "a tag on a value", 0); return }
+      if (index("-?:,]}%@`", f) > 0) { bad("a plain scalar starting with a refused character", 1); return }
+      p = v; sub(/[ \t]+#.*$/, "", p)
+      if (p ~ /:([ \t]|$)/) bad("a plain scalar holding a colon and a space", 1)
+    }
+    function line(   p, q, c, k, v, isitem, sk, ws) {
+      match(orig, /^[ \t]*/); ind = RLENGTH; ws = substr(orig, 1, ind); t = substr(orig, ind + 1); hadx = 0
+      if (ws ~ /\t/) { bad("a tab in indentation", 1); if (mode == "kit") return }
+      while ((p = index(t, "${{")) > 0) {
+        hadx = 1; q = index(substr(t, p), "}}")
+        if (q == 0) { bad("an expression the reader cannot bound (${{ with no }})", 1); return }
+        if (substr(t, p, q + 1) ~ /[\047"]:([ \t]|$)/) { bad("an expression span that holds a quote followed by a colon and a space", 1); return }
+        t = substr(t, 1, p - 1) "X" substr(t, p + q + 1)
+      }
+      if (ind == 0) {
+        if (t ~ /^%/) { bad("a directive", 0); return }
+        if (t ~ /^---([ \t]|$)/) {
+          if (t !~ /^---[ \t]*(#.*)?$/) { bad("content on a document-marker line", 0); return }
+          if (content || docs) bad("a second document or a document marker that is not first", 0)
+          docs = 1; return
+        }
+        if (t ~ /^\.\.\.([ \t]|$)/) { if (t !~ /^\.\.\.[ \t]*(#.*)?$/) bad("content on a document-marker line", 0); else bad("a document-end marker", 0); return }
+      }
+      content = 1; c = ind; isitem = 0; k = ""
+      if (t ~ /^-([ \t]|$)/) {
+        while (top > 0 && mcol[top] > ind) top--
+        if (t ~ /^-[ \t]*(#.*)?$/) return
+        if (t !~ /^- [^ \t]/) { bad("a dash followed by more than one space or a tab (the key sits at another column)", 0); return }
+        t = substr(t, 3); c = ind + 2; isitem = 1
+        if (t ~ /^-([ \t]|$)/) { bad("a nested sequence item", 1); return }
+      }
+      if (t ~ /^\?([ \t]|$)/) { bad("an explicit ? key", 0); return }
+      if (t ~ /^<<[ \t]*:/) { bad("a merge key", 0); return }
+      if (t ~ /^[A-Za-z0-9_][A-Za-z0-9_.\/-]*:([ \t]|$)/) { k = t; sub(/:.*$/, "", k); v = substr(t, length(k) + 2) }
+      else if (t ~ /^[A-Za-z0-9_][A-Za-z0-9_.\/-]*[ \t]+:([ \t]|$)/) {
+        bad("a space before a key colon", 1); if (mode == "kit") return
+        k = t; sub(/[ \t]+:.*$/, "", k); v = t; sub(/^[^:]*:/, "", v)
+      }
+      else if (t ~ /^"[^"]*"[ \t]*:([ \t]|$)/ || t ~ /^\047[^\047]*\047[ \t]*:([ \t]|$)/) {
+        q = substr(t, 1, 1); k = substr(t, 2); k = substr(k, 1, index(k, q) - 1)  # S7: the exact closed span, so "on\047x" is not on
+        v = substr(t, length(k) + 3); sub(/^[ \t]*:/, "", v)
+        if (!(ind == 0 && !isitem && k == "on")) { bad(k == "on" ? "a quoted on that is not in column 0" : "a quoted key", 1); if (mode == "kit") return }
+        else onq = 1
+      }
+      else if (t ~ /^[&*!]/) { value(t, "", isitem, ind, c); return }
+      else if (!isitem && t ~ /^[{[]/) { bad(substr(t, 1, 1) == "{" ? "a flow mapping at a node start" : "a flow sequence at a node start", 0); return }  # F3: a root or bare flow collection
+      else if (!isitem) { bad(t ~ /^[A-Za-z0-9_][A-Za-z0-9_.\/-]*:[^ \t]/ ? "a colon glued to its key is not a key (an unclassifiable line)" : "a line shape the reader cannot classify", 1); return }
+      else v = t
+      if (k != "") {
+        while (top > 0 && mcol[top] > c) top--
+        if (top == 0 || mcol[top] < c) { top++; mcol[top] = c; gen[top]++ }
+        sk = top "|" gen[top] "|" k
+        if (sk in seen) { bad(k == "on" && onq ? "a repeated on (through the quoted spelling)" : "a repeated key", 0); return }
+        seen[sk] = 1
+      }
+      value(v, k, isitem, ind, c)
+    }
+    { lines++; orig = $0; if (orig ~ "\015$") sub("\015$", "", orig)
+      if (index(orig, "\015") > 0) { bad("a CR inside a line (a YAML parser ends the line there)", 0); next }
+      if (inbody) {
+        if (orig ~ /^[ \t]*$/) next
+        match(orig, /^[ \t]*/)
+        if (RLENGTH > bodykey) {
+          if (substr(orig, 1, RLENGTH) ~ /\t/) bad("a tab in a block scalar indentation", 1)
+          if (bodyind < 0) bodyind = RLENGTH; else if (RLENGTH < bodyind) bad("an ambiguous dedent inside a block scalar", 1)
+          next
+        }
+        inbody = 0
+      }
+      if (orig ~ /^[ \t]*$/ || orig ~ /^[ \t]*#/) next
+      if (pend >= 0) {  # S2: the previous line held a non-empty scalar or flow value; a deeper line is the YAML continuation of it, not a new item or key
+        match(orig, /^[ \t]*/); pc = pend; pend = -1
+        if (RLENGTH > pc) { bad("a continuation of a multi-line scalar", 0); next }
+      }
+      line() }
+    END { printf "STAT %d %d %d\n", lines + 0, bodies + 0, nbad + 0 }' "$1"); then _yf_arc=0; else _yf_arc=$?; fi
+  if [ "$_yf_arc" != 0 ]; then
+    echo "FAIL: $1: the yaml-forms scan did not run (awk rc $_yf_arc): an unreadable file or a broken awk must not read as clean (SWAS-554)"
+    _yf_refused=$((_yf_refused + 1)); return 1
+  fi
+  _yf_st=$(printf '%s\n' "$_yf_o" | sed -n 's/^STAT //p')
+  set -- "$1" "$2" $_yf_st
+  _yf_lines=$((${_yf_lines:-0} + $3)); _yf_bodies=$((${_yf_bodies:-0} + $4)); _yf_refused=$((${_yf_refused:-0} + $5))
+  _yf_m=$(printf '%s\n' "$_yf_o" | grep -v '^STAT ' || :)
+  [ -z "$_yf_m" ] || printf '%s\n' "$_yf_m"
+  if [ -n "$_yf_m" ] && [ "$2" != kit ]; then
+    echo "    remedy: write the key out as plain block YAML. GitHub accepts the form, but the kit's line locks cannot read it; this is disclosed, not a failure (SWAS-554)"
+  fi
+  if printf '%s\n' "$_yf_m" | grep -q '^FAIL: '; then return 1; fi
+  return 0
+}
+
+# check_yaml_forms_tree <root> <kit|adopter> (SWAS-554, YF): the structural refusal over a tree. `kit`: the GitHub files of the LB set (every workflow, dot-named too,
+# profiles/*.yml, profiles/*/ci.yml, docs/operations/*.github.yml) in kit mode; zero workflow files read is a FAIL. `adopter`: the tree's own workflows, each in kit
+# mode when it carries the emitted origin marker (the kit wrote it) and in the narrow adopter mode otherwise (the provenance axis of _own_origin). GitLab files are out of scope.
+check_yaml_forms_tree() {  # <root> <kit|adopter> -> 0 ok; 1 any FAIL, or (kit) no workflow file was read
+  _yt_rc=0; _yt_wf=0; _yf_files=0; _yf_lines=0; _yf_bodies=0; _yf_refused=0
+  for _yt_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml "$1"/.github/workflows/.yml "$1"/.github/workflows/.yaml; do
+    [ -f "$_yt_f" ] || continue
+    _yt_wf=$((_yt_wf + 1)); _yf_files=$((_yf_files + 1)); _yt_m=kit
+    if [ "$2" != kit ] && [ "$(_own_origin "$_yt_f" 0)" != emitted ]; then _yt_m=adopter; fi
+    check_yaml_forms "$_yt_f" "$_yt_m" || _yt_rc=1
+  done
+  if [ "$2" = kit ]; then
+    if [ "$_yt_wf" = 0 ]; then
+      echo "FAIL: yaml-forms liveness: read no workflow file under $1/.github/workflows (a glob that matched nothing must not pass; SWAS-554)"
+      _yt_rc=1
+    fi
+    for _yt_f in "$1"/profiles/*.yml "$1"/profiles/*/ci.yml "$1"/docs/operations/*.github.yml; do
+      [ -f "$_yt_f" ] || continue
+      _yf_files=$((_yf_files + 1))
+      check_yaml_forms "$_yt_f" kit || _yt_rc=1
+    done
+  fi
+  [ "$_yt_rc" != 0 ] || [ "$_yf_files" = 0 ] || echo "OK: yaml forms — $_yf_files file(s), $_yf_lines line(s) read, $_yf_bodies block bodies skipped, $_yf_refused refused under $1"
+  return "$_yt_rc"
 }
 
 # check_sast_parse_spans <workflow-file> (SWAS-278 278a, SP): the kit's SAST-parse step must print where semgrep
@@ -653,7 +841,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
     inb && /^          fetch-depth: 2[ \t]/ { fd2++ }
     inb && /fetch-depth:/ && !/fetch-depth: 2[ \t]/ { fdother++ }
     inb && /^ *base=/ { bases++; if ($0 !~ /git rev-parse HEAD\^1\)/) badbase++ }
-    inb && /git diff --quiet "\$base" HEAD -- / { diffl++; ps = $0; sub(/;.*$/, "", ps); if (ps ~ /\.claude\/settings\.json/ && ps ~ /templates\/sandbox-strict\.settings\.local\.json/ && ps ~ /conformance\/guard-wired\.sh/ && ps ~ /docs\/patches\/2026-10-25-boundary-default-352b\.settings\.patch/ && ps ~ /conformance\/boundary-redteam\.sh/) fullspec++ }
+    inb && /git diff --quiet "\$base" HEAD -- / { diffl++; ps = $0; sub(/;.*$/, "", ps); if (ps ~ /\.claude\/settings\.json/ && ps ~ /templates\/sandbox-overlay\.settings\.local\.json/ && ps ~ /conformance\/guard-wired\.sh/ && ps ~ /docs\/patches\/2026-10-25-boundary-default-352b\.settings\.patch/ && ps ~ /conformance\/boundary-redteam\.sh/) fullspec++ }
     inb && /echo "SKIP: boundary red-team/ && /did not run/ { skipl++ }
     # SWAS-363: the run body of the live step is pinned in order, up to the dedent out of `run: |` (a line at the step key indent or shallower).
     inb && inrun && !/^[ \t]*$/ {
@@ -751,7 +939,7 @@ check_boundary_redteam_step() {  # <workflow-file> -> 0 ok; 1 the job is absent,
     echo "FAIL: $1 the boundary-redteam job must take its base only from git rev-parse HEAD^1 (base lines=$7, other=$8)" >&2; return 1
   fi
   if [ "$9" != 1 ] || [ "${10}" != 1 ]; then
-    echo "FAIL: $1 the boundary-redteam job must be diff-gated: one 'git diff --quiet \"\$base\" HEAD -- ...' naming .claude/settings.json, templates/sandbox-strict.settings.local.json, conformance/guard-wired.sh, the SWAS-404 candidate patch docs/patches/2026-10-25-boundary-default-352b.settings.patch and the harness conformance/boundary-redteam.sh (diff lines=$9, full pathspec=${10})" >&2; return 1
+    echo "FAIL: $1 the boundary-redteam job must be diff-gated: one 'git diff --quiet \"\$base\" HEAD -- ...' naming .claude/settings.json, templates/sandbox-overlay.settings.local.json, conformance/guard-wired.sh, the SWAS-404 candidate patch docs/patches/2026-10-25-boundary-default-352b.settings.patch and the harness conformance/boundary-redteam.sh (diff lines=$9, full pathspec=${10})" >&2; return 1
   fi
   if [ "${11}" != 1 ]; then
     echo "FAIL: $1 the boundary-redteam job must print an explicit 'SKIP: boundary red-team ... did not run' line when no boundary file changed, never a silent green; found ${11}" >&2; return 1
@@ -921,6 +1109,7 @@ check_boundary_macos_leg() {  # <ci.yml> <macos workflow> -> 0 ok; 1 the file is
   if [ "$5" != 1 ] || [ "$6" != 0 ] || [ "$7" != 0 ]; then
     echo "FAIL: $_bm_f the macOS workflow must not change how its steps run or what they inherit (no shell:, working-directory: or defaults: key, no GITHUB_ENV or BASH_ENV, GITHUB_PATH only as the one exact rg line, and exactly one env: key, the profile resolver's; env-like keys=$5, ENV writes=$6, other PATH writes=$7)" >&2; return 1
   fi
+  # SWAS-554: check_yaml_forms runs before this lock on a kit tree and reads a block body to the measured key column (this scan's li > ri rule reads a deeper key of a `- run:` step as body; SWAS-739 boards that fix (design Q5); the exact step pins cover it meanwhile. The gate-id presence check's body skip is SWAS-740 (design Q7)).
   # read on the RAW file: a comment line inside a run: body is still shell text to GitHub (it expands the expression, and a value with a newline escapes the comment), so comments are NOT dropped here;
   # whole-line comments outside run bodies (the header and TODO blocks) are skipped
   _bm_rw=$(awk '{ match($0, /^ */); li = RLENGTH }
@@ -1225,6 +1414,7 @@ H2BODY
     }
     /^[ \t]*#/ { next }
     /^[ \t]*$/ { next }
+    /^env:/ { wenvbad++ }  # SWAS-554 S3: any workflow-level env: key, whatever it holds
     /^env:[ \t]*$/ { wenv = 1; next }
     wenv && /^[A-Za-z]/ { wenv = 0 }
     wenv && /^  (PATH|BASH_ENV):/ { wenvbad++ }
@@ -1288,7 +1478,7 @@ H2BODY
     echo "FAIL: $1 conformance-core must not set a job-level continue-on-error, defaults or env key (it would mask or change every step, the H2 lane included; an env: can re-point PATH so the pinned sh and git resolve to a planted binary); found ${13}" >&2; return 1
   fi
   if [ "${15}" != 0 ]; then
-    echo "FAIL: $1 the workflow-level env: must not name PATH or BASH_ENV (it re-points every job's shell and binaries, the H2 lane included); found ${15}" >&2; return 1
+    echo "FAIL: $1 the workflow-level env: must not name PATH or BASH_ENV (it re-points every job's shell and binaries, the H2 lane included), and no workflow-level env: key is allowed at all (SWAS-554 S3); found ${15}" >&2; return 1
   fi
   if [ "${14}" != 0 ]; then
     echo "FAIL: $1 the H2 run body must be exactly the pinned sequence (the N/A-on-push guard branch with its exit 0, the base fetch, the merge-base branch with its exit 1, the gb-ref clone and the four-line inline call), with no other line in the block: any extra line (an exit, an exec, a flipped condition, a trailing true) can green or skip the lane; first deviation: $_h2_bd" >&2; return 1
@@ -1410,6 +1600,7 @@ own_tree_run() {  # [<root>]  (default .)
   fi
   if [ "$_ot_kit" = 1 ]; then  # SWAS-274: the kit's own PR-cancel lock (kit-tree guard; adopters carry no such block)
     check_line_breaks_tree "$_ot_root" || _ot_rc=1  # SWAS-447: first, so a hidden line break is named before any LF-split lock below is trusted
+    check_yaml_forms_tree "$_ot_root" kit || _ot_rc=1  # SWAS-554: second, so a form the line locks cannot read is refused before any of them is trusted
     for _ot_cw in ci.yml golden-path.yml; do
       # a missing file is skipped on purpose: the golden-path workflow is kit-tree only and may be absent
       [ -f "$_ot_root/.github/workflows/$_ot_cw" ] || continue
@@ -1428,6 +1619,12 @@ own_tree_run() {  # [<root>]  (default .)
     check_shellcheck_pin_tree "$_ot_root" || _ot_rc=1  # SWAS-499: every linting job runs the pinned shellcheck installer first (SCP); kit trees only
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_cheap_set "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-382 S1: the cheap set waits on nothing and carries no lane condition (CS)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_gate_shape "$_ot_root/.github/workflows/ci.yml" - || _ot_rc=1  # SWAS-382 S3: the runtime gate's shape (GT); the decider's list is compared by the selftest, not here
+  else  # SWAS-554: an adopter tree. Every workflow gets the CRLF-tolerant line-break scan (RES-1) and the structural refusal, per file by provenance: an emitted file takes the whole list, an adopter-owned one the narrow disclosed list
+    for _ot_lf in "$_ot_root"/.github/workflows/*.yml "$_ot_root"/.github/workflows/*.yaml "$_ot_root"/.github/workflows/.*.yml "$_ot_root"/.github/workflows/.*.yaml "$_ot_root"/.github/workflows/.yml "$_ot_root"/.github/workflows/.yaml; do
+      [ -f "$_ot_lf" ] || continue
+      check_line_breaks "$_ot_lf" crlf || _ot_rc=1
+    done
+    check_yaml_forms_tree "$_ot_root" adopter || _ot_rc=1
   fi
   if [ "$_ot_seen" = 0 ]; then
     # The zero-found three-state (verify-enforced-wired.sh:845-849, copied).
@@ -1460,6 +1657,7 @@ own_tree_run() {  # [<root>]  (default .)
 # line (trailing whitespace allowed, nothing else), is the EXACT literal text of the two installer lines in .github/workflows/ci.yml and drift-watch.yml
 # (lit_inst, lit_chk below); an `echo` before it, a `; true`, `|| exit 0` or `|| echo x` after it, or any other drift is not the installer. A step-level
 # if: or continue-on-error: on those steps also voids them.
+# SWAS-554: on a kit tree check_yaml_forms runs before this lock and refuses anchors, aliases, flow forms and quoted keys, so the ceiling "anchors and aliases are not resolved" now has a refusal in front of it.
 # FAIL CLOSED: per workflow file the lock counts the lint lines in the whole file and the lint lines it attributed to a step (a 6-space `- ` step
 # under a 2-space job); any difference reds NAMING THE FILE. Inside `jobs:` (a) any non-blank, non-comment line indented under 4 spaces that is not
 # the exact job-header form (`  name:` and nothing after the colon) reds naming file and line, and (b) so does the first such line after `jobs:` if it
@@ -1534,7 +1732,7 @@ _scp_scan() {  # <workflow-file> -> `L <job>` per linting job, `F <job> <why>` p
 }
 check_shellcheck_pin_tree() {  # <root> -> 0 ok; 1 a linting job without its pinned installer first, a gate-lint without the OFF line, a drifted list, or no workflow read
   _sp_rc=0; _sp_files=0; _sp_jobs=0
-  for _sp_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml; do  # the dot globs: a plain * skips dot-named files
+  for _sp_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/workflows/.*.yml "$1"/.github/workflows/.*.yaml "$1"/.github/workflows/.yml "$1"/.github/workflows/.yaml; do  # the dot globs: a plain * skips dot-named files; .*.yml needs a name, so .yml and .yaml are listed (SWAS-554 S9)
     [ -f "$_sp_f" ] || continue
     _sp_files=$((_sp_files + 1))
     _sp_o=$(_scp_scan "$_sp_f")
@@ -1918,6 +2116,7 @@ _sj_blk() {  # <wf> <job> -> the job's lines, cut at the next 2-space job header
   extract_job_block "$1" "$2" | awk 'NR == 1 { print; next } /^  [A-Za-z0-9_-]+:([ \t]|$)/ { exit } { print }'
 }
 _sj_code() { grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || :; }   # code lines only: no comment-only and no blank lines
+# SWAS-554: shard_join_run and the kit's --own-tree run check_yaml_forms first, which refuses a quoted key, a flow form, an anchor and an alias; the readers below keep their code as the second line.
 _sj_nk() { sed -E "s/^( *(- )?)[\"']([A-Za-z0-9_.-]+)[\"'][[:space:]]*:/\1\3:/"; }   # S-M1/S-M2: a quoted mapping key ("if": false) reads as the bare key, so no lock below is escaped by quoting it
 _sj_noalias() {  # <label> <normalised code lines> -> a FAIL when a merge key or an alias could hide a key from the locks (the line-based reader cannot expand either)
   printf '%s\n' "$2" | grep -Eq '^ *(- )?<<[[:space:]]*:|:[[:space:]]+\*[A-Za-z0-9_-]+[[:space:]]*(#.*)?$|^ *- \*[A-Za-z0-9_-]+' && _sj_fail "$1 uses a YAML merge key or alias, which the line-based locks cannot expand (write the keys out)"
@@ -2181,6 +2380,7 @@ check_shard_join_shape() {  # <workflow> <join> [<docs-pin>] -> 0 sound; 1 with 
 shard_join_run() {  # <join> <results> [<workflow> [<docs-pin>]] -> the join's first step (CI passes only the first two; the rest is for the selftest's fixtures)
   _sr_wf=${3:-$(dirname "$0")/../.github/workflows/ci.yml}
   check_line_breaks "$_sr_wf" || return 1  # SWAS-447: a hidden line break blinds the LF-split allow-list below; never inside check_shard_join_shape (own_tree_run calls that too)
+  check_yaml_forms "$_sr_wf" kit || return 1  # SWAS-554: a form the line-based allow-list cannot read; this call runs on an independent runner, outside the job the --own-tree run sits in
   check_shard_join_shape "$_sr_wf" "$1" "${4:-}" || return 1
   _sr_ls=$(_sj_legs "$_sr_wf" "$1" | tr '\n' ' ')
   _sj_results "$_sr_ls" "$2" || return 1
@@ -2339,6 +2539,7 @@ ag loop-state false,false"
 #   R4  every job is on exactly one of the two lists, and every listed name is a job of the file (a new job must be placed by a human)
 #   R5  no workflow but ci.yml (dot-named ones included) names KIT_CI_RUNNER (any case) or a RunsOn label fragment on a code line, and every
 #       runs-on value there is on the allow-list (the literal, or the KIT_TRACKER_RUNNER form)             (check_runner_switch_tree)
+#       SWAS-725: KIT_FIXTURE_WORKFLOW also may carry KIT_FIXTURE_EXPR, once, as its runs-on value, and it owes R7's token, permission and checkout checks (see the constants below)
 #   R6  .github/runs-on.yml does not exist: the RunsOn App can write that one file and the kit uses none (check_runner_switch_tree)
 #   R7  a MOVABLE job names no secret and no job token (secrets.X, secrets[X], toJSON(secrets), secrets: inherit, github.token, any case; a comment counts:
 #       the lock reads the raw line), declares no permission beyond contents: read, and the workflow level (inherited by every job) holds permissions
@@ -2353,15 +2554,28 @@ KIT_RUNNER_HOSTED_FLOOR="secret-scan sast sbom artifact-gate boundary-redteam ga
 # the expression, never another label): a variable flip must not move it to a Linux box. R5 allows that one literal for that one file (KIT_MACOS_WORKFLOW) and for no other file.
 KIT_MACOS_RUNNER=macos-15
 KIT_MACOS_WORKFLOW=boundary-redteam-macos.yml
+# SWAS-725: the dispatch-only pre-release adopter fixture has its OWN runner expression (it picks the RunsOn runner on workflow_dispatch, because the hosted runner stops a ~100-minute job). R5 allows
+# that exact text, as a runs-on value and past the variable-name scan, for that one file (KIT_FIXTURE_WORKFLOW) and for no other file; any edit to the expression, or the expression in another file, reds.
+KIT_FIXTURE_WORKFLOW=adopter-fixture.yml
+KIT_FIXTURE_EXPR="\${{ github.event_name == 'workflow_dispatch' && vars.KIT_CI_RUNNER && format('runs-on={0}-{1}/{2}', github.run_id, github.run_attempt, vars.KIT_CI_RUNNER) || 'ubuntu-24.04' }}"
 
 _rs_facts() {  # <ci.yml> -> one fact per line: JB <job> · RO/RD <job> [runs-on value] · CO <job> <false|persisted> per checkout step · TK <job> <raw line> · PM <job> <scope> · BH/AL <line> <text> · WP/WT <text>
   # Comments are cut at a `#` that starts the line or follows white space (a `#` glued to a value stays part of it). TK and WT read the RAW line, case-folded.
+  # SWAS-554: on a kit tree check_yaml_forms runs first (own_tree_run) and refuses quoted or spaced keys, flow mappings and sequences, anchors and aliases (the C-1, C-2, C-3, C-6 spellings), so this reader needs no second key normaliser.
   awk '
     function flush() { if (stepco) print "CO " job " " (steppc ? "false" : "persisted"); stepco = 0; steppc = 0; inwith = 0 }
     function endjob() { flush(); if (job != "" && !nro) print "RO " job " "; nro = 0; inperm = 0 }
-    function tok(s) {  # a secret or the job token: secrets.X, secrets[X], toJSON(secrets), secrets: inherit, github.token, github[token]
-      s = tolower(s)
+    function tok1(s) {  # the named forms: secrets.X, secrets[X], toJSON(secrets), secrets: inherit, github.token, github[token]
       return (s ~ /(^|[^a-z0-9_])secrets(\.|\[|\))/ || s ~ /(^|[^a-z0-9_])secrets:[ \t]*inherit/ || s ~ /(^|[^a-z0-9_])github(\.token|\[[\047\042]token[\047\042]\])/)
+    }
+    function tok(s,   t, sp, p, q) {  # SWAS-554 S1: the named forms on the raw line, then inside each ${{ }} span (spaces next to brackets and parentheses removed) a bare secrets, or a github not followed by a dot and a context name (toJSON(github), github[...], bare github)
+      s = tolower(s)
+      if (tok1(s)) return 1
+      p = index(s, "${{")  # SWAS-554 F1 (fail closed): a quoted }} inside an expression ends no span here; the rules run from the first ${{ to the end of the comment-cut line
+      if (p == 0) return 0
+      sp = substr(s, p + 3)  # no comment cut: a # inside a quoted string of the expression, or a second expression after a comment, must not hide a token
+      gsub(/[ \t]+\]/, "]", sp); gsub(/\[[ \t]+/, "[", sp); gsub(/[ \t]+\)/, ")", sp); gsub(/\([ \t]+/, "(", sp)
+      return (tok1(sp) || sp ~ /(^|[^a-z0-9_.-])secrets([^a-z0-9_-]|$)/ || sp ~ /(^|[^a-z0-9_.-])github([^a-z0-9_.-]|$)/ || sp ~ /(^|[^a-z0-9_.-])github\[/)
     }
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
     { l = $0; sub(/(^|[ \t])#.*/, "", l) }
@@ -2393,7 +2607,7 @@ _rs_facts() {  # <ci.yml> -> one fact per line: JB <job> · RO/RD <job> [runs-on
     { inperm = 0 }
     l ~ /^      - / { flush() }
     l ~ /^        [^ \t]/ { inwith = (l ~ /^        with:[ \t]*$/) }
-    l ~ /^ +(- )?uses:[ \t]*[\047\042]?actions\/checkout@/ { stepco = 1 }
+    tolower(l) ~ /^ +(- )?uses:[ \t]*[\047\042]?actions\/checkout@/ { stepco = 1 }  # SWAS-554 S2: owner and repository resolve without regard to case
     inwith && l ~ /^          persist-credentials:[ \t]*false[ \t]*$/ { steppc = 1 }
     END { endjob(); if (!wpseen) print "WP (absent)" }' "$1"
 }
@@ -2451,14 +2665,30 @@ check_runner_switch_tree() {  # <root> -> 0 ok; 1 R1-R4/R7 on its ci.yml, R5 on 
     [ -f "$_rst_f" ] || continue
     [ "${_rst_f##*/}" != ci.yml ] || continue
     _rst_code=$(awk '{ sub(/(^|[ \t])#.*/, ""); print }' "$_rst_f")
-    if printf '%s\n' "$_rst_code" | grep -q -i -e 'KIT_CI_RUNNER' -e 'runs-on=' -e 'runner=' -e 'image=ubuntu'; then
-      echo "FAIL: $_rst_f names KIT_CI_RUNNER or a RunsOn label fragment: only ci.yml may (R5)" >&2; _rst_rc=1
+    # SWAS-725: KIT_FIXTURE_WORKFLOW may carry the dispatch runner expression (KIT_FIXTURE_EXPR), and only when it occurs EXACTLY ONCE, as that file's runs-on value (a second copy anywhere, e.g. in an env: value, admits nothing).
+    # The admitted text is cut out of the scan copy, so any OTHER variable name or RunsOn fragment in that file still reds. That file also owes R7's checks (below), since its job is a moved one.
+    _rst_fx=""; _rst_isfx=0
+    if [ "${_rst_f##*/}" = "$KIT_FIXTURE_WORKFLOW" ]; then
+      _rst_isfx=1
+      _rst_fxn=$(printf '%s\n' "$_rst_code" | RS_FX="$KIT_FIXTURE_EXPR" awk 'BEGIN { x = ENVIRON["RS_FX"] } { l = $0; n = 0; while ((i = index(l, x)) > 0) { n++; l = substr(l, i + length(x)) } t += n; if (n > 0) { v = $0; sub(/^[ \t]*runs-on:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); if ($0 ~ /^[ \t]*runs-on:/ && v == x) ok++ } } END { print (t + 0) " " (ok + 0) }')
+      [ "$_rst_fxn" != "1 1" ] || _rst_fx=$KIT_FIXTURE_EXPR
+      _rst_r7=$(_rs_facts "$_rst_f" | awk '$1 == "TK" || $1 == "PM" || $1 == "WP" || $1 == "WT" || ($1 == "CO" && $3 != "false")')
+      if [ -n "$_rst_r7" ]; then
+        echo "FAIL: $_rst_f names a secret or the job token, declares a permission beyond contents: read, or has a checkout without persist-credentials: false (R5, the R7 checks for the fixture workflow): $(printf '%s' "$_rst_r7" | head -n 1)" >&2; _rst_rc=1
+      fi
+    fi
+    _rst_scan=$_rst_code
+    if [ -n "$_rst_fx" ]; then
+      _rst_scan=$(printf '%s\n' "$_rst_code" | RS_FX="$_rst_fx" awk 'BEGIN { x = ENVIRON["RS_FX"] } { while ((i = index($0, x)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(x)); print }')
+    fi
+    if printf '%s\n' "$_rst_scan" | grep -q -i -e 'KIT_CI_RUNNER' -e 'runs-on=' -e 'runner=' -e 'image=ubuntu'; then
+      echo "FAIL: $_rst_f names KIT_CI_RUNNER or a RunsOn label fragment: only ci.yml may, and the exact fixture expression once as the runs-on value of $KIT_FIXTURE_WORKFLOW (R5)" >&2; _rst_rc=1
     fi
     _rst_mac=""; [ "${_rst_f##*/}" != "$KIT_MACOS_WORKFLOW" ] || _rst_mac="$KIT_MACOS_RUNNER"  # SWAS-552: the one file that may carry the one macOS literal
-    if ! printf '%s\n' "$_rst_code" | awk -v hosted="$KIT_HOSTED_RUNNER" -v mac="$_rst_mac" 'BEGIN { ok2 = "${{ vars.KIT_TRACKER_RUNNER || \047" hosted "\047 }}" }
-        /^[ \t]*runs-on:/ { v = $0; sub(/^[ \t]*runs-on:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); if (v != hosted && v != ok2 && (mac == "" || v != mac)) { print "runs-on value not on the allow-list: " v > "/dev/stderr"; bad = 1 } }
+    if ! printf '%s\n' "$_rst_code" | RS_FX="$_rst_fx" awk -v hosted="$KIT_HOSTED_RUNNER" -v mac="$_rst_mac" 'BEGIN { fx = ENVIRON["RS_FX"]; ok2 = "${{ vars.KIT_TRACKER_RUNNER || \047" hosted "\047 }}" }
+        /^[ \t]*runs-on:/ { v = $0; sub(/^[ \t]*runs-on:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); if (v != hosted && v != ok2 && (mac == "" || v != mac) && (fx == "" || v != fx)) { print "runs-on value not on the allow-list: " v > "/dev/stderr"; bad = 1 } }
         END { exit bad }'; then
-      echo "FAIL: $_rst_f has a runs-on value that is neither $KIT_HOSTED_RUNNER nor the KIT_TRACKER_RUNNER form: only ci.yml may carry another label (R5)" >&2; _rst_rc=1
+      echo "FAIL: $_rst_f has a runs-on value that is neither $KIT_HOSTED_RUNNER nor the KIT_TRACKER_RUNNER form (nor, in $KIT_FIXTURE_WORKFLOW only, the exact fixture form KIT_FIXTURE_EXPR used once): only ci.yml may carry another label (R5)" >&2; _rst_rc=1
     fi
   done
   return "$_rst_rc"
@@ -3263,6 +3493,323 @@ selftest() {
   _ot_case OT12 "$d/ot12" 0 "judged against NOTHING" "all-8-na disposition -> LOUD zero, never a bare green"
   _st_mark OT
 
+  # ── SWAS-554 (YF) legs: the structural refusal (check_yaml_forms). One mutant per refused form (design §4), the allowed forms (§5), the provenance split (§6), the folded fixes (§7a). ──
+  # Every mutant is the clean 9-line base plus the mutant lines (line 10 on), so the base passing (YF-base) is what makes each FAIL attributable to the refusal.
+  _yf_q="'"
+  _yf_head='name: base\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo a\n'
+  mkdir -p "$d/yf"
+  _yf_mk() { # <file> <printf format of the lines appended to the clean base>; octal escapes only, so no banned byte sits in this source
+    # shellcheck disable=SC2059
+    { printf -- "$_yf_head"; printf -- "$2"; } > "$1"
+  }
+  _yf_m() { # <id> <line> <form> <K|B> <printf format> — kit mode must FAIL naming file:line: form; adopter mode discloses it (B) or does not judge it (K)
+    _ym_f="$d/yf/m$1.yml"; _yf_mk "$_ym_f" "$5"
+    if _ym_o=$(check_yaml_forms "$_ym_f" kit); then _ym_rc=0; else _ym_rc=1; fi
+    if _ym_a=$(check_yaml_forms "$_ym_f" adopter); then _ym_arc=0; else _ym_arc=1; fi
+    _ym_ok=0
+    if [ "$4" = B ]; then _has "$_ym_a" "N/A (ADOPTER-OWNED): $_ym_f:$2: $3" && _ym_ok=1; else [ -z "$_ym_a" ] && _ym_ok=1; fi
+    if [ "$_ym_rc" = 1 ] && _has "$_ym_o" "FAIL: $_ym_f:$2: $3" && [ "$_ym_arc" = 0 ] && [ "$_ym_ok" = 1 ]; then
+      echo "selftest PASS: YF$1 — $3 (line $2): FAIL in kit mode, mode $4 in adopter mode"
+    else
+      echo "selftest FAIL: YF$1 — $3 (line $2) (kit rc=$_ym_rc, adopter rc=$_ym_arc, mode $4): kit [$_ym_o] adopter [$_ym_a]"; sf=1
+    fi
+  }
+  _yf_ok() { # <name> <desc> <printf format appended to the base> — clean (no line at all) in both modes
+    _yo_f="$d/yf/ok$1.yml"; _yf_mk "$_yo_f" "$3"; _yo_bad=""
+    for _yo_m in kit adopter; do
+      if _yo_o=$(check_yaml_forms "$_yo_f" "$_yo_m") && [ -z "$_yo_o" ]; then :; else _yo_bad="$_yo_bad ${_yo_m}[$_yo_o]"; fi
+    done
+    if [ -z "$_yo_bad" ]; then echo "selftest PASS: YF-$1 — $2"; else echo "selftest FAIL: YF-$1 — $2:$_yo_bad"; sf=1; fi
+  }
+  _yf_ok base "the clean 9-line base is clean in both modes" ''
+  _yf_m 1 10 "a flow mapping at a node start" B '      - {uses: actions/checkout@main}\n'
+  _yf_m 2 10 "a flow mapping as a value" B '    permissions: {contents: write}\n'
+  _yf_m 3 10 "flow sequence holding a flow mapping" B '    x: [{run: id}]\n'
+  _yf_m 4 10 "flow sequence holding a bracket" K '    needs: [[a], b]\n'
+  _yf_m 5 10 "flow sequence holding an anchor" B '    x: [&s a]\n'
+  _yf_m 6 10 "flow sequence holding an alias" B '    x: [*s]\n'
+  _yf_m 7 10 "flow sequence holding a quote that is not a closed simple item" K "    branches: [${_yf_q}a, b${_yf_q}]\n"
+  _yf_m 8 10 "flow sequence holding a colon in a plain item" K '    ports: [5432:5432]\n'
+  _yf_m 9 10 "flow sequence that does not close on its line" K '    branches: [main,\n'
+  _yf_m 10 10 "a quoted key" K '      - "uses": actions/checkout@v4\n'
+  _yf_m 11 10 "a quoted on that is not in column 0" K '  "on": x\n'
+  _yf_m 12 10 "a space before a key colon" K '    x : ubuntu-24.04\n'
+  _yf_m 13 10 "an explicit ? key" B '    ? runs-on\n'
+  _yf_m 14 10 "an anchor on a value" B '    x: &r ubuntu-24.04\n'
+  _yf_m 15 10 "an anchor on a sequence item" B '      - &s\n'
+  _yf_m 16 10 "an alias as a value" B '    x: *r\n'
+  _yf_m 17 10 "an alias as a sequence item" B '      - *s\n'
+  _yf_m 18 10 "a merge key" B '    <<: *defaults\n'
+  _yf_m 19 10 "a tag on a value" B '        if: !cancelled()\n'
+  _yf_m 20 10 "a tag on a sequence item" B '      - !!map {}\n'
+  _yf_m 21 10 "a directive" B '%%YAML 1.2\n'
+  _yf_m 22 10 "a second document or a document marker that is not first" B '---\n'
+  _yf_m 23 10 "a document-end marker" B '...\n'
+  _yf_m 24 10 "a repeated key" B '    runs-on: ubuntu-24.04\n'
+  _yf_m 25 10 "a repeated on (through the quoted spelling)" B '"on": x\n'
+  _yf_m 26 10 "an explicit indentation indicator" B '      - run: |2\n          echo a\n'
+  _yf_m 27 10 "a tab in indentation" K '\011runs-on: x\n'
+  _yf_m 28 10 "a CR inside a line (a YAML parser ends the line there)" B '      - run: echo a\015      shell: x\n'
+  _yf_m 29 10 "an expression the reader cannot bound (\${{ with no }})" K '    if: ${{ a\n'
+  _yf_m 30 12 "an ambiguous dedent inside a block scalar" K '      - run: |\n            a\n          b\n'
+  # YF31: the body-end differential. A `- run:` literal block (key column 8), then `shell:` at column 8: it is a key of the step (the BRMA rule li > ri reads it as body), so a second `shell:` reds.
+  _yf_m 31 13 "a repeated key" B '      - run: |\n          echo a\n        shell: bash {0}\n        shell: bash {0}\n'
+  _yf_ok 31ctl "YF31 control: one shell: key right after the body is clean (the repeat above is the only red)" '      - run: |\n          echo a\n        shell: bash {0}\n'
+  _yf_m 31b 10 "a dash followed by more than one space or a tab (the key sits at another column)" B '      -   run: echo a\n'
+  _yf_m 32a 10 "a line shape the reader cannot classify" K '    @x: y\n'
+  _yf_m 32b 10 "a quoted scalar that does not close on its line" K '    note: "abc\n'
+  _yf_m 32c 10 "a nested sequence item" K '      - - a\n'
+  _yf_m 33 10 "\`\${{\` inside a flow sequence (it parses as a flow mapping)" B '    needs: [${{ x }}]\n'
+  _yf_m 34 10 "a refused first character in a flow item" B '    x: [? a]\n'
+  _yf_m 35 10 "a colon glued to its key is not a key (an unclassifiable line)" K '    runs-on:x\n'
+  # the allowed forms (design §5), each clean in both modes
+  _yf_ok flow "flow sequences of plain scalars, [] and a needs list" '    types: [opened, synchronize, reopened, ready_for_review]\n    empty: []\n    needs: [a, b]\n'
+  _yf_ok qseq "quoted flow items: ports: ['5432:5432'] and several closed items (Q2)" "    ports: [${_yf_q}5432:5432${_yf_q}]\n    paths: [${_yf_q}profiles/go/**${_yf_q}, \"docs/*.md\", ${_yf_q}a_b.c-d${_yf_q}]\n"
+  _yf_ok plain "plain values with indicators mid-way, expressions with quotes, braces, && and ||, a value glued to a colon" "    path: ~/.m2/repository\n    severity: HIGH,CRITICAL\n    components: clippy, rustfmt\n    tags: \${{ a }}:\${{ b }}\n    image: a:b\n    when: \${{ a == format(${_yf_q}r/{0}${_yf_q}, b) && !c || d }}\n    cmd: echo \"x\" >> \$GITHUB_ENV\n    cron: ${_yf_q}23 5 * * 1${_yf_q}  # c\n    empty: ''  # c\n    n: \"RATIFY — x\"\n"
+  _yf_ok blocks "all six block headers under any key, hostile text inside, and a bare - | item" '    a: |\n      uses: {x} & *b ? - [ ] a: b\n    b: |-\n      x\n    c: |+\n      y\n    d: >\n      z\n    e: >-\n      w\n    f: >+\n      v\n    g:\n      - |\n        text: {\n'
+  _yf_ok comments "blank lines, whole-line comments at any indent, trailing comments" '\n# c\n      # c\n    note: a # c\n'
+  printf -- '---\n' > "$d/yf/doc1.yml"; printf -- "$_yf_head" >> "$d/yf/doc1.yml"
+  printf -- '"on":\n  push:\n    branches: [main]\n'"'"'x'"'"': 1\n' > "$d/yf/onq.yml"
+  if _yo_a=$(check_yaml_forms "$d/yf/doc1.yml" kit); then _yo_arc=0; else _yo_arc=1; fi
+  if _yo_b=$(check_yaml_forms "$d/yf/onq.yml" kit); then _yo_brc=0; else _yo_brc=1; fi
+  if [ "$_yo_arc" = 0 ] && [ -z "$_yo_a" ] && [ "$_yo_brc" = 1 ] && _has "$_yo_b" "onq.yml:4: a quoted key" && ! _has "$_yo_b" "onq.yml:1:"; then
+    echo "selftest PASS: YF-doc — one leading --- and a quoted \"on\" at column 0 pass; another quoted column-0 key reds on its own line"
+  else
+    echo "selftest FAIL: YF-doc — leading --- or quoted on mishandled: [$_yo_a] [$_yo_b]"; sf=1
+  fi
+  awk '{ printf "%s\015\n", $0 }' "$d/yf/okbase.yml" > "$d/yf/crlf.yml"
+  if _yo_a=$(check_yaml_forms "$d/yf/crlf.yml" kit) && _yo_b=$(check_yaml_forms "$d/yf/crlf.yml" adopter) && [ -z "$_yo_a$_yo_b" ]; then
+    echo "selftest PASS: YF-crlf — a trailing CR (CRLF file) passes in both modes"
+  else echo "selftest FAIL: YF-crlf — a CRLF file was refused: [$_yo_a] [$_yo_b]"; sf=1; fi
+  # the real files: every profile ci.yml is clean in kit mode; a copy with a directive appended reds on its appended line
+  _yf_root=$(dirname "$0")/..; _yf_n=0; _yf_first=""
+  for _yf_p in "$_yf_root"/profiles/*/ci.yml; do
+    [ -f "$_yf_p" ] || continue
+    _yf_n=$((_yf_n + 1)); [ -n "$_yf_first" ] || _yf_first=$_yf_p
+    if _yo_o=$(check_yaml_forms "$_yf_p" kit); then :; else echo "selftest FAIL: YF-real — $_yf_p is refused: $_yo_o"; sf=1; fi
+  done
+  if [ "$_yf_n" -gt 0 ]; then
+    echo "selftest PASS: YF-real — $_yf_n profile ci.yml file(s) read, none refused"
+    { cat "$_yf_first"; printf '%%YAML 1.2\n'; } > "$d/yf/real.yml"
+    _yf_rl=$(($(wc -l < "$_yf_first") + 1))
+    if _yo_o=$(check_yaml_forms "$d/yf/real.yml" kit); then echo "selftest FAIL: YF-real — a real profile copy with a directive appended was not refused"; sf=1
+    elif _has "$_yo_o" "$d/yf/real.yml:$_yf_rl: a directive"; then echo "selftest PASS: YF-real — a real profile copy with a directive appended reds on its line ($_yf_rl)"
+    else echo "selftest FAIL: YF-real — the directive was refused without naming line $_yf_rl: $_yo_o"; sf=1; fi
+  elif [ -d "$_yf_root/profiles" ]; then echo "selftest FAIL: YF-real — profiles/ exists but no profile ci.yml was read (a glob that read nothing must not pass)"; sf=1
+  fi
+  # liveness: a kit tree with no workflow file is a FAIL, never a pass on nothing
+  mkdir -p "$d/yfempty/.github/workflows"
+  if _yo_o=$(check_yaml_forms_tree "$d/yfempty" kit); then echo "selftest FAIL: YF-live — a tree with no workflow file passed"; sf=1
+  elif _has "$_yo_o" "yaml-forms liveness"; then echo "selftest PASS: YF-live — zero workflow files read is a FAIL"
+  else echo "selftest FAIL: YF-live — wrong message: $_yo_o"; sf=1; fi
+  # the provenance split (design §6), through the real --own-tree entry point on adopter trees
+  _yf_at() { # <name> <marker:1|0> <printf format appended to ci.yml> <want-rc> <want text> <desc>
+    mkdir -p "$d/yfa$1"; : > "$d/yfa$1/ENGINEERING-PRINCIPLES.md"
+    # shellcheck disable=SC2086
+    _ot_gh "$d/yfa$1" "$2" $ALLG
+    # shellcheck disable=SC2059
+    printf -- "$3" >> "$d/yfa$1/.github/workflows/ci.yml"
+    _ot_case "YF-$1" "$d/yfa$1" "$4" "$5" "$6"
+  }
+  _yf_at emitq 1 '    runs-on : x\n' 1 "a space before a key colon" "an EMITTED file takes the whole list (a spaced key reds)"
+  _yf_at ownedq 0 '    runs-on : x\n' 0 "OK: ci-gates --own-tree" "an ADOPTER-OWNED file is not judged on a kit-only form (a spaced key passes)"
+  _yf_at emittab 1 '\011x: y\n' 1 "a tab in indentation" "an EMITTED file: a tab in indentation reds"
+  _yf_at emitun 1 '    @x: y\n' 1 "a line shape the reader cannot classify" "an EMITTED file: an unclassifiable line reds"
+  _yf_at emitanc 1 '    x: &r a\n' 1 "an anchor on a value" "an EMITTED file: an anchor reds"
+  _yf_at ownedanc 0 '    x: &r a\n' 0 "N/A (ADOPTER-OWNED)" "an ADOPTER-OWNED anchor is disclosed, not a red"
+  _yf_at ownedanc2 0 '    x: &r a\n' 0 "an anchor on a value" "the disclosure names the form"
+  _yf_at ownedcr 0 '    x: a\015    y: b\n' 1 "(0d)" "an ADOPTER-OWNED file: a CR inside a line reds (RES-1)"
+  _yf_at ownednel 0 '    x: a\302\205    y: b\n' 1 "NEL" "an ADOPTER-OWNED file: a NEL byte reds (RES-1)"
+  mkdir -p "$d/yfacrlf"; : > "$d/yfacrlf/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/yfacrlf" 0 $ALLG
+  awk '{ printf "%s\015\n", $0 }' "$d/yfacrlf/.github/workflows/ci.yml" > "$d/yfacrlf/ci.crlf" && mv "$d/yfacrlf/ci.crlf" "$d/yfacrlf/.github/workflows/ci.yml"
+  _ot_case YF-crlftree "$d/yfacrlf" 0 "OK: ci-gates --own-tree" "an adopter tree with a CRLF workflow passes (a trailing CR is a line ending)"
+  # the folded cards, through --own-tree on a kit-marked scratch tree: the spelling reds at the structural refusal, ahead of the lock it evaded
+  _yf_kt() { # <name> <ci.yml|other.yml> <printf format appended> <want text> <desc>
+    mkdir -p "$d/yfk$1/docs"; : > "$d/yfk$1/docs/ROADMAP-KIT.md"
+    # shellcheck disable=SC2086
+    _ot_gh "$d/yfk$1" 0 $ALLG
+    if [ "$2" = other.yml ]; then printf 'jobs:\n  a:\n' > "$d/yfk$1/.github/workflows/other.yml"; fi
+    # shellcheck disable=SC2059
+    printf -- "$3" >> "$d/yfk$1/.github/workflows/$2"
+    _ot_case "YF-$1" "$d/yfk$1" 1 "$4" "$5"
+  }
+  _yf_kt c1q ci.yml '"env":\n  X: ${{ secrets.T }}\n' "a quoted key" "C-1: a quoted top-level env: holding a token reds at the structural refusal"
+  _yf_kt c1s ci.yml 'env :\n  X: ${{ secrets.T }}\n' "a space before a key colon" "C-1: a spaced top-level env : reds"
+  _yf_kt c2q other.yml '    "runs-on": self-hosted\n' "a quoted key" "C-2: a quoted runs-on in a non-ci.yml workflow reds"
+  _yf_kt c2s other.yml '    runs-on : self-hosted\n' "a space before a key colon" "C-2: a spaced runs-on in a non-ci.yml workflow reds"
+  _yf_kt c3p ci.yml '    "permissions": {contents: write}\n' "a quoted key" "C-3: a quoted permissions: reds"
+  _yf_kt c3u ci.yml '      - "uses": actions/checkout@v4\n' "a quoted key" "C-3: a quoted - uses: reds"
+  _yf_kt c6 ci.yml '    needs: [*lbl]\n' "flow sequence holding an alias" "C-6: a flow-sequence alias reds"
+  _yf_kt q422a ci.yml '"env":\n  PATH: x\n' "a quoted key" "422: a quoted env: holding PATH reds structurally"
+  _yf_kt q422b ci.yml 'env: {PATH: x}\n' "a flow mapping as a value" "422: env: {PATH: x} reds structurally"
+  # S1/S2: the semantic fixes in the runner-switch facts reader (_rs_facts), a moved job named cf-claims
+  _yf_tk() { # <name> <TK expected:1|0> <printf format of the step lines> <desc>
+    printf 'jobs:\n  cf-claims:\n    runs-on: ubuntu-24.04\n    steps:\n' > "$d/yf/tk$1.yml"
+    # shellcheck disable=SC2059
+    printf -- "$3" >> "$d/yf/tk$1.yml"
+    _yk_n=$(_rs_facts "$d/yf/tk$1.yml" | awk '$1 == "TK" { n++ } END { print n + 0 }')
+    if { [ "$2" = 1 ] && [ "$_yk_n" -gt 0 ]; } || { [ "$2" = 0 ] && [ "$_yk_n" = 0 ]; }; then echo "selftest PASS: YF-$1 — $4"; else echo "selftest FAIL: YF-$1 — $4 (TK facts: $_yk_n, want presence $2)"; sf=1; fi
+  }
+  _yf_tk s1a 1 '      - run: echo ${{ toJSON( secrets ) }}\n' "S1: toJSON( secrets ) with spaces is a token in a moved job"
+  _yf_tk s1b 1 "      - run: echo \${{ github[ ${_yf_q}token${_yf_q} ] }}\n" "S1: github[ 'token' ] with spaces is a token"
+  _yf_tk s1c 1 '      - run: echo ${{ toJSON(github) }}\n' "S1: toJSON(github) is a token"
+  _yf_tk s1d 1 '      - run: echo ${{ secrets }}\n' 'S1: a bare ${{ secrets }} is a token'
+  _yf_tk s1n 0 '      # the secrets and github are only named in this comment\n      - run: echo ${{ github.event_name }} ${{ github.run_id }}\n' "S1 negative: github.event_name, github.run_id and a comment naming secrets stay green"
+  _yf_tc() { # <name> <CO value> <printf format> <desc>
+    printf 'jobs:\n  cf-claims:\n    runs-on: ubuntu-24.04\n    steps:\n' > "$d/yf/co$1.yml"
+    # shellcheck disable=SC2059
+    printf -- "$3" >> "$d/yf/co$1.yml"
+    _yk_c=$(_rs_facts "$d/yf/co$1.yml" | awk '$1 == "CO" { print $3 }')
+    if [ "$_yk_c" = "$2" ]; then echo "selftest PASS: YF-$1 — $4"; else echo "selftest FAIL: YF-$1 — $4 (CO fact [$_yk_c], want $2)"; sf=1; fi
+  }
+  _yf_tc s2a persisted '      - uses: Actions/Checkout@1111111111111111111111111111111111111111\n' "S2: a case-variant Actions/Checkout@ without persist-credentials: false is a checkout step (persisted)"
+  _yf_tc s2b false '      - uses: Actions/Checkout@1111111111111111111111111111111111111111\n        with:\n          persist-credentials: false\n' "S2: the same checkout with persist-credentials: false reads false"
+  # S3: the H2 lock refuses ANY workflow-level env: key, on a copy of the live ci.yml (only where the live file carries the H2 job)
+  _yf_live="$_yf_root/.github/workflows/ci.yml"
+  if [ -f "$_yf_live" ] && check_h2_defer_step "$_yf_live" >/dev/null 2>&1; then
+    awk '/^jobs:/ && !done { print "env:"; print "  FOO: bar"; done = 1 } { print }' "$_yf_live" > "$d/yf/s3.yml"
+    if _yo_o=$(check_h2_defer_step "$d/yf/s3.yml" 2>&1); then echo "selftest FAIL: YF-s3 — a bare workflow-level env: with a harmless key was not refused by the H2 lock"; sf=1
+    elif _has "$_yo_o" "no workflow-level env: key is allowed at all"; then echo "selftest PASS: YF-s3 — S3: the H2 lock refuses a workflow-level env: whatever it holds (the live ci.yml alone is clean)"
+    else echo "selftest FAIL: YF-s3 — the H2 lock refused it for another reason: $_yo_o"; sf=1; fi
+  elif [ -f "$_yf_root/docs/ROADMAP-KIT.md" ]; then
+    echo "selftest FAIL: YF-s3 — this is a kit tree, but the live ci.yml is missing or the H2 lock refuses it unmutated, so S3 is untested (R6)"; sf=1
+  else echo "selftest SKIP: YF-s3 — not a kit tree (no live ci.yml with the H2 job)"
+  fi
+
+  # ── SWAS-554 fix pass 3 (review R1-R11, security S1-S9): each mutant reds; each named control stays clean ──
+  # S1: a document marker line carries nothing but an optional comment (a flow mapping after --- hid a whole workflow from the line reader)
+  _yf_m 36 10 "content on a document-marker line" B '--- {on: push, jobs: {a: {runs-on: self-hosted, steps: [{"u\\x73es": evil/a@main}]}}}\n'
+  _yf_m 36b 10 "content on a document-marker line" B '--- !!map\n'
+  _yf_m 36c 10 "content on a document-marker line" B '--- &a\n'
+  _yf_m 36d 10 "content on a document-marker line" B '... x\n'
+  printf -- '--- # a comment\n' > "$d/yf/doc2.yml"; printf -- "$_yf_head" >> "$d/yf/doc2.yml"
+  printf -- '--- {on: push}\n' > "$d/yf/doc3.yml"; printf -- "$_yf_head" >> "$d/yf/doc3.yml"
+  if _yo_a=$(check_yaml_forms "$d/yf/doc2.yml" kit) && [ -z "$_yo_a" ]; then _yo_arc=0; else _yo_arc=1; fi
+  if _yo_b=$(check_yaml_forms "$d/yf/doc3.yml" kit); then _yo_brc=0; else _yo_brc=1; fi
+  if [ "$_yo_arc" = 0 ] && [ "$_yo_brc" = 1 ] && _has "$_yo_b" "doc3.yml:1: content on a document-marker line"; then echo "selftest PASS: YF36e — a first '--- # comment' marker is clean while a first '--- {on: push}' is refused (the marker rule is not just 'later markers')"
+  else echo "selftest FAIL: YF36e — first-line marker mishandled: [$_yo_a] [$_yo_b]"; sf=1; fi
+  # S2: a deeper line after a non-empty scalar is YAML's continuation of it
+  _yf_m 37 11 "a continuation of a multi-line scalar" B '    note: sh conformance/x.sh\n      - x || true\n'
+  _yf_m 37b 12 "a continuation of a multi-line scalar" B '    list:\n      - a\n        b\n'
+  _yf_ok 37ctl "S2 control: a key with an empty value followed by a deeper line is a nested block, not a continuation" '    note:\n      - x\n'
+  # R2 (S3): spans are bounded by the next }} and so may hold a single } (moved job cf-claims)
+  _yf_tk s1e 1 "      - run: echo \${{ format(${_yf_q}{0}${_yf_q}, github) }}\n" 'S3: ${{ format('"'"'{0}'"'"', github) }} (a brace inside the span) is a token'
+  _yf_tk s1f 1 "      - run: echo \${{ format(${_yf_q}{0}${_yf_q}, toJSON( secrets )) }}\n" 'S3: format with toJSON( secrets ) inside is a token'
+  _yf_tk s1g 1 "      - run: echo \${{ format(${_yf_q}{0}${_yf_q}, toJSON(github)) }}\n" 'S3: format with toJSON(github) inside is a token'
+  _yf_tk s1h 1 "      - run: echo \${{ github[format(${_yf_q}{0}oken${_yf_q}, ${_yf_q}t${_yf_q})] }}\n" 'S3: github[format(...)] is a token'
+  # F1 (fail closed): a quoted }} inside the expression does not end the reading; s1k is the negative (no bare github, text after the span)
+  _yf_tk s1i 1 "      - run: echo \${{ format(${_yf_q}}}${_yf_q}, toJSON(github)) }}\n" 'F1: format with a quoted }} then toJSON(github) is a token'
+  _yf_tk s1j 1 "      - run: echo \${{ format(${_yf_q}}}${_yf_q}, toJSON( secrets )) }}\n" 'F1: format with a quoted }} then toJSON( secrets ) is a token'
+  _yf_tk s1k 0 '      - run: echo ${{ github.event_name }} done\n' 'F1 negative: github.event_name then plain text, no bare github, is not a token'
+  # automated security review of 76232e02: the expression reader cuts no comment (a # in a quoted string, or a second expression after a comment)
+  _yf_tk s1l 1 "      - run: echo \${{ format(${_yf_q} #${_yf_q}, toJSON( secrets )) }}\n" 'F1b: a quoted # inside the expression does not hide toJSON( secrets )'
+  _yf_tk s1m 1 '      - run: echo ${{ inputs.a }} # ${{ toJSON(github) }}\n' 'F1b: an expression after a # comment is still read'
+  # F3: a root flow collection after --- # c: refused in kit mode, disclosed in adopter mode
+  printf -- '--- # c\n{on: push}\n' > "$d/yf/root.yml"
+  if _yo_k=$(check_yaml_forms "$d/yf/root.yml" kit); then _yo_krc=0; else _yo_krc=1; fi
+  _yo_a=$(check_yaml_forms "$d/yf/root.yml" adopter) || :
+  if [ "$_yo_krc" = 1 ] && _has "$_yo_k" "root.yml:2: a flow mapping at a node start" && _has "$_yo_a" "N/A (ADOPTER-OWNED): $d/yf/root.yml:2: a flow mapping at a node start"; then echo "selftest PASS: YF53 — a root flow mapping after a leading marker reds in kit mode and is disclosed in adopter mode"
+  else echo "selftest FAIL: YF53 — root flow mapping: kit [$_yo_k] adopter [$_yo_a]"; sf=1; fi
+  # S7: the quoted key is the exact closed span
+  _yf_m 38 10 "a quoted key" K "\"on${_yf_q}x\": y\n"
+  _yf_m 39 10 "a repeated key" B 'on: x\n'
+  # R3 (S8): adopter mode discloses the both-mode form on a line the kit-only shapes used to hide it behind (kit mode names the same forms)
+  _yf_m 40 10 "an anchor on a value" B '    &a key: v\n'
+  _yf_m 41 10 "an alias as a value" B '    *u : v\n'
+  _yf_m 42 10 "a tag on a value" B '    !t key: v\n'
+  _yf_a() { # <id> <line> <form> <printf format> — adopter mode must DISCLOSE the form (kit mode refuses the line too, for a kit-only reason)
+    _ya_f="$d/yf/a$1.yml"; _yf_mk "$_ya_f" "$4"
+    if _ya_o=$(check_yaml_forms "$_ya_f" adopter) && _has "$_ya_o" "N/A (ADOPTER-OWNED): $_ya_f:$2: $3"; then echo "selftest PASS: YF$1 — adopter mode discloses '$3' on a kit-only-shaped line"
+    else echo "selftest FAIL: YF$1 — adopter mode did not disclose '$3' (line $2): [$_ya_o]"; sf=1; fi
+  }
+  _yf_a 43 10 "a flow mapping as a value" '\011x: {a: b}\n'
+  _yf_a 44 10 "a flow mapping as a value" '    "x": {a: b}\n'
+  _yf_a 45 10 "a flow mapping as a value" '    x : {a: b}\n'
+  _yf_a 46 10 "flow sequence holding a flow mapping" "    x: [${_yf_q}a${_yf_q}, {b: c}]\n"
+  _yf_a 47 10 "flow sequence holding an anchor" "    x: [${_yf_q}a${_yf_q}, &z]\n"
+  _yf_a 48 10 "flow sequence holding an alias" "    x: [${_yf_q}a${_yf_q}, *z]\n"
+  # R4: an expression span holding a quote and a colon-space
+  _yf_m 49 10 "an expression span that holds a quote followed by a colon and a space" K '    x: "${{ ": b }}"\n'
+  # R5: the emitted-file quoted-key cell the first build lacked
+  _yf_at emitqk 1 '    "x": y\n' 1 "a quoted key" "an EMITTED file: a quoted key reds"
+  # R9: no control byte in a report line; R10: 'on' in single quotes at column 0
+  if _yo_o=$(check_yaml_forms "$d/yf/m28.yml" kit); then :; fi
+  case "$_yo_o" in *"$(printf '\015')"*) echo "selftest FAIL: YF50 — the report line still holds a CR"; sf=1 ;; *"echo a?      shell: x"*) echo "selftest PASS: YF50 — a control byte in a refused line is shown as ?" ;; *) echo "selftest FAIL: YF50 — unexpected report: [$_yo_o]"; sf=1 ;; esac
+  printf -- "'on':\n  push:\n    branches: [main]\n" > "$d/yf/onsq.yml"
+  if _yo_a=$(check_yaml_forms "$d/yf/onsq.yml" kit) && [ -z "$_yo_a" ]; then echo "selftest PASS: YF51 — a single-quoted 'on' at column 0 is clean"; else echo "selftest FAIL: YF51 — 'on' in single quotes refused: [$_yo_a]"; sf=1; fi
+  # S9: a workflow named exactly .yml is walked
+  mkdir -p "$d/yfdot/.github/workflows"; printf 'jobs:\n  a:\n    x: &r a\n' > "$d/yfdot/.github/workflows/.yml"
+  if _yo_o=$(check_yaml_forms_tree "$d/yfdot" kit); then echo "selftest FAIL: YF52 — a workflow named exactly .yml was not walked"; sf=1
+  elif _has "$_yo_o" "an anchor on a value"; then echo "selftest PASS: YF52 — a workflow named exactly .yml is walked and refused"
+  else echo "selftest FAIL: YF52 — wrong output: $_yo_o"; sf=1; fi
+  # YF-incept (SWAS-751): incept's OWN transform of every profile ci.yml — install_pipeline through its seam, and
+  # curate_db_backed 0 for the no-db archetype — judged as an EMITTED file through the real --own-tree entry point
+  _yfi_root=$(cd "$(dirname "$0")/.." && pwd -P); _yfi_inc="$_yfi_root/scripts/incept.sh"
+  _yfi_mk='# kit-pipeline-origin: emitted'; _yfi_n=0; _yfi_region=0; _yfi_first=""; _yfi_bad=0; _yfi_rbad=0
+  if [ -f "$_yfi_inc" ]; then
+    mkdir -p "$d/yfi"
+    for _yfi_p in "$_yfi_root"/profiles/*/ci.yml; do
+      [ -f "$_yfi_p" ] || continue
+      _yfi_n=$((_yfi_n + 1)); [ -n "$_yfi_first" ] || _yfi_first=$_yfi_p
+      _yfi_name=$(basename "$(dirname "$_yfi_p")")
+      for _yfi_arch in db nodb; do
+        _yfi_t="$d/yfi/$_yfi_name-$_yfi_arch"; _yfi_f="$_yfi_t/.github/workflows/ci.yml"
+        mkdir -p "$_yfi_t/.github/workflows"
+        if ! sh "$_yfi_inc" __install-pipeline "$_yfi_p" "$_yfi_f"; then
+          echo "selftest FAIL: YF-incept — $_yfi_name ($_yfi_arch): the install_pipeline seam failed"; sf=1; _yfi_bad=1; continue
+        fi
+        if [ "$_yfi_arch" = nodb ]; then
+          if ( cd "$_yfi_t" && sh "$_yfi_inc" __db-curate 0 >/dev/null ); then :
+          else echo "selftest FAIL: YF-incept — $_yfi_name ($_yfi_arch): the __db-curate 0 seam failed"; sf=1; _yfi_bad=1; continue; fi
+        fi
+        if _yfi_o=$(sh "$0" --own-tree "$_yfi_t" 2>&1); then _yfi_rc=0; else _yfi_rc=$?; fi
+        if [ "$_yfi_rc" != 0 ] || ! _has "$_yfi_o" "OK: ci-gates --own-tree" || _has "$_yfi_o" "FAIL" || _has "$_yfi_o" "N/A ("; then
+          _yfi_det=$(printf '%s\n' "$_yfi_o" | grep FAIL | tr '\n' ' ' || :)
+          [ -n "$_yfi_det" ] || _yfi_det=$(printf '%s\n' "$_yfi_o" | head -n 1)
+          echo "selftest FAIL: YF-incept — $_yfi_name ($_yfi_arch): --own-tree rc $_yfi_rc: $_yfi_det"; sf=1; _yfi_bad=1
+        fi
+        if [ "$(head -n 1 "$_yfi_f")" != "$_yfi_mk" ]; then
+          echo "selftest FAIL: YF-incept — $_yfi_name ($_yfi_arch): line 1 of the installed file is not the origin marker"; sf=1; _yfi_bad=1
+        fi
+        if [ "$_yfi_arch" = nodb ] && grep -qF '# >>> kit:db-backed' "$_yfi_p"; then
+          _yfi_region=$((_yfi_region + 1))
+          if grep -qF -e '# >>> kit:db-backed' -e '# <<< kit:db-backed' "$_yfi_f"; then
+            echo "selftest FAIL: YF-incept — $_yfi_name (nodb): a kit:db-backed region marker survived the strip"; sf=1; _yfi_bad=1; _yfi_rbad=1
+          fi
+        fi
+      done
+    done
+    if [ "$_yfi_n" -gt 0 ]; then
+      [ "$_yfi_bad" = 0 ] && echo "selftest PASS: YF-incept — $_yfi_n profile ci.yml file(s) x 2 archetypes (db, nodb): every incepted tree passes --own-tree as emitted, stamped on line 1"
+      [ "$_yfi_rbad" = 0 ] && echo "selftest PASS: YF-incept-region — $_yfi_region of $_yfi_n source(s) hold a kit:db-backed region, each stripped from its nodb tree"
+      # the cell can red: an anchor line appended to a copy, installed through the same seam, is refused on its own line
+      cp "$_yfi_first" "$d/yfi/mut.yml"; printf '\n    x: &a b\n' >> "$d/yfi/mut.yml"
+      mkdir -p "$d/yfi/mut/.github/workflows"; _yfi_mf="$d/yfi/mut/.github/workflows/ci.yml"
+      if ! sh "$_yfi_inc" __install-pipeline "$d/yfi/mut.yml" "$_yfi_mf"; then
+        echo "selftest FAIL: YF-incept-mut — the seam failed on the mutant"; sf=1
+      else
+        _yfi_ml=$(wc -l < "$_yfi_mf" | tr -d ' ')
+        if _yfi_o=$(sh "$0" --own-tree "$d/yfi/mut" 2>&1); then _yfi_rc=0; else _yfi_rc=$?; fi
+        if [ "$_yfi_rc" = 1 ] && _has "$_yfi_o" "FAIL:" && _has "$_yfi_o" "ci.yml:$_yfi_ml:"; then
+          echo "selftest PASS: YF-incept-mut — an anchor line appended to a real profile and installed reds as emitted, on its line ($_yfi_ml)"
+        else echo "selftest FAIL: YF-incept-mut — rc $_yfi_rc, wanted rc 1 and a FAIL naming ci.yml:$_yfi_ml: $_yfi_o"; sf=1; fi
+      fi
+      # the seam runs the real call site's arguments: its ERE equals the one the --ci github call installs ci.yml with
+      _yfi_e1=$(awk -F"'" '/^[[:space:]]*install_pipeline "\$2" "\$3" / { print $2; exit }' "$_yfi_inc")
+      _yfi_e2=$(awk -F"'" '/install_pipeline .*\.github\/workflows\/ci\.yml/ { print $2; exit }' "$_yfi_inc")
+      if [ -n "$_yfi_e1" ] && [ "$_yfi_e1" = "$_yfi_e2" ]; then
+        echo "selftest PASS: YF-incept-ere — the seam's kit-own ERE equals the --ci github call site's ($_yfi_e1)"
+      else echo "selftest FAIL: YF-incept-ere — seam ERE [$_yfi_e1] differs from the call site's [$_yfi_e2]"; sf=1; fi
+    elif [ -d "$_yfi_root/profiles" ]; then echo "selftest FAIL: YF-incept — profiles/ exists but no profile ci.yml was read (a glob that read nothing must not pass)"; sf=1
+    fi
+  elif [ -f "$_yfi_root/docs/ROADMAP-KIT.md" ] || [ -f "$_yfi_root/.github/workflows/golden-path.yml" ]; then
+    echo "selftest FAIL: YF-incept — scripts/incept.sh is absent on a kit tree"; sf=1
+  else echo "selftest SKIP: YF-incept — scripts/incept.sh is absent (an adopter tree may delete the one-time bootstrap)"
+  fi
+  _st_mark YF
+
   # ── B8 legs (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) ───────────
   # `--disposition <gate-id> <file>` — single-sourced query mode reusing read_dispositions verbatim
   # (release-tag.sh's provenance_gate calls this rather than minting a third parser; see
@@ -3535,7 +4082,7 @@ selftest() {
       echo "selftest PASS: BR0 — the real ci.yml's boundary-redteam job is diff-gated with an explicit skip, bounded, report-only, unmasked and wired"
       awk '/^  boundary-redteam:/ { skip = 1; next } skip && /^  [a-z]/ { skip = 0 } !skip' "$_br_real" > "$d/br/m1.yml"
       awk '/^  boundary-redteam:/ { inb = 1 } inb && /^    timeout-minutes: / { inb = 0; next } { print }' "$_br_real" > "$d/br/m2.yml"
-      sed 's/ -- \.claude\/settings\.json templates\/sandbox-strict\.settings\.local\.json conformance\/guard-wired\.sh docs\/patches\/2026-10-25-boundary-default-352b\.settings\.patch conformance\/boundary-redteam\.sh;/ -- conformance\/boundary-redteam.sh;/' "$_br_real" > "$d/br/m3.yml"
+      sed 's/ -- \.claude\/settings\.json templates\/sandbox-overlay\.settings\.local\.json conformance\/guard-wired\.sh docs\/patches\/2026-10-25-boundary-default-352b\.settings\.patch conformance\/boundary-redteam\.sh;/ -- conformance\/boundary-redteam.sh;/' "$_br_real" > "$d/br/m3.yml"
       sed 's/ docs\/patches\/2026-10-25-boundary-default-352b\.settings\.patch conformance\/boundary-redteam\.sh;/ conformance\/boundary-redteam.sh;/' "$_br_real" > "$d/br/m28.yml"
       sed '/echo "SKIP: boundary red-team/d' "$_br_real" > "$d/br/m4.yml"
       sed 's/guard-battery, guard-delta, boundary-redteam\]/guard-battery, guard-delta]/' "$_br_real" > "$d/br/m5.yml"
@@ -5367,14 +5914,22 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     _sj_cell SJ61 "the live ci.yml's conformance-docs shard is sound (legs, join, the pin $_SJ_DOCS_PIN, no foreign member)" 0 - "$_sj_kr/.github/workflows/ci.yml" conformance-docs
   else echo "selftest SKIP: SJ60/SJ61 — not a kit tree"; fi
   # M1-M8: sed-edited copies of THIS script, run through the run mode on the fixtures above; the cell's own expectation must FAIL under the mutation.
-  _sj_mutcell() {  # <id> <desc> <sed-expr> <cell: join|results|wf|want-rc|needle>
-    sed "$3" "$0" > "$d/sj/$1.sh"
-    if cmp -s "$0" "$d/sj/$1.sh"; then echo "selftest FAIL: $1 — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1; return 0; fi
+  _sj_mutcell() {  # <id> <desc> <sed-expr> <cell: join|results|wf|want-rc|needle> [nofront]
+    # SWAS-554: the structural refusal (check_yaml_forms, called in shard_join_run) reds quoted keys, flow forms and explicit keys BEFORE the allow-list reads them, so the cells that test
+    # _sj_allow and _sj_nk on such a fixture run on a copy of this script without that one call line (nofront): the lock under test is then the first to see the fixture. The refusal's own
+    # call site is graded by the YFj cells below, which delete only that line.
+    _sjm_src=$0
+    if [ "${5:-}" = nofront ]; then
+      _sjm_src="$d/sj/$1.base.sh"; sed '/^  check_yaml_forms "\$_sr_wf" kit || return 1/d' "$0" > "$_sjm_src"
+      if cmp -s "$0" "$_sjm_src"; then echo "selftest FAIL: $1 — unbound: the structural-refusal call line in shard_join_run was not found"; sf=1; return 0; fi
+    fi
+    sed "$3" "$_sjm_src" > "$d/sj/$1.sh"
+    if cmp -s "$_sjm_src" "$d/sj/$1.sh"; then echo "selftest FAIL: $1 — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1; return 0; fi
     _sjm_join=${4%%|*}; _sjm_r=${4#*|}; _sjm_res=${_sjm_r%%|*}; _sjm_r=${_sjm_r#*|}; _sjm_wf=${_sjm_r%%|*}; _sjm_r=${_sjm_r#*|}; _sjm_want=${_sjm_r%%|*}; _sjm_nd=${_sjm_r#*|}
     _sjm_pin=""
     case "$_sjm_join" in *@*) _sjm_pin=${_sjm_join#*@}; _sjm_join=${_sjm_join%@*} ;; esac   # a docs join may carry its pin as join@N
     # the positive control: the UNMUTATED script must satisfy the cell's expectation, or "the mutant fails it" proves nothing (rc 127 would also fail it)
-    _sj_run "$0" "$_sjm_join" "$_sjm_res" "$_sjm_wf" "$_sjm_pin"
+    _sj_run "$_sjm_src" "$_sjm_join" "$_sjm_res" "$_sjm_wf" "$_sjm_pin"
     _sjm_ok=1
     [ "$_sjr_rc" = "$_sjm_want" ] || _sjm_ok=0
     case "$_sjr_o" in *"$_sjm_nd"*) : ;; *) _sjm_ok=0 ;; esac
@@ -5397,16 +5952,30 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   _sj_mutcell SJM7 "making the docs pin a >= test" 's/\[ "\$_sj_tot" -eq "\$_sj_pin" \]/[ "$_sj_tot" -ge "$_sj_pin" ]/' "conformance-docs@3|success success|$d/sj/dcm.yml|1|the pin is 3"
   # the round's new locks (R-I1, S-M1/S-M2, S-L1, S-L2): each mutant disables one and must make its named fixture's expectation fail
   _sj_mutcell SJM9 "skipping the join's exact step list" 's/" = ok ] || _sj_fail/" = ok ] || :/' "conformance-selftests|success success|$d/sj/jextra.yml|1|step list"
-  _sj_mutcell SJM10 "replacing the quoted-key normaliser with cat" 's/^_sj_nk() {.*/_sj_nk() { cat; }/' "conformance-selftests|success success|$d/sj/qif.yml|1|step-level if:"
+  _sj_mutcell SJM10 "replacing the quoted-key normaliser with cat" 's/^_sj_nk() {.*/_sj_nk() { cat; }/' "conformance-selftests|success success|$d/sj/qif.yml|1|step-level if:" nofront
   _sj_mutcell SJM11 "skipping the set +e test" 's/(run:\[\[:space:\]\]\*)?set(/(run:[[:space:]]*)?xset(/' "conformance-selftests|success success|$d/sj/setpe.yml|1|switches errexit off"
   _sj_mutcell SJM12 "not running the leg locks on the join" 's/^  _sj_locks "join /  : "join /' "conformance-selftests|success success|$d/sj/jcoe.yml|1|join conformance-selftests carries a step-level continue-on-error"
   _sj_mutcell SJM13 "letting a trailing comment satisfy the !cancelled() check" 's/ | sed .s\/\[\[:space:\]\]#\.\*\/\/. | grep -qF/ | grep -qF/' "conformance-selftests|success success|$d/sj/cmtcancel.yml|1|must carry !cancelled()"
   # option A: each mutant disables one half of the allow-list (the shape test, the block-content ban) and the fixture that half owns must stop failing
-  _sj_mutcell SJM14 "disabling the allow-list on the N1 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/qesc.yml|1|leg conformance-selftests-1 line"
-  _sj_mutcell SJM15 "disabling the allow-list on the N2 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/flow.yml|1|line shape not in the allow-list"
-  _sj_mutcell SJM16 "disabling the allow-list on the N3 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/xkey.yml|1|line shape not in the allow-list"
+  _sj_mutcell SJM14 "disabling the allow-list on the N1 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/qesc.yml|1|leg conformance-selftests-1 line" nofront
+  _sj_mutcell SJM15 "disabling the allow-list on the N2 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/flow.yml|1|line shape not in the allow-list" nofront
+  _sj_mutcell SJM16 "disabling the allow-list on the N3 shape" 's/^\( *\)_sj_allow "/\1: "/' "conformance-selftests|success success|$d/sj/xkey.yml|1|line shape not in the allow-list" nofront
   _sj_mutcell SJM17 "disabling the block-content ban on the trap shape" 's/if (t ~ \/^trap/if (0 \&\& t ~ \/^trap/' "conformance-selftests|success success|$d/sj/trapx.yml|1|may not start a command with trap"
   _sj_mutcell SJM18 "disabling the block-content ban on the shopt shape" 's/|| t ~ \/^shopt/|| 0 \&\& t ~ \/^shopt/' "conformance-selftests|success success|$d/sj/shoptx.yml|1|may not start a command with trap"
+  # YFj (SWAS-554): shard_join_run's own call of check_yaml_forms is load-bearing. On each fixture the run names the structural refusal; on a copy without that one call line it does not.
+  _yf_jcell() { # <id> <fixture> <needle>
+    _yj_m="$d/sj/$1.nofront.sh"; sed '/^  check_yaml_forms "\$_sr_wf" kit || return 1/d' "$0" > "$_yj_m"
+    if cmp -s "$0" "$_yj_m"; then echo "selftest FAIL: $1 — unbound: the structural-refusal call line in shard_join_run was not found"; sf=1; return 0; fi
+    _sj_run "$0" conformance-selftests "success success" "$2" ""
+    case "$_sjr_o" in *"$3"*) _yj_a=1 ;; *) _yj_a=0 ;; esac
+    _sj_run "$_yj_m" conformance-selftests "success success" "$2" ""
+    case "$_sjr_o" in *"$3"*) _yj_b=1 ;; *) _yj_b=0 ;; esac
+    if [ "$_yj_a" = 1 ] && [ "$_yj_b" = 0 ]; then echo "selftest PASS: $1 — the run names '$3' with the call and not without it"
+    else echo "selftest FAIL: $1 — needle '$3': with the call $_yj_a (want 1), without it $_yj_b (want 0)"; sf=1; fi
+  }
+  _yf_jcell YFj1 "$d/sj/qif.yml" "a quoted key"
+  _yf_jcell YFj2 "$d/sj/flow.yml" "a flow mapping at a node start"
+  _yf_jcell YFj3 "$d/sj/xkey.yml" "an explicit ? key"
   _st_mark SJ
 
   # ── SWAS-447 — the line-break ban (LB): check_line_breaks, check_line_breaks_tree, and their two call sites (own_tree_run, shard_join_run) ──
@@ -5523,8 +6092,9 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && [ -f "$_agg_kr/conformance/ci-classify-changes.sh" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
     if check_line_breaks_tree "$_agg_kr" > "$d/lb/lbr.out" 2>&1; then _lbr_rc=0; else _lbr_rc=$?; fi
     # 26 = the 25 before SWAS-552 plus its on-demand macOS workflow (.github/workflows/boundary-redteam-macos.yml), a deliberate add
-    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 26 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 26 judged files"
-    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 26; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
+    # 27 = the 26 plus SWAS-725's dispatch-only adopter fixture workflow (.github/workflows/adopter-fixture.yml), a deliberate add
+    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 27 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 27 judged files"
+    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 27; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
   else echo "selftest SKIP: LBr — not a kit tree"; fi
   # the mutants: a sed-edited COPY of this script runs the cell's fixture; the original must show the needle (the positive control) and the mutant must not.
   # A sed that matches nothing is "unbound" and fails loud: the pinned line moved, and a mutant equal to the original proves nothing.
@@ -5544,7 +6114,16 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   cp "$d/lb/cr.yml" "$d/lb/m1/.github/workflows/a.yml"; cp "$d/lb/crlf.yml" "$d/lb/m1/.github/workflows/b.yml"
   _lb_mut LBm1 "dropping the CR alternative from the ban (LB1, LB2)" 's/scan("\\\\015", "C0")/scan("\\\\377", "C0")/' tree "$d/lb/m1" "file(s) read under"
   _lb_mut LBm2 "deleting the own_tree_run call (LB13)" '/^    check_line_breaks_tree "\$_ot_root" || _ot_rc=1/d' own "$_lb_k" "RP liveness"
-  _lb_mut LBm3 "deleting the shard_join_run call (LB14)" '/^  check_line_breaks "\$_sr_wf" || return 1/d' join "$d/lb/st-cr.yml" "in-run negative"
+  # SWAS-554: shard_join_run now also calls check_yaml_forms, which reds a CR inside a line too; the mutant therefore deletes both call lines so the run still reaches the allow-list, and LBj below
+  # grades the structural refusal's own call site on the same fixture (only the line-break call deleted -> the structural refusal names the CR).
+  _lb_mut LBm3 "deleting the shard_join_run call (LB14)" '/^  check_line_breaks "\$_sr_wf" || return 1/d;/^  check_yaml_forms "\$_sr_wf" kit || return 1/d' join "$d/lb/st-cr.yml" "in-run negative"
+  sed '/^  check_line_breaks "\$_sr_wf" || return 1/d' "$0" > "$d/lb/LBj.sh"
+  _lb_run "$d/lb/LBj.sh" join "$d/lb/st-cr.yml"
+  case "$_lbr_o" in
+    *"$_lb_ndl"*) echo "selftest FAIL: LBj — the line-break call was not deleted from the copy" ; sf=1 ;;
+    *"a CR inside a line (a YAML parser ends the line there)"*) echo "selftest PASS: LBj — with only the line-break call deleted, shard_join_run's structural refusal still names the CR (its own call site is live)" ;;
+    *) echo "selftest FAIL: LBj — neither guard named the CR (out='$_lbr_o')"; sf=1 ;;
+  esac
   _st_mark LB
 
   # SCP1-SCP26 (SWAS-499) — the shellcheck pin lock (check_shellcheck_pin_tree). Fixtures are workflow files in scratch trees; every case runs the lock through its
@@ -5632,9 +6211,9 @@ EOF
   _scp_case SCP11 "a data-flow list in shellcheck.sh with one more file than the lock holds -> RED naming it" 1 "SC_NOFLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list1"
   _scp_case SCP11b "both lists equal to the lock's literals -> green" 0 "the data-flow lists match" "$d/scp/t-list2"
   _scp_case SCP11c "the no--x list widened by one file -> RED naming SC_NOFOLLOW_FILES" 1 "SC_NOFOLLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list3"
-  # SCP12: the real kit tree, exactly its seven linting jobs (a new linting job is a deliberate edit of this count, with its installer)
+  # SCP12: the real kit tree, exactly its eight linting jobs (a new linting job is a deliberate edit of this count, with its installer; the eighth is SWAS-725's adopter-fixture job)
   if [ -f "$_kr/.github/workflows/ci.yml" ] && { [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
-    _scp_case SCP12 "the real kit tree: its 7 linting jobs all run the pinned installer first, and the data-flow lists match" 0 "OK: shellcheck-pin — 7 linting job(s)" "$_kr"
+    _scp_case SCP12 "the real kit tree: its 8 linting jobs all run the pinned installer first, and the data-flow lists match" 0 "OK: shellcheck-pin — 8 linting job(s)" "$_kr"
   else echo "selftest SKIP: SCP12 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned)"; fi
   # SCP13: a .github/workflows/ that holds no workflow file must RED (a glob that matched nothing is a vacuous green)
   mkdir -p "$d/scp/t-empty/.github/workflows"
@@ -5808,7 +6387,12 @@ EOF
                  "30:drift-watch.yml:M280-30:the array label form runs-on: [runs-on, cpu=2] in drift-watch.yml" \
                  "31:.hidden.yml:M280-31:a dot-named workflow naming the variable in another case" \
                  "32:boundary-redteam-macos.yml:M280-32:macos-latest in the macOS workflow (only the literal macos-15 is allowed there)" \
-                 "33:drift-watch.yml:M280-33:the macos-15 literal in a workflow other than the macOS one"; do
+                 "33:drift-watch.yml:M280-33:the macos-15 literal in a workflow other than the macOS one" \
+                 "34:adopter-fixture.yml:M280-34:an edited event guard in the fixture workflow's runner expression (SWAS-725; only the exact text is allowed there)" \
+                 "35:drift-watch.yml:M280-35:the fixture workflow's runner expression planted in another workflow (SWAS-725; allowed in adopter-fixture.yml only)" \
+                 "36:adopter-fixture.yml:M280-36:a RunsOn label fragment (runner=2cpu) planted beside the admitted expression in the fixture workflow" \
+                 "37:adopter-fixture.yml:M280-37:secrets.X planted in the fixture workflow (the R7 token check)" \
+                 "38:adopter-fixture.yml:M280-38:a second copy of the admitted expression in an env: value of the fixture workflow"; do
       _rs_n=${_rs_m%%:*}; _rs_r=${_rs_m#*:}; _rs_want=${_rs_r%%:*}; _rs_r=${_rs_r#*:}
       _rs_id=${_rs_r%%:*}; _rs_desc=${_rs_r#*:}
       mkdir -p "$d/rs/t$_rs_n/.github/workflows"
@@ -5820,6 +6404,11 @@ EOF
         31) printf 'jobs:\n  x:\n    runs-on: ${{ vars.kit_ci_runner }}\n' > "$d/rs/t31/.github/workflows/.hidden.yml" ;;
         32) sed 's/^    runs-on: macos-15$/    runs-on: macos-latest/' "$_kr/.github/workflows/boundary-redteam-macos.yml" > "$d/rs/t32/.github/workflows/boundary-redteam-macos.yml" ;;
         33) awk '/^    runs-on: ubuntu-24.04[ \t]*$/ && !done { done = 1; print "    runs-on: macos-15"; next } { print }' "$_kr/.github/workflows/drift-watch.yml" > "$d/rs/t33/.github/workflows/drift-watch.yml" ;;
+        34) sed "s/github.event_name == 'workflow_dispatch'/github.event_name == 'pull_request'/" "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW" > "$d/rs/t34/.github/workflows/$KIT_FIXTURE_WORKFLOW" ;;
+        36) { cat "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW"; printf '      - run: echo runner=2cpu\n'; } > "$d/rs/t36/.github/workflows/$KIT_FIXTURE_WORKFLOW" ;;
+        37) { cat "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW"; printf '      - run: echo ${{ secrets.X }}\n'; } > "$d/rs/t37/.github/workflows/$KIT_FIXTURE_WORKFLOW" ;;
+        38) { cat "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW"; printf '      - env:\n          RUNNER: %s\n        run: echo x\n' "$KIT_FIXTURE_EXPR"; } > "$d/rs/t38/.github/workflows/$KIT_FIXTURE_WORKFLOW" ;;
+        35) { cat "$_kr/.github/workflows/drift-watch.yml"; printf '    runs-on: %s\n' "$KIT_FIXTURE_EXPR"; } > "$d/rs/t35/.github/workflows/drift-watch.yml" ;;
       esac
       if _rs_o=$(check_runner_switch_tree "$d/rs/t$_rs_n" 2>&1); then
         echo "selftest FAIL: $_rs_id — $_rs_desc was NOT caught"; sf=1
@@ -5827,6 +6416,34 @@ EOF
         echo "selftest PASS: $_rs_id — $_rs_desc -> RED, naming '$_rs_want'"
       else echo "selftest FAIL: $_rs_id — $_rs_desc reds without naming '$_rs_want': $_rs_o"; sf=1; fi
     done
+    # M280-39/40 (SWAS-736): step 3 of the fixture workflow reads UNVERIFIED from the prepush lane's verdict only, never from prose. The two lines that carry the test (the UNV_RE
+    # assignment and the grep that reports) are cut out of the REAL workflow and run against inline prepush outputs. M280-39: a clean output that holds the tracker-contract twin's
+    # reason note (the word UNVERIFIED in prose) reads clean, and the mutant (the bare grep swapped back in) reads it as UNVERIFIED. M280-40: a real UNVERIFIED result row, and a closing
+    # PARITY-CORE: UNVERIFIED line, are each reported from its OWN fixture (u2: the row with a PARITY-CORE: FAIL close; u3: only the closing line), so dropping either half of UNV_RE reds. An empty extraction reads clean and so fails M280-40: the cells are not vacuous.
+    _rs_vt=$(sed -n '/^ *UNV_RE=/p; /prepush\.txt"; then res "FAIL the prepush run read UNVERIFIED/p' "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW")
+    _rs_unv() {  # <the extracted test lines> <dir holding prepush.txt> -> rc 1 when the test reports UNVERIFIED (the step's exit 1), rc 0 when it reads clean
+      env RUNNER_TEMP="$2" sh -c "res() { :; }
+$1"
+    }
+    mkdir -p "$d/rs/u1" "$d/rs/u2" "$d/rs/u3"
+    printf '%s\n' '  OK    twin               tracker-contract tracker-contract.sh --conf .kit/credential-free.conf    0s' '#   twin reason: the local argv names a conf that does not exist, so the verdict is UNVERIFIED rc 2 and the run makes no call into the credential library' '# note:  UNVERIFIED  with two spaces each side, mid-line (the ^ anchor keeps it from counting)' 'PARITY-CORE: OK' > "$d/rs/u1/prepush.txt"
+    printf '%s\n' '  UNVERIFIED  core-secretscan gitleaks range scan (abc..HEAD)' 'PARITY-CORE: FAIL' > "$d/rs/u2/prepush.txt"
+    printf '%s\n' '  OK    twin               loop-state loop-state.sh --head HEAD    1s' 'PARITY-CORE: UNVERIFIED (another heavy arm is running)' > "$d/rs/u3/prepush.txt"
+    _rs_mut=$(printf '%s\n' "$_rs_vt" | sed 's/grep -Eq "[$]UNV_RE"/grep -q UNVERIFIED/')
+    if ! _has "$_rs_vt" 'UNV_RE=' || ! _has "$_rs_vt" 'then res "FAIL the prepush run read UNVERIFIED'; then
+      echo "selftest FAIL: M280-39 — the verdict test (the UNV_RE line and the reporting grep) was not found in $KIT_FIXTURE_WORKFLOW step 3"; sf=1
+    elif ! _rs_unv "$_rs_vt" "$d/rs/u1"; then
+      echo "selftest FAIL: M280-39 — step 3's verdict test reports UNVERIFIED on a clean output whose reason note holds the word"; sf=1
+    elif [ "$_rs_mut" = "$_rs_vt" ]; then
+      echo "selftest FAIL: M280-39 — the mutant equals the original (the reporting grep moved)"; sf=1
+    elif _rs_unv "$_rs_mut" "$d/rs/u1"; then
+      echo "selftest FAIL: M280-39 — the bare grep for UNVERIFIED was NOT caught (it reads the clean output clean)"; sf=1
+    else echo "selftest PASS: M280-39 — a clean output with UNVERIFIED in a reason note reads clean, and the bare-grep mutant reports it -> the cell has teeth"; fi
+    if _rs_unv "$_rs_vt" "$d/rs/u2"; then
+      echo "selftest FAIL: M280-40 — a real UNVERIFIED result row was NOT reported by step 3's verdict test"; sf=1
+    elif _rs_unv "$_rs_vt" "$d/rs/u3"; then
+      echo "selftest FAIL: M280-40 — a closing PARITY-CORE: UNVERIFIED line was NOT reported by step 3's verdict test"; sf=1
+    else echo "selftest PASS: M280-40 — step 3's verdict test reports a real UNVERIFIED result row and a closing PARITY-CORE: UNVERIFIED line"; fi
     # M280-W: the --own-tree wiring, through the REAL entry point on a kit-marked scratch tree (as GD4): the secret-scan mutant must red there.
     mkdir -p "$d/rs/tw/.github/workflows" "$d/rs/tw/docs" "$d/rs/tw/conformance"
     : > "$d/rs/tw/docs/ROADMAP-KIT.md"
@@ -6315,7 +6932,7 @@ _unv_end() {
 _st_begin() {  # first statement of selftest(): state reset with no conditions (an inherited _st_done=1 must not survive), then the traps
   d=$(mktemp -d)
   _st_done=0 _st_seen='' _st_last=''
-  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB SCP RS CS GT'
+  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB SCP RS CS GT YF'
   trap '_st_rc=$?; rm -rf "$d"; if [ "$_st_done" != 1 ]; then echo "FAIL: ci-gates selftest ended before its end marker (last section: ${_st_last:-none}, rc $_st_rc)" >&2; exit 1; fi; exit "$_st_rc"' EXIT
   trap 'exit 130' INT TERM
 }

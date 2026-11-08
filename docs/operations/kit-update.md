@@ -38,9 +38,10 @@ Code's own protected paths), applied in your main checkout from an agent session
 half-applied tree. Then both steps (applying the patch, step 2, and pulling a merged control-plane PR, step 3) are
 **a human step**: one git command in your own terminal outside the agent's sandbox, or run by the agent in a
 dev-clone or worktree outside the project. A patch that touches none of those paths needs no human step. `--from`
-itself writes none of the protected paths, and `--advance-base` writes only the `kit-base` refs. (The older opt-in
-template `templates/sandbox-strict.settings.local.json` predates the default and is not recommended; see
-`docs/operations/runtime-guards.md`, "Below the text layer: the strict profile (opt-in)".)
+itself writes none of the protected paths, and `--advance-base` writes only the `kit-base` refs. (The optional
+deny-only overlay `templates/sandbox-overlay.settings.local.json` replaces the older
+`templates/sandbox-strict.settings.local.json`; an update shows that as one delete and one add, and a leftover old copy is read by no check. See
+`docs/operations/runtime-guards.md`, "Below the text layer: the OS sandbox and the deny-only overlay".)
 
 **Upgrading from v3.234.0 or v3.235.x.** Your installed `.claude/settings.json` has the sandbox ON, so THIS update
 changes protected paths and is one terminal step: run `git pull` (or apply the patch) in your own terminal. If an

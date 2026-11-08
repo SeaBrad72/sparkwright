@@ -10,7 +10,7 @@ semantic axes (intent/scope, plan alignment, overclaim judgment) remain agent/hu
 ```
 sparkwright doctor
   ├─ conformance/verify.sh       [GATING]    every registered conformance check
-  ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier (kit-self; N/A on an adopter tree)
+  ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier (kit-self; N/A on an adopter tree; the row counts N-A claims)
   ├─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment
   └─ conformance/kit-current.sh  [ADVISORY]  is the kit you ADOPTED behind the current release?
 ```
@@ -26,7 +26,7 @@ The split is intentional and the naming is exact.
 | Dimension    | Role    | What it runs                                       |
 |--------------|---------|----------------------------------------------------|
 | `conformance`| GATING  | `conformance/verify.sh` (all checks)               |
-| `claims`     | GATING (kit-self) | `conformance/claims-registry.sh`; `N/A (kit-self…)` on an adopter tree |
+| `claims`     | GATING (kit-self) | `conformance/claims-registry.sh`; `N/A (kit-self…)` on an adopter tree. The row carries the registry's N-A count, e.g. `PASS (2 N-A: verified nothing here, …)`: an N-A claim's verifier exited 0 but declared it checked nothing, so it is never counted as holding |
 | `git`        | ADVISORY| branch · dirty-tree · tag alignment                |
 | `kit-update` | ADVISORY| `conformance/kit-current.sh` — adopted kit vs current release |
 
@@ -176,6 +176,14 @@ credential line and the forge identity line. It prints its own estimate (`doctor
 ran reuses its recorded exit code and output (the memo is shell variables in that process, no file or flag). Every row still
 prints its own PASS, UNVERIFIED or FAIL line under its own id, and a non-pass prints its diagnostics on every row it covers.
 Today that is the three claims that share one orchestrator-loop wiring check.
+
+**The claims registry has four verdicts, and N-A is not a pass.** A verifier that exits 0 but prints a line starting `N/A`
+(or `SKIP:`) with no real `OK` line, or only an `OK (0 … checked)` line, verified nothing here. The registry prints
+`N-A: <id> — <that line>` for it, counts it in the closing line (`claims: <P> pass · <N> N-A · <U> unverified · <F> fail`)
+and names the ids. It does not fail an adopter's run, and it is never reported as holding. On the kit's own tree (either kit
+marker present) only two N-A rows are allowed, each by exact id and reason: the guard battery's CI deferral, and
+`feature-flags-ready` (the kit has no feature-flag surface; that claim is about adopter trees). Any other N-A is a FAIL. The doctor claims row shows
+the N-A count read from that closing line. The registry path is fixed at `conformance/claims.tsv`; `KIT_CLAIMS` is gone.
 
 ## Graceful degradation in adopter repos
 

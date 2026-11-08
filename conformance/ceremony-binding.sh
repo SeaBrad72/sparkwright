@@ -1463,8 +1463,8 @@ _ip_quote() {
   _ip_want="inherits $_ip_w: $_ip_ptk"
   if [ "$_ip_ctk" != "$_ip_want" ]; then
     _inh_fail "the child's token must be exactly 'inherits <P>: <the parent's token>' (equality, not containment)." \
-      "expected --token '$_ip_want'" \
-      "and --go-by '$_ip_gn' (copy <P> into --token exactly as it is written in --basis)."
+      "expected --token '$_ip_want' (or the same words in a file given as --token-file)" \
+      "and --go-by '$_ip_gn' (copy <P> into the token (--token or --token-file) exactly as it is written in --basis)."
     return 2
   fi
   _ip_ps="$(_cb_clean "$(printf '%s\n' "$_ip_pb" | sed -n 's/^scope: //p' | head -1)")"
@@ -3005,7 +3005,6 @@ selftest() {
   # records `--basis <P>:<path>` on a NON-HEAD branch commit. Every cell differs from the passing one
   # (IN1) in exactly ONE respect, and every negative asserts its specific refusal text.
   # =====================================================================================================
-  _self="$DIR/conformance/ceremony-binding.sh"
   _cp="$_tmp/changed-cp"
   printf 'auth/x.js\n' > "$_tmp/changed-sens"; _sens="$_tmp/changed-sens"
   unset CB_FORGE_COMMITTERS
@@ -3177,6 +3176,41 @@ selftest() {
   _inh_neg IN22 "$_tmp/i22" "$_cp" "not a legacy record" "a parent BACKDATED to 2026-01-01 and off the list"
   _inh_sub IN22b "$_tmp/i21" 2 "not a legacy record" "the production entry ignores an env-supplied legacy list" "CB_LEGACY_PARENTS=$(cat "$_tmp/i21/.P")"
   CB_LEGACY_PARENTS=''
+  # HERM1 (SWAS-741) — the reverse polarity: a fixture whose OWN diff is ordinary must read ordinary through
+  # the production entry. The fail-safe never answers `ordinary`, so this proves the class was derived in the
+  # fixture; with IN12b/IN22b (control-plane fixtures) a host-copy regression reds one of the two on any host.
+  _mkherm "$_tmp/herm1"
+  _inh_sub HERM1 "$_tmp/herm1" 0 "N-A: ceremony-binding — change-class 'ordinary'" "a fixture with an ordinary diff reads ordinary through its own authority copy" "CB_FORGE_COMMITTERS=Nobody"
+  # HERM2 (SWAS-741) — the static lock: no subprocess in this selftest runs the HOST's copy of this script.
+  # From selftest() to EOF, no non-comment line may RUN the script on the host path (sh/bash whose target is
+  # "$0", $_psk_self, the host-copy variable, or any spelling of $DIR/conformance/ceremony-binding.sh), except
+  # the class-free modes: the --changed load refusals (3), --print-scope-key (4) and the universal-glob
+  # load refusals that re-enter --selftest (2). Those exempt runs are COUNTED and PINNED, so a new one reds
+  # too. The patterns spell the host-copy variable and every path with bracket classes, so the lock's own
+  # lines never match themselves and no skip marker is needed.
+  # LIMIT: this is a static lock on the NAMED spellings only. It does not see an alias under another name
+  # (_me="$0"; sh "$_me"), a direct run ("$0" ... or exec "$0"), a flag before the path (sh -e "$0"), or
+  # sourcing (. "$0"). HERM1 together with IN12b/IN22b is the behavioural backstop for those.
+  _legs=$((_legs+1))   # HERM2
+  _h2_pin=9
+  _h2_bad="$(awk -v pin="$_h2_pin" \
+    -v r='(^|[^A-Za-z0-9_])(sh|bash)[ 	]+"?([$][{]?(0|_psk_self|_s[e]lf)[}]?|[$][{]?DIR[}]?"?/conformance/ceremony-binding[.]sh)' \
+    -v a='(^|[^A-Za-z0-9_])_s[e]lf([^A-Za-z0-9_]|$)' '
+    /^selftest\(\) \{/ { on=1 }
+    on && $0 !~ /^[ 	]*#/ && ($0 ~ r || $0 ~ a) {
+      if (index($0,"--print-scope-key")>0 || index($0,"--changed")>0 || index($0,"--selftest")>0) ex++
+      else print NR": "$0
+    }
+    END {
+      if (!on) print "NO selftest() FOUND (the lock would be vacuous)"
+      if (ex+0 != pin+0) print "EXEMPT HOST-COPY RUNS: found " ex+0 ", pinned " pin
+    }
+  ' "$DIR/conformance/ceremony-binding.sh")"
+  if [ -z "$_h2_bad" ]; then
+    echo "PASS HERM2: no selftest() line runs the host's copy except the $_h2_pin pinned class-free runs (the --changed and universal-glob load refusals, and --print-scope-key)"
+  else
+    echo "FAIL HERM2: the host's copy is run from selftest(): $_h2_bad"; _fails=$((_fails+1))
+  fi
   # IN20 — the render: parent summary ahead of the fence even past the 8 KB cut; an unresolved P is visible.
   _ih_cpad=1; _mkinh "$_tmp/i20"
   _legs=$((_legs+1))   # IN20
@@ -3666,10 +3700,7 @@ _mkgov() {
   mkdir -p "$_dv/conformance" "$_dv/.claude/hooks" "$_dv/docs/architecture" "$_dv/docs/governance" \
            "$_dv/docs/kit-internals" "$_dv/skills/design" "$_dv/.github/workflows" \
            "$_dv/docs/plans" "$_dv/docs/reviews"
-  cp "$DIR/conformance/promotion-readiness.sh" "$_dv/conformance/promotion-readiness.sh"
-  if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
-    cp "$DIR/.claude/hooks/guard-core.sh" "$_dv/.claude/hooks/guard-core.sh"
-  fi
+  _inh_authority "$_dv" || { echo "FAIL GOV-AUTH: the authority copy into $_dv failed (SWAS-741: guard-core is required)"; _fails=$((_fails+1)); }
   (
     cd "$_dv" || exit 1
     git init -q 2>/dev/null
@@ -3783,10 +3814,7 @@ _mkreplay() {
   # The authority copy (as _mkfix and _mkgov carry): this leg runs with the fixture as $DIR, so the
   # CLASS derivation must resolve here too — without it the run dies at "change-class is UNDERIVABLE"
   # and the leg would assert the wrong refusal (measured on first write, exactly as leg 3 warns).
-  cp "$DIR/conformance/promotion-readiness.sh" "$_dr/conformance/promotion-readiness.sh"
-  if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
-    cp "$DIR/.claude/hooks/guard-core.sh" "$_dr/.claude/hooks/guard-core.sh"
-  fi
+  _inh_authority "$_dr" || { echo "FAIL REPLAY-AUTH: the authority copy into $_dr failed (SWAS-741: guard-core is required)"; _fails=$((_fails+1)); }
   (
     cd "$_dr" || exit 1
     git init -q 2>/dev/null
@@ -4000,9 +4028,44 @@ _inh_hasnot() {   # <leg> <dir> <listing> <needle> <desc>
     *) echo "PASS $1: $5" ;;
   esac
 }
-_inh_sub() {   # <leg> <dir> <rc> <needle> <desc> <VAR=value>   through the PRODUCTION entry (a subprocess)
+# _inh_authority <dir> — SWAS-741: copy the authority into a fixture at the same relative paths, so a
+# subprocess run INSIDE the fixture classifies the fixture, never the enclosing repository (the entry
+# derives its class through promotion-readiness.sh, which cds to the repository it LIVES in). Every file
+# is REQUIRED: a missing guard-core would degrade the classifier to its control-plane fail-safe and a
+# cell would pass through it silently, so any miss returns non-zero and the calling cell FAILS.
+# The copies are untracked in _inh_sub's fixtures and committed in the base by _mkgov/_mkreplay; either
+# way they are never in base...HEAD.
+_inh_authority() {
+  for _ia_f in conformance/ceremony-binding.sh conformance/obligation-lib.sh \
+               conformance/promotion-readiness.sh .claude/hooks/guard-core.sh; do
+    [ -f "$DIR/$_ia_f" ] || return 1
+    mkdir -p "$1/$(dirname "$_ia_f")" || return 1
+    cp "$DIR/$_ia_f" "$1/$_ia_f" || return 1
+  done
+  unset _ia_f
+}
+# _mkherm <dir> — HERM1's fixture: a main base and a README-only head on feat, so ITS OWN diff is ordinary.
+_mkherm() {
+  mkdir -p "$1"
+  (
+    cd "$1" || exit 1
+    git init -q 2>/dev/null
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    git config commit.gpgsign false; git config diff.renames true
+    printf 'fixture repo\n' > README.md
+    git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+    git checkout -q -b feat
+    printf 'a docs-only change\n' >> README.md
+    git add -A 2>/dev/null; git commit -q -m head >/dev/null 2>&1
+  )
+}
+_inh_sub() {   # <leg> <dir> <rc> <needle> <desc> <VAR=value>   through the PRODUCTION entry (a subprocess), the FIXTURE's copy
   _legs=$((_legs+1))
-  _is_out="$( cd "$2" && env "$6" sh "$_self" --scope PR-1 2>&1 )" && _is_rc=0 || _is_rc=$?
+  if ! _inh_authority "$2"; then
+    echo "FAIL $1: $5 — the authority copy into the fixture failed (guard-core is required)"; _fails=$((_fails+1)); return 0
+  fi
+  _is_out="$( cd "$2" && env "$6" sh "$2/conformance/ceremony-binding.sh" --scope PR-1 2>&1 )" && _is_rc=0 || _is_rc=$?
   case "$_is_rc:$_is_out" in
     "$3":*"$4"*) echo "PASS $1: $5 -> rc $3 naming '$4'" ;;
     *) echo "FAIL $1: $5 expected rc $3 naming '$4', got rc=$_is_rc: $_is_out"; _fails=$((_fails+1)) ;;

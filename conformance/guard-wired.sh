@@ -71,13 +71,13 @@
 #   sh conformance/guard-wired.sh --rung1-only [project-dir]
 #   sh conformance/guard-wired.sh --selftest
 #   sh conformance/guard-wired.sh --boundary-only [project-dir]   (the boundary leg alone, for `sparkwright doctor --boundary`; 0 / 1 / 2 UNVERIFIED)
-#   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the strict
-#     profile? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
-# Beyond the guard, check_dir accepts the shipped default (the OS sandbox OFF: no `sandbox` key is shipped, and
-# an explicit `enabled: false` is accepted too) while still requiring the Edit(...) denies; the strict profile (opt-in) is the template
-# templates/sandbox-strict.settings.local.json, whose load-bearing keys (enabled, allowUnsandboxedCommands
-# false, denyWrite a superset of the enforcement layer, the temp roots) are checked in the kit's own tree, and
-# on an adopter's EFFECTIVE block (settings.json merged with settings.local.json) when that turns the sandbox on.
+#   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the default
+#     merged with the overlay? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
+# Beyond the guard, check_dir accepts the shipped default (the OS sandbox ON, with the Edit(...) denies still required; an
+# explicit local `enabled: false` is a human opt-out and is accepted too). The optional deny-only overlay is the template
+# templates/sandbox-overlay.settings.local.json (SWAS-462): it may add denies and pin tight values, and holds no key that grants.
+# `_gw_overlay_grade` is a closed schema over it alone; on the kit's own tree the default merged with it must also pass the full
+# grader and the tightness pin. An adopter's EFFECTIVE block (settings.json merged with settings.local.json) is graded as before.
 # SWAS-354 (slice 352b): the agent boundary ON by default. A GRADER judges a settings document (sandbox on, read-deny paired with Read
 # rules, only the two template names in allowRead, WebFetch denied, no sockets, no loopback bind, no wildcard host, no home in allowWrite,
 # the write belt paired with Edit rules, no duplicate key); the committed .claude/settings.json is graded once it makes any boundary
@@ -210,15 +210,15 @@ _gw_brownfield_leg() {
 
 # The enforcement layer the OS sandbox must keep read-only to the agent's shell (design
 # docs/architecture/2026-10-06-guard-cp-readonly-sandbox-design.md §5.1). The shipped denyWrite must be a
-# SUPERSET of this; network.allowUnixSockets is optional (absent = the strict form, still wired).
+# SUPERSET of this; network.allowUnixSockets is optional (absent = the tight form, still wired).
 SANDBOX_DENY_REQUIRED='./.claude ./hooks ./.kit ./.git/hooks ./.git/config ./.mcp.json ~/.gitconfig ~/.config/git ~/.zshrc ~/.zshenv ~/.zprofile ~/.bashrc ~/.bash_profile ~/.profile'
 
-# The strict profile (opt-in, SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN): the shipped template an adopter copies to
+# The deny-only overlay (opt-in, SWAS-462): the shipped template an adopter copies to
 # .claude/settings.local.json. Claude Code takes scalars from the higher-precedence scope (local over project)
 # and CONCATENATES the filesystem arrays (its settings and sandboxing docs), so the effective block is the
 # project's `sandbox` deep-merged with the local file's by this rule. _GW_DM mirrors it (the kit's own mirror of
 # documented behaviour, not a run of Claude Code).
-SANDBOX_STRICT_TEMPLATE='templates/sandbox-strict.settings.local.json'
+SANDBOX_OVERLAY_TEMPLATE='templates/sandbox-overlay.settings.local.json'
 _GW_DM='def dm(a; b): a as $a | b as $b | if ($a|type)=="object" and ($b|type)=="object" then reduce ($b|keys_unsorted[]) as $k ($a; .[$k] = (if ($a|has($k)) then dm($a[$k]; $b[$k]) else $b[$k] end)) elif ($a|type)=="array" and ($b|type)=="array" then $a + $b else $b end;'
 
 # _gw_merge_json <project settings.json> [<local settings.json>] -> stdout: the project JSON with `.sandbox`
@@ -253,8 +253,8 @@ _gw_edit_denies() {
   return "$_ed_rc"
 }
 
-# _gw_sandbox_keys <json-text> <label> -> PASS/FAIL lines for the strict profile's load-bearing keys, returns 1 on
-# any gap. <json-text> is a settings document (the template, or an adopter's effective merged settings).
+# _gw_sandbox_keys <json-text> <label> -> PASS/FAIL lines for the sandbox's load-bearing keys, returns 1 on
+# any gap. <json-text> is a settings document (the default merged with the overlay, or an adopter's effective merged settings).
 _gw_sandbox_keys() {
   _sl_rc=0; _sk_j="$1"; _sk_l="$2"
   printf '%s\n' "$_sk_j" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 \
@@ -282,9 +282,10 @@ _gw_sandbox_keys() {
 }
 
 # _gw_sandbox_leg <project-dir> -> prints PASS/FAIL lines, returns 1 on any gap. jq is already confirmed present
-# by the caller. The Edit denies are required in every profile. The shipped default has the OS sandbox OFF
-# (`sandbox.enabled` false or no `sandbox` key) and passes; when the EFFECTIVE block (settings.json merged with an
-# adopter's settings.local.json) turns it on, the strict profile's load-bearing keys are checked on that block.
+# by the caller. The Edit denies are required in every profile. The shipped default has the OS sandbox ON; a
+# pre-boundary settings file, or a local opt-out, has it off (`sandbox.enabled` false or no `sandbox` key) and passes
+# here; when the EFFECTIVE block (settings.json merged with an adopter's settings.local.json) turns it on, the
+# sandbox's load-bearing keys are checked on that block.
 _gw_sandbox_leg() {
   _sg_rc=0; _sg_proj="$1/.claude/settings.json"; _sg_loc="$1/.claude/settings.local.json"
   _gw_edit_denies "$_sg_proj" || _sg_rc=1
@@ -297,26 +298,126 @@ _gw_sandbox_leg() {
   if printf '%s\n' "$_sg_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1; then
     _gw_sandbox_keys "$_sg_eff" "the effective sandbox block (settings.json merged with settings.local.json)" || _sg_rc=1
   else
-    echo "PASS: the OS sandbox is off in the effective settings (the pre-boundary default, or a local opt-out); the guard hook and the Edit deny rules are the local layer, the strict profile is $SANDBOX_STRICT_TEMPLATE"
+    echo "PASS: the OS sandbox is off in the effective settings (the pre-boundary default, or a local opt-out); the guard hook and the Edit deny rules are the local layer, the optional deny-only overlay is $SANDBOX_OVERLAY_TEMPLATE"
   fi
   return "$_sg_rc"
 }
 
-# _gw_template_check <project-dir> -> the strict template, in the kit's own tree (docs/ROADMAP-KIT.md marker): it
-# must exist, parse, and carry every load-bearing key. An adopter export carries the file too and is checked when
-# present; a tree with neither the marker nor the file is N/A. jq is already confirmed present.
+# ── SWAS-462: the sandbox template is a DENY-ONLY OVERLAY ───────────────────────────────────────────────────────
+# Design: docs/architecture/2026-11-07-sandbox-overlay-462-design.md. The overlay may add denies and pin tightening flags; it may hold no key
+# that grants. Every array it holds is a deny array (arrays concatenate across scopes), so the merged block is the default plus more denies; every
+# scalar it holds is pinned to its tight value (a local scalar wins), so no scalar can loosen the default. GW_OVERLAY_JQ is a CLOSED schema over
+# the template ALONE: it prints one line per gap. $full = "1" adds the value pins, the list shapes and the required denyWrite rows; "0" is the
+# KEY, CONTAINER-TYPE, LIST-SHAPE and present-scalar half (no required rows; the --sandbox-enforce pre-gate, which must not require the rows: its fixtures cut them on purpose).
+# Every container must be an object (a null or a list REPLACES the default block and drops its denies). No apostrophe may appear in the program.
+GW_OVERLAY_JQ='def val($d; $p): ($d | try getpath($p) catch null);
+def hasp($d; $p): ($d | try (getpath($p[0:-1]) | type == "object" and has($p[-1])) catch false);
+def badkeys($d; $p; $a): (val($d; $p)) as $o | if ($o | type) == "object" then ($o | keys_unsorted[] | select(. as $k | any($a[]; . == $k) | not) | ((($p + [.]) | join(".")) + " is not allowed in the overlay: it grants or weakens")) else empty end;
+. as $d
+| if ($d | type) != "object" then "the overlay must be a JSON object"
+  else ([
+    badkeys($d; []; ["sandbox", "permissions"]),
+    (([["sandbox"], ["sandbox", "filesystem"], ["sandbox", "network"], ["permissions"]][]) as $p | select(hasp($d; $p) and ((val($d; $p) | type) != "object")) | (($p | join(".")) + " must be an object in the overlay (any other type replaces the default block and drops its denies)")),
+    badkeys($d; ["sandbox"]; ["enabled", "failIfUnavailable", "autoAllowBashIfSandboxed", "allowUnsandboxedCommands", "filesystem", "network"]),
+    badkeys($d; ["sandbox", "filesystem"]; ["denyRead", "denyWrite"]),
+    badkeys($d; ["sandbox", "network"]; ["deniedDomains"]),
+    badkeys($d; ["permissions"]; ["deny"]),
+    (([["sandbox", "filesystem", "denyRead"], ["sandbox", "filesystem", "denyWrite"], ["sandbox", "network", "deniedDomains"], ["permissions", "deny"]][]) as $p | select(hasp($d; $p)) | val($d; $p) as $v | if (($v | type) != "array") or ($v | any(.[]; type != "string")) then (($p | join(".")) + " must be a list of strings in the overlay") else empty end)
+  ] + (if $full != "1" then [
+    (if hasp($d; ["sandbox", "enabled"]) and val($d; ["sandbox", "enabled"]) != true then "sandbox.enabled must be the boolean true in the overlay" else empty end),
+    (if hasp($d; ["sandbox", "failIfUnavailable"]) and val($d; ["sandbox", "failIfUnavailable"]) != true then "sandbox.failIfUnavailable must be the boolean true in the overlay (the sandbox must refuse to start without its OS layer, never run unsandboxed)" else empty end),
+    (if hasp($d; ["sandbox", "autoAllowBashIfSandboxed"]) and val($d; ["sandbox", "autoAllowBashIfSandboxed"]) != false then "sandbox.autoAllowBashIfSandboxed must be the boolean false in the overlay" else empty end),
+    (if hasp($d; ["sandbox", "allowUnsandboxedCommands"]) and val($d; ["sandbox", "allowUnsandboxedCommands"]) != false then "sandbox.allowUnsandboxedCommands must be the boolean false in the overlay" else empty end)
+  ] else [] end) + (if $full == "1" then [
+    (if val($d; ["sandbox", "enabled"]) == true then empty else "sandbox.enabled must be the boolean true in the overlay" end),
+    (if val($d; ["sandbox", "failIfUnavailable"]) == true then empty else "sandbox.failIfUnavailable must be the boolean true in the overlay (the sandbox must refuse to start without its OS layer, never run unsandboxed)" end),
+    (if val($d; ["sandbox", "autoAllowBashIfSandboxed"]) == false then empty else "sandbox.autoAllowBashIfSandboxed must be the boolean false in the overlay" end),
+    (if val($d; ["sandbox", "allowUnsandboxedCommands"]) == false then empty else "sandbox.allowUnsandboxedCommands must be the boolean false in the overlay" end),
+    (([["sandbox", "filesystem", "denyRead"], ["sandbox", "filesystem", "denyWrite"]][]) as $p | val($d; $p) | select(type == "array") | .[] | select(type == "string" and (startswith("./**") or startswith("/**"))) | (($p | join(".")) + " entry " + . + " uses a form the sandbox does not bind (./** and /** never bind; a bare **/x or ~/x does)")),
+    ($req[] as $r | select(((val($d; ["sandbox", "filesystem", "denyWrite"]) | if type == "array" then . else [] end) | any(.[]; . == $r)) | not) | ("sandbox.filesystem.denyWrite lacks " + $r + " in the overlay (that part of the enforcement layer would be writable from the shell)"))
+  ] else [] end) | .[]) end
+| gsub("[[:cntrl:]]"; "?")'
+
+# _gw_overlay_grade <file> <label> <full|keys> -> one FAIL line per gap, returns 1 on any gap (or when the file cannot be read).
+_gw_overlay_grade() {
+  _og_req=$(jq -n '$ARGS.positional' --args $SANDBOX_DENY_REQUIRED 2>/dev/null) || { printf '%s\n' "FAIL: overlay: could not build the required denyWrite list"; return 1; }
+  _og_full=0
+  if [ "${3:-full}" = full ]; then _og_full=1; fi
+  _og_out=$(jq -r --argjson req "$_og_req" --arg full "$_og_full" "$GW_OVERLAY_JQ" "$1" 2>/dev/null) || { printf '%s\n' "FAIL: overlay: the grader could not read $2"; return 1; }
+  [ -n "$_og_out" ] || return 0
+  printf '%s\n' "$_og_out" | while IFS= read -r _og_l; do printf '%s\n' "FAIL: overlay: $2: $_og_l"; done
+  return 1
+}
+
+# The tightness pin (kit tree only): in the merged document every GRANTING list equals the default's, every DENY list is a superset of the default's,
+# and no scalar differs from the default except failIfUnavailable becoming true. Input: jq -s over [default, merged].
+GW_TIGHT_JQ='.[0] as $p | .[1] as $m
+| [
+    (([["sandbox", "filesystem", "allowWrite"], ["sandbox", "filesystem", "allowRead"], ["sandbox", "network", "allowedDomains"], ["sandbox", "network", "allowUnixSockets"], ["permissions", "allow"], ["permissions", "ask"]][]) as $g
+      | select(($p | getpath($g)) != ($m | getpath($g)))
+      | (($g | join(".")) + " differs from the default in the merged settings (a granting list must equal the default)")),
+    (([["sandbox", "filesystem", "denyRead"], ["sandbox", "filesystem", "denyWrite"], ["sandbox", "network", "deniedDomains"], ["permissions", "deny"]][]) as $g
+      | (($p | getpath($g)) // []) as $pv | (($m | getpath($g)) // []) as $mv
+      | select((($mv | type) != "array") or (($pv | type) == "array" and any($pv[]; . as $x | any($mv[]; . == $x) | not)))
+      | (($g | join(".")) + " in the merged settings lacks a row of the default (a deny list must be a superset)")),
+    (((([$m | paths(type == "array")] + [$p | paths(type == "array")]) | unique) | map(select(.[0] == "sandbox" and all(.[]; type == "string"))))[] as $q
+      | select(([["sandbox", "filesystem", "denyRead"], ["sandbox", "filesystem", "denyWrite"], ["sandbox", "network", "deniedDomains"]] | any(.[]; . == $q)) | not)
+      | select((($p | try getpath($q) catch null) // "absent") != (($m | try getpath($q) catch null) // "absent"))
+      | (($q | join(".")) + " differs from the default in the merged settings (any other sandbox list, such as excludedCommands, must equal the default)")),
+    ((($m | [paths(type != "array" and type != "object")]) | map(select(all(.[]; type == "string"))))[] as $q
+      | select(($p | getpath($q)) != ($m | getpath($q)))
+      | select((($q == ["sandbox", "failIfUnavailable"]) and (($m | getpath($q)) == true)) | not)
+      | (($q | join(".")) + " differs from the default in the merged settings (a scalar may differ only to its tight value)"))
+  ] | .[]'
+
+# _gw_tight_check <default settings.json> <merged settings file> -> FAIL lines and rc 1 on any gap.
+_gw_tight_check() {
+  _tt_out=$(jq -s -r "$GW_TIGHT_JQ" "$1" "$2" 2>/dev/null) || { printf '%s\n' "FAIL: tightness: the grader could not read the merged settings"; return 1; }
+  [ -n "$_tt_out" ] || return 0
+  printf '%s\n' "$_tt_out" | while IFS= read -r _tt_l; do printf '%s\n' "FAIL: tightness: $_tt_l"; done
+  return 1
+}
+
+# _gw_overlay_merged_check <project-dir> <overlay file> -> (kit tree only) the committed default merged with the overlay passes the FULL boundary
+# grader (the temp roots come from the default) and the tightness pin. This is the acceptance criterion: the grader passes any template the kit recommends.
+_gw_overlay_merged_check() {
+  _om_s="$1/.claude/settings.json"
+  [ -f "$_om_s" ] || { printf '%s\n' "FAIL: $_om_s missing from a kit tree — there is no default to merge the overlay into"; return 1; }
+  _om_m=$(mktemp 2>/dev/null) || { printf '%s\n' "FAIL: overlay: no scratch file could be created, so the default merged with the overlay was NOT graded"; return 1; }
+  _om_rc=0
+  if ! _gw_merge_json "$_om_s" "$2" > "$_om_m" 2>/dev/null; then
+    printf '%s\n' "FAIL: overlay: could not merge $_om_s with $2, so the default merged with the overlay was NOT graded"; _om_rc=1
+  else
+    _gw_boundary_grade "$_om_m" "the shipped default merged with $SANDBOX_OVERLAY_TEMPLATE" || _om_rc=1
+    _gw_tight_check "$_om_s" "$_om_m" || _om_rc=1
+  fi
+  rm -f "$_om_m"
+  return "$_om_rc"
+}
+
+# _gw_template_check <project-dir> -> the overlay template, in the kit's own tree (docs/ROADMAP-KIT.md marker): it must exist, parse
+# strictly, pass the closed schema, and (kit-source tree only) merged with the default pass the full grader and the tightness pin. An adopter export
+# carries the file too and is checked (schema only) when present: their effective local file is graded by _gw_boundary_leg. A tree with neither
+# the marker nor the file is N/A. jq is already confirmed present.
 _gw_template_check() {
-  _tc_f="$1/$SANDBOX_STRICT_TEMPLATE"
+  _tc_f="$1/$SANDBOX_OVERLAY_TEMPLATE"
   if [ ! -f "$_tc_f" ]; then
     if [ -f "$1/docs/ROADMAP-KIT.md" ]; then
-      echo "FAIL: $SANDBOX_STRICT_TEMPLATE is missing from a kit tree — the opt-in strict sandbox profile is not shipped"; return 1
+      echo "FAIL: $SANDBOX_OVERLAY_TEMPLATE is missing from a kit tree — the optional deny-only sandbox overlay is not shipped"; return 1
     fi
-    echo "N/A: $SANDBOX_STRICT_TEMPLATE not present (no kit-source marker); the strict profile is opt-in"; return 0
+    echo "N/A: $SANDBOX_OVERLAY_TEMPLATE not present (no kit-source marker); the overlay is opt-in"; return 0
   fi
   if ! jq -e . "$_tc_f" >/dev/null 2>&1; then
-    echo "FAIL: $SANDBOX_STRICT_TEMPLATE is not valid JSON"; return 1
+    echo "FAIL: $SANDBOX_OVERLAY_TEMPLATE is not valid JSON"; return 1
   fi
-  _gw_sandbox_keys "$(jq -c . "$_tc_f")" "$SANDBOX_STRICT_TEMPLATE"
+  _gw_bd_gate "$_tc_f" "$SANDBOX_OVERLAY_TEMPLATE" || return 1
+  _tc_rc=0
+  _gw_overlay_grade "$_tc_f" "$SANDBOX_OVERLAY_TEMPLATE" full || _tc_rc=1
+  if _gw_kitsource "$1"; then
+    _gw_overlay_merged_check "$1" "$_tc_f" || _tc_rc=1
+  fi
+  [ "$_tc_rc" -ne 0 ] || echo "PASS: $SANDBOX_OVERLAY_TEMPLATE holds only denies and tight pins (closed schema)"
+  return "$_tc_rc"
 }
 
 # ── SWAS-354 (slice 352b, b1): the agent boundary ON by default ──────────────────────────────────────────────
@@ -1217,41 +1318,54 @@ selftest() {
   _unv_f=$base/unverified   # SWAS-577: the marker file of grep calls that could not answer (read by _unv_end before the verdict)
   : > "$_unv_f" || { echo "selftest FAIL: the UNVERIFIED marker file cannot be created ($_unv_f), so an unanswered grep could not be recorded"; st=1; }
 
-  # The strict profile's `sandbox` block as a fixture (the template's shape, in its STRICT form: no
-  # network.allowUnixSockets, which the leg must accept since allowUnixSockets is optional).
+  # A full `sandbox` block as a fixture (every load-bearing key, no network.allowUnixSockets, which the leg must accept since
+  # allowUnixSockets is optional). It feeds mk_sbx and mk_loc, whose cells test the leg's merge; it is NOT the shipped overlay (that is
+  # _gw_overlay_tmpl below: the overlay may not carry allowWrite).
   _gw_full_sbx='{"enabled":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"allowWrite":["~","/tmp","/private/var/folders","/var/folders"],"denyWrite":["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}}'
 
-  # mk <dir> <matcher>: a project whose PreToolUse guard.sh hook uses <matcher> + a valid guard.sh. The sandbox is
-  # No `sandbox` key at all, as shipped (an explicit false would outrank a developer's own user-level setting):
-  # the default profile (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN).
+  # The overlay template as a fixture: the design section 2a content, verbatim. It feeds mk_tmpl.
+  _gw_overlay_tmpl='{"sandbox":{"enabled":true,"failIfUnavailable":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"denyWrite":["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}}}'
+  # A default-shaped `sandbox` block for the enforce fixtures: the temp roots in allowWrite and NO denyWrite, so a denyWrite row cut from the
+  # overlay is really cut from the merged block.
+  _gw_def_sbx='{"enabled":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"allowWrite":["/private/tmp","/tmp","/private/var/folders","/var/folders"]}}'
+
+  # mk <dir> <matcher>: a project whose PreToolUse guard.sh hook uses <matcher> + a valid guard.sh. The fixture
+  # has no `sandbox` key at all (a pre-boundary settings file): the off profile the leg still accepts.
   mk() {
     _d="$1"; _m="$2"; mkdir -p "$_d/.claude/hooks"
     printf '{"permissions":{"deny":["Edit(/.claude/**)","Edit(/hooks/**)","Edit(/.kit/**)"]},"hooks":{"PreToolUse":[{"matcher":"%s","hooks":[{"type":"command","command":"sh .claude/hooks/guard.sh"}]}]}}\n' "$_m" > "$_d/.claude/settings.json"
     printf '#!/bin/sh\nexit 0\n' > "$_d/.claude/hooks/guard.sh"
   }
 
-  # mk_sbx <dir> <jq-filter>: the fixture with the STRICT block in settings.json, then <jq-filter> applied to the
+  # mk_sbx <dir> <jq-filter>: the fixture with the full block in settings.json, then <jq-filter> applied to the
   # document (a mutant).
   mk_sbx() {
     mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
     jq --argjson s "$_gw_full_sbx" ".sandbox = \$s | $2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
   }
 
-  # mk_loc <dir> <jq-filter>: an adopter's .claude/settings.local.json holding the strict block, then <jq-filter>
+  # mk_loc <dir> <jq-filter>: an adopter's .claude/settings.local.json holding the full block, then <jq-filter>
   # applied to the document (a copy of the template, or a mutant of it).
   mk_loc() {
     jq -n --argjson s "$_gw_full_sbx" '{sandbox: $s}' | jq "$2" > "$1/.claude/settings.local.json"
   }
 
-  # mk_tmpl <dir> <jq-filter>: the kit's templates/sandbox-strict.settings.local.json (or a mutant of it).
+  # mk_tmpl <dir> <jq-filter>: the kit's templates/sandbox-overlay.settings.local.json (or a mutant of it).
   mk_tmpl() {
     mkdir -p "$1/templates"
-    jq -n --argjson s "$_gw_full_sbx" '{sandbox: $s}' | jq "$2" > "$1/templates/sandbox-strict.settings.local.json"
+    printf '%s\n' "$_gw_overlay_tmpl" | jq "$2" > "$1/templates/sandbox-overlay.settings.local.json"
   }
 
-  # Static sandbox leg: the shipped default (sandbox OFF) is wired; the strict block, wherever it comes from
-  # (settings.json, an adopter's settings.local.json, or the shipped template), has one mutant per required key
-  # / entry removed that must FAIL, naming the gap.
+  # mk_enf <dir> <project jq-filter> <template jq-filter>: a --sandbox-enforce fixture, a default-shaped project plus an overlay template (or a mutant of either).
+  mk_enf() {
+    mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+    jq --argjson s "$_gw_def_sbx" ".sandbox = \$s | $2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
+    mk_tmpl "$1" "$3"
+  }
+
+  # Static sandbox leg: a settings file with the sandbox off (a pre-boundary file or a local opt-out) is wired; the full block, wherever it comes from
+  # (settings.json or an adopter's settings.local.json), has one mutant per required key / entry removed that must FAIL, naming the gap. The
+  # shipped overlay template is graded by its own closed-schema cells below.
   if command -v jq >/dev/null 2>&1; then
     d="$base/sbx_off"; mk_sbx "$d" '.sandbox.enabled = false'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
@@ -1270,7 +1384,7 @@ selftest() {
     # project, filesystem arrays concatenated).
     d="$base/loc_full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" '.'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: the effective sandbox block'; then echo "selftest PASS: an adopter local file holding the full strict block -> wired"; else echo "selftest FAIL: an adopter local file holding the full strict block should be wired (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: the effective sandbox block'; then echo "selftest PASS: an adopter local file holding the full block -> wired"; else echo "selftest FAIL: an adopter local file holding the full block should be wired (rc=$rc)"; st=1; fi
     d="$base/loc_short"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] && _has "$out" 'denyWrite lacks ./.claude'; then echo "selftest PASS: an adopter local file with a short denyWrite -> FAIL"; else echo "selftest FAIL: an adopter local file with a short denyWrite should FAIL (rc=$rc)"; st=1; fi
@@ -1284,41 +1398,76 @@ selftest() {
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] && _has "$out" 'not valid JSON'; then echo "selftest PASS: an adopter local file that is not JSON -> FAIL"; else echo "selftest FAIL: an adopter local file that is not JSON should FAIL (rc=$rc)"; st=1; fi
     # The documented merge: arrays CONCATENATE across the two files (half the entries in each is the full set), and
-    # a local enabled:false turns a strict project file off (scalars: local over project).
+    # a local enabled:false turns a full-block project file off (scalars: local over project).
     d="$base/loc_split"; mk_sbx "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[0:5]'; mk_loc "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[5:]'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: denyWrite split across settings.json and the local file -> wired (arrays concatenate)"; else echo "selftest FAIL: a denyWrite split across the two files should be wired (rc=$rc)"; st=1; fi
     d="$base/loc_turns_off"; mk_sbx "$d" '.'; printf '{"sandbox":{"enabled":false}}\n' > "$d/.claude/settings.local.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 0 ] && _has "$out" 'sandbox is off'; then echo "selftest PASS: a local enabled:false over a strict project file -> off, wired"; else echo "selftest FAIL: a local enabled:false should override the project (rc=$rc)"; st=1; fi
-    # The shipped strict template: exists and parses and carries every load-bearing key in the kit's own tree.
+    if [ "$rc" -eq 0 ] && _has "$out" 'sandbox is off'; then echo "selftest PASS: a local enabled:false over a full-block project file -> off, wired"; else echo "selftest FAIL: a local enabled:false should override the project (rc=$rc)"; st=1; fi
+    # The shipped overlay template: exists, parses strictly, passes the closed schema and carries every required row. (The kit-tree legs
+    # (merged grade, tightness pin) run on the real tree further down; these fixtures carry no kit marker, so only the schema runs here.)
     d="$base/tmpl_good"; mkdir -p "$d"; mk_tmpl "$d" '.'
-    if _gw_template_check "$d" >/dev/null 2>&1; then echo "selftest PASS: a complete strict template -> wired"; else echo "selftest FAIL: a complete strict template should be wired"; st=1; fi
+    if _gw_template_check "$d" >/dev/null 2>&1; then echo "selftest PASS: a complete overlay template -> wired"; else echo "selftest FAIL: a complete overlay template should be wired"; st=1; fi
     _tm_mut() {  # <dir-name> <jq-filter> <expected-substring>
       d="$base/tmpl_$1"; mkdir -p "$d"; mk_tmpl "$d" "$2"
       if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-      if [ "$rc" -eq 1 ] && _has "$out" "$3"; then echo "selftest PASS: strict template $1 -> FAIL"; else echo "selftest FAIL: strict template $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+      if [ "$rc" -eq 1 ] && _has "$out" "$3"; then echo "selftest PASS: overlay template $1 -> FAIL"; else echo "selftest FAIL: overlay template $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
     }
     _tm_mut enabled_false '.sandbox.enabled = false' 'sandbox.enabled'
     _tm_mut unsandboxed_true '.sandbox.allowUnsandboxedCommands = true' 'allowUnsandboxedCommands'
     _tm_mut unsandboxed_absent 'del(.sandbox.allowUnsandboxedCommands)' 'allowUnsandboxedCommands'
     _tm_mut autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'autoAllowBashIfSandboxed'
     _tm_mut excluded '.sandbox.excludedCommands = ["git"]' 'excludedCommands'
-    for _t in /private/var/folders /var/folders; do
-      _tm_mut "allow_$(printf '%s' "$_t" | tr -c 'A-Za-z0-9\n' '_')" "del(.sandbox.filesystem.allowWrite[] | select(. == \"$_t\"))" "allowWrite lacks $_t"
-    done
     for _e in $SANDBOX_DENY_REQUIRED; do
       _tm_mut "deny_$(printf '%s' "$_e" | tr -c 'A-Za-z0-9\n' '_')" "del(.sandbox.filesystem.denyWrite[] | select(. == \"$_e\"))" "denyWrite lacks $_e"
     done
-    d="$base/tmpl_badjson"; mkdir -p "$d/templates"; printf '{ not json\n' > "$d/templates/sandbox-strict.settings.local.json"
+    # SWAS-462 mutants 1-33: one per forbidden key, value or container swap. Each must FAIL, naming the path.
+    _tm_mut ov01_allowed_domains_star '.sandbox.network.allowedDomains = ["*"]' 'sandbox.network.allowedDomains is not allowed in the overlay'
+    _tm_mut ov02_unix_sockets '.sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]' 'sandbox.network.allowUnixSockets is not allowed in the overlay'
+    _tm_mut ov03_all_unix_sockets '.sandbox.network.allowAllUnixSockets = true' 'sandbox.network.allowAllUnixSockets is not allowed in the overlay'
+    _tm_mut ov04_local_binding '.sandbox.network.allowLocalBinding = true' 'sandbox.network.allowLocalBinding is not allowed in the overlay'
+    _tm_mut ov05_mach_lookup '.sandbox.network.allowMachLookup = ["x"]' 'sandbox.network.allowMachLookup is not allowed in the overlay'
+    _tm_mut ov06_http_proxy_port '.sandbox.network.httpProxyPort = 1' 'sandbox.network.httpProxyPort is not allowed in the overlay'
+    _tm_mut ov07_allow_write_home '.sandbox.filesystem.allowWrite = ["~"]' 'sandbox.filesystem.allowWrite is not allowed in the overlay'
+    _tm_mut ov08_allow_read '.sandbox.filesystem.allowRead = ["**/.env.example"]' 'sandbox.filesystem.allowRead is not allowed in the overlay'
+    _tm_mut ov09_filesystem_disabled '.sandbox.filesystem.disabled = true' 'sandbox.filesystem.disabled is not allowed in the overlay'
+    _tm_mut ov10_weaker_isolation_true '.sandbox.enableWeakerNetworkIsolation = true' 'sandbox.enableWeakerNetworkIsolation is not allowed in the overlay'
+    _tm_mut ov11_weaker_isolation_false '.sandbox.enableWeakerNetworkIsolation = false' 'sandbox.enableWeakerNetworkIsolation is not allowed in the overlay'
+    _tm_mut ov12_weaker_nested '.sandbox.enableWeakerNestedSandbox = true' 'sandbox.enableWeakerNestedSandbox is not allowed in the overlay'
+    _tm_mut ov13_excluded_commands '.sandbox.excludedCommands = ["git"]' 'sandbox.excludedCommands is not allowed in the overlay'
+    _tm_mut ov14_unsandboxed_true '.sandbox.allowUnsandboxedCommands = true' 'sandbox.allowUnsandboxedCommands must be the boolean false'
+    _tm_mut ov15_autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'sandbox.autoAllowBashIfSandboxed must be the boolean false'
+    _tm_mut ov16_fail_if_unavailable_false '.sandbox.failIfUnavailable = false' 'sandbox.failIfUnavailable must be the boolean true'
+    _tm_mut ov17_enabled_false '.sandbox.enabled = false' 'sandbox.enabled must be the boolean true'
+    _tm_mut ov18_nested_userns '.sandbox.allowNestedUserNamespaces = true' 'sandbox.allowNestedUserNamespaces is not allowed in the overlay'
+    _tm_mut ov19_apple_events '.sandbox.allowAppleEvents = true' 'sandbox.allowAppleEvents is not allowed in the overlay'
+    _tm_mut ov20_ignore_violations '.sandbox.ignoreViolations = {}' 'sandbox.ignoreViolations is not allowed in the overlay'
+    _tm_mut ov21_credentials '.sandbox.credentials = {}' 'sandbox.credentials is not allowed in the overlay'
+    _tm_mut ov22_permissions_allow '.permissions.allow = ["Read"]' 'permissions.allow is not allowed in the overlay'
+    _tm_mut ov23_permissions_ask '.permissions.ask = ["Bash"]' 'permissions.ask is not allowed in the overlay'
+    _tm_mut ov24_default_mode '.permissions.defaultMode = "bypassPermissions"' 'permissions.defaultMode is not allowed in the overlay'
+    _tm_mut ov25_additional_directories '.permissions.additionalDirectories = ["/"]' 'permissions.additionalDirectories is not allowed in the overlay'
+    _tm_mut ov26_top_level_hooks '.hooks = {}' 'hooks is not allowed in the overlay'
+    _tm_mut ov27_top_level_env '.env = {}' 'env is not allowed in the overlay'
+    _tm_mut ov28_deny_write_string '.sandbox.filesystem.denyWrite = "x"' 'sandbox.filesystem.denyWrite must be a list of strings'
+    _tm_mut ov29_deny_read_dot_glob '.sandbox.filesystem.denyRead = ["./**/.env"]' 'sandbox.filesystem.denyRead entry ./**/.env uses a form the sandbox does not bind'
+    _tm_mut ov30_enabled_string '.sandbox.enabled = "true"' 'sandbox.enabled must be the boolean true'
+    _tm_mut ov31_filesystem_null '.sandbox.filesystem = null' 'sandbox.filesystem must be an object'
+    _tm_mut ov32_network_list '.sandbox.network = []' 'sandbox.network must be an object'
+    _tm_mut ov33_permissions_string '.permissions = "x"' 'permissions must be an object'
+    # Deny-only additions stay wired: an extra denyRead, denyWrite, deniedDomains and permissions.deny row is exactly what the overlay is for.
+    d="$base/tmpl_ov_extra_denies"; mkdir -p "$d"; mk_tmpl "$d" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.filesystem.denyRead = ["**/extra"] | .sandbox.network.deniedDomains = ["evil.example"] | .permissions.deny = ["Read(./**/extra)"]'
+    if _gw_template_check "$d" >/dev/null 2>&1; then echo "selftest PASS: an overlay that only adds deny rows -> wired"; else echo "selftest FAIL: an overlay that only adds deny rows should be wired"; st=1; fi
+    d="$base/tmpl_badjson"; mkdir -p "$d/templates"; printf '{ not json\n' > "$d/templates/sandbox-overlay.settings.local.json"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && _has "$out" 'not valid JSON'; then echo "selftest PASS: a strict template that is not JSON -> FAIL"; else echo "selftest FAIL: a non-JSON strict template should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'not valid JSON'; then echo "selftest PASS: an overlay template that is not JSON -> FAIL"; else echo "selftest FAIL: a non-JSON overlay template should FAIL (rc=$rc)"; st=1; fi
     d="$base/tmpl_nomarker"; mkdir -p "$d"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ] && _has_line "$out" 'N/A'; then echo "selftest PASS: no template and no kit marker -> N/A"; else echo "selftest FAIL: no template and no kit marker should be N/A (rc=$rc)"; st=1; fi
     d="$base/tmpl_marker"; mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
     if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && _has "$out" 'missing from a kit tree'; then echo "selftest PASS: a kit-source tree without the strict template -> FAIL"; else echo "selftest FAIL: a kit-source tree without the strict template should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'missing from a kit tree'; then echo "selftest PASS: a kit-source tree without the overlay template -> FAIL"; else echo "selftest FAIL: a kit-source tree without the overlay template should FAIL (rc=$rc)"; st=1; fi
     d="$base/sbx_unsandboxed"; mk_sbx "$d" '.sandbox.allowUnsandboxedCommands = true'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] && _has "$out" 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands=true -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands=true should FAIL (rc=$rc)"; st=1; fi
@@ -1353,10 +1502,12 @@ selftest() {
     d="$base/sbx_superset"; mk_sbx "$d" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]'
     if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: a superset denyWrite and an allowUnixSockets entry -> wired"; else echo "selftest FAIL: a superset denyWrite and allowUnixSockets should be wired"; st=1; fi
     # --sandbox-enforce: no npx -> SKIP (rc 3, never a pass); no enabled sandbox block -> FAIL (rc 1).
-    # --sandbox-enforce runs against the STRICT profile: the shipped settings.json (sandbox off) merged with the
-    # template under templates/, so every enforce fixture is a default project plus a (possibly mutated) template.
-    d="$base/sbx_enf"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.'
-    mkdir -p "$base/sbx_bin"; ln -sf "$(command -v jq)" "$base/sbx_bin/jq"
+    # --sandbox-enforce runs against the default merged with the overlay: the shipped settings.json (sandbox on) merged with the
+    # template under templates/, so every enforce fixture is a default-shaped project plus a (possibly mutated) overlay template.
+    d="$base/sbx_enf"; mk_enf "$d" '.' '.'
+    # The strict-parse gate before the pre-gate needs tr, wc, head, od and awk; npx is the only tool left off this PATH.
+    mkdir -p "$base/sbx_bin"
+    for _sb_t in jq tr wc head od awk mktemp; do ln -sf "$(command -v "$_sb_t")" "$base/sbx_bin/$_sb_t"; done
     if out=$(PATH="$base/sbx_bin" /bin/sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 3 ] && _has_line "$out" 'SKIP: npx'; then echo "selftest PASS: --sandbox-enforce without npx -> SKIP rc 3"; else echo "selftest FAIL: --sandbox-enforce without npx should SKIP with rc 3 (rc=$rc)"; st=1; fi
     # _enf_fail <dir> <label>: the run must exit 1; rc 3 (no sandbox runtime here) is a disclosed SKIP, never a pass.
@@ -1366,21 +1517,36 @@ selftest() {
       elif [ "$rc" -eq 3 ] && ! _has_line "$out" 'FAIL'; then echo "selftest SKIP: --sandbox-enforce $2 (no sandbox runtime here)"
       else echo "selftest FAIL: --sandbox-enforce $2 must exit 1 (rc=$rc)"; st=1; fi
     }
-    # No template, or one that does not turn the sandbox on: there is no strict profile to enforce. Both exit 1
+    # No template, or one that does not turn the sandbox on: there is no overlay to enforce. Both exit 1
     # before the runtime is started, so these two never SKIP.
     d="$base/sbx_enf_notmpl"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && _has "$out" 'strict'; then echo "selftest PASS: --sandbox-enforce with no strict template -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with no strict template should FAIL (rc=$rc)"; st=1; fi
-    d="$base/sbx_enf_off"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.sandbox.enabled = false'
+    if [ "$rc" -eq 1 ] && _has "$out" 'no overlay template to enforce'; then echo "selftest PASS: --sandbox-enforce with no overlay template -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with no overlay template should FAIL (rc=$rc)"; st=1; fi
+    d="$base/sbx_enf_off"; mk_enf "$d" '.' '.sandbox.enabled = false'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on a strict profile that is off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the strict profile off should FAIL (rc=$rc)"; st=1; fi
-    # A SKIP must never hide a FAIL: with no /tmp in allowWrite and ./.claude missing from the template's denyWrite,
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on an overlay that turns the sandbox off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the overlay turning the sandbox off should FAIL (rc=$rc)"; st=1; fi
+    # SWAS-462: a template that grants must exit 1 BEFORE the runtime starts (never a SKIP that hides a widening template). An allowWrite-bearing
+    # template, and a container swap (a null filesystem would drop the default denies), each name the overlay rule.
+    d="$base/sbx_enf_grants"; mk_enf "$d" '.' '.sandbox.filesystem.allowWrite = ["~"]'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'sandbox.filesystem.allowWrite is not allowed in the overlay' && ! _has_line "$out" 'SKIP'; then echo "selftest PASS: --sandbox-enforce with an allowWrite-bearing overlay -> FAIL before the runtime starts"; else echo "selftest FAIL: --sandbox-enforce with an allowWrite-bearing overlay must exit 1 naming the rule, never SKIP (rc=$rc)"; st=1; fi
+    d="$base/sbx_enf_nullfs"; mk_enf "$d" '.' '.sandbox.filesystem = null'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'sandbox.filesystem must be an object'; then echo "selftest PASS: --sandbox-enforce with a null filesystem in the overlay -> FAIL before the runtime starts"; else echo "selftest FAIL: --sandbox-enforce with a null filesystem in the overlay must exit 1 (rc=$rc)"; st=1; fi
+    # A list with the wrong shape and a present scalar that is not tight also exit 1 before the runtime (the keys-mode pre-gate reads shapes and pins).
+    d="$base/sbx_enf_nulllist"; mk_enf "$d" '.' '.sandbox.filesystem.denyWrite = null'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'sandbox.filesystem.denyWrite must be a list of strings' && ! _has_line "$out" 'SKIP'; then echo "selftest PASS: --sandbox-enforce with denyWrite null in the overlay -> FAIL before the runtime starts"; else echo "selftest FAIL: --sandbox-enforce with denyWrite null in the overlay must exit 1 naming the rule, never SKIP (rc=$rc)"; st=1; fi
+    d="$base/sbx_enf_failopen"; mk_enf "$d" '.' '.sandbox.failIfUnavailable = false'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && _has "$out" 'sandbox.failIfUnavailable must be the boolean true' && ! _has_line "$out" 'SKIP'; then echo "selftest PASS: --sandbox-enforce with failIfUnavailable false in the overlay -> FAIL before the runtime starts"; else echo "selftest FAIL: --sandbox-enforce with failIfUnavailable false in the overlay must exit 1 naming the rule, never SKIP (rc=$rc)"; st=1; fi
+    # A SKIP must never hide a FAIL: with no /tmp in the project's allowWrite and ./.claude missing from the overlay's denyWrite,
     # the write to .claude/hooks/x LANDS while the sentinel (under /tmp) cannot, so the run must exit 1, never 3.
-    d="$base/sbx_enf_landed"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.sandbox.filesystem.allowWrite = ["~"] | del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
-    _enf_fail "$d" "with a template missing ./.claude and a landed protected write and no sentinel"
-    # A template missing a home entry: the dotfile write lands under the runtime, so leg 1 must go red.
-    d="$base/sbx_enf_nozshrc"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "~/.zshrc"))'
-    _enf_fail "$d" "with a template missing ~/.zshrc"
+    d="$base/sbx_enf_landed"; mk_enf "$d" '.sandbox.filesystem.allowWrite -= ["/tmp", "/private/tmp"]' 'del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
+    _enf_fail "$d" "with an overlay missing ./.claude and a landed protected write and no sentinel"
+    # An overlay missing a home entry: the dotfile write lands under the runtime, so leg 1 must go red.
+    d="$base/sbx_enf_nozshrc"; mk_enf "$d" '.' 'del(.sandbox.filesystem.denyWrite[] | select(. == "~/.zshrc"))'
+    _enf_fail "$d" "with an overlay missing ~/.zshrc"
 
     # ── SWAS-354 (352b, b1): the boundary grader and the patch leg. Cells first: each cut below must FAIL naming the control it removes.
     # _bd_good prints a document that passes the grader, built from the grader's own tables; the real-tree cell further down grades the
@@ -1604,8 +1770,8 @@ selftest() {
     _bd_adv default_mode_auto_warn '.permissions.defaultMode = "auto"' 'WARN: boundary: permissions.defaultMode is auto'
     _bd_adv credentials_aws_pairs_warn '.sandbox.credentials = {"awsPairs": []}' 'WARN: boundary: sandbox.credentials.awsPairs is set'
     _bd_adv credentials_inject_hosts_warn '.sandbox.credentials = {"injectHosts": []}' 'WARN: boundary: sandbox.credentials.injectHosts is set'
-    # PASS by value: the kit strict template shape (failIfUnavailable true), a tightening, every documented non-bypass mode, a deny or mask entry.
-    _bd_adv strict_template_with_fail_if_unavailable '.sandbox.failIfUnavailable = true' 'PASS: boundary: the committed .claude/settings.json carries'
+    # PASS by value: the overlay shape (failIfUnavailable true), a tightening, every documented non-bypass mode, a deny or mask entry.
+    _bd_adv overlay_with_fail_if_unavailable '.sandbox.failIfUnavailable = true' 'PASS: boundary: the committed .claude/settings.json carries'
     _bd_adv ignore_violations_pass '.sandbox.ignoreViolations = {"*": ["/x"]}' 'PASS: boundary: the committed .claude/settings.json carries'
     _bd_adv credentials_sigv4_pass '.sandbox.credentials = {"sigv4": []}' 'PASS: boundary: the committed .claude/settings.json carries'
     _bd_adv disable_auto_mode_pass '.permissions.disableAutoMode = "disable"' 'PASS: boundary: the committed .claude/settings.json carries'
@@ -1818,6 +1984,37 @@ selftest() {
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: the shipped boundary patch passes its legs on the real tree"; else echo "selftest FAIL: the shipped boundary patch fails its legs on the real tree: $out"; st=1; fi
     if out=$(_gw_boundary_leg "$_gw_root" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ]; then echo "selftest PASS: the committed settings.json passes the boundary leg on the real tree (graded, or N/A before the patch is applied)"; else echo "selftest FAIL: the committed settings.json fails the boundary leg on the real tree: $out"; st=1; fi
+    # SWAS-462 pinning cells. POSITIVE: the real default merged with the real overlay passes the full grader and the tightness pin (the grader
+    # passes any template the kit recommends).
+    if out=$(_gw_template_check "$_gw_root" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && _has "$out" 'PASS: boundary: the shipped default merged with' && _has "$out" 'holds only denies and tight pins'; then echo "selftest PASS: the real default merged with the real overlay passes the full grader and the tightness pin"; else echo "selftest FAIL: the real default merged with the real overlay should pass the full grader and the tightness pin (rc=$rc): $out"; st=1; fi
+    # LOAD-BEARING NEGATIVE: the OLD template's content (the retired sandbox-strict file), merged with the real default, FAILs the grader, naming the
+    # wildcard host, the sockets, the home allowWrite, the weaker isolation and failIfUnavailable. If the grader stopped seeing these, this goes red.
+    _ov_old="$base/ov_old_template.json"; _ov_oldm="$base/ov_old_merged.json"
+    jq -n '{sandbox:{enabled:true,autoAllowBashIfSandboxed:false,allowUnsandboxedCommands:false,failIfUnavailable:false,enableWeakerNetworkIsolation:true,network:{allowedDomains:["*"],allowUnixSockets:["/var/run/docker.sock","~/.docker/run/docker.sock"]},filesystem:{allowWrite:["~","/private/tmp","/tmp","/private/var/folders","/var/folders"],denyWrite:["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}}}' > "$_ov_old"
+    if _gw_merge_json "$_gw_root/.claude/settings.json" "$_ov_old" > "$_ov_oldm" 2>/dev/null; then
+      if out=$(_gw_boundary_grade "$_ov_oldm" "the default merged with the old template" 2>&1); then rc=0; else rc=$?; fi
+      _ov_miss=""
+      for _ov_s in 'is not an exact host name' 'allowUnixSockets is not an empty list' 'allowWrite holds' 'enableWeakerNetworkIsolation is true' 'sandbox.failIfUnavailable is present and not the boolean true'; do
+        _has "$out" "$_ov_s" || _ov_miss="$_ov_miss [$_ov_s]"
+      done
+      if [ "$rc" -eq 1 ] && [ -z "$_ov_miss" ]; then echo "selftest PASS: the old strict template merged with the real default FAILs the grader (wildcard host, sockets, home allowWrite, weaker isolation, failIfUnavailable)"; else echo "selftest FAIL: the old template merged with the real default should FAIL naming five gaps (rc=$rc, unnamed:$_ov_miss)"; st=1; fi
+      if out=$(_gw_tight_check "$_gw_root/.claude/settings.json" "$_ov_oldm" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && _has "$out" 'sandbox.network.allowedDomains differs' && _has "$out" 'sandbox.filesystem.allowWrite differs' && _has "$out" 'sandbox.network.allowUnixSockets differs' && _has "$out" 'sandbox.enableWeakerNetworkIsolation differs'; then echo "selftest PASS: the tightness pin FAILs the old template merged with the real default (granting lists and a loosened scalar)"; else echo "selftest FAIL: the tightness pin should FAIL the old template merged with the real default (rc=$rc): $out"; st=1; fi
+    else
+      echo "selftest FAIL: the old-template negative could not be merged with the real default"; st=1
+    fi
+    # The tightness pin alone: a dropped deny row, and a tight scalar that is allowed, each on a merge of the real default.
+    _ov_tm() {  # <name> <jq-filter over the merged default> <expected rc> <expected substring or empty>
+      jq "$2" "$_gw_root/.claude/settings.json" > "$base/ov_tm.json"
+      if out=$(_gw_tight_check "$_gw_root/.claude/settings.json" "$base/ov_tm.json" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$3" ] && { [ -z "$4" ] || _has "$out" "$4"; }; then echo "selftest PASS: tightness pin $1"; else echo "selftest FAIL: tightness pin $1 should exit $3 naming '$4' (rc=$rc): $out"; st=1; fi
+    }
+    _ov_tm "a denyWrite row dropped from the merge -> FAIL" 'del(.sandbox.filesystem.denyWrite[0])' 1 'sandbox.filesystem.denyWrite in the merged settings lacks a row of the default'
+    _ov_tm "a permissions.deny list replaced by a scalar -> FAIL" '.permissions.deny = "x"' 1 'permissions.deny in the merged settings lacks a row of the default'
+    _ov_tm "an extra deny row and failIfUnavailable true -> wired" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.failIfUnavailable = true' 0 ''
+    _ov_tm "a merge adding sandbox.excludedCommands [git] -> FAIL (any other sandbox list must equal the default)" '.sandbox.excludedCommands = ["git"]' 1 'sandbox.excludedCommands differs from the default'
+    _ov_tm "failIfUnavailable false -> FAIL (a scalar may differ only to its tight value)" '.sandbox.failIfUnavailable = false' 1 'sandbox.failIfUnavailable differs from the default'
   fi
 
   # SWAS-355: --boundary-only is the boundary leg ALONE (doctor --boundary): 0 graded or N/A, 1 FAIL, 2 UNVERIFIED. One grader, no new grading logic.
@@ -2459,7 +2656,7 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
 
   _unv_end || st=1
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
-  echo "guard-wired --selftest: OK (sandbox: the off default wired with the Edit denies still required; the strict block, in settings.json, an adopter's settings.local.json (arrays concatenate, local scalars win) or the shipped template, FAILs on each required key/denyWrite entry removed; --sandbox-enforce SKIP/FAIL routes against the merged strict profile; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
+  echo "guard-wired --selftest: OK (sandbox: a sandbox-off settings file wired with the Edit denies still required; the full block, in settings.json or an adopter's settings.local.json (arrays concatenate, local scalars win), FAILs on each required key/denyWrite entry removed; the shipped deny-only overlay passes a closed schema (33 forbidden-key mutants), merged with the default passes the full grader and the tightness pin, and the old template merged with the default FAILs; --sandbox-enforce SKIP/FAIL routes against the default merged with the overlay, a granting overlay exiting 1 before the runtime starts; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
 }
 
@@ -2574,7 +2771,7 @@ _se_list() {
   jq -r "$2[]?" "$1" | while IFS= read -r _p; do _se_path "$_p" "$3" "$4"; done | jq -R 'select(length>0)' | jq -s .
 }
 
-# _se_cfg <settings> <repo> <home> <out> [nodeny|notemp] -> the runtime settings file for the strict profile.
+# _se_cfg <settings> <repo> <home> <out> [nodeny|notemp] -> the runtime settings file for the default merged with the overlay.
 _se_cfg() {
   _aw=$(_se_list "$1" '.sandbox.filesystem.allowWrite' "$2" "$3")
   _aw=$(printf '%s' "$_aw" | jq --arg r "$2" '. + [$r]')
@@ -2618,7 +2815,7 @@ _se_leg1() {
       if [ "$_h0" = "$_h1" ]; then :; else echo "FAIL: [$2] a plain write to ${_f#"$_se_base"/} got through the sandbox (hash changed)"; _bad=1; fi
     else
       # The runtime also write-protects some paths on its own (.git/config, .git/hooks, .mcp.json), so only
-      # the five the strict profile alone carries must land here.
+      # the five that denyWrite alone carries must land here.
       case "$_f" in
         */.claude/hooks/x|*/hooks/pre-push|*/.kit/dials.conf|"$_se_home"/.zshrc|"$_se_home"/.gitconfig)
           if [ "$_h0" != "$_h1" ]; then :; else echo "FAIL: [$2] the write to ${_f#"$_se_base"/} did not land with denyWrite emptied — leg 1 would prove nothing"; _bad=1; fi ;;
@@ -2676,7 +2873,7 @@ _se_temp() {
   return 0
 }
 
-# _se_leg_temp -> the macOS temp-root leg: a bare mktemp -d succeeds under the strict profile, and is refused
+# _se_leg_temp -> the macOS temp-root leg: a bare mktemp -d succeeds under the merged policy, and is refused
 # with the two temp-root entries removed (else the leg proves nothing). N/A on Linux. Sets rc; returns 3 when
 # the runtime never ran a probe.
 _se_leg_temp() {
@@ -2686,8 +2883,8 @@ _se_leg_temp() {
   _se_temp "$_se_c" shipped
   [ "$_se_ran" -eq 1 ] || { echo "SKIP: [temp root] the runtime did not run the probe: $(tail -n 1 "$_se_log" | cut -c1-160)"; return 3; }
   case "$_se_mk" in
-    "$_tr"/*) echo "PASS: [temp root] a bare mktemp -d succeeds under the strict profile" ;;
-    *) echo "FAIL: [temp root] a bare mktemp -d was refused under the strict profile (allowWrite lacks the macOS temp root)"; rc=1; return 0 ;;
+    "$_tr"/*) echo "PASS: [temp root] a bare mktemp -d succeeds under the merged policy" ;;
+    *) echo "FAIL: [temp root] a bare mktemp -d was refused under the merged policy (allowWrite lacks the macOS temp root)"; rc=1; return 0 ;;
   esac
   _se_cfg "$_se_settings" "$_se_repo" "$_se_home" "$_se_base/notemp.json" notemp
   _se_temp "$_se_base/notemp.json" notemp
@@ -2700,15 +2897,20 @@ _se_leg_temp() {
 }
 
 sandbox_enforce() {
-  # The OS proof runs against the STRICT profile (the shipped default has the sandbox off): the shipped
-  # settings.json merged with the template an adopter copies to settings.local.json, by the documented rule
-  # (scalars local over project, filesystem arrays concatenated). That is the kit's mirror, not a run of Claude Code.
-  _se_settings="$1/.claude/settings.json"; _se_tmpl="$1/$SANDBOX_STRICT_TEMPLATE"
-  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent — cannot translate the strict sandbox policy; install jq" >&2; return 2; }
-  [ -f "$_se_settings" ] || { echo "FAIL: $_se_settings missing — no shipped settings to merge the strict profile into"; return 1; }
-  [ -f "$_se_tmpl" ] || { echo "FAIL: $_se_tmpl missing — no strict sandbox profile to enforce"; return 1; }
-  _se_eff=$(_gw_merge_json "$_se_settings" "$_se_tmpl" 2>/dev/null) || { echo "FAIL: could not merge $_se_settings with $_se_tmpl (invalid JSON?) — no strict profile to enforce"; return 1; }
-  printf '%s\n' "$_se_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 || { echo "FAIL: the strict profile (settings.json merged with $SANDBOX_STRICT_TEMPLATE) does not enable the sandbox"; return 1; }
+  # The OS proof runs against the shipped settings.json (the sandbox is ON there) merged with the overlay an adopter
+  # copies to settings.local.json, by the documented rule (scalars local over project, filesystem arrays
+  # concatenated). That is the kit's mirror, not a run of Claude Code.
+  _se_settings="$1/.claude/settings.json"; _se_tmpl="$1/$SANDBOX_OVERLAY_TEMPLATE"
+  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent — cannot translate the sandbox policy; install jq" >&2; return 2; }
+  [ -f "$_se_settings" ] || { echo "FAIL: $_se_settings missing — no shipped settings to merge the overlay into"; return 1; }
+  [ -f "$_se_tmpl" ] || { echo "FAIL: $_se_tmpl missing — no overlay template to enforce"; return 1; }
+  _se_eff=$(_gw_merge_json "$_se_settings" "$_se_tmpl" 2>/dev/null) || { echo "FAIL: could not merge $_se_settings with $_se_tmpl (invalid JSON?) — no overlay to enforce"; return 1; }
+  # SWAS-462 pre-gate, BEFORE the runtime starts: a template that grants or weakens (or swaps a container's type) exits 1 here, so a SKIP can never
+  # hide a widening template. Keys, container types, list shapes and present scalar pins only: the required denyWrite rows are _gw_template_check's job, and two enforce
+  # fixtures cut a row on purpose and must still reach the runtime.
+  _gw_bd_gate "$_se_tmpl" "$SANDBOX_OVERLAY_TEMPLATE" || return 1
+  _gw_overlay_grade "$_se_tmpl" "$SANDBOX_OVERLAY_TEMPLATE" keys || return 1
+  printf '%s\n' "$_se_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 || { echo "FAIL: the default merged with $SANDBOX_OVERLAY_TEMPLATE does not enable the sandbox"; return 1; }
   command -v npx >/dev/null 2>&1 || { echo "SKIP: npx not found — the pinned sandbox runtime cannot be fetched"; return 3; }
   _se_base=$(mktemp -d /tmp/gw-sbx.XXXXXX) || { echo "SKIP: could not create a throwaway directory"; return 3; }
   _se_base=$( cd "$_se_base" && pwd -P )
@@ -2752,7 +2954,7 @@ sandbox_enforce() {
   _l1=0; _se_leg1 "$_se_base/broken.json" broken landed || _l1=$?
   [ "$_l1" -ne 3 ] || { _se_gap; return $?; }
   if [ "$_l1" -eq 0 ]; then echo "PASS: [non-vacuity] with denyWrite emptied the plain writes land, so leg 1 is graded"; else rc=1; fi
-  [ "$rc" -eq 0 ] && echo "guard-wired --sandbox-enforce: OK (the strict profile, settings.json merged with the template, is enforced by the OS for the protected paths)"
+  [ "$rc" -eq 0 ] && echo "guard-wired --sandbox-enforce: OK (the default merged with the overlay template is enforced by the OS for the protected paths)"
   [ "$rc" -eq 0 ] || echo "guard-wired --sandbox-enforce: FAIL" >&2
   return "$rc"
 }
