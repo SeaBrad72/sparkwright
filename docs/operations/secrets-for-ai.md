@@ -96,7 +96,7 @@ files in the tree: `op run -- <cmd>`, `doppler run -- <cmd>`,
 that needs the secret gets it for its own lifetime; nothing is left behind for
 the agent to open.
 
-`sparkwright doctor` checks for what is left behind, by **name only**. It never
+`sh scripts/sparkwright doctor` checks for what is left behind, by **name only**. It never
 reads a file's content or a variable's value:
 
 - **`secrets-in-tree`** lists secret-named files in the working tree (tracked,

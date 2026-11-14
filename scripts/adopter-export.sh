@@ -47,9 +47,11 @@ _ae_is_kit_tree() {
 # root of its own repo?". The two diverge only when nested, which is why every non-nested test
 # agrees and why the kit once wrote a pre-push hook into a stranger's repository.
 #
-# BOTH sides of the compare must be PHYSICAL paths: `--show-toplevel` is symlink-resolved, `$PWD`
-# is not. On macOS /tmp -> /private/tmp, so a logical compare FALSE-REFUSES under /tmp while
-# passing on Linux CI. Normalizing both sides is the only compare that cannot drift.
+# The root test asks git (`--is-inside-work-tree` plus `--show-prefix`, see owns_itself); it does NOT
+# compare path strings. A path compare drifts: `--show-toplevel` is symlink-resolved while `$PWD` is not
+# (macOS /tmp -> /private/tmp), and on a case-insensitive filesystem a case-variant `cd` keeps its
+# spelling in `pwd -P` while git reports the stored one (SWAS-463). The physical paths below only
+# decide "in no repo at all" and name the owner in the refusal text.
 #
 # CP-11 closes the git-dir-CONTAINMENT gap: an ambient GIT_DIR/GIT_WORK_TREE env redirect is now hard-
 # refused here (env-ONLY — adopter-export takes no nested-tree path, so there is no --allow-nested gate).
@@ -68,7 +70,13 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   [ -n "$_phys" ] || return 1
   _own=$(owning_repo_root "$1")
   [ -n "$_own" ] || return 0
-  [ "$_own" = "$_phys" ]
+  # Ask git whether <dir> is the root, never compare path strings: on a case-insensitive filesystem `cd` into a
+  # case-variant spelling keeps that spelling in `pwd -P` while git reports the toplevel as stored, so a string
+  # compare refused the repository's own root. `--show-prefix` prints an empty line exactly at the root.
+  # git also prints an empty prefix when the cwd is OUTSIDE the work tree (a `core.worktree` pointing elsewhere), so the same subshell requires
+  # `--is-inside-work-tree` to print exactly `true`; anything else refuses.
+  _pfx=$( CDPATH='' cd "$1" 2>/dev/null && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && git rev-parse --show-prefix 2>/dev/null ) || return 1   # MUT-OWNSINSIDE
+  [ -z "$_pfx" ]   # MUT-OWNSROOT
 }
 
 # CP-11: an ambient GIT_DIR/GIT_WORK_TREE makes `git archive HEAD` read a repo OTHER than the kit. This is
@@ -480,7 +488,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # absence list when the one-router front door retired it. It is a KEPT-list veteran, so the move is
   # the only thing that proves the new export-ignore attribute actually took effect — a deletion from
   # the kept list alone would have shipped a botched .gitattributes entry green.
-  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt conformance/mass-release-baseline.txt WALKTHROUGH.md .publish-identifiers conformance/aggregate-coverage.sh conformance/kit-base.sh scripts/ci-time-report.sh conformance/incept-manifests conformance/repo-ownership.sh; do
+  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt conformance/mass-release-baseline.txt WALKTHROUGH.md .publish-identifiers conformance/aggregate-coverage.sh conformance/kit-base.sh scripts/ci-time-report.sh conformance/incept-manifests conformance/repo-ownership.sh .github/golden-path/.trivyignore; do
     [ -e "$_d/$p" ] && { echo "FAIL: export-ignored path present: $p"; fail=1; } || echo "PASS: absent $p"
   done
   # SWAS-608: one sample per area of the kit-only files hidden by name in .gitattributes (a conformance script, the

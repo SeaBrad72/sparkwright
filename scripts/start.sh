@@ -46,8 +46,9 @@ here=$(dirname "$0")
 ST_CLASSIFIER="$here/../conformance/promotion-readiness.sh"
 
 st_usage() {
-  echo "usage: sparkwright start <ROW-ID> [--branch <name>] [--changed <listing>]" >&2
+  echo "usage: sparkwright start <ROW-ID> [--branch <name>] [--changed <listing>] [--lease-token <sha>]" >&2
   echo "       sparkwright start --selftest" >&2
+  echo "       (a project with no remote yet claims locally; after the first push run: sh scripts/board.sh publish)" >&2
 }
 
 # st_besteffort <cmd...> — run a step that MUST NOT change the exit code. THE B2 EXIT-TRAP LESSON:
@@ -126,7 +127,7 @@ st_emit() {
 
 # do_start <args...> — parse strictly, classify, claim, then (and only then) print acts 4-5.
 do_start() {
-  _row=""; _branch=""; _changed=""; _have_branch=0; _have_changed=0
+  _row=""; _branch=""; _changed=""; _have_branch=0; _have_changed=0; _ltok=""
   # STRICT PARSER, REJECT BY DEFAULT [C2]: exactly one positional (the row); accept ONLY
   # --branch / --changed; ANY other option -> rc 2, so board-claim's --links / --dry-run /
   # --board-already-moved are UNREACHABLE through `start`. A positional beginning with `-` is an
@@ -136,11 +137,18 @@ do_start() {
     case "$1" in
       --branch)  [ $# -ge 2 ] || { echo "start: --branch needs a value" >&2; return 2; }; _branch=$2;  _have_branch=1;  shift 2 ;;
       --changed) [ $# -ge 2 ] || { echo "start: --changed needs a value" >&2; return 2; }; _changed=$2; _have_changed=1; shift 2 ;;
-      -*)        echo "start: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')' (only --branch and --changed are accepted)" >&2; st_usage; return 2 ;;
+      --lease-token) [ $# -ge 2 ] || { echo "start: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;   # SWAS-192: forwarded to the claim, which checks it
+      -*)        echo "start: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')' (only --branch, --changed and --lease-token are accepted)" >&2; st_usage; return 2 ;;
       *)         [ -z "$_row" ] || { echo "start: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
     esac
   done
   [ -n "$_row" ] || { echo "start: a row id is required" >&2; st_usage; return 2; }
+
+  # SWAS-784: the first line names the tree start works in. It is resolved from $0's directory, never from $PWD, and derived from nothing in argv; it refuses nothing.
+  _tree=$(CDPATH='' cd -- "$here/.." && pwd -P) || _tree='<unknown>'
+  case "$_tree" in *[[:cntrl:]]*) _tree='<unprintable path>' ;; esac
+  # (stderr: stdout is the Kit-* trailer block a caller pastes, and must carry only that)
+  printf 'start: tree %s\n' "$_tree" >&2   # MUT-STARTTREE
 
   # ── act 1: classify. Only when a listing is given; otherwise the class is unknown (the block carries a placeholder class).
   _class=""
@@ -168,11 +176,10 @@ do_start() {
   # composes claim-ref for a tracker backend), and start prints nothing derived from argv (row,
   # branch, listing) until this has returned 0 — so those values have already passed validation.
   _rc=0
-  if [ "$_have_branch" = 1 ]; then
-    sh "$here/board.sh" claim "$_row" --branch "$_branch" || _rc=$?
-  else
-    sh "$here/board.sh" claim "$_row" || _rc=$?
-  fi
+  set -- claim "$_row"
+  [ "$_have_branch" != 1 ] || set -- "$@" --branch "$_branch"
+  [ -z "$_ltok" ] || set -- "$@" --lease-token "$_ltok"
+  sh "$here/board.sh" "$@" || _rc=$?
 
   # ── PROPAGATE rc UNCHANGED [C1]. On non-zero: board-claim's stderr has already reached the caller
   # as-is; propagate its exact rc (never collapse 3 "already claimed" into 2) and print NO trailer.
@@ -309,6 +316,59 @@ selftest() {
   st_emit_hasnt "$_e_cp" "leg f/cp-twokey: control-plane is a two-key block (no Kit-Stage)" "Kit-Stage:"
   st_emit_hasnt "$_e_cp" "leg f/cp-twokey: control-plane is a two-key block (no Kit-Skill)" "Kit-Skill:"
 
+  # ---- leg (g): the tree line (SWAS-784). start resolves its tree from $0, so its first line names the tree that holds this script, whatever the cwd; it refuses nothing
+  # (a held row still returns rc 3). A mutant copy that drops the line must lose it; the unmutated copy beside it proves the cell is live.
+  _g_want="start: tree $(CDPATH='' cd -- "$(dirname -- "$ST_SELF")/.." && pwd -P)"
+  st_run "$st_base/B" ROW-1 --branch feat/g
+  st_expect_rc 3 "leg g/no-refusal: the tree line changes no exit code (a held row is still rc 3)"
+  if [ "$(printf '%s\n' "$st_out" | sed -n 1p)" = "$_g_want" ]; then
+    st_pass "leg g/tree: the first line names the tree that holds the script, not the cwd"
+  else st_fail "leg g/tree: the first line is not '$_g_want'; out=[$st_out]"; fi
+  _g_tm="$st_stub/tree-mut"; mkdir -p "$_g_tm/scripts"
+  cp "$ST_SELF" "$_g_tm/scripts/start-orig.sh"; sed '/MUT-STARTTREE$/d' "$ST_SELF" > "$_g_tm/scripts/start-mut.sh"
+  if cmp -s "$ST_SELF" "$_g_tm/scripts/start-mut.sh"; then st_fail "leg g/mutant: tree-line-dropped did not apply (the sed matched nothing)"
+  else
+    _g_tw="start: tree $(CDPATH='' cd -- "$_g_tm" && pwd -P)"
+    _g_o1=$( cd "$st_base/B" && sh "$_g_tm/scripts/start-orig.sh" ROW-1 2>&1 ) || true
+    _g_o2=$( cd "$st_base/B" && sh "$_g_tm/scripts/start-mut.sh" ROW-1 2>&1 ) || true
+    case "$_g_o1" in "$_g_tw"*) : ;; *) st_fail "leg g/mutant: the unmutated copy does not print its tree line (the cell is vacuous); out=[$_g_o1]" ;; esac
+    # the tree line is on STDERR: stdout alone never carries it (the trailer block is what a caller pastes), stderr alone does; a mutant that sends it to stdout must lose this
+    _g_so=$( cd "$st_base/B" && sh "$_g_tm/scripts/start-orig.sh" ROW-1 2>/dev/null ) || true
+    _g_se=$( cd "$st_base/B" && sh "$_g_tm/scripts/start-orig.sh" ROW-1 2>&1 >/dev/null ) || true
+    case "$_g_so" in *"start: tree"*) st_fail "leg g/stderr: the tree line reached STDOUT; out=[$_g_so]" ;; *) st_pass "leg g/stderr: the tree line is not on stdout" ;; esac
+    case "$_g_se" in *"start: tree"*) st_pass "leg g/stderr: the tree line is on stderr" ;; *) st_fail "leg g/stderr: the tree line is not on stderr (the cell is vacuous); err=[$_g_se]" ;; esac
+    sed '/MUT-STARTTREE$/s/ >&2//' "$ST_SELF" > "$_g_tm/scripts/start-out.sh"
+    if cmp -s "$ST_SELF" "$_g_tm/scripts/start-out.sh"; then st_fail "leg g/mutant: tree-line-to-stdout did not apply (the sed matched nothing)"
+    else
+      _g_o3=$( cd "$st_base/B" && sh "$_g_tm/scripts/start-out.sh" ROW-1 2>/dev/null ) || true
+      case "$_g_o3" in *"start: tree"*) st_pass "leg g/mutant: tree-line-to-stdout is killed (the mutant puts the line on stdout, so the stderr cell reds)" ;; *) st_fail "leg g/mutant: tree-line-to-stdout survived; out=[$_g_o3]" ;; esac
+    fi
+    case "$_g_o2" in
+      *"start: tree"*) st_fail "leg g/mutant: tree-line-dropped survived; out=[$_g_o2]" ;;
+      *board.sh*)      st_pass "leg g/mutant: tree-line-dropped is killed (the mutant ran past the line and printed none)" ;;
+      *)               st_fail "leg g/mutant: the mutant never ran past the tree line (vacuous); out=[$_g_o2]" ;;
+    esac
+  fi
+
+  # ---- leg ST-L (SWAS-783): in a repository with NO remote, start claims locally and prints the trailer ----
+  # The first card of a new project is claimed before its remote exists. The claim is a local ref (never a
+  # refs/claims/* ref), the Kit-* block prints as it does with a remote, and the usage names this route.
+  st_mklocal N "Session N" n@example.com
+  st_run "$st_base/N" ROW-1 --branch feat/n --changed "$st_base/listing-ordinary"
+  st_expect_rc 0 "leg ST-L/claim: start in a repository with no remote -> rc 0"
+  st_has   "leg ST-L/trailer: the block leads with Kit-Row" "Kit-Row: ROW-1"
+  st_has   "leg ST-L/class: the block carries the derived class" "Kit-Class: ordinary"
+  st_has   "leg ST-L/sentence: the claim says it is recorded in this repository" "recorded in this repository"
+  st_hasnt "leg ST-L/not-unreachable: it is not the unreachable sentence" "cannot reach"
+  if git -C "$st_base/N" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    st_pass "leg ST-L/ref: the local claim ref exists"
+  else
+    st_fail "leg ST-L/ref: no local claim ref after a claimed rc 0"
+  fi
+  st_run "$st_base/N"
+  st_expect_rc 2 "leg ST-L/usage: start with no row -> rc 2"
+  st_has   "leg ST-L/help: the usage names the no-remote route" "no remote yet claims locally"
+
   if [ "$st_fail_n" -ne 0 ]; then
     echo "start --selftest: FAIL" >&2
     return 1
@@ -331,7 +391,28 @@ st_mkclone() {
     git config user.email "$3"
     git config commit.gpgsign false
   )
-  cat > "$st_base/$1/BACKLOG.md" <<'BOARD_EOF'
+  st_board "$st_base/$1/BACKLOG.md"
+}
+
+# st_mklocal <name> <user.name> <user.email> — a repository with NO remote at all: `git init`, one commit
+# holding the fixture board (an unborn HEAD is refused by the claim, which needs a branch name).
+st_mklocal() {
+  mkdir -p "$st_base/$1"
+  (
+    cd "$st_base/$1"
+    git init -q .
+    git config user.name "$2"
+    git config user.email "$3"
+    git config commit.gpgsign false
+    st_board "$st_base/$1/BACKLOG.md"
+    git add BACKLOG.md
+    git commit -q -m 'fixture board'
+  ) >/dev/null 2>&1
+}
+
+# st_board <path> — the fixture board: ROW-1 and ROW-2 in Ready, and a Done row.
+st_board() {
+  cat > "$1" <<'BOARD_EOF'
 # Fixture — Backlog
 
 ## Ready

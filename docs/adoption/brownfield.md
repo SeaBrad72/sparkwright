@@ -55,7 +55,24 @@ If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md`
 
 ## 2. The `.claude/` MERGE policy (do-no-harm core)
 
-If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks and settings; **add** the kit's guard:
+If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks and settings; **add** the kit's guard.
+
+**First option: let the kit compose the merge as a patch you read and apply.** From a kit export or checkout, run this against your repository (the target is only read):
+
+```sh
+sh scripts/sparkwright adopt <target-repo> --out <patch-file>
+```
+
+It writes one file, `<patch-file>`, outside your repository (mode 600, never overwriting), and changes nothing in your repo. The patch carries the two guard scripts, your `.claude/settings.json` with the guard hook and the three `Edit` denies added (every other key and hook of yours is kept; a guard entry shared with your own hook is moved to its own element, so your hook's matcher never widens), and the two `.gitignore` lines of step 3. Before it writes the patch it applies it to a temp copy and checks the result with `guard-wired.sh --rung1-only`. It needs jq 1.7 or later, and the target must be the repository root. It refuses, writing nothing, on a symlinked path, a tracked path with uncommitted changes, a `settings.json` that is not strict JSON, or a guard script that differs from the kit's (add `--replace-guard` to put the kit's copy in the patch). Run again on an adopted repository, it writes no file and says so. Then you:
+
+1. Read the patch.
+2. At your repository root, `git apply <patch-file>`.
+3. `sh conformance/guard-wired.sh`.
+4. Install the pre-push hook (step 5 below), which stays a human act.
+
+If the patch carries your `settings.json`, it holds your settings values: read it yourself, and do not have an agent read it.
+
+**The hand steps below are the fallback** when you cannot run the verb, and the reference for what the patch does:
 
 1. Copy **both** `.claude/hooks/guard.sh` **and** `.claude/hooks/guard-core.sh` into your `.claude/hooks/` (keep your existing hooks), then `chmod +x .claude/hooks/guard.sh .claude/hooks/guard-core.sh`. **Both are required:** the runtime guard and the pre-push hook (§3) both *source* `guard-core.sh`, and the hook is **fail-closed** — an installed hook whose core is missing **refuses every push** rather than fail open. Copying `guard.sh` alone leaves the core dependency unmet. *(A whole-tree §1 copy into a repo with no prior `.claude/` already brought both; this step is the merge path for a repo that already has its own `.claude/` you must not overwrite.)*
 2. In your `.claude/settings.json`, **add** the kit's PreToolUse guard hook. **JSON has no duplicate keys** — how you add it depends on what's already there:
@@ -104,7 +121,7 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
    That is not the merge failing; it is step 5's own gate. If instead you see `guard-wired: FAIL —
    the runtime guard is NOT active`, the `.claude/` merge itself needs fixing before you continue.
 
-> The kit does **not** script this merge: a merge bug could clobber exactly the hooks we're protecting. The merge is human-performed; `guard-wired.sh` verifies the result.
+> The kit composes this merge as a patch (`sparkwright adopt`, above); it never applies it. A merge bug could clobber exactly the hooks we're protecting, so the verb edits only the named entries, checks its own patch on a temp copy, and the person reads and applies the patch; `guard-wired.sh` verifies the result.
 
 5. **Make the pre-push git hook live — a HUMAN step.** `guard-wired.sh` certifies **both** rungs — the `PreToolUse` `guard.sh` rung **and** the live pre-push git hook (present, executable, core-resolvable, and FRESH — byte-identical to `hooks/pre-push` as committed at HEAD; a foreign/chained hook without the kit marker is preserved unjudged); a stale, dirty or absent kit hook turns `guard-wired: OK` RED. The rung leg only runs on an incepted/kit-source tree, outside CI — on a fresh export or a CI runner it N/As, disclosed, never silently. Git's default hooks directory is **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but nothing yet runs it. Make it live yourself:
 
@@ -160,9 +177,11 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
 `scripts/incept.sh` is the **greenfield** bootstrap — it renames the kit's root `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps fresh project artifacts, which assumes you started *from* the kit. In a brownfield repo you do the Inception **judgment** steps by hand (`../../START-HERE.md` steps 1–7): write the charter, record the stack as **ADR-000**, instantiate the project `CLAUDE.md` from `../../templates/PROJECT-CLAUDE-TEMPLATE.md`, start `RUNBOOK.md`, add a `.env.example` (the gate requires one), pick a backlog backend (`work-tracking/adapters.md`), assign roles. ⚠️ **`../../START-HERE.md` steps 1–7 are the source of truth** — this inline list is orientation, not the manifest (an enumerated list is exactly what drifts, which is why §1 says copy the whole tree).
 
+**First option: let an agent draft it from the code.** The kit's `../../skills/inception-from-code/SKILL.md` has the agent read your repository (README, manifests, CI, Makefile, `.env.example`) and write five **drafts**, only under `docs/inception-draft/`: `CHARTER.md`, `ADR-000-stack.md`, `RUNBOOK.md`, `BACKLOG-GAPS.md` and `GUARD-PROPOSALS.md`. Each starts with one fixed draft banner (`../../templates/INCEPTION-DRAFT-TEMPLATE.md`) and tags every fact `[verified]`, `[read]`, `[inferred]` or `[asserted]`. **You** review the drafts and move what is right into place in a PR you read; the agent never ratifies. `sh conformance/inception-done.sh` (strict) fails while `docs/inception-draft/` exists or a ratified file (`CLAUDE.md`, `docs/architecture/ADR-000-stack.md`, `RUNBOOK.md`, `BACKLOG.md`) still carries the banner line, so unreviewed drafts cannot pass Inception. The draft is a reading of your repository, not your intent: check the `[asserted]` facts first. The hand steps in the rest of this section remain the fallback, and the steps that are judgment (roles, autonomy tiers, the backlog choice) stay yours either way.
+
 ⚠️ **The backlog-backend choice has a governance cost today, and you should know it before you make it.** Which gates bind, per backend, and the cure for each non-binding outcome, is stated in one place, not restated here: `../work-tracking/adapters.md` §Which gates bind.
 
-**Stamp the entry contract — greenfield `incept` does this for you; here you must.** Copy the **§1 Entry contract** section of `ENGINEERING-PRINCIPLES.md` **byte-identical** into the top of your project `CLAUDE.md` (the harness contextFile) and into `AGENTS.md`, then fill the project header fields the template carries — `**Project:**`, `**Intent owner:**`, the backlog backend, and `- **Target harness(es)** (§harness-neutrality): …`. The context-binding checks compare these byte-for-byte, so a paraphrase does not satisfy them.
+**Stamp the entry contract — greenfield `incept` does this for you; here `sh scripts/sparkwright adopt` does (section 2: the same reviewed patch adds the §1 region to `CLAUDE.md` and `AGENTS.md`).** The hand copy is the fallback: copy the first `## ` section of `../../templates/PROJECT-CLAUDE-TEMPLATE.md` plus the `## ` heading after it **byte-identical** into the top of your project `CLAUDE.md` (the harness contextFile) and into `AGENTS.md`. Either way, add and fill the project header fields the template carries — `**Project:**`, `**Intent owner:**`, the backlog backend, and `- **Target harness(es)** (§harness-neutrality): …`. The context-binding checks compare these byte-for-byte, so a paraphrase does not satisfy them.
 
 **Commit the baseline BEFORE running the gate.** The contextFile and the copied-in artifacts must be *tracked* for the gate to see them:
 
@@ -189,7 +208,7 @@ The gate checks that the **runtime guard is wired** — the `PreToolUse` guard *
 The guard is necessary, not sufficient:
 
 - **superpowers spec-path collision.** If you drive development with the superpowers harness, its brainstorming/writing-plans skills write specs to `docs/superpowers/specs/`, which this kit `.gitignore`s (pre-anonymization scratch). A `git add` there silently no-ops. Put tracked design docs under `docs/architecture/` (referenced by ADR-000), or un-ignore the path for your project.
-- **Pattern coverage.** `guard.sh` matches *common* destructive verbs. Your legacy repo may have **bespoke destructive tooling** (`make nuke-db`, a homegrown deploy/migration script) the patterns don't recognize. Extend `.claude/hooks/guard.sh` with your repo's destructive commands. Then **add a deny case for each new pattern to `conformance/agent-autonomy.sh`** and re-run it: that suite is a **regression guard, not a coverage oracle** — running it as-is only confirms the *existing* cases still pass; it does not validate your new patterns unless you add cases for them.
+- **Pattern coverage.** `guard.sh` matches *common* destructive verbs. Your legacy repo may have **bespoke destructive tooling** (`make nuke-db`, a homegrown deploy/migration script) the patterns don't recognize. To find those targets, run `sh scripts/inception-scan.sh <your-repo>`: it reads the root Makefile and `package.json` scripts as text (it runs no `make` or `npm`), asks your installed guard which recipe lines it would deny, and prints a `GUARD-PROPOSALS.md` to stdout. It proposes and applies nothing, and it sees only the unexpanded text of those two files, so read what it lists as "not scanned" and "not resolved" yourself. Extend `.claude/hooks/guard.sh` with your repo's destructive commands. Then **add a deny case for each new pattern to `conformance/agent-autonomy.sh`** and re-run it: that suite is a **regression guard, not a coverage oracle** — running it as-is only confirms the *existing* cases still pass; it does not validate your new patterns unless you add cases for them.
 - **Runtime scope.** The guard covers only the **Claude Code runtime**. Humans at a shell and other agent runtimes are **not** covered — and a legacy system is more likely to have other automation/people holding prod access. The **platform backstop is Org-owned** and matters *more* here because the blast radius pre-exists: production IAM, separate prod accounts/credentials, and deploy approvals (`../enterprise/README.md` — the human-coverage boundary). The kit's guard reduces agent risk; it does not replace platform controls.
 
 ## 5. Adopting when you already fail the gates

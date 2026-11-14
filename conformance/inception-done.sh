@@ -8,7 +8,8 @@
 # asserts the gate's SPECIFIC leg/guard-line verdicts (repo live · hook live · harness-aware guard
 # line) — never the whole-gate "OK" verdict, which would pull in the `export-ignore`d ADR/BACKLOG and
 # couple the selftest to the tree it runs in. So it passes at the kit root, on an export tree, and for
-# a fresh adopter (before their ADR/BACKLOG exist), and is wired as a control check.
+# a fresh adopter (before their ADR/BACKLOG exist), and is wired as a control check. The one exception
+# is cell s2a (SWAS-769), whose fixture writes its own ADR-000 and BACKLOG.md, so it does not depend on the tree.
 # A green Inception-Done must mean the ENFORCEMENT SURFACE is PRESENT — not that a config
 # file mentions it. So we assert a real git repo (T2.1) and an installed pre-push hook floor
 # leg (T2.2), and the runtime-guard line is harness-aware (T2.3), driven by each adapter's
@@ -40,12 +41,90 @@ set -eu
 # B8: wf_is_deploy() — the SAME deployable derivation deployable-ready.sh uses (single source of
 # truth), sourced BEFORE run_gate's `cd "$DIR"` below, so sourcing stays caller-cwd-independent.
 . "$(dirname "$0")/wf-helpers.sh"
+# SWAS-769: has_data_surface() — the SAME data-backed rule `readiness.sh dr-ready` applies (single source of
+# truth), sourced BEFORE run_gate's `cd "$DIR"` below, so sourcing stays caller-cwd-independent. Needs wf-helpers.sh above.
+. "$(dirname "$0")/surface-lib.sh"
 # B8 fix round 1 (reviewer Minor-3): resolve ci-gates.sh via THIS SCRIPT's own dirname — the same
 # caller-cwd-independent convention the two sourcing lines above already use — never relative to
 # the target tree run_gate `cd`s into below. A raw/partial adopter tree may have no ci-gates.sh of
 # its own; the query must always run the invoking kit's copy, exactly as the disposition FILE
 # (read from the target tree) and the QUERY SCRIPT (read from the kit) are two different subjects.
 CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
+# SWAS-814: the kit's own waivers-valid.sh, resolved exactly as CI_GATES_SH is (this script's own dirname,
+# never the target tree). In an adopter's normal run (`sh conformance/inception-done.sh` inside their tree) $0 IS the
+# tree's own copy, so the tree's own waivers-valid.sh answers, exactly as with CI_GATES_SH; only a kit run against
+# another directory uses the kit's copy.
+# Read only on the plan-limit path of the branch-protection leg, as `--active branch-protection-plan`.
+WAIVERS_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/waivers-valid.sh"
+
+# ── SWAS-769 — the two-stage Inception split. START-HERE.md's checklist is two lists, "Before your first slice" and
+# "Before your first production deploy"; every line there carries one `(id: …)` tag, and these two lists name the same
+# ids (selftest cell s2d locks the two together). The first-slice ids are what the legs above and below grade or
+# the human boxes loop entry needs; the first-deploy ids are owed before the first production deploy and are NOT
+# graded here: the OWED section near the end of run_gate only reports them. The deploy gate that makes them block a deploy
+# is a later card (SWAS-829).
+ID_FIRST_SLICE_IDS="charter stack-adr repo-protect env-secrets ci-green project-files config roles identities"
+ID_FIRST_DEPLOY_IDS="slo envs oncall bia rb-deploy rb-rollback rb-dr rb-monitor"
+
+# ── SWAS-779 — the draft banner. Hard-coded HERE and never read from templates/INCEPTION-DRAFT-TEMPLATE.md, because an agent can edit that
+# template; selftest cell dr8 locks the two together. A ratified file that still carries this whole line was moved into place unread.
+ID_DRAFT_BANNER='> **DRAFT: inferred from the repository by an agent. Not ratified. A person reviews it and moves what is right into place.**'
+
+# _id_owed_spec <id> : sets _id_owf (the file the item lives in) and _id_owt (the template placeholder that, still
+# present, means the item is owed; empty = a presence read of the file alone). rc 1 for an id outside the first-deploy
+# set. The tokens are mirrored against templates/PROJECT-CLAUDE-TEMPLATE.md and templates/RUNBOOK-TEMPLATE.md by cell s2e.
+_id_owed_spec() {
+  _id_owt=''
+  case "$1" in
+    slo)         _id_owf=CLAUDE.md; _id_owt='[soft track-and-guide / hard-gating]' ;;
+    envs)        _id_owf=CLAUDE.md; _id_owt='[per-tier deploy trigger]' ;;
+    oncall)      _id_owf=CLAUDE.md; _id_owt='| On-call / operator | [...] |' ;;
+    bia)         _id_owf=docs/continuity/BIA.md ;;
+    rb-deploy)   _id_owf=RUNBOOK.md; _id_owt='[deploy command(s)]' ;;
+    rb-rollback) _id_owf=RUNBOOK.md; _id_owt='[rollback command]' ;;
+    rb-dr)       _id_owf=RUNBOOK.md; _id_owt='**RPO:** [< 24h default]' ;;
+    rb-monitor)  _id_owf=RUNBOOK.md; _id_owt='Error tracking: [tool/link]' ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# ── _id_attest_state : SWAS-813 — does a PRIVATE repository declare GitHub Enterprise Cloud? Sets _id_as to
+# declared | absent | unverifiable. The declaration is the GitHub variable KIT_ATTEST_PRIVATE, set at repository
+# or organization level; `true` in any case counts (the workflow compares strings without regard to case).
+# Read in the order the workflow's `vars` context resolves it: the REPOSITORY variable decides when it exists, with
+# any value; the ORGANIZATION list is read only when the repository read is a 404, and matched by the exact name.
+#   declared      the deciding value is true.
+#   absent        the deciding value is anything else, or the repository read is a 404 and the whole organization list has no entry.
+#   unverifiable  a 403 on either read, a 404 on the repository read then any non-answer on the organization read, or any other status.
+# Seam: INCEPTION_DONE_GH_VAR_CMD answers both reads (it is called with the API path as its last word, and its failure
+# text is read for `HTTP 404`). It is honoured ONLY when _ID_SEAMS is 1, a plain shell variable (never exported, never read
+# from the environment) that only selftest() sets, so an exported INCEPTION_DONE_GH_VAR_CMD is ignored in a real run. (The older
+# INCEPTION_DONE_GH_CMD seam is the invoker's environment and is unchanged here.) The Actions token cannot read variables,
+# so there is no CI leg here (see the leg's header).
+_ID_SEAMS=0
+_id_attest_state() {
+  _id_cmd="gh api"; _id_cmdp="gh api --paginate"
+  if [ "$_ID_SEAMS" = 1 ] && [ -n "${INCEPTION_DONE_GH_VAR_CMD:-}" ]; then _id_cmd=$INCEPTION_DONE_GH_VAR_CMD; _id_cmdp=$INCEPTION_DONE_GH_VAR_CMD; fi
+  _id_as=unverifiable
+  _id_rv=$($_id_cmd "repos/{owner}/{repo}/actions/variables/KIT_ATTEST_PRIVATE" 2>&1) && _id_rc=0 || _id_rc=$?
+  if [ "$_id_rc" -ne 0 ]; then
+    case "$_id_rv" in *"HTTP 404"*) : ;; *) return 0 ;; esac
+    _id_found=no
+  else
+    _id_val=$(printf '%s' "$_id_rv" | jq -r '.value // empty' 2>/dev/null) || return 0
+    _id_found=yes   # MUT-PREC
+  fi
+  if [ "$_id_found" = no ]; then
+    _id_ro=$($_id_cmdp "repos/{owner}/{repo}/actions/organization-variables" 2>&1) && _id_rc=0 || _id_rc=$?   # MUT-ORGREAD
+    [ "$_id_rc" -eq 0 ] || return 0
+    _id_val=$(printf '%s' "$_id_ro" | jq -r '.variables[]? | select(.name == "KIT_ATTEST_PRIVATE") | .value' 2>/dev/null) || return 0
+    _id_val=$(printf '%s\n' "$_id_val" | head -n 1)
+  fi
+  _id_val=$(printf '%s' "$_id_val" | tr '[:upper:]' '[:lower:]')
+  if [ "$_id_val" = true ]; then _id_as=declared; else _id_as=absent; fi
+  return 0
+}
 
 # ── _id_git <git-args…> : run git with the ambient GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
 # and config-injection (GIT_CONFIG_COUNT/GLOBAL/SYSTEM/NOSYSTEM/GIT_CONFIG/GIT_CONFIG_PARAMETERS)
@@ -257,7 +336,7 @@ case "$_id_tok" in
 esac
 
 # project CLAUDE.md key header fields must be filled (no leftover placeholders)
-if grep -Eq '\*\*Project:\*\* \[name\]|\*\*Intent owner:\*\* \[who owns' CLAUDE.md 2>/dev/null; then
+if grep -Eq '\*\*Project:\*\* \[name\]|\*\*Intent owner:\*\* \[(who owns|owed)' CLAUDE.md 2>/dev/null; then
   echo "FAIL: project CLAUDE.md key fields not filled (Project / Intent owner)"; fail=1
 else
   echo "PASS: project CLAUDE.md key header fields filled"
@@ -396,9 +475,12 @@ else
         if _bpo=$(sh conformance/branch-protection.sh --raw 2>/dev/null); then _bp=0; else _bp=$?; fi
         # The names are TREE-CONTROLLED text reaching the operator's display: sanitized (R-3: no control
         # bytes, bounded), and they can only NARROW the verdict to a FAIL — nothing parsed here can produce
-        # a PASS. Producer wording is mirror-locked by selftest cell h4m so a reword cannot degrade the remedy.
+        # a PASS, with ONE exception (SWAS-814): on the plan-limit path of the rc 2 arm below, a ratified,
+        # unexpired branch-protection-plan row in the tree's own WAIVER-REGISTER.md prints WAIVED (still
+        # NOT ENFORCED) instead of FAIL, and echoes that row's bounded owner and expiry.
+        # Producer wording is mirror-locked by selftest cell h4m so a reword cannot degrade the remedy.
         _bpu=$(printf '%s\n' "$_bpo" | sed -n 's/^FAIL: required-check context(s) declared in .* but not live on [^:]*: \(.*\) — run: .*$/\1/p' | head -1 | tr -d '[:cntrl:]' | cut -c1-200)
-        _bpf=$(printf '%s\n' "$_bpo" | grep -c '^FAIL:')   # rc 1 is COMPOUND: the unbound arm is taken only when it is the SOLE failure
+        _bpf=$(printf '%s\n' "$_bpo" | grep -c '^FAIL:' || true)   # rc 1 is COMPOUND: the unbound arm is taken only when it is the SOLE failure; `|| true`: grep -c exits 1 on a count of 0 and set -e would end the gate before any verdict # MUT-BPCOUNT
         case "$_bp" in
           0) echo "PASS: verified protected (main, GitHub)" ;;
           1) if [ -n "$_bpu" ] && [ "$_bpf" = 1 ]; then
@@ -424,7 +506,34 @@ else
                *'tracker-board-gates is declared required but this tree'"'"'s backlog backend is md'*)
                  echo "FAIL: branch protection — $(printf '%s\n' "$_bpdo" | grep '^FAIL:' | head -1 | tr -d '[:cntrl:]' | cut -c1-240 | sed 's/^FAIL: //')"; fail=1 ;;
              esac
-             if [ "$MODE" = surface ]; then
+             # The upgrade-403 cause (SWAS-212): matched on a FIXED anchor in the producer's stdout line, and the
+             # operator reads FIXED kit text below — the stub's or the tree's own text is never echoed, with ONE
+             # exception (SWAS-814): the WAIVED line below echoes a ratified waiver row's owner (bounded) and expiry.
+             # Producer wording is mirror-locked by the branch-protection selftest, which pins this phrase on both sides.
+             _bpplan=0
+             case "$_bpo" in
+               *'UNVERIFIED: '*'this plan cannot enforce protection on a private repository (a public repository or a paid plan can)'*)
+                 echo "  cause: this plan cannot enforce protection on a private repository (a public repository or a paid plan can)"
+                 _bpplan=1 ;;
+             esac
+             # SWAS-814: ONLY on the plan-limit cause, ask the kit's own waivers-valid.sh whether the tree's register
+             # holds a ratified, filled, unexpired branch-protection-plan row (its rc is honoured: any non-zero, a
+             # missing checker included, is no waiver). A row never reaches any other cause (gh missing or
+             # unauthenticated, an inaccessible remote), rc 1, the vacuous-tracker FAIL above, or any other leg.
+             _bpwaived=0
+             if [ "$_bpplan" = 1 ]; then   # MUT-BPPLAN
+               if _bpw=$(sh "$WAIVERS_SH" --active branch-protection-plan ./WAIVER-REGISTER.md 2>/dev/null); then   # MUT-BPRC
+                 _bpwo=$(printf '%s\n' "$_bpw" | head -1 | cut -f1 | tr -d '[:cntrl:]' | cut -c1-60)
+                 _bpwe=$(printf '%s\n' "$_bpw" | head -1 | cut -f2 | tr -d '[:cntrl:]' | cut -c1-10)
+                 printf '%s\n' "WAIVED: branch protection — NOT ENFORCED: this plan cannot enforce protection on a private repository; waived by ${_bpwo} until ${_bpwe} (exit: make the repository public, or move to a paid plan)"   # MUT-BPNE
+                 _bpwaived=1   # MUT-BPFAIL
+               else
+                 echo "  waiver route: a ratified, unexpired branch-protection-plan row in WAIVER-REGISTER.md at the repository root (templates/WAIVER-REGISTER.md) records this plan limit; START-HERE.md §3"
+               fi
+             fi
+             if [ "$_bpwaived" = 1 ]; then
+               :
+             elif [ "$MODE" = surface ]; then
                echo "OUTSTANDING: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent); re-run authenticated against a live repo, or in CI"
              else
                echo "FAIL: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent) and verification is required (strict); authenticate gh / check the remote exists, or run --surface"; fail=1
@@ -455,11 +564,16 @@ fi
 # gate-provenance repo-class leg. MODE strict (default) | surface, same shape as the
 # branch-protection leg above. Trigger: the incepted tree DERIVES deployable (Dockerfile OR any
 # workflow wf_is_deploy — deployable-ready.sh's own derivation, reused, not re-invented) AND the
-# forge probe reports isPrivate && !isInOrganization. On a private, user-owned repo the SLSA
-# provenance/image-provenance CI job(s) never run at all (profiles/*/ci.yml's push-only+visibility
-# `if:`, provenance-precondition.sh-locked) — so nothing would ever surface the gap once Inception
-# passes. A validated `na` disposition for gate-provenance is a conscious decision, not silence,
-# and is not blocked twice.
+# forge probe reports isPrivate. SWAS-813: who OWNS the repo no longer decides anything. GitHub offers
+# attestations on a public repository, and on a private one only with GitHub Enterprise Cloud, so on a
+# private repository the SLSA provenance/image-provenance attest step(s) run only when the repository or
+# organization variable KIT_ATTEST_PRIVATE is true (profiles/*/ci.yml, provenance-precondition.sh-locked), and
+# nothing else would surface that gap once Inception passes. Order of the verdicts: declared (`_id_attest_state`)
+# PASS; then a validated `na` disposition for gate-provenance, a conscious decision that is not blocked twice
+# (N/A, whatever the read said); then unverifiable (403 or any other status) FAIL/OUTSTANDING, never a PASS;
+# then absent, FAIL/OUTSTANDING with the cure.
+# The declaration is read locally through the API only: no profile CI runs this gate live (verify.sh registers
+# only its --selftest), so there is no CI-env leg, and an exported KIT_ATTEST_PRIVATE is never read here.
 if [ "$is_repo" -ne 1 ]; then
   echo "SKIP: gate-provenance repo-class leg — not a git repository (see the repo failure above)"
 else
@@ -487,7 +601,7 @@ else
     # tier as PREFLIGHT_GH_CMD (trusted-invocation-only; see that script's own SECURITY header).
     _id_gh_json=""
     if [ -n "${INCEPTION_DONE_GH_CMD:-}" ] || command -v gh >/dev/null 2>&1; then
-      _id_gh_json=$(${INCEPTION_DONE_GH_CMD:-gh repo view --json isPrivate,isInOrganization} 2>/dev/null) || _id_gh_json=""
+      _id_gh_json=$(${INCEPTION_DONE_GH_CMD:-gh repo view --json isPrivate} 2>/dev/null) || _id_gh_json=""
     fi
     if [ -z "$_id_gh_json" ] || ! command -v jq >/dev/null 2>&1; then
       if [ "$MODE" = surface ]; then
@@ -497,34 +611,43 @@ else
       fi
     else
       _id_priv=$(printf '%s' "$_id_gh_json" | jq -r '.isPrivate' 2>/dev/null || echo "")
-      _id_org=$(printf '%s' "$_id_gh_json" | jq -r '.isInOrganization' 2>/dev/null || echo "")
-      # [security MED-1, fix round 1] a PARSE FAILURE — either field is anything other than exactly
+      # [security MED-1, fix round 1] a PARSE FAILURE — the field is anything other than exactly
       # `true` or `false` (garbage JSON, a jq error swallowed above, a schema change) — is
-      # UNVERIFIABLE, never the affirmative public/org PASS below. Checked BEFORE the true/false
+      # UNVERIFIABLE, never the affirmative public PASS below. Checked BEFORE the true/false
       # branch, mirroring the no-gh/no-jq arm's own posture (strict FAIL / surface OUTSTANDING),
       # never a silent green on a value this gate could not actually parse.
       case "$_id_priv" in true|false) : ;; *) _id_priv="" ;; esac
-      case "$_id_org" in true|false) : ;; *) _id_org="" ;; esac
-      if [ -z "$_id_priv" ] || [ -z "$_id_org" ]; then
+      if [ -z "$_id_priv" ]; then
         if [ "$MODE" = surface ]; then
           echo "OUTSTANDING: gate-provenance repo-class — GitHub repo visibility unverifiable (malformed/unparseable gh response); re-run authenticated, or in CI"
         else
           echo "FAIL: gate-provenance repo-class — GitHub repo visibility unverifiable (malformed/unparseable gh response) and verification is required (strict); re-authenticate gh, or run --surface"; fail=1
         fi
-      elif [ "$_id_priv" = "true" ] && [ "$_id_org" = "false" ]; then
+      elif [ "$_id_priv" = "true" ]; then   # MUT-ORG
+        _id_attest_state
         _id_gpdisp=$(sh "$CI_GATES_SH" --disposition gate-provenance conformance/gate-dispositions.txt || echo apply)
-        if [ "$_id_gpdisp" = na ]; then
+        if [ "$_id_as" = declared ]; then
+          echo "PASS: gate-provenance repo-class — a private repository that declares GitHub Enterprise Cloud (KIT_ATTEST_PRIVATE is true); the SLSA provenance job(s) can run"
+        elif [ "$_id_gpdisp" = na ]; then
+          # Order (R2): declared, then a validated na, then unverifiable, then absent. A recorded na decides the question
+          # whatever the variable read said, so a token that cannot read variables never blocks an adopter who has said na.
           # [security LOW-3, fix round 1] strip control characters from the echoed reason — a
           # disposition file's reason field is free text this gate does not own the review of.
           _id_reason=$(awk -F'\t' '!/^[[:space:]]*#/ && $1=="gate-provenance" && NF>=3 {print $3}' conformance/gate-dispositions.txt 2>/dev/null | head -1 | tr -d '[:cntrl:]')
-          echo "N/A: gate-provenance repo-class — a private, user-owned deployable repo, but gate-provenance is validated na (${_id_reason:-reason on file}) — a conscious decision, not silence"
+          echo "N/A: gate-provenance repo-class — a private deployable repo without a verified KIT_ATTEST_PRIVATE declaration, but gate-provenance is validated na (${_id_reason:-reason on file}) — a conscious decision, not silence"
+        elif [ "$_id_as" = unverifiable ]; then
+          if [ "$MODE" = surface ]; then
+            echo "OUTSTANDING: gate-provenance repo-class — a private repository whose KIT_ATTEST_PRIVATE declaration is unverifiable (gh could not read the repository or organization variable: no access, or an unexpected status); re-run authenticated with access to repository variables"
+          else
+            echo "FAIL: gate-provenance repo-class — a private repository whose KIT_ATTEST_PRIVATE declaration is unverifiable and verification is required (strict); authenticate gh with access to repository variables, or run --surface"; fail=1
+          fi
         elif [ "$MODE" = surface ]; then
-          echo "OUTSTANDING: gate-provenance repo-class — a private, user-owned (non-org) deployable repo; the SLSA provenance/image-provenance CI job(s) will NEVER run here (profiles/*/ci.yml's push-only+visibility 'if:'). Make the repo public, move it to a GitHub org, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."
+          echo "OUTSTANDING: gate-provenance repo-class — a private deployable repo; GitHub offers attestations on a private repository only with Enterprise Cloud, so the SLSA provenance attest step(s) are skipped here (profiles/*/ci.yml). Make the repo public, declare Enterprise Cloud by setting the KIT_ATTEST_PRIVATE variable (repository or organization) to true, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."
         else
-          echo "FAIL: gate-provenance repo-class — a private, user-owned (non-org) deployable repo cannot pass Inception silently provenance-less; the SLSA provenance/image-provenance CI job(s) will NEVER run here (profiles/*/ci.yml's push-only+visibility 'if:'). Make the repo public, move it to a GitHub org, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."; fail=1
+          echo "FAIL: gate-provenance repo-class — a private deployable repo cannot pass Inception silently provenance-less; GitHub offers attestations on a private repository only with Enterprise Cloud, so the SLSA provenance attest step(s) are skipped here (profiles/*/ci.yml). Make the repo public, declare Enterprise Cloud by setting the KIT_ATTEST_PRIVATE variable (repository or organization) to true, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."; fail=1
         fi
       else
-        echo "PASS: gate-provenance repo-class — repo is public or org-owned; the SLSA provenance job(s) can run"
+        echo "PASS: gate-provenance repo-class — repo is public; the SLSA provenance job(s) can run"
       fi
     fi
   fi
@@ -562,6 +685,60 @@ else
   echo "surface: charter + ADR-000 decision legs deferred to strict (incept epilogue steps 1-2 are judgment, not scaffold)"
 fi
 
+# ── The inception-drafts leg (SWAS-779). Inception cannot be graded done on unratified drafts: strict FAILS while docs/inception-draft/
+#    exists, or while any of the four ratified files still carries the draft banner line; --surface reports each as OWED and never fails
+#    on it. The match is the WHOLE line, anchored, against the hard-coded literal above. A missing file is "no banner" (BACKLOG.md is
+#    absent on a tracker-backed board); an unreadable file is a FAIL, read from grep's own exit code (0 found, 1 not found, 2 trouble),
+#    as the first-deploy set below reads it. Honest ceiling: the gate sees text, so a person's review of the PR that moves a draft into
+#    place is the control, not this leg.
+_id_drn=0
+_id_dremit() {
+  if [ "$MODE" = strict ]; then echo "FAIL: inception drafts unratified — $1"; fail=1; else echo "OWED (inception drafts): $1"; fi
+  _id_drn=$((_id_drn + 1))
+}
+#    The banner is matched after the carriage returns are removed and the whitespace around the line is trimmed, so a CRLF file or a banner
+#    with trailing spaces is still the banner line. A regular FILE named docs/inception-draft counts as the directory.
+if [ -e docs/inception-draft ] || [ -L docs/inception-draft ]; then _id_dremit "docs/inception-draft/ still exists; move what is right into place, then delete it"; fi   # MUT-DRDIR
+for _id_drf in CLAUDE.md docs/architecture/ADR-000-stack.md RUNBOOK.md BACKLOG.md; do
+  [ -e "$_id_drf" ] || [ -L "$_id_drf" ] || continue
+  _id_drr=0
+  if [ ! -r "$_id_drf" ]; then _id_drr=2
+  else tr -d '\r' < "$_id_drf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -e "$ID_DRAFT_BANNER" || _id_drr=$?   # MUT-DRBANNER
+  fi
+  case "$_id_drr" in
+    0) _id_dremit "$_id_drf still carries the draft banner line; a person reviews it, edits it and removes the banner" ;;
+    1) : ;;
+    *) _id_dremit "$_id_drf could not be read, so it cannot be shown free of the draft banner" ;;   # MUT-DRUNREAD
+  esac
+done
+if [ "$_id_drn" -eq 0 ]; then
+  if [ "$MODE" = strict ]; then echo "PASS: no inception draft remains — docs/inception-draft/ is absent and no ratified file carries the draft banner"; else echo "surface: no inception draft present"; fi
+fi
+
+# ── The first-deploy set (SWAS-769, option A). Eight items are owed before the first production deploy, not before
+#    the first slice, so nothing here is graded: each prints one OWED line and the loop-entry verdict below is not
+#    read from them, in either mode. A line is a reminder, not a proof: `owed` means the file is missing or still
+#    carries its template placeholder; `filled` means only that the placeholder is gone (a stub BIA reads filled), and a
+#    human still judges the content. `N/A` for bia and rb-dr when the project is not data-backed, by the same
+#    has_data_surface rule `readiness.sh dr-ready` applies. The gate that makes these block a deploy is a later card.
+for _id_ow in $ID_FIRST_DEPLOY_IDS; do
+  _id_owed_spec "$_id_ow" || continue
+  case "$_id_ow" in
+    bia|rb-dr)
+      if ! has_data_surface .; then echo "OWED (first-deploy set): $_id_ow — N/A — $_id_owf"; continue; fi ;;
+  esac
+  if [ ! -f "$_id_owf" ]; then _id_ows=owed
+  elif [ -z "$_id_owt" ]; then _id_ows=filled
+  else
+    # grep exit: 0 placeholder found (owed), 1 not found (filled), 2 unreadable (owed: a file that cannot be read is not shown filled)
+    if grep -qF -e "$_id_owt" "$_id_owf" 2>/dev/null; then _id_ows=owed
+    else
+      case $? in 1) _id_ows=filled ;; *) _id_ows=owed ;; esac
+    fi
+  fi
+  echo "OWED (first-deploy set): $_id_ow — $_id_ows — $_id_owf"
+done
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: Inception-Done gate not satisfied in '$DIR'"; return 1; fi
 echo "OK: Inception-Done gate satisfied in '$DIR'"
 return 0
@@ -578,6 +755,7 @@ return 0
 # harness cannot neuter the test's own bookkeeping. Keep no literal <var>=1 token in any comment
 # above this line (it would be a phantom accumulator to the lexer-less mutator).
 selftest() {
+  _ID_SEAMS=1   # the variable-read seam is live only in here (see _id_attest_state)
   set +e   # the harness asserts explicitly; a fixture's non-zero return must not abort the sweep
   st_fail=0
   ROOT=$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)
@@ -984,6 +1162,14 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_run "$d" surface
   st_has "PASS present: backlog (declared backend: jira)"
 
+  # (p2) SWAS-844: `sparkwright new` stamps the intent owner as `[owed]`; that must read as unfilled, like `[who owns the why]`.
+  echo "--- (p2) Intent owner stamped [owed] reads as unfilled ---"
+  d=$(st_mkfix p2 claude-code); st_install_hook "$d"
+  printf '%s\n' '**Intent owner:** [owed]' >> "$d/CLAUDE.md"
+  st_run "$d" surface
+  st_has "FAIL: project CLAUDE.md key fields not filled"
+  st_hasnt "PASS: project CLAUDE.md key header fields filled"
+
   # NON-MD-BACKEND-NEVER-SILENT §3.5a's incept leg (the `board-governance` waiver stamp) is NOT
   # here, and the plan that put it here was wrong on contact: `scripts/incept.sh` refuses any tree
   # carrying kit-internal files, and this gate's fixtures are CLONES OF THE KIT. It lives in
@@ -991,10 +1177,10 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   # live incept inside it — the only fixture shape incept will accept.
 
   # ── B8 §4.3 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) — the
-  # repo-class leg: a deployable, private, user-owned (non-org) repo cannot pass Inception silently
-  # provenance-less, because the SLSA provenance/image-provenance CI job(s) never run there at all
-  # (profiles/*/ci.yml's push-only+visibility `if:`). Seam-stubbed via INCEPTION_DONE_GH_CMD (the
-  # st_bpstub precedent) so fixtures never touch the network.
+  # repo-class leg: a deployable, private repo without the KIT_ATTEST_PRIVATE declaration cannot pass Inception
+  # silently provenance-less, because the SLSA attest step(s) are skipped there (profiles/*/ci.yml's
+  # public-or-declared `if:`; SWAS-813). Seam-stubbed via INCEPTION_DONE_GH_CMD (the st_bpstub precedent) and
+  # INCEPTION_DONE_GH_VAR_CMD (live only inside this selftest) so fixtures never touch the network.
   _id_mkdisp_apply() { # <dir> — an all-apply 8-id dispositions file (no na anywhere)
     mkdir -p "$1/conformance"
     { for _g in gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance; do
@@ -1017,6 +1203,25 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   }
   _priv_stub='printf {"isPrivate":true,"isInOrganization":false}'
   _pub_stub='printf {"isPrivate":false,"isInOrganization":false}'
+  _privorg_stub='printf {"isPrivate":true,"isInOrganization":true}'
+  # SWAS-813: the variable-read seam. _id_varstub writes a gh-api stand-in into the fixture: it logs each path it is asked
+  # ($0.calls), then answers the repository read and the organization read from two snippets of shell. The snippets below
+  # are the answers a real read gives: a 404 and a 403 (the failure text `gh api` prints), a repository variable with a
+  # value, and an organization list that holds the variable, holds nothing, or holds only a name that is not the exact one.
+  _id_varstub() { # <dir> <repo-answer> <org-answer>
+    printf '%s\n' '#!/bin/sh' 'echo "$1" >> "$0.calls"' 'case "$1" in' \
+      "  */actions/variables/KIT_ATTEST_PRIVATE) $2 ;;" \
+      "  */actions/organization-variables) $3 ;;" \
+      'esac' > "$1/varstub.sh"
+  }
+  _vs_404='echo "gh: Not Found (HTTP 404)" >&2; exit 1'
+  _vs_403='echo "gh: Resource not accessible by personal access token (HTTP 403)" >&2; exit 1'
+  _vs_repo_true='printf "%s\n" "{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"true\"}"'
+  _vs_repo_TRUE='printf "%s\n" "{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"TRUE\"}"'
+  _vs_repo_false='printf "%s\n" "{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"false\"}"'
+  _vs_org_true='printf "%s\n" "{\"total_count\":1,\"variables\":[{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"true\"}]}"'
+  _vs_org_none='printf "%s\n" "{\"total_count\":0,\"variables\":[]}"'
+  _vs_org_decoy='printf "%s\n" "{\"total_count\":1,\"variables\":[{\"name\":\"KIT_ATTEST_PRIVATE_OTHER\",\"value\":\"true\"}]}"'
 
   # (q) deployable + private + user-owned + gate-provenance UNDECIDED (apply) -> strict FAIL /
   # surface OUTSTANDING (the spine AC, verbatim: "a private user-owned deployable repo cannot pass
@@ -1024,17 +1229,21 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   echo "--- (q) gate-provenance repo-class: deployable + private + user-owned -> FAIL/OUTSTANDING ---"
   d=$(st_mkfix q claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
   printf 'FROM scratch\n' > "$d/Dockerfile"
-  _id_mkdisp_apply "$d"
-  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  _id_mkdisp_apply "$d"; _id_varstub "$d" "$_vs_404" "$_vs_org_none"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
   st_has "FAIL: gate-provenance repo-class"
   st_has "cannot pass Inception silently provenance-less"
+  st_has "KIT_ATTEST_PRIVATE"
+  st_has "record a dated na disposition"
+  st_hasnt "move it to a git""hub org"
   if [ "$RC" -ne 0 ]; then
     echo "    ok  : rc $RC (non-zero, as a strict FAIL leg must produce)"
   else
     echo "    BAD : rc 0 — a strict FAIL leg must not report gate satisfied"; st_fail=1
   fi
-  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
   st_has "OUTSTANDING: gate-provenance repo-class"
+  st_has "KIT_ATTEST_PRIVATE"
   st_hasnt "FAIL: gate-provenance repo-class"
 
   # (r) SAME fixture + a validated na disposition for gate-provenance -> N/A (an adopter who has
@@ -1048,8 +1257,12 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   echo "--- (r) gate-provenance repo-class: validated na disposition -> N/A, not blocked twice ---"
   d=$(st_mkfix r claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
   printf 'FROM scratch\n' > "$d/Dockerfile"
-  _id_mkdisp_na "$d"
-  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  _id_mkdisp_na "$d"; _id_varstub "$d" "$_vs_404" "$_vs_org_none"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "N/A: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+  # (r2) the same na on an ORG-OWNED private repository: the na route covers every private repository without the declaration.
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_privorg_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
   st_has "N/A: gate-provenance repo-class"
   st_hasnt "FAIL: gate-provenance repo-class"
 
@@ -1117,6 +1330,261 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_hasnt "FAIL: gate-provenance repo-class"
   st_hasnt "PASS: gate-provenance repo-class"
 
+  # (x) SWAS-813 — the KIT_ATTEST_PRIVATE declaration on a PRIVATE deployable repository. Each cell builds a deployable fixture
+  # with an all-apply disposition file and the variable-read stub, and asserts the leg's own lines. _id_xcell runs the gate in
+  # one mode; _id_xmut runs a MUTATED copy of this script as the real entry and asserts it no longer prints what the intact
+  # cell requires. The mutated lines carry the markers MUT-ORG, MUT-ORGREAD and MUT-PREC in _id_attest_state and the leg.
+  _id_xcell() { # <label> <repo-view-stub> <repo-answer> <org-answer> [strict|surface]
+    _xd=$(st_mkfix "x$1" claude-code); st_install_hook "$_xd"; st_gh "$_xd"; st_bpstub "$_xd" 0
+    printf 'FROM scratch\n' > "$_xd/Dockerfile"; _id_mkdisp_apply "$_xd"; _id_varstub "$_xd" "$3" "$4"
+    OUT=$( ( INCEPTION_DONE_GH_CMD="$2" INCEPTION_DONE_GH_VAR_CMD="sh $_xd/varstub.sh" MODE="${5:-strict}" run_gate "$_xd" ) 2>&1 ); RC=$?
+  }
+  _id_xmut() { # <label> <sed-script> <repo-view-stub> <repo-answer> <org-answer> <line the intact cell prints> <line the mutant must print instead>
+    _xd=$(st_mkfix "m$1" claude-code); st_install_hook "$_xd"; st_gh "$_xd"; st_bpstub "$_xd" 0
+    printf 'FROM scratch\n' > "$_xd/Dockerfile"; _id_mkdisp_apply "$_xd"; _id_varstub "$_xd" "$4" "$5"
+    sed "$2" "$0" > "$_xd/conformance/inception-done-probe.sh"
+    if cmp -s "$0" "$_xd/conformance/inception-done-probe.sh"; then
+      echo "    BAD : the $1 mutant did not apply (the sed expression matched nothing)"; st_fail=1; return 0
+    fi
+    # the copy that runs also has the seam live (a real entry keeps _ID_SEAMS at 0), so only the marked line differs from the intact gate
+    sed -e "$2" -e 's/^_ID_SEAMS=0$/_ID_SEAMS=1/' "$0" > "$_xd/conformance/inception-done-mut.sh"
+    if ! sh -n "$_xd/conformance/inception-done-mut.sh" 2>/dev/null; then
+      echo "    BAD : the $1 mutant does not parse (a mutant that cannot run would read as killed)"; st_fail=1; return 0
+    fi
+    OUT=$( INCEPTION_DONE_GH_CMD="$3" INCEPTION_DONE_GH_VAR_CMD="sh $_xd/varstub.sh" sh "$_xd/conformance/inception-done-mut.sh" "$_xd" 2>&1 ); RC=$?
+    case "$OUT" in
+      *"$6"*) printf '    BAD : the %s mutant survived (the cell still prints [%s])\n' "$1" "$6"; st_fail=1 ;;
+      *"$7"*) printf '    ok  : the %s mutant no longer prints [%s] and prints [%s]\n' "$1" "$6" "$7" ;;
+      *) printf '    BAD : the %s mutant dropped [%s] but did not print the flipped verdict [%s] (it died some other way)\n' "$1" "$6" "$7"; st_fail=1 ;;
+    esac
+  }
+  echo "--- (x1) private, repository variable true -> PASS ---"
+  _id_xcell 1 "$_priv_stub" "$_vs_repo_true" "$_vs_org_none"
+  st_has "PASS: gate-provenance repo-class"; st_hasnt "FAIL: gate-provenance repo-class"
+  echo "--- (x2) private, repository variable absent (404), organization variable true -> PASS ---"
+  _id_xcell 2 "$_priv_stub" "$_vs_404" "$_vs_org_true"
+  st_has "PASS: gate-provenance repo-class"; st_hasnt "FAIL: gate-provenance repo-class"
+  echo "--- (x3) private, both reads absent -> strict FAIL / surface OUTSTANDING, the cure names the variable and the na route ---"
+  _id_xcell 3 "$_priv_stub" "$_vs_404" "$_vs_org_none"
+  st_has "FAIL: gate-provenance repo-class"; st_has "KIT_ATTEST_PRIVATE"; st_has "record a dated na disposition"; st_rc 1
+  _id_xcell 3s "$_priv_stub" "$_vs_404" "$_vs_org_none" surface
+  st_has "OUTSTANDING: gate-provenance repo-class"; st_has "KIT_ATTEST_PRIVATE"; st_hasnt "FAIL: gate-provenance repo-class"
+  echo "--- (x4) private ORG-owned, both reads absent -> FAIL (the owner type no longer passes the gate) ---"
+  _id_xcell 4 "$_privorg_stub" "$_vs_404" "$_vs_org_none"
+  st_has "FAIL: gate-provenance repo-class"; st_hasnt "PASS: gate-provenance repo-class"; st_rc 1
+  echo "--- (x5) private, repository read 403 -> UNVERIFIABLE (strict FAIL / surface OUTSTANDING), never PASS ---"
+  _id_xcell 5 "$_priv_stub" "$_vs_403" "$_vs_org_true"
+  st_has "FAIL: gate-provenance repo-class"; st_has "unverifiable"; st_hasnt "PASS: gate-provenance repo-class"
+  _id_xcell 5s "$_priv_stub" "$_vs_403" "$_vs_org_true" surface
+  st_has "OUTSTANDING: gate-provenance repo-class"; st_has "unverifiable"; st_hasnt "PASS: gate-provenance repo-class"
+  echo "--- (x6) private, repository read 404 and organization read 403 -> UNVERIFIABLE ---"
+  _id_xcell 6 "$_priv_stub" "$_vs_404" "$_vs_403"
+  st_has "FAIL: gate-provenance repo-class"; st_has "unverifiable"; st_hasnt "PASS: gate-provenance repo-class"
+  echo "--- (x7) an exported KIT_ATTEST_PRIVATE is never read, in or out of Actions -> the API reads decide (absent -> FAIL) ---"
+  _id_xcell 7 "$_priv_stub" "$_vs_404" "$_vs_org_none"
+  OUT=$( ( KIT_ATTEST_PRIVATE=true INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $_xd/varstub.sh" MODE=strict run_gate "$_xd" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class"; st_hasnt "PASS: gate-provenance repo-class"
+  OUT=$( ( GITHUB_ACTIONS=true KIT_ATTEST_PRIVATE=true INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $_xd/varstub.sh" MODE=strict run_gate "$_xd" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class"; st_hasnt "PASS: gate-provenance repo-class"
+  echo "--- (x8) private, repository variable false and organization variable true -> absent (the repository value decides, the organization is not read) ---"
+  _id_xcell 8 "$_priv_stub" "$_vs_repo_false" "$_vs_org_true"
+  st_has "FAIL: gate-provenance repo-class"; st_hasnt "PASS: gate-provenance repo-class"
+  case "$(cat "$_xd/varstub.sh.calls" 2>/dev/null)" in
+    *organization-variables*) echo "    BAD : the organization list was read although the repository variable decided"; st_fail=1 ;;
+    *actions/variables/KIT_ATTEST_PRIVATE*) echo "    ok  : only the repository variable was read" ;;
+    *) echo "    BAD : the variable-read seam was never called"; st_fail=1 ;;
+  esac
+  echo "--- (x9) private, repository variable TRUE (any case) -> PASS ---"
+  _id_xcell 9 "$_priv_stub" "$_vs_repo_TRUE" "$_vs_org_none"
+  st_has "PASS: gate-provenance repo-class"; st_hasnt "FAIL: gate-provenance repo-class"
+  echo "--- (x10) private, organization list holds only a different name -> absent (the exact name is matched) ---"
+  _id_xcell 10 "$_priv_stub" "$_vs_404" "$_vs_org_decoy"
+  st_has "FAIL: gate-provenance repo-class"; st_hasnt "PASS: gate-provenance repo-class"
+  echo "--- (x11) non-GitHub remote: the leg's output is unchanged (visibility unverifiable, no declaration text) ---"
+  d=$(st_mkfix x11 claude-code); st_install_hook "$d"; st_nongh "$d"; st_attest "$d"
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_empty_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class — GitHub repo visibility unverifiable and verification is required (strict)"; st_hasnt "KIT_ATTEST_PRIVATE"
+  echo "--- (x12) NOT deployable, private ORG-owned -> N/A (the precondition still gates the leg) ---"
+  d=$(st_mkfix x12 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  rm -f "$d/.github/workflows/tracker-live.yml" "$d/.github/workflows/adopter-tracker-gates.yml"
+  _id_mkdisp_apply "$d"; _id_varstub "$d" "$_vs_404" "$_vs_org_none"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_privorg_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "N/A: gate-provenance repo-class"; st_has "no deploy surface"; st_hasnt "FAIL: gate-provenance repo-class"
+  echo "--- (x13) mutant: 'or org-owned' restored -> the private-org cell (x4) must red ---"
+  _id_xmut org '/# MUT-ORG$/s#.*#  elif [ "$_id_priv" = "true" ] \&\& [ "$(printf "%s" "$_id_gh_json" | jq -r ".isInOrganization")" != "true" ]; then#' "$_privorg_stub" "$_vs_404" "$_vs_org_none" "FAIL: gate-provenance repo-class" "PASS: gate-provenance repo-class"
+  echo "--- (x14) mutant: the organization-variable read skipped -> the org-only cell (x2) must red ---"
+  _id_xmut orgread "/# MUT-ORGREAD\$/s/.*/    _id_ro=\"\"; _id_rc=0/" "$_priv_stub" "$_vs_404" "$_vs_org_true" "PASS: gate-provenance repo-class" "FAIL: gate-provenance repo-class"
+  echo "--- (x15) mutant: the organization decides over the repository -> the repository-false cell (x8) must red ---"
+  _id_xmut prec '/# MUT-PREC$/s/_id_found=yes/_id_found=no/' "$_priv_stub" "$_vs_repo_false" "$_vs_org_true" "FAIL: gate-provenance repo-class" "PASS: gate-provenance repo-class"
+  echo "--- (x16) the variable-read seam exported outside the selftest is ignored (a real entry reads gh, which here fails with a 403) ---"
+  _id_xcell 16 "$_priv_stub" "$_vs_repo_true" "$_vs_org_true"
+  mkdir -p "$_xd/nogh"; printf '%s\n' '#!/bin/sh' 'echo "gh: Resource not accessible (HTTP 403)" >&2' 'exit 1' > "$_xd/nogh/gh"; chmod +x "$_xd/nogh/gh"
+  OUT=$( PATH="$_xd/nogh:$PATH" INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $_xd/varstub.sh" sh "$0" "$_xd" 2>&1 ); RC=$?
+  st_has "gate-provenance repo-class"; st_has "unverifiable"; st_has "KIT_ATTEST_PRIVATE declaration is unverifiable"; st_hasnt "PASS: gate-provenance repo-class"
+  echo "--- (x17) private, a validated na and a 403 on the repository read -> N/A (a recorded na decides, whatever the read said) ---"
+  d=$(st_mkfix x17 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_na "$d"; _id_varstub "$d" "$_vs_403" "$_vs_403"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" INCEPTION_DONE_GH_VAR_CMD="sh $d/varstub.sh" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "N/A: gate-provenance repo-class"; st_hasnt "FAIL: gate-provenance repo-class"
+
+  # (w) REAL ENTRY (SWAS-212). Every cell above calls run_gate in this `set +e` shell, so none can see a
+  # silent abort; these run `sh "$0" <dir>` itself, with set -e live, and assert the SUMMARY line the
+  # gate prints last — an abort before it reds. Branch-protection is stubbed protected (rc 0) and
+  # unverifiable (rc 2); the provenance leg is made deterministic by the public-repo stub.
+  _plan_cause='this plan cannot enforce protection on a private repository (a public repository or a paid plan can)'
+  echo "--- (w1) real entry: protected (bp exit 0) -> verdict and summary reached, both modes ---"
+  d=$(st_mkfix w1 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  st_real "$d" strict;  st_has "PASS: verified protected"; st_has "Inception-Done gate"
+  st_real "$d" surface; st_has "PASS: verified protected"; st_has "Inception-Done gate"
+  echo "--- (w2) real entry: unverifiable (bp exit 2) -> the unverifiable line and the summary, both modes ---"
+  d=$(st_mkfix w2 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 'UNVERIFIED: protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on me/repo — run in CI or authenticate gh. (NOT a pass.)'
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  st_real "$d" strict;  st_has "FAIL: branch protection — GitHub state unverifiable"; st_has "FAIL: Inception-Done gate not satisfied"; st_hasnt "$_plan_cause"
+  st_real "$d" surface; st_has "OUTSTANDING: branch protection — GitHub state unverifiable"; st_has "Inception-Done gate"; st_hasnt "$_plan_cause"
+  echo "--- (w3) real entry: unverifiable because the plan cannot protect a private repo -> the cause is named, fixed text ---"
+  d=$(st_mkfix w3 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 "UNVERIFIED: protection endpoint returned non-200 on me/repo: $_plan_cause — run in CI or authenticate gh. (NOT a pass.)"
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  st_real "$d" strict;  st_has "  cause: $_plan_cause"; st_has "FAIL: Inception-Done gate not satisfied"; st_hasnt "me/repo"
+  st_real "$d" surface; st_has "  cause: $_plan_cause"; st_has "OUTSTANDING: branch protection — GitHub state unverifiable"; st_hasnt "me/repo"
+  # (w4) MUTANT: the guard dropped. The mutated gate is installed as the fixture's own copy and run as the
+  # real entry; it must NOT reach the protected verdict (it aborts at the count), proving (w1) can red.
+  echo "--- (w4) mutant: no \`|| true\` on the FAIL count -> the real-entry cell must red ---"
+  d=$(st_mkfix w4 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  sed '/# MUT-BPCOUNT$/s/ || true)/)/' "$0" > "$d/conformance/inception-done-mut.sh"
+  if cmp -s "$0" "$d/conformance/inception-done-mut.sh"; then
+    echo "    BAD : the MUT-BPCOUNT mutant did not apply"; st_fail=1
+  else
+    OUT=$( INCEPTION_DONE_GH_CMD="$_pub_stub" sh "$d/conformance/inception-done-mut.sh" "$d" 2>&1 ); RC=$?
+    case "$OUT" in
+      *"PASS: verified protected"*) printf '    BAD : the MUT-BPCOUNT mutant survived (the real-entry cell did not red)\n'; st_fail=1 ;;
+      *) if [ "$RC" = 1 ]; then printf '    ok  : the mutant aborts before the verdict (rc 1), so (w1) reds on it\n'; else printf '    BAD : the MUT-BPCOUNT mutant died with rc %s, not the abort status 1 (a crash, not the guard)\n' "$RC"; st_fail=1; fi ;;
+    esac
+  fi
+
+  # (bpw) SWAS-814 — the plan-limit waiver. A ratified, unexpired branch-protection-plan row in the tree's own
+  # WAIVER-REGISTER.md turns the plan-limit cause (and only it) into a WAIVED line that still says NOT ENFORCED. Each cell
+  # runs the in-process gate with the branch-protection seam stubbed (st_bpstub / a split stub) and a register this cell writes
+  # explicitly: the fixture is a clone of the kit tree, whose own root register must never answer for the cell. The public-repo
+  # stub keeps the provenance leg deterministic. "No fail" is read against a baseline fixture whose branch protection is
+  # verified (bp exit 0): the waived run must return what the protected run returns, so the waiver adds no failure of its own.
+  _bpd() { date -u -d "$1 days" +%Y-%m-%d 2>/dev/null || date -u -v"$1"d +%Y-%m-%d; }
+  _bpD0=$(_bpd +0); _bpD60=$(_bpd +60); _bpDP10=$(_bpd -10); _bpDP100=$(_bpd -100)
+  _bpw_reg() { # <dir> <gate> <owner> <opened> <expires> [ratified-by]
+    printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| %s | free private repository | %s | %s | %s | public repository or paid plan | %s |\n' "$2" "$3" "$4" "$5" "${6:-@sec}" > "$1/WAIVER-REGISTER.md"
+  }
+  _bpw_fix() { # <name> -> a fixture whose branch protection reports the plan-limit cause (bp exit 2), no register yet
+    _bpd_=$(st_mkfix "$1" claude-code); st_install_hook "$_bpd_"; st_gh "$_bpd_"
+    st_bpstub "$_bpd_" 2 "UNVERIFIED: protection endpoint returned non-200 on me/repo: $_plan_cause — run in CI or authenticate gh. (NOT a pass.)"
+    rm -f "$_bpd_/WAIVER-REGISTER.md"
+    printf '%s' "$_bpd_"
+  }
+  _bpw_run() { OUT=$( ( INCEPTION_DONE_GH_CMD="$_pub_stub" MODE="${2:-strict}" run_gate "$1" ) 2>&1 ); RC=$?; }
+  _bpw_line="WAIVED: branch protection — NOT ENFORCED: this plan cannot enforce protection on a private repository; waived by"
+  echo "--- (bpw0) baseline: verified protection (bp exit 0) -> the return the waived runs must equal ---"
+  d=$(st_mkfix bpw0 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0; rm -f "$d/WAIVER-REGISTER.md"
+  _bpw_run "$d"; st_has "PASS: verified protected"; _bpw_base_rc=$RC
+  echo "--- (bpw1) plan-limit cause + an active row -> WAIVED, NOT ENFORCED, no failure of its own, strict and surface ---"
+  d=$(_bpw_fix bpw1); _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  _bpw_run "$d" strict
+  st_has "  cause: $_plan_cause"; st_has "$_bpw_line @jdoe until $_bpD60 (exit: make the repository public, or move to a paid plan)"
+  st_hasnt "FAIL: branch protection"; st_hasnt "OUTSTANDING: branch protection"; st_hasnt "waiver route"
+  # "No failure of its own" is only decidable against a green baseline: on a tree whose whole-gate verdict is not OK for other
+  # reasons (an export tree, with no ADR-000 or BACKLOG.md) both returns are 1, and equal returns would prove nothing.
+  if [ "$_bpw_base_rc" = 0 ]; then st_rc 0
+  else echo "selftest n/a: (bpw1) skipped — the waived run's no-fail check needs a green baseline on this tree (baseline rc $_bpw_base_rc)"; fi
+  _bpw_run "$d" surface
+  st_has "$_bpw_line @jdoe until $_bpD60"; st_hasnt "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+  echo "--- (bpw2) plan-limit cause, no row / expired row / placeholder row -> today's FAIL (OUTSTANDING under --surface) plus the waiver route ---"
+  d=$(_bpw_fix bpw2)
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_has "waiver route: a ratified, unexpired branch-protection-plan row"; st_hasnt "WAIVED"; st_rc 1
+  _bpw_run "$d" surface
+  st_has "OUTSTANDING: branch protection — GitHub state unverifiable"; st_has "waiver route:"; st_hasnt "WAIVED"
+  _bpw_reg "$d" branch-protection-plan @jdoe "$_bpDP100" "$_bpDP10"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_has "waiver route:"; st_hasnt "WAIVED"; st_rc 1
+  _bpw_reg "$d" branch-protection-plan "[owner]" "$_bpD0" "$_bpD60" "[security-owner]"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_has "waiver route:"; st_hasnt "WAIVED"; st_rc 1
+  echo "--- (bpw3) plan-limit cause + only a board-governance row -> FAIL (a row for another gate waives nothing here) ---"
+  d=$(_bpw_fix bpw3); _bpw_reg "$d" board-governance @jdoe "$_bpD0" "$_bpD60"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_has "waiver route:"; st_hasnt "WAIVED"; st_rc 1
+  echo "--- (bpw4) plan-limit cause + a valid row inside a register the full run rejects (a smuggled secret-scan row) -> FAIL ---"
+  d=$(_bpw_fix bpw4); _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  printf '| secret-scan | smuggled | @jdoe | %s | %s | y | @sec |\n' "$_bpD0" "$_bpD60" >> "$d/WAIVER-REGISTER.md"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_hasnt "WAIVED"; st_rc 1
+  echo "--- (bpw5) plan-limit cause + an active row + the vacuous-tracker FAIL -> FAIL (the row cannot waive it) ---"
+  d=$(_bpw_fix bpw5); _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  printf '%s\n' "FAIL: tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection (see RUNBOOK, reverting a tracker)" > "$d/conformance/bp-stub-do.msg"
+  printf '#!/bin/sh\ncase " $* " in\n  *" --declared-only "*) cat "$(dirname "$0")/bp-stub-do.msg"; exit 1 ;;\n  *) cat "$(dirname "$0")/bp-stub.msg"; exit 2 ;;\nesac\n' > "$d/conformance/branch-protection.sh"; chmod +x "$d/conformance/branch-protection.sh"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — tracker-board-gates is declared required"; st_has "$_bpw_line @jdoe until $_bpD60"; st_rc 1
+  _bpw_run "$d" surface
+  st_has "FAIL: branch protection — tracker-board-gates is declared required"
+  echo "--- (bpw6) unauthenticated rc 2 (no plan-limit cause) + an active row -> FAIL, never WAIVED ---"
+  d=$(st_mkfix bpw6 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 'UNVERIFIED: protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on me/repo — run in CI or authenticate gh. (NOT a pass.)'
+  _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection — GitHub state unverifiable"; st_hasnt "WAIVED"; st_hasnt "waiver route"; st_rc 1
+  _bpw_run "$d" surface
+  st_has "OUTSTANDING: branch protection — GitHub state unverifiable"; st_hasnt "WAIVED"
+  echo "--- (bpw7) rc 1 (verified unprotected) + an active row -> FAIL, never WAIVED ---"
+  d=$(st_mkfix bpw7 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 1
+  _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  _bpw_run "$d" strict
+  st_has "FAIL: branch protection"; st_has "NOT protected"; st_hasnt "WAIVED"; st_rc 1
+  echo "--- (bpw8) an owner longer than 60 characters is bounded in the echo ---"
+  d=$(_bpw_fix bpw8); _bpw_long=$(printf '%070d' 0 | tr 0 a)
+  _bpw_reg "$d" branch-protection-plan "$_bpw_long" "$_bpD0" "$_bpD60"
+  _bpw_run "$d" strict
+  st_has "waived by $(printf '%060d' 0 | tr 0 a) until $_bpD60"; st_hasnt "$(printf '%061d' 0 | tr 0 a)"
+  # MUTANTS: a copy of this gate with one marked line changed is run as the real entry, against its own fixture and the kit's
+  # waivers-valid.sh, and must print the FLIPPED verdict, not merely a different return.
+  _bpw_mut() { # <dir> <label> <sed-script> <line the intact cell prints> <line the mutant must print instead>
+    cp "$(dirname "$CI_GATES_SH")/waivers-valid.sh" "$1/conformance/waivers-valid.sh"
+    sed -e "$3" "$0" > "$1/conformance/inception-done-bpm.sh"
+    if cmp -s "$0" "$1/conformance/inception-done-bpm.sh"; then
+      echo "    BAD : the $2 mutant did not apply (the sed expression matched nothing)"; st_fail=1; return 0
+    fi
+    if ! sh -n "$1/conformance/inception-done-bpm.sh" 2>/dev/null; then
+      echo "    BAD : the $2 mutant does not parse (a mutant that cannot run would read as killed)"; st_fail=1; return 0
+    fi
+    OUT=$( INCEPTION_DONE_GH_CMD="$_pub_stub" sh "$1/conformance/inception-done-bpm.sh" "$1" 2>&1 ); RC=$?
+    case "$OUT" in
+      *"$4"*) printf '    BAD : the %s mutant survived (the cell still prints [%s])\n' "$2" "$4"; st_fail=1 ;;
+      *"$5"*) printf '    ok  : the %s mutant no longer prints [%s] and prints [%s]\n' "$2" "$4" "$5" ;;
+      *) printf '    BAD : the %s mutant dropped [%s] but did not print the flipped verdict [%s] (it died some other way)\n' "$2" "$4" "$5"; st_fail=1 ;;
+    esac
+  }
+  echo "--- (bpw9) mutant: the plan-limit condition dropped (waive any rc 2) -> the unauthenticated cell (bpw6) must red ---"
+  d=$(st_mkfix bpw9 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 'UNVERIFIED: protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on me/repo — run in CI or authenticate gh. (NOT a pass.)'
+  _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  _bpw_mut "$d" plancond '/# MUT-BPPLAN$/s/.*/             if true; then/' "FAIL: branch protection — GitHub state unverifiable" "WAIVED: branch protection"
+  echo "--- (bpw10) mutant: the checker's return ignored -> the no-row cell (bpw2) must red ---"
+  d=$(_bpw_fix bpw10); rm -f "$d/WAIVER-REGISTER.md"
+  _bpw_mut "$d" ignorerc '/# MUT-BPRC$/s#.*#               if _bpw=$(sh "$WAIVERS_SH" --active branch-protection-plan ./WAIVER-REGISTER.md 2>/dev/null || true); then#' "FAIL: branch protection — GitHub state unverifiable" "WAIVED: branch protection"
+  echo "--- (bpw11) mutant: NOT ENFORCED dropped from the WAIVED line -> the waived cell (bpw1) must red ---"
+  d=$(_bpw_fix bpw11); _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  _bpw_mut "$d" notenforced '/# MUT-BPNE$/s/NOT ENFORCED: //' "WAIVED: branch protection — NOT ENFORCED" "WAIVED: branch protection — this plan cannot enforce"
+  echo "--- (bpw12) mutant: the waiver sets fail=1 beside _bpwaived=1 -> the waived run's verdict must flip from OK to FAIL (green baseline only) ---"
+  if [ "$_bpw_base_rc" = 0 ]; then
+    d=$(_bpw_fix bpw12); _bpw_reg "$d" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+    _bpw_mut "$d" waivedfail '/# MUT-BPFAIL$/s/_bpwaived=1 .*/_bpwaived=1; fail=1   # MUT-BPFAIL/' "OK: Inception-Done gate satisfied" "FAIL: Inception-Done gate not satisfied"
+    # the kill must come from the mutated line: the waiver still fired in the mutant, and no branch-protection FAIL line explains the red
+    st_has "WAIVED: branch protection — NOT ENFORCED"; st_hasnt "FAIL: branch protection"
+  else
+    echo "selftest n/a: (bpw12) skipped — the waived-fail mutant needs a green baseline on this tree (baseline rc $_bpw_base_rc)"
+  fi
+
   # (n1)-(n3) decided-not-present legs (INCEPTION-DONE-DECIDED-NOT-PRESENT). Load-bearing negatives:
   # the §1 Overview template placeholder and the unfilled example ADR-000 must each red STRICT; an
   # absent ADR reds too; (n3) proves surface stays green on both (incept's own post-scaffold verify
@@ -1152,6 +1620,195 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_hasnt "FAIL: charter undecided"
   st_hasnt "FAIL: stack decision"
   st_has "deferred to strict"
+
+  # (s2) SWAS-769 — the first-deploy set never changes the loop-entry verdict. Unlike every cell above, s2a asserts the
+  # WHOLE verdict, so its fixture builds its own world: md declared with its own BACKLOG.md, the decided ADR-000 st_mkfix
+  # writes, no remote, no deploy surface (the provenance leg reads N/A) and a data surface (.env.example names a database),
+  # so bia and rb-dr are in play. `owed` carries every template placeholder the OWED section reads; `filled` carries none.
+  _s2_fix() { # <name> <owed|filled> -> a fixture whose first-slice legs are all met
+    _s2f=$(st_mkfix "$1" claude-code); st_install_hook "$_s2f"; st_norem "$_s2f"
+    rm -f "$_s2f/.github/workflows/tracker-live.yml" "$_s2f/.github/workflows/adopter-tracker-gates.yml" "$_s2f/Dockerfile"
+    # The harness-adapter leg is not what s2a tests: stub it green (the st_bpstub pattern), since st_mkfix's CLAUDE.md has no section for its entry-contract lock.
+    printf '#!/bin/sh\nexit 0\n' > "$_s2f/conformance/harness-adapter.sh"; chmod +x "$_s2f/conformance/harness-adapter.sh"
+    # ci.yml is export-ignored in an adopter export, so the CI leg needs its own minimal non-deploy workflow.
+    if [ ! -f "$_s2f/.github/workflows/ci.yml" ]; then
+      mkdir -p "$_s2f/.github/workflows"
+      printf 'name: ci\non: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n' > "$_s2f/.github/workflows/ci.yml"
+    fi
+    printf '%s\n' '- **Backlog backend** (§6): md' >> "$_s2f/CLAUDE.md"
+    printf '# Backlog\n' > "$_s2f/BACKLOG.md"
+    printf 'DATABASE_URL=postgres://localhost/fixture\n' > "$_s2f/.env.example"
+    if [ "$2" = owed ]; then
+      printf '%s\n' '- **SLO / error-budget posture** (§9): [soft track-and-guide / hard-gating]' '- **Environments**: Dev to Prod: [per-tier deploy trigger]' '| On-call / operator | [...] |' >> "$_s2f/CLAUDE.md"
+      printf '%s\n' 'Steps: `[deploy command(s)]`' 'Command: `[rollback command]`' '**RPO:** [< 24h default]' 'Error tracking: [tool/link]' > "$_s2f/RUNBOOK.md"
+      rm -f "$_s2f/docs/continuity/BIA.md"
+    else
+      printf '%s\n' '- **SLO / error-budget posture** (§9): soft track-and-guide' '- **Environments**: Dev to Prod: merge to main deploys Dev' '| On-call / operator | the fixture owner |' >> "$_s2f/CLAUDE.md"
+      printf '%s\n' 'Steps: `make deploy`' 'Command: `make rollback`' '**RPO:** 24h' 'Error tracking: fixture-tracker' > "$_s2f/RUNBOOK.md"
+      mkdir -p "$_s2f/docs/continuity"; printf '# BIA\n' > "$_s2f/docs/continuity/BIA.md"
+    fi
+    printf '%s' "$_s2f"
+  }
+  _s2_owedhas() { # the eight OWED lines, each in <state>
+    st_has "OWED (first-deploy set): slo — $1 — CLAUDE.md"
+    st_has "OWED (first-deploy set): envs — $1 — CLAUDE.md"
+    st_has "OWED (first-deploy set): oncall — $1 — CLAUDE.md"
+    st_has "OWED (first-deploy set): bia — $1 — docs/continuity/BIA.md"
+    st_has "OWED (first-deploy set): rb-deploy — $1 — RUNBOOK.md"
+    st_has "OWED (first-deploy set): rb-rollback — $1 — RUNBOOK.md"
+    st_has "OWED (first-deploy set): rb-dr — $1 — RUNBOOK.md"
+    st_has "OWED (first-deploy set): rb-monitor — $1 — RUNBOOK.md"
+  }
+  echo "--- (s2a) surface: every first-slice leg met, every first-deploy item owed -> the whole verdict is OK ---"
+  d=$(_s2_fix s2a owed)
+  st_run "$d" surface
+  st_has "OK: Inception-Done gate satisfied"; st_hasnt "FAIL:"; st_rc 0
+  _s2_owedhas owed
+  _s2_osurf=$OUT
+  echo "--- (s2a′) strict, no remote: exactly two FAIL lines (the no-remote protection leg and the closing summary), still owed ---"
+  st_run "$d" strict
+  st_has "FAIL: branch protection — no remote configured"; st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  _s2_nfail=$(printf '%s\n' "$OUT" | grep -c '^FAIL' || true)
+  if [ "$_s2_nfail" = 2 ]; then printf '    ok  : exactly 2 FAIL lines\n'; else printf '    BAD : %s FAIL lines (wanted exactly 2)\n' "$_s2_nfail"; st_fail=1; fi
+  _s2_owedhas owed
+  _s2_ostrict=$OUT
+  echo "--- (s2b) strict, all eight filled, the pre-push hook removed -> the hook FAIL stands (nothing compensates) ---"
+  d=$(_s2_fix s2b filled); rm -f "$d/.git/hooks/pre-push"
+  st_run "$d" strict
+  st_has "FAIL: pre-push git hook missing"; st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  _s2_owedhas filled
+  st_hasnt " — owed — "
+  echo "--- (s2c) the OWED lines hold no FAIL, in either mode: eight lines each, none with FAIL ---"
+  for _s2_o in "$_s2_osurf" "$_s2_ostrict" "$OUT"; do
+    _s2_ln=$(printf '%s\n' "$_s2_o" | grep -c '^OWED (first-deploy set): ' || true)
+    _s2_lf=$(printf '%s\n' "$_s2_o" | grep '^OWED (first-deploy set): ' | grep -c 'FAIL' || true)
+    if [ "$_s2_ln" = 8 ] && [ "$_s2_lf" = 0 ]; then printf '    ok  : 8 OWED lines, none with FAIL\n'; else printf '    BAD : %s OWED lines, %s with FAIL (wanted 8 and 0)\n' "$_s2_ln" "$_s2_lf"; st_fail=1; fi
+  done
+  echo "--- (s2d) START-HERE's two tagged lists name the same ids as the gate's two lists ---"
+  _s2_sh="$ROOT/START-HERE.md"; _s2_dp="$ROOT/DEVELOPMENT-PROCESS.md"
+  if [ ! -f "$_s2_sh" ] || [ ! -f "$_s2_dp" ]; then
+    echo "selftest n/a: (s2d) skipped — START-HERE.md or DEVELOPMENT-PROCESS.md is not in this tree"
+  else
+    _s2_sec() { # <heading prefix> -> that list's checklist lines
+      awk -v h="$1" 'index($0, h) == 1 { f = 1; next } /^### / { f = 0 } f && /^- \[[ x]\] /' "$_s2_sh"
+    }
+    _s2_tags() { # <heading prefix> -> one id per line; BADLINES:<n> when a line does not carry exactly one tag
+      _s2_sec "$1" | awk '{ n = gsub(/\(id: [a-z0-9-]+\)/, "&"); if (n != 1) bad++; if (match($0, /\(id: [a-z0-9-]+\)/)) print substr($0, RSTART + 5, RLENGTH - 6) } END { if (bad) print "BADLINES:" bad }'
+    }
+    _s2_hs='### Before your first slice'; _s2_hd='### Before your first production deploy'
+    _s2_gs=$(_s2_tags "$_s2_hs" | sort); _s2_gd=$(_s2_tags "$_s2_hd" | sort)
+    _s2_ws=$(printf '%s\n' $ID_FIRST_SLICE_IDS | sort); _s2_wd=$(printf '%s\n' $ID_FIRST_DEPLOY_IDS | sort)
+    if [ -n "$_s2_gs" ] && [ "$_s2_gs" = "$_s2_ws" ]; then printf '    ok  : first-slice tags equal the gate list\n'; else printf '    BAD : first-slice tags [%s] differ from the gate list [%s]\n' "$_s2_gs" "$_s2_ws"; st_fail=1; fi
+    if [ -n "$_s2_gd" ] && [ "$_s2_gd" = "$_s2_wd" ]; then printf '    ok  : first-deploy tags equal the gate list\n'; else printf '    BAD : first-deploy tags [%s] differ from the gate list [%s]\n' "$_s2_gd" "$_s2_wd"; st_fail=1; fi
+    _s2_dup=$(printf '%s\n%s\n' "$_s2_gs" "$_s2_gd" | sort | uniq -d)
+    if [ -z "$_s2_dup" ]; then printf '    ok  : no tag appears under both lists\n'; else printf '    BAD : tag(s) under both lists [%s]\n' "$_s2_dup"; st_fail=1; fi
+    _s2_sl=$(_s2_sec "$_s2_hs"); _s2_dl=$(_s2_sec "$_s2_hd")
+    _s2_item6=$(grep -F '**Per-project configuration** —' "$_s2_dp" | head -1)
+    for _s2_fld in 'backlog backend' 'autonomy-tier' 'SLO' 'review routing' 'WIP' 'environments'; do
+      case "$_s2_item6" in *"$_s2_fld"*) _s2_in6=yes ;; *) _s2_in6=no ;; esac
+      _s2_cnt=0
+      case "$_s2_sl" in *"$_s2_fld"*) _s2_cnt=$((_s2_cnt + 1)) ;; esac
+      case "$_s2_dl" in *"$_s2_fld"*) _s2_cnt=$((_s2_cnt + 1)) ;; esac
+      if [ "$_s2_in6" = yes ] && [ "$_s2_cnt" = 1 ]; then printf '    ok  : item-6 field [%s] is in exactly one list\n' "$_s2_fld"; else printf '    BAD : item-6 field [%s]: named in DEVELOPMENT-PROCESS item 6 = %s, in %s of the two lists (wanted yes and 1)\n' "$_s2_fld" "$_s2_in6" "$_s2_cnt"; st_fail=1; fi
+    done
+  fi
+  echo "--- (s2e) every placeholder token the OWED section reads is still in its template ---"
+  _s2_tc="$ROOT/templates/PROJECT-CLAUDE-TEMPLATE.md"; _s2_tr="$ROOT/templates/RUNBOOK-TEMPLATE.md"
+  if [ ! -f "$_s2_tc" ] || [ ! -f "$_s2_tr" ]; then
+    echo "selftest n/a: (s2e) skipped — a template is not in this tree"
+  else
+    for _s2_id in $ID_FIRST_DEPLOY_IDS; do
+      _id_owed_spec "$_s2_id" || { printf '    BAD : [%s] has no spec in _id_owed_spec\n' "$_s2_id"; st_fail=1; continue; }
+      [ "$_s2_id" = bia ] && continue   # a file-absent read: no placeholder token to mirror
+      case "$_id_owf" in CLAUDE.md) _s2_tpl=$_s2_tc ;; *) _s2_tpl=$_s2_tr ;; esac
+      if [ -n "$_id_owt" ] && grep -qF -e "$_id_owt" "$_s2_tpl"; then printf '    ok  : [%s] token is in %s\n' "$_s2_id" "${_s2_tpl##*/}"; else printf '    BAD : [%s] token [%s] is not in %s (a reworded template would read every item as filled)\n' "$_s2_id" "$_id_owt" "${_s2_tpl##*/}"; st_fail=1; fi
+    done
+  fi
+
+  # (dr) SWAS-779 — the inception-drafts leg. Strict fails on a docs/inception-draft/ directory or on the draft banner (a whole line) in any of
+  # the four ratified files; --surface reports each as OWED and does not fail on it. A missing file is no banner; an unreadable one fails.
+  _dr_ban=$ID_DRAFT_BANNER
+  _dr_fix() { # <name> -> a fixture with no draft directory and no banner anywhere
+    _drx_p=$(st_mkfix "$1" claude-code); st_install_hook "$_drx_p"; rm -rf "$_drx_p/docs/inception-draft"
+    printf '%s' "$_drx_p"
+  }
+  echo "--- (dr1) strict: no draft directory, no banner -> PASS, no draft FAIL ---"
+  d=$(_dr_fix dr1); st_run "$d" strict
+  st_has "PASS: no inception draft remains"; st_hasnt "FAIL: inception drafts unratified"
+  echo "--- (dr2) strict: docs/inception-draft/ exists -> FAIL ---"
+  d=$(_dr_fix dr2); mkdir -p "$d/docs/inception-draft"; printf 'x\n' > "$d/docs/inception-draft/CHARTER.md"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — docs/inception-draft/ still exists"; st_hasnt "PASS: no inception draft remains"
+  st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  echo "--- (dr3) strict: the banner line in each of the four ratified files -> FAIL naming that file ---"
+  _drc_i=0
+  for _drc_n in CLAUDE.md docs/architecture/ADR-000-stack.md RUNBOOK.md BACKLOG.md; do
+    _drc_i=$((_drc_i + 1))
+    d=$(_dr_fix "dr3-$_drc_i"); printf '%s\n' "$_dr_ban" >> "$d/$_drc_n"
+    st_run "$d" strict
+    st_has "FAIL: inception drafts unratified — $_drc_n still carries the draft banner line"; st_hasnt "PASS: no inception draft remains"
+    st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  done
+  echo "--- (dr4) strict: the banner text inside a longer line, or a reworded banner, is not the whole line -> no draft FAIL ---"
+  d=$(_dr_fix dr4)
+  printf 'note: %s\n%s trailing words\n> **DRAFT: reworded by hand.**\n' "$_dr_ban" "$_dr_ban" > "$d/RUNBOOK.md"
+  st_run "$d" strict
+  st_has "PASS: no inception draft remains"; st_hasnt "FAIL: inception drafts unratified"
+  echo "--- (dr5) strict: no BACKLOG.md (a tracker-backed board) is no banner -> no draft FAIL ---"
+  d=$(_dr_fix dr5); rm -f "$d/BACKLOG.md"
+  st_run "$d" strict
+  st_has "PASS: no inception draft remains"; st_hasnt "FAIL: inception drafts unratified"; st_hasnt "could not be read"
+  echo "--- (dr6) strict: an unreadable RUNBOOK.md -> FAIL (not shown free of the banner) ---"
+  d=$(_dr_fix dr6); chmod 000 "$d/RUNBOOK.md"
+  if [ -r "$d/RUNBOOK.md" ]; then
+    echo "selftest n/a: (dr6) skipped — this user reads a mode 000 file (root)"
+  else
+    st_run "$d" strict
+    st_has "FAIL: inception drafts unratified — RUNBOOK.md could not be read"; st_hasnt "PASS: no inception draft remains"
+    st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  fi
+  chmod 644 "$d/RUNBOOK.md" 2>/dev/null || true
+  echo "--- (dr7) surface: a draft directory and a banner are OWED lines, never a FAIL ---"
+  d=$(_dr_fix dr7); mkdir -p "$d/docs/inception-draft"; printf '%s\n' "$_dr_ban" >> "$d/RUNBOOK.md"
+  st_run "$d" surface
+  st_has "OWED (inception drafts): docs/inception-draft/ still exists"
+  st_has "OWED (inception drafts): RUNBOOK.md still carries the draft banner line"
+  st_hasnt "FAIL: inception drafts unratified"
+  d=$(_dr_fix dr7b); st_run "$d" surface
+  st_has "surface: no inception draft present"; st_hasnt "OWED (inception drafts)"
+  echo "--- (dr8) the template's banner line is the hard-coded literal (a reworded template would disarm the leg) ---"
+  _dr_tp="$ROOT/templates/INCEPTION-DRAFT-TEMPLATE.md"
+  if [ ! -f "$_dr_tp" ]; then
+    echo "selftest n/a: (dr8) skipped — templates/INCEPTION-DRAFT-TEMPLATE.md is not in this tree"
+  else
+    _dr_tl=$(grep -F -e '> **DRAFT:' "$_dr_tp" || true)
+    if [ "$_dr_tl" = "$_dr_ban" ]; then printf '    ok  : the template carries the one banner line, equal to the literal\n'; else printf '    BAD : the template banner [%s] differs from the literal (or it holds more than one such line)\n' "$_dr_tl"; st_fail=1; fi
+  fi
+  echo "--- (dr12) strict: a CRLF file carrying the banner, and a banner with spaces around it -> FAIL ---"
+  d=$(_dr_fix dr12); printf '%s\r\n' "$_dr_ban" > "$d/RUNBOOK.md"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — RUNBOOK.md still carries the draft banner line"; st_hasnt "PASS: no inception draft remains"; st_rc 1
+  d=$(_dr_fix dr12b); printf '  %s   \n' "$_dr_ban" > "$d/RUNBOOK.md"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — RUNBOOK.md still carries the draft banner line"; st_hasnt "PASS: no inception draft remains"; st_rc 1
+  echo "--- (dr13) strict: a regular FILE named docs/inception-draft -> FAIL ---"
+  d=$(_dr_fix dr13); printf 'x\n' > "$d/docs/inception-draft"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — docs/inception-draft/ still exists"; st_hasnt "PASS: no inception draft remains"; st_rc 1
+  echo "--- (dr9) mutant: the draft-directory test dropped -> the directory cell (dr2) must red ---"
+  d=$(_dr_fix dr9); mkdir -p "$d/docs/inception-draft"; printf 'x\n' > "$d/docs/inception-draft/CHARTER.md"
+  _bpw_mut "$d" drdir '/# MUT-DRDIR$/s/.*/if false; then :; fi/' "FAIL: inception drafts unratified — docs/inception-draft/ still exists" "PASS: no inception draft remains"
+  echo "--- (dr10) mutant: the whole-line anchor dropped -> the longer-line cell (dr4) must red ---"
+  d=$(_dr_fix dr10); printf 'note: %s\n' "$_dr_ban" > "$d/RUNBOOK.md"
+  _bpw_mut "$d" dranchor '/# MUT-DRBANNER$/s/grep -qxF/grep -qF/' "PASS: no inception draft remains" "FAIL: inception drafts unratified — RUNBOOK.md still carries"
+  echo "--- (dr11) mutant: an unreadable file read as clean -> the unreadable cell (dr6) must red ---"
+  d=$(_dr_fix dr11); chmod 000 "$d/RUNBOOK.md"
+  if [ -r "$d/RUNBOOK.md" ]; then
+    echo "selftest n/a: (dr11) skipped — this user reads a mode 000 file (root)"
+  else
+    _bpw_mut "$d" drunread '/# MUT-DRUNREAD$/s/.*/    *) : ;;/' "FAIL: inception drafts unratified — RUNBOOK.md could not be read" "PASS: no inception draft remains"
+  fi
+  chmod 644 "$d/RUNBOOK.md" 2>/dev/null || true
 
   echo "--- (b10) sanitizer: a forged prefix over an EXPORTED triad, under bash-as-/bin/sh ---"
   selftest_sanitizer_bash_unset
@@ -1261,6 +1918,9 @@ seed_fixture_template() {
 # st_run <dir>: capture run_gate's combined output in OUT and its return in RC (subshelled so its
 #   `cd "$DIR"` does not move the selftest's own working directory).
 st_run() { OUT=$( ( MODE="${2:-strict}" run_gate "$1" ) 2>&1 ); RC=$?; }
+# st_real <dir> <strict|surface>: the REAL entry — this script run as `sh "$0" <dir> [--surface]`, with set -e live (st_run calls
+#   run_gate in the selftest's own `set +e` shell and cannot see an abort). The provenance leg reads INCEPTION_DONE_GH_CMD.
+st_real() { OUT=$( INCEPTION_DONE_GH_CMD="$_pub_stub" sh "$0" "$1" ${2:+--$2} 2>&1 ); RC=$?; }
 # st_has <substr>: OUT must contain <substr>. st_hasnt: OUT must NOT. st_rc <n>: RC must equal <n>.
 st_has()   { case "$OUT" in *"$1"*) printf '    ok  : has [%s]\n' "$1" ;; *) printf '    BAD : MISSING [%s]\n' "$1"; st_fail=1 ;; esac; }
 st_hasnt() { case "$OUT" in *"$1"*) printf '    BAD : SHOULD-NOT have [%s]\n' "$1"; st_fail=1 ;; *) printf '    ok  : absent [%s]\n' "$1" ;; esac; }

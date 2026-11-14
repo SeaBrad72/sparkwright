@@ -6,7 +6,7 @@
 # Four posture dimensions:
 #   conformance [GATING]   — sh conformance/verify.sh
 #   claims      [GATING]   — sh conformance/claims-registry.sh (kit-self: N/A on an adopter tree, see below)
-#   git         [ADVISORY] — branch, dirty-tree, tag alignment (WARN-only; never hard-fails alone)
+#   git         [ADVISORY] — branch, dirty-tree, tag alignment on the kit's own tree (WARN-only; never hard-fails alone)
 #   kit-update  [ADVISORY] — is the kit you ADOPTED behind the current release? (conformance/kit-current.sh)
 #
 # WHY kit-update IS HERE (P1.2/T7). The kit's own recurring failure — its board calls it KW21 — is a
@@ -230,6 +230,9 @@ if [ "${1:-}" = "--selftest" ]; then
   _dover=$(printf '%s\n' "$_kt_out" | grep -E '^Overall:' | head -1)
   printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+PASS$' \
     || { echo "doctor --selftest: FAIL (row D: a passing claim on a kit-marked tree did not render PASS)"; sfail=1; }
+  #   SWAS-775: a run that does not end in FAIL prints no operator-card pointer.
+  printf '%s\n' "$_kt_out" | grep -qF 'What this means for you:' \
+    && { echo "doctor --selftest: FAIL (row D: a run that did not fail printed the operator-card pointer)"; sfail=1; } || true
   _ktA=$(_kt_tree 1)
   for _kx in "" "--require"; do
     _kt_run "$_ktA" "$_kx"
@@ -247,6 +250,9 @@ if [ "${1:-}" = "--selftest" ]; then
   _kt_run "$_ktB" ""
   { printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+FAIL$' && printf '%s\n' "$_kt_out" | grep -q '^Overall: FAIL' && [ "$_kt_rc" -eq 1 ]; } \
     || { echo "doctor --selftest: FAIL (row B: a failing claim on the kit tree did not render claims FAIL / Overall: FAIL / exit 1)"; sfail=1; }
+  #   SWAS-775: an Overall: FAIL run prints the operator-card pointer, after the Overall line.
+  printf '%s\n' "$_kt_out" | awk '/^Overall: FAIL/ { o = 1; next } o && $0 == "What this means for you: docs/onboarding/operator-card.md" { f = 1 } END { exit f ? 0 : 1 }' \
+    || { echo "doctor --selftest: FAIL (row B: an Overall: FAIL run did not print the operator-card pointer after the Overall line)"; sfail=1; }
   _ktC=$(_kt_tree 1); mkdir -p "$_ktC/.github/workflows"; : > "$_ktC/.github/workflows/golden-path.yml"
   _kt_run "$_ktC" ""
   printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+FAIL$' \
@@ -405,6 +411,26 @@ if [ "${1:-}" = "--selftest" ]; then
       && { echo "doctor --selftest: FAIL (mutant shellexport-off survived: the shell-export cell would stay green)"; sfail=1; } || true
   fi
   rm -rf "$_mut_dir" 2>/dev/null || true
+
+  # SWAS-784 tree line: doctor's first line names the tree it reports on (the tree that holds the script, never $PWD), and it refuses nothing. An isolated copy of this
+  # script in a fixture tree, run from ANOTHER directory, so the line must name the fixture root and not the cwd; the mutant drops the line.
+  _tl_run() {  # <script> <cwd> -> stdout: the first line of a seam-flag run of <script>, run from <cwd>
+    ( cd "$2" && HOME="$2" GIT_CEILING_DIRECTORIES="$2" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true sh "$1" --selftest-e2e 2>/dev/null || true ) | sed -n 1p
+  }
+  _tl_root=$(mktemp -d); mkdir -p "$_tl_root/scripts"; cp "$0" "$_tl_root/scripts/doctor.sh"
+  _tl_cwd=$(mktemp -d)
+  _tl_want="doctor: reporting on $(cd "$_tl_root" && pwd -P)"
+  [ "$(_tl_run "$_tl_root/scripts/doctor.sh" "$_tl_cwd")" = "$_tl_want" ] \
+    || { echo "doctor --selftest: FAIL (the first line is not '$_tl_want': doctor does not name the tree it reports on)"; sfail=1; }
+  if _mut_make tree-line-dropped '/MUT-DOCROOT$/d'; then
+    cp "$_mut_dir/scripts/doctor.sh" "$_tl_root/scripts/doctor-mut.sh"
+    case "$(_tl_run "$_tl_root/scripts/doctor-mut.sh" "$_tl_cwd")" in
+      "doctor: reporting on "*) echo "doctor --selftest: FAIL (mutant tree-line-dropped survived: the tree line is still printed)"; sfail=1 ;;
+      "sparkwright doctor") : ;;
+      *) echo "doctor --selftest: FAIL (mutant tree-line-dropped never ran the real body: vacuous)"; sfail=1 ;;
+    esac
+  fi
+  rm -rf "$_mut_dir" "$_tl_root" "$_tl_cwd" 2>/dev/null || true
 
   # 6. FAIL-SAFE (design §3 F4) — absent / malformed / jq-absent → N/A-with-reason, NEVER a false OK.
   _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/none-l" \
@@ -804,6 +830,44 @@ FSTUB
     || { echo "doctor --selftest: FAIL (forge: an SSH origin did not render the SSH advisory)"; sfail=1; }
   printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
     || { echo "doctor --selftest: FAIL (forge: an scp-style SSH origin did not resolve to acme/widgets)"; sfail=1; }
+  # SWAS-223: the advisory names only the variables gh reads for github.com, GH_TOKEN and GITHUB_TOKEN. Each cell first unsets all four
+  # candidates (so the developer's own shell cannot move it), then sets at most one, and asserts on `set in the environment` (the SSH and HTTPS
+  # lines carry the same `forge credential:` prefix). The run must reach the forge (the identity line), else a silent line proves nothing.
+  _fg_cred() {  # [NAME] [script]: a default run through the stand-in; NAME (if given) is set to a marker; output in _o
+    : > "$_fgd/flog"; printf '%s' push > "$_fgd/fmode"; printf '%s' 200 > "$_fgd/fprot"
+    _o=$(env -u GH_TOKEN -u GITHUB_TOKEN -u GITHUB_PERSONAL_ACCESS_TOKEN -u GH_ENTERPRISE_TOKEN ${1:+"$1=CREDMARK-23"} \
+      DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="$_gh_o" sh "${2:-$0}" --selftest-e2e 2>&1) || true
+  }
+  for _fc in GITHUB_PERSONAL_ACCESS_TOKEN GH_ENTERPRISE_TOKEN; do
+    _fg_cred "$_fc"
+    printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
+      || { echo "doctor --selftest: FAIL (forge-cred: the $_fc run never reached the forge line: vacuous)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'set in the environment' \
+      && { echo "doctor --selftest: FAIL (forge-cred: $_fc alone printed a credential line, but gh does not read it for github.com)"; sfail=1; } || true
+    printf '%s\n' "$_o" | grep -qF 'CREDMARK' \
+      && { echo "doctor --selftest: FAIL (forge-cred: a token value reached doctor output for $_fc)"; sfail=1; } || true
+  done
+  for _fc in GH_TOKEN GITHUB_TOKEN; do
+    _fg_cred "$_fc"
+    printf '%s\n' "$_o" | grep -qxF "forge credential: $_fc set in the environment (it decides which credential gh uses; doctor does not read it)" \
+      || { echo "doctor --selftest: FAIL (forge-cred: $_fc alone did not render the credential line)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'CREDMARK' \
+      && { echo "doctor --selftest: FAIL (forge-cred: a token value reached doctor output for $_fc)"; sfail=1; } || true
+  done
+  # mutant gh-vars-restored: a temp copy that names the old third variable again (addressed to the loop line's own marker, so the cell's quoted
+  # sed is not touched); the PAT-only cell must go red (the line appears)
+  if _mut_make gh-vars-restored '/# MUT-GHVARS$/s/GITHUB_TOKEN; do/GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; do/' && sh -n "$_mut_dir/scripts/doctor.sh"; then
+    _fg_cred GITHUB_PERSONAL_ACCESS_TOKEN "$_mut_dir/scripts/doctor.sh"
+    printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
+      || { echo "doctor --selftest: FAIL (mutant gh-vars-restored: the mutated copy never reached the forge line - vacuous)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'set in the environment' \
+      || { echo "doctor --selftest: FAIL (mutant gh-vars-restored survived: the PAT-only cell would stay green)"; sfail=1; }
+  else
+    # _mut_make already printed its own FAIL when the sed matched nothing; only a copy that does not parse needs one here
+    [ ! -f "${_mut_dir:-/nonexistent}/scripts/doctor.sh" ] || { echo "doctor --selftest: FAIL (mutant gh-vars-restored does not parse)"; sfail=1; }
+  fi
+  rm -rf "${_mut_dir:-/nonexistent}" 2>/dev/null || true
 
   # — SWAS-207b: the merge relationship, the declaration agreement and the branch-protection line. All three are INFO: they never
   #   warn, never fail and never change the exit code. DOCTOR_FORGE_DIALS / DOCTOR_FORGE_GOV name fixture files standing in for
@@ -1217,6 +1281,7 @@ forge identity: N/A — no origin remote
 merge relationship: N/A — no origin remote
 branch protection: N/A — no origin remote
 secrets-in-tree: OK - no secret-named file in the working tree
+lease: N/A (scripts/checkout-lease.sh is not present in this tree)
 
 Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)
 
@@ -1229,7 +1294,10 @@ GOLD
   # trailing blanks are stripped on both sides: the header's `latest-tag:` line ends in a space an editor may drop from the golden.
   # The secrets-in-env line and its indented names are dropped from the comparison: they list THIS session's ambient variable names,
   # which no fixture controls (their own cells are the SWAS-357 ones above).
-  [ "$(printf '%s\n' "$_pq_out" | sed 's/[[:space:]]*$//' | awk '/^secrets-in-env:/ { drop = 1; next } drop && /^      / { next } { drop = 0; print }')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
+  # SWAS-784: the first line of stdout is now the tree line, whose path is the stub tree's (a mktemp name no golden can carry): it is asserted on its own, then dropped from the golden compare.
+  [ "$(printf '%s\n' "$_pq_out" | sed -n 1p)" = "doctor: reporting on $(cd "$_pq_a" && pwd -P)" ] \
+    || _pq_fail "C6: the first line of a default run is not the tree line naming the stub tree"
+  [ "$(printf '%s\n' "$_pq_out" | sed 1d | sed 's/[[:space:]]*$//' | awk '/^secrets-in-env:/ { drop = 1; next } drop && /^      / { next } { drop = 0; print }')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
     || _pq_fail "C6: the stdout of a default run changed (progress must be stderr only)"
 
   # SWAS-473 (MUT-DOCFSMON): doctor's own git row must not run a planted core.fsmonitor. The fixture is a repository whose core.fsmonitor names a canary script that writes FSMON-RAN if it is ever executed.
@@ -1591,6 +1659,88 @@ GOLD
   printf '%s\n' "$_pq_err" | grep -qE "^doctor \[1/[0-9]+\] done in .*\(row 0/$(grep -c '^check ' "$_pq_z/conformance/verify.sh") reported\)" \
     || _pq_fail "C8a: a battery that reported no rows did not say 'row 0/R'"
 
+  # WHY (SWAS-212): a failing gating row says why, on stdout, under its row; the Overall line names the dimensions that failed. The row lines
+  # themselves are unchanged (C8a above and row B still match them). Real path, stub batteries; the seam arms follow; then four mutants.
+  _wy_mut() {  # <tree> <sed script>: the tree's doctor.sh becomes a mutated copy of this one; rc 1 when the mutation did not apply
+    sed "$2" "$0" > "$1/scripts/doctor.sh"
+    ! cmp -s "$0" "$1/scripts/doctor.sh"
+  }
+  _wy_esc=$(printf '\033')
+  _wy_t=$(_pq_tree 1 3 'printf "  [control] bad-one FAIL\n  [control] bad-two FAIL\n  [doc] unv-one UNVERIFIED\n  [control] fine-one PASS\n  [control] ev\033[31mil FAIL\n"; exit 1'); _pq_run "$_wy_t"
+  printf '%s\n' "$_pq_out" | grep -qE '^  conformance +FAIL$' || _pq_fail "WHY1: the conformance row text moved"
+  for _wy_r in 'bad-one FAIL' 'bad-two FAIL' 'unv-one UNVERIFIED' 'ev\[31mil FAIL'; do
+    printf '%s\n' "$_pq_out" | grep -qE "^      $_wy_r\$" || _pq_fail "WHY1: the failing row '$_wy_r' is not printed under the conformance row"
+  done
+  printf '%s\n' "$_pq_out" | grep -qF 'fine-one' && _pq_fail "WHY1: a PASS row was listed as a cause" || true
+  printf '%s\n' "$_pq_out" | grep -q "$_wy_esc" && _pq_fail "WHY1: a control byte reached stdout" || true
+  _wy_a=$(printf '%s\n' "$_pq_out" | grep -nE '^  conformance +FAIL$' | head -1 | cut -d: -f1); _wy_b=$(printf '%s\n' "$_pq_out" | grep -n '^      bad-one FAIL$' | head -1 | cut -d: -f1)
+  { [ -n "$_wy_a" ] && [ -n "$_wy_b" ] && [ "$_wy_a" -lt "$_wy_b" ]; } || _pq_fail "WHY1: the cause rows do not follow the conformance row"
+  printf '%s\n' "$_pq_out" | grep -q '^Overall: FAIL  (' || _pq_fail "WHY1: the Overall: FAIL  ( prefix moved"
+  printf '%s\n' "$_pq_out" | grep -qF 'Overall: FAIL  (a gating dimension failed: conformance — the rows above say why' || _pq_fail "WHY1: the Overall line does not name conformance alone"
+  # no row named (the C8a stub): the line says so; a PASS battery adds nothing
+  _pq_run "$(_pq_tree 1 3 'exit 1')"
+  printf '%s\n' "$_pq_out" | grep -qxF '      (verify failed without naming a row)' || _pq_fail "WHY2: a failing battery that names no row did not say so"
+  _pq_run "$(_pq_tree 1 3 'exit 0')"
+  printf '%s\n' "$_pq_out" | grep -qF 'without naming a row' && _pq_fail "WHY2: a passing battery printed the no-row line" || true
+  # claims: the registry's FAIL lines, not its passes; the Overall line names claims
+  _wy_c=$(_pq_tree 1 3 'exit 0' 'printf "  FAIL claim-alpha: broken\n  pass claim-beta\nclaims: 1 pass · 0 N-A · 0 unverified · 1 fail\n"; exit 1'); _pq_run "$_wy_c"
+  printf '%s\n' "$_pq_out" | grep -qE '^  claims +FAIL' || _pq_fail "WHY3: the claims row text moved"
+  printf '%s\n' "$_pq_out" | grep -qxF '      FAIL claim-alpha: broken' || _pq_fail "WHY3: the registry's FAIL line is not printed under the claims row"
+  printf '%s\n' "$_pq_out" | grep -qF 'claim-beta' && _pq_fail "WHY3: a passing claim was listed as a cause" || true
+  printf '%s\n' "$_pq_out" | grep -qF 'Overall: FAIL  (a gating dimension failed: claims — the rows above say why' || _pq_fail "WHY3: the Overall line does not name claims alone"
+  _pq_run "$(_pq_tree 1 3 'exit 1' 'exit 1')"
+  printf '%s\n' "$_pq_out" | grep -qF 'Overall: FAIL  (a gating dimension failed: conformance, claims — the rows above say why' || _pq_fail "WHY4: the Overall line does not name both failing dimensions"
+  # the cap: 12 failing rows print 10 and a count line
+  _pq_run "$(_pq_tree 1 3 'i=1; while [ "$i" -le 12 ]; do printf "  [control] cap-$i FAIL\n"; i=$((i+1)); done; exit 1')"
+  [ "$(printf '%s\n' "$_pq_out" | grep -c '^      cap-')" = 10 ] && printf '%s\n' "$_pq_out" | grep -qxF '      ... and 2 more (first 10 shown)' || _pq_fail "WHY5: 12 failing rows were not capped at 10 with a count line"
+  # the seam arms (--selftest-e2e): the same lines under the same rows
+  _wy_sd=$(mktemp -d)
+  printf 'printf "  [control] seam-bad FAIL\\n"\nexit 1\n' > "$_wy_sd/v"; printf 'echo "FAIL claim-seam"\nexit 1\n' > "$_wy_sd/c"
+  _wy_so=$(DOCTOR_VERIFY_CMD="sh $_wy_sd/v" DOCTOR_CLAIMS_CMD="sh $_wy_sd/c" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_wy_so" | grep -qxF '      seam-bad FAIL' || _pq_fail "WHY6: the seam arm did not print the failing conformance row"
+  printf '%s\n' "$_wy_so" | grep -qxF '      FAIL claim-seam' || _pq_fail "WHY6: the seam arm did not print the registry's FAIL line"
+  printf '%s\n' "$_wy_so" | grep -qF 'failed: conformance, claims —' || _pq_fail "WHY6: the seam arm's Overall line does not name both dimensions"
+  rm -rf "$_wy_sd"
+  # mutants: each must drop what its cell asserts
+  if _wy_mut "$_wy_t" '/# MUT-DOCROWS$/s/^.*$/    :/'; then _pq_run "$_wy_t"
+    printf '%s\n' "$_pq_out" | grep -qxF '      bad-one FAIL' && _pq_fail "WHY mutant DOCROWS survived (the row names are not load-bearing)" || true
+  else _pq_fail "WHY mutant DOCROWS did not apply"; fi
+  if _wy_mut "$_wy_t" '/# MUT-DOCDIMS$/s/^.*$/  :/'; then _pq_run "$_wy_t"
+    printf '%s\n' "$_pq_out" | grep -qF 'failed: conformance —' && _pq_fail "WHY mutant DOCDIMS survived (the accumulator is not load-bearing)" || true
+  else _pq_fail "WHY mutant DOCDIMS did not apply"; fi
+  if _wy_mut "$_wy_t" '/# MUT-DOCOVERALL$/s/\${gate_dims:-unnamed}/conformance\/claims/'; then _pq_run "$_wy_t"
+    printf '%s\n' "$_pq_out" | grep -qF 'failed: conformance —' && _pq_fail "WHY mutant DOCOVERALL survived (a fixed dimension list passes)" || true
+  else _pq_fail "WHY mutant DOCOVERALL did not apply"; fi
+  if _wy_mut "$_wy_c" '/# MUT-DOCCLAIMS$/s/^.*$/  :/'; then _pq_run "$_wy_c"
+    printf '%s\n' "$_pq_out" | grep -qxF '      FAIL claim-alpha: broken' && _pq_fail "WHY mutant DOCCLAIMS survived (the claims lines are not load-bearing)" || true
+  else _pq_fail "WHY mutant DOCCLAIMS did not apply"; fi
+  rm -rf "$_wy_t" "$_wy_c" 2>/dev/null || true
+
+  # SWAS-223: the release-tag note is the KIT's (it compares the tree's VERSION to a v<VERSION> tag, and an adopter never has the kit's tag), so only a
+  # kit-marked tree checks it or prints `latest-tag:`. Real path, stub batteries, no git repository in either tree. The adopter tree must still
+  # print its git row (else a silent row proves nothing); the kit tree is the non-vacuity anchor; then one mutant per gate (header, git row).
+  _tg_mut() {  # <tree> <sed script>: _wy_mut, and the mutated copy must still parse (a broken copy would "fail" every assertion for the wrong reason)
+    _wy_mut "$1" "$2" && sh -n "$1/scripts/doctor.sh"
+  }
+  _tg_a=$(_pq_tree 0 3 'exit 0'); _pq_run "$_tg_a"
+  _tg_row=$(printf '%s\n' "$_pq_out" | grep -E '^  git +' | head -1)
+  case "$_tg_row" in *'[branch='*) ;; *) _pq_fail "TAG1: the adopter tree printed no git row (the cells below prove nothing)" ;; esac
+  case "$_tg_row" in *untagged/unreleased*) _pq_fail "TAG1: an adopter tree's git row carries the kit's untagged/unreleased note" ;; esac
+  case "$_tg_row" in *'; ]') _pq_fail "TAG1: an adopter tree's git row ends on a dangling separator" ;; esac
+  printf '%s\n' "$_pq_out" | grep -qF 'latest-tag:' && _pq_fail "TAG1: an adopter tree's header prints latest-tag:" || true
+  printf '%s\n' "$_pq_out" | grep -q '^branch: .*VERSION: ' || _pq_fail "TAG1: the adopter header line moved (branch, sha and VERSION are still printed)"
+  _tg_k=$(_pq_tree 1 3 'exit 0'); _pq_run "$_tg_k"
+  _tg_row=$(printf '%s\n' "$_pq_out" | grep -E '^  git +' | head -1)
+  case "$_tg_row" in *'WARN: v'*' untagged/unreleased]') ;; *) _pq_fail "TAG2: a kit-marked tree with no tag lost the untagged/unreleased WARN" ;; esac
+  printf '%s\n' "$_pq_out" | grep -qF 'latest-tag:' || _pq_fail "TAG2: a kit-marked tree's header lost latest-tag:"
+  if _tg_mut "$_tg_a" '/# MUT-DOCTAGGATE2$/s/^.*$/if false; then/'; then _pq_run "$_tg_a"
+    printf '%s\n' "$_pq_out" | grep -qF 'untagged/unreleased' || _pq_fail "TAG mutant DOCTAGGATE2 survived (the git-row gate is not load-bearing)"
+  else _pq_fail "TAG mutant DOCTAGGATE2 did not apply"; fi
+  if _tg_mut "$_tg_a" '/# MUT-DOCTAGGATE$/s/^.*$/if true; then/'; then _pq_run "$_tg_a"
+    printf '%s\n' "$_pq_out" | grep -qF 'latest-tag:' || _pq_fail "TAG mutant DOCTAGGATE survived (the header gate is not load-bearing)"
+  else _pq_fail "TAG mutant DOCTAGGATE did not apply"; fi
+  rm -rf "$_tg_a" "$_tg_k" 2>/dev/null || true
+
   # C8b (LOAD-BEARING NEGATIVE): an interrupted battery is never a PASS. Two distinct fail-closed paths, three stubs. The first two
   # record a NON-ZERO status: one kills itself with SIGTERM (a real signal) and, if TERM is ignored, still exits 130; the other is
   # a bare `exit 130`, independent of any signal disposition. The third kills its PARENT (the subshell that would have written the
@@ -1764,7 +1914,7 @@ GOLD
   # shellcheck disable=SC2016  # a sed script, literal on purpose
   _st_mut unreadable-silent 's/ || printf .%s\\n. "\$_sd_mark")/)/' unr
   _st_mut cap-removed 's/^_sd_cap=20$/_sd_cap=2000/' cap
-  _st_mut require-not-fail 's/_sd_v=FAIL; gate_fail=1;/_sd_v=FAIL;/' require
+  _st_mut require-not-fail 's/_sd_v=FAIL; _gate_fail secrets-in-tree;/_sd_v=FAIL;/' require
   _st_mut value-printed 's/print k }/print k "=" ENVIRON[k] }/' env
   chmod 755 "$_st/unr/sub" 2>/dev/null || true
   rm -rf "$_st" 2>/dev/null || true
@@ -2090,7 +2240,7 @@ _fg_line() {
 # _fg_advisory: NAMES ONLY (never a value): which variables decide the credential gh uses, and whether git pushes by SSH.
 _fg_advisory() {
   _fa_names=''
-  for _fa_v in GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; do
+  for _fa_v in GH_TOKEN GITHUB_TOKEN; do   # the two names gh reads for github.com, the only host doctor has an adapter for (SWAS-223)   # MUT-GHVARS
     eval "_fa_val=\${$_fa_v:-}"
     [ -z "$_fa_val" ] || _fa_names="$_fa_names${_fa_names:+, }$_fa_v"
   done
@@ -2370,6 +2520,40 @@ fi
 
 gate_fail=0
 warns=0
+# SWAS-212: a failing gating dimension says WHY, on stdout, under its row. gate_dims is the one accumulator the Overall line names its
+# dimensions from; _gate_fail <dimension> is the only way a gating site sets gate_fail, so the two cannot disagree.
+gate_dims=""
+_gate_fail() {
+  gate_fail=1
+  case ", $gate_dims, " in *", $1, "*) ;; *) gate_dims="$gate_dims${gate_dims:+, }$1" ;; esac   # MUT-DOCDIMS
+  return 0
+}
+# _why_show: stdin = candidate lines. At most 10 are printed, control bytes stripped, 240 columns, indented deeper than the row.
+_why_show() {
+  _wy_all=$(cat)
+  [ -n "$_wy_all" ] || return 0
+  _wy_n=$(printf '%s\n' "$_wy_all" | wc -l | tr -d ' ')
+  printf '%s\n' "$_wy_all" | sed -n '1,10p' | LC_ALL=C tr -d '\001-\011\013-\037\177' | cut -c1-240 | sed -e 's/^[[:space:]]*//' -e 's/^/      /'
+  [ "$_wy_n" -le 10 ] || echo "      ... and $((_wy_n-10)) more (first 10 shown)"
+  return 0
+}
+# _why_conformance <row status> <battery output>: the FAIL and UNVERIFIED result rows by name; a failing battery that names none says so.
+_why_conformance() {
+  [ "$1" != PASS ] || return 0
+  _wc_rows=$(printf '%s\n' "$2" | awk '/^  \[(control|doc)\] / { if ($NF == "FAIL" || $NF == "UNVERIFIED") print $2 " " $NF }')
+  if [ -n "$_wc_rows" ]; then
+    printf '%s\n' "$_wc_rows" | _why_show   # MUT-DOCROWS
+  elif [ "$1" = FAIL ]; then
+    echo "      (verify failed without naming a row)"
+  fi
+  return 0
+}
+# _why_claims <row status> <registry output>: the registry's own FAIL lines.
+_why_claims() {
+  [ "$1" = FAIL ] || return 0
+  printf '%s\n' "$2" | grep -w FAIL | _why_show || true   # MUT-DOCCLAIMS
+  return 0
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # step progress (SWAS-201). One "doctor [k/N] <step> ..." line when a step starts and "doctor [k/N] done in <t>" when it ends, a
@@ -2736,10 +2920,19 @@ _sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 _version=$(tr -d '[:space:]' < VERSION 2>/dev/null || echo "unknown")
 _latest_tag=$(git tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1 || echo "none")
 
+# SWAS-784: the first line names the tree this report is about. doctor resolves it from $0 (the cd at the top of this file), never from the caller's cwd; it refuses nothing.
+_tree_root=$(pwd -P)
+case "$_tree_root" in *[[:cntrl:]]*) _tree_root='<unprintable path>' ;; esac
+printf 'doctor: reporting on %s\n' "$_tree_root"   # MUT-DOCROOT
 echo "sparkwright doctor"
 echo "------------------"
-printf 'branch: %s  sha: %s  VERSION: %s  latest-tag: %s\n' \
-  "$_branch" "$_sha" "$_version" "$_latest_tag"
+# SWAS-223: the release tag is the KIT's, so only the kit's own tree prints it; an adopter tree never has it.
+if _pg_kit_tree; then   # MUT-DOCTAGGATE
+  printf 'branch: %s  sha: %s  VERSION: %s  latest-tag: %s\n' \
+    "$_branch" "$_sha" "$_version" "$_latest_tag"
+else
+  printf 'branch: %s  sha: %s  VERSION: %s\n' "$_branch" "$_sha" "$_version"
+fi
 echo ""
 
 # — POSTURE ——————————————————————————————————————————————————————————————————
@@ -2789,7 +2982,7 @@ if [ "$QUICK" = "1" ]; then
   # a warn, and a gate_fail under --require/CI. A seam command is skipped too: --quick means the battery does not run.
   printf '  %-14s UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)\n' "conformance"
   warns=$((warns+1))
-  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+  [ "$REQUIRE" = "1" ] && _gate_fail conformance || true
 elif [ -n "$DOCTOR_VERIFY_CMD" ]; then
   # overridden (selftest/test path) — invoke stub directly, no [ -f ] guard
   if _vout=$($DOCTOR_VERIFY_CMD 2>&1); then _vrc=0; else _vrc=$?; fi
@@ -2799,9 +2992,10 @@ elif [ -n "$DOCTOR_VERIFY_CMD" ]; then
     *) _vstatus="FAIL" ;;
   esac
   printf '  %-14s %s\n' "conformance" "$_vstatus"
+  _why_conformance "$_vstatus" "$_vout"
   case "$_vstatus" in
-    FAIL)       gate_fail=1 ;;
-    UNVERIFIED) [ "$REQUIRE" = "1" ] && gate_fail=1 || true ;;
+    FAIL)       _gate_fail conformance ;;
+    UNVERIFIED) [ "$REQUIRE" = "1" ] && _gate_fail conformance || true ;;
   esac
 elif [ -f "conformance/verify.sh" ]; then
   _args=""
@@ -2817,15 +3011,16 @@ elif [ -f "conformance/verify.sh" ]; then
   esac
   _pg_end "row ${_pv_seen:-0}/${_pv_tot:-0} reported"
   printf '  %-14s %s\n' "conformance" "$_vstatus"
+  _why_conformance "$_vstatus" "$_vout"
   case "$_vstatus" in
-    FAIL)       gate_fail=1 ;;
-    UNVERIFIED) [ "$REQUIRE" = "1" ] && gate_fail=1 || true ;;
+    FAIL)       _gate_fail conformance ;;
+    UNVERIFIED) [ "$REQUIRE" = "1" ] && _gate_fail conformance || true ;;
   esac
 else
   _pg_skip "conformance battery: conformance/verify.sh is not present, skipped"
   printf '  %-14s UNVERIFIED (not present)\n' "conformance"
   warns=$((warns+1))
-  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+  [ "$REQUIRE" = "1" ] && _gate_fail conformance || true
 fi
 
 # 2. claims [GATING]
@@ -2842,7 +3037,7 @@ if [ "$QUICK" = "1" ] && { [ -n "$DOCTOR_CLAIMS_CMD" ] || _pg_kit_tree; }; then
   # not apply there skip or not (SWAS-199 takes precedence).
   printf '  %-14s UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)\n' "claims"
   warns=$((warns+1))
-  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+  [ "$REQUIRE" = "1" ] && _gate_fail claims || true
 elif [ -n "$DOCTOR_CLAIMS_CMD" ]; then
   # overridden (selftest/test path) — invoke stub directly, no [ -f ] guard
   if _cout=$($DOCTOR_CLAIMS_CMD 2>&1); then _crc=0; else _crc=$?; fi
@@ -2851,7 +3046,8 @@ elif [ -n "$DOCTOR_CLAIMS_CMD" ]; then
     *) _cstatus="FAIL" ;;
   esac
   printf '  %-14s %s%s\n' "claims" "$_cstatus" "$(_claims_na_note "$_cout")"
-  [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
+  _why_claims "$_cstatus" "$_cout"
+  [ "$_cstatus" = "FAIL" ] && _gate_fail claims || true
 elif ! _pg_kit_tree; then
   # kit-self (SWAS-199): the registry grades the KIT's own headline claims. Neither kit marker (the same
   # pair verify.sh --kitself uses) means this is an exported/incepted adopter tree: the dimension stands
@@ -2868,12 +3064,13 @@ elif [ -f "conformance/claims-registry.sh" ]; then
   esac
   _pg_end
   printf '  %-14s %s%s\n' "claims" "$_cstatus" "$(_claims_na_note "$_cout")"
-  [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
+  _why_claims "$_cstatus" "$_cout"
+  [ "$_cstatus" = "FAIL" ] && _gate_fail claims || true
 else
   _pg_skip "claims registry: conformance/claims-registry.sh is not present, skipped"
   printf '  %-14s UNVERIFIED (not present)\n' "claims"
   warns=$((warns+1))
-  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+  [ "$REQUIRE" = "1" ] && _gate_fail claims || true
 fi
 
 # 3. git [ADVISORY — WARN-only; never sets gate_fail]
@@ -2927,7 +3124,10 @@ else
   _git_notes="${_git_notes}clean; "
 fi
 
-if [ -z "$_git_tag_for_ver" ]; then
+# SWAS-223: the tag is the kit's release tag, so an adopter tree (no kit marker) neither checks it nor ends the row on a dangling "; ".
+if ! _pg_kit_tree; then   # MUT-DOCTAGGATE2
+  _git_notes=${_git_notes%; }
+elif [ -z "$_git_tag_for_ver" ]; then
   _git_notes="${_git_notes}WARN: v${_version} untagged/unreleased"
   _git_warn=1
 else
@@ -3242,7 +3442,7 @@ if [ "$_sd_tree_on" -eq 1 ]; then
     warns=$((warns+1))
     echo "secrets-in-tree: WARN - no secret-named file found, but some paths unreadable (a permission error stopped part of the walk), so the tree is not cleared"
   else
-    if [ "$REQUIRE" -eq 1 ]; then _sd_v=FAIL; gate_fail=1; else _sd_v=WARN; warns=$((warns+1)); fi
+    if [ "$REQUIRE" -eq 1 ]; then _sd_v=FAIL; _gate_fail secrets-in-tree; else _sd_v=WARN; warns=$((warns+1)); fi
     echo "secrets-in-tree: $_sd_v - $_sd_total secret-named file(s) in the working tree$_sd_unr (names only; never read). Inject runtime secrets (op run, doppler run, aws-vault exec, CI secrets) instead: docs/operations/secrets-for-ai.md"
     _sd_show "$_sd_out"
   fi
@@ -3261,6 +3461,22 @@ if [ "$_sd_env_on" -eq 1 ]; then
   fi
   _pg_end
 fi
+# 9. lease [the checkout lease, SWAS-192 slice A; GATING only for the one state that fails closed]
+# `lease: off (no key, no lease log)` is a checkout that never opted in (or was rolled back by a human); `lease: on` is one that did.
+# FAIL: the key is gone (or false) while a lease or lease-log ref remains, so every lease-checking verb refuses (scripts/checkout-lease.sh).
+# Ceiling: a same-user process can delete the refs and the key together, and doctor cannot tell that from a checkout never enabled.
+# The three-state decision lives in the lease script (one source with the verbs' own fail-closed test); doctor prints its line.
+if [ -f scripts/checkout-lease.sh ]; then
+  _ls_rc=0; _ls_out=$(sh scripts/checkout-lease.sh doctor-line 2>&1) || _ls_rc=$?
+  printf '%s\n' "$_ls_out"
+  [ "$_ls_rc" -eq 0 ] || _gate_fail lease
+elif [ -n "$(git config --local --get kit.checkoutLease 2>/dev/null || true)" ] || [ -n "$(git for-each-ref --count=1 refs/local-lease/ refs/local-lease-log/ 2>/dev/null || true)" ]; then
+  # the verbs refuse in this state (their gates fail closed on a missing script), so doctor says so rather than N/A
+  _gate_fail lease
+  echo "lease: FAIL - scripts/checkout-lease.sh is missing but kit.checkoutLease is set or a lease ref exists: the kit's verbs refuse until it is restored (or a person rolls back by removing the key and every refs/local-lease* ref together)."
+else
+  echo "lease: N/A (scripts/checkout-lease.sh is not present in this tree)"
+fi
 # — VERDICT ——————————————————————————————————————————————————————————————————
 echo ""
 if [ "$QUICK" = "1" ] && [ "$gate_fail" = "1" ] && [ "$REQUIRE" = "1" ]; then
@@ -3273,11 +3489,16 @@ elif [ "$QUICK" = "1" ]; then
   # never PASS: conformance is always UNVERIFIED here, so warns >= 1; the first token stays Overall: (PASS|WARN|FAIL) for parsers
   echo "Overall: WARN  (--quick: conformance and claims were NOT run; this is not a pass. Run doctor without --quick for the verdict)"
 elif [ "$gate_fail" = "1" ]; then
-  echo "Overall: FAIL  (a gating dimension failed — fix conformance/claims before shipping)"
+  echo "Overall: FAIL  (a gating dimension failed: ${gate_dims:-unnamed} — the rows above say why; fix them before shipping)"   # MUT-DOCOVERALL
 elif [ "$warns" != "0" ]; then
   echo "Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)"
 else
   echo "Overall: PASS"
+fi
+# SWAS-775: an Overall of FAIL (every branch above that sets gate_fail) ends with the one line that sends a person to the one-page operator card. Not on WARN or PASS; no exit code moves.
+# conformance/agents-brief.sh pins the card to this verdict's prefix and runs this script to read this line.
+if [ "$gate_fail" = "1" ]; then
+  echo "What this means for you: docs/onboarding/operator-card.md"
 fi
 
 # — FOOTER (honest ceiling) ——————————————————————————————————————————————————

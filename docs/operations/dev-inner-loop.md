@@ -6,7 +6,7 @@ Rapid iteration depends on a **tight inner loop**: the smaller the gap between w
 | Tier | Fires on | Runs (seconds-fast) | Purpose | Bypassable? |
 |------|----------|---------------------|---------|-------------|
 | **Pre-commit** | every `git commit` | format · lint · type-check (changed files) · the **affected/fast test subset** | catch the trivial stuff *before* it's even committed | yes (`--no-verify`) — it's a convenience, not a control |
-| **Pre-push** | before every `git push` | the **agent guard** (`hooks/pre-push`) · plus `sparkwright prepush` — CI's cheap face, run by hand | safety speed-bump (force-push/push-to-main/destructive) · and: find the red here, not on a runner | yes (`--no-verify` for the hook; the lane is a command you choose to run) |
+| **Pre-push** | before every `git push` | the **agent guard** (`hooks/pre-push`) · plus `sh scripts/sparkwright prepush` — CI's cheap face, run by hand | safety speed-bump (force-push/push-to-main/destructive) · and: find the red here, not on a runner | yes (`--no-verify` for the hook; the lane is a command you choose to run) |
 | **CI** | every PR | the full §14 gate set (lint · types · **full** tests+coverage · build · secret-scan · SBOM · provenance) | the authoritative gate — **not** bypassable | no |
 
 **Keep them layered, not redundant.** Pre-commit runs *fast* checks on *changed* files only (sub-10s is the target) — if it gets slow, people disable it. The *full* suite, coverage gate, and supply-chain gates live in CI where slowness is acceptable. The pre-push *hook* is the guard, not a test runner — the parity lane below is a separate, deliberate command (minutes, not seconds), run once before the branch's one push rather than on every commit.
@@ -16,10 +16,10 @@ Rapid iteration depends on a **tight inner loop**: the smaller the gap between w
 One command, no arguments, before the branch's one push:
 
 ```sh
-sparkwright prepush            # = sh conformance/prepush-lane.sh
+sh scripts/sparkwright prepush            # = sh conformance/prepush-lane.sh
 ```
 
-What it runs is derived from `ci.yml` at run time, not hand-curated: the lane runs what it derived serially, under `dash` (CI's `/bin/sh`), in a scrubbed environment (`GH_*`/`GIT_*`/`KIT_*` unset, an empty `HOME`, `LC_ALL=C`), and writes nothing in the repo. A tokenizer-independent census (`sparkwright prepush --census`) reds when a `conformance/` mention in `ci.yml` is neither derived nor explained by a row in `conformance/prepush-twins.tsv`.
+What it runs is derived from `ci.yml` at run time, not hand-curated: the lane runs what it derived serially, under `dash` (CI's `/bin/sh`), in a scrubbed environment (`GH_*`/`GIT_*`/`KIT_*` unset, an empty `HOME`, `LC_ALL=C`), and writes nothing in the repo. A tokenizer-independent census (`sh scripts/sparkwright prepush --census`) reds when a `conformance/` mention in `ci.yml` is neither derived nor explained by a row in `conformance/prepush-twins.tsv`.
 
 **What the default runs.** The default proves the change's *own surface*, not CI parity:
 - scoped lint: `shellcheck.sh --listed` on the listing's shell files (the full shellcheck lock stays in CI and `--warranted`);
@@ -32,7 +32,7 @@ What it runs is derived from `ci.yml` at run time, not hand-curated: the lane ru
 
 The rest of the ~81-86 CI-derived `core-live` checks no longer run by default; one note line says how many, and that `--warranted` and CI run them.
 
-**The recipe is one command: run `sparkwright prepush` (the default) once on the final head, push once, and CI is the net**. Do not re-run by hand what the default already covers. It runs under `dash` on your machine; BSD-versus-GNU divergence (macOS vs Linux) is CI's to catch. If CI goes red and the cause is understood, fix and push again.
+**The recipe is one command: run `sh scripts/sparkwright prepush` (the default) once on the final head, push once, and CI is the net**. Do not re-run by hand what the default already covers. It runs under `dash` on your machine; BSD-versus-GNU divergence (macOS vs Linux) is CI's to catch. If CI goes red and the cause is understood, fix and push again.
 
 **`--warranted` is optional.** Recommended only when a CI red is expensive to redo: CI takes longer than ~30 min, or the change edits a shared library many checks read (for example `conformance/backlog-lib.sh`, `conformance/version-helpers.sh`, `.claude/hooks/guard-core.sh`). When in doubt, don't, but a change to the guard or secret-scan is never a case for doubt: run `--warranted`. The measurement behind this (2026-10-03, every `--warranted` line in the preceding week's review records): about 15 slices at 45-75 min per run; 2 real catches (a mass-budget overrun; a green-on-clone red plus mass budget and backlog presence), both also red in CI; one run wasted 78 min with no verdict; a CI round is about 25-40 min, plus re-binding review and GO records to the new SHA. On that evidence `--warranted` breaks even at best.
 
@@ -58,4 +58,4 @@ An agent's inner loop is the same loop. A fast pre-commit means an agent (or hum
 - **Format/lint:** the stack's formatter + linter on staged files only (`ruff` / `prettier`+`eslint` / `gofmt`+`golangci-lint` / `rustfmt`+`clippy`).
 
 ## What this is — and isn't
-Pre-commit is a **recommended accelerator, not a gate** (it's `--no-verify`-able by design — gating on it would just train people to bypass it). The authoritative enforcement stays in CI (§14) and the guard (pre-push). `sparkwright prepush` is the same kind of thing — a command you choose to run, whose rc no gate consumes today; it buys iterations, not authority. This tier exists purely to make the fast path *fast*.
+Pre-commit is a **recommended accelerator, not a gate** (it's `--no-verify`-able by design — gating on it would just train people to bypass it). The authoritative enforcement stays in CI (§14) and the guard (pre-push). `sh scripts/sparkwright prepush` is the same kind of thing — a command you choose to run, whose rc no gate consumes today; it buys iterations, not authority. This tier exists purely to make the fast path *fast*.

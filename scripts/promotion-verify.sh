@@ -49,7 +49,8 @@
 #                     `git show <tag>:VERSION` == `git show <approved-sha>:VERSION` (belt+braces).
 #          Ref is treated as a tag when refs/tags/<ref> resolves, else as a merged ref.
 #
-# Exit: 0 = ok . 1 = MISMATCH (loud: "SHIPPED != APPROVED") . 2 = usage/args.
+# Exit: 0 = ok . 1 = MISMATCH (loud: "SHIPPED != APPROVED") . 2 = usage/args . 5 = the checkout lease refused (`record`, `land` and `actuate`,
+# only in a checkout that opted in with `kit.checkoutLease`: they need `--lease-token <sha>`; the check runs before the verb's own argument checks).
 #
 # HONEST CEILING (do not overclaim):
 #   * `shipped == approved` is the GATEABLE guarantee — the record's existence, its SHA-binding,
@@ -152,6 +153,109 @@ _pv_ref_exists() {
   git symbolic-ref -q "$1" >/dev/null 2>&1 && return 0
   git rev-parse -q --verify "$1" >/dev/null 2>&1 && return 0
   [ -n "$(git for-each-ref "$1" 2>/dev/null)" ]
+}
+# THE RECORD SPLITTER (SWAS-323): a note is a LIST of records. A record starts at a header line `record: promotion ` or
+# `land: promotion ` (a `land:` record is of another type that no GO reader takes), and the blank lines
+# between records are dropped, so each record's bytes are exactly what `record` composed. The note is DEFECTIVE, and holds NO
+# record at all (a reader then binds nothing, fail closed), when its first line is not a header (D1), a non-blank line is not
+# `key: value` (D2), or a key repeats inside one record (D3: other readers take `head -1`, a matcher greps every line, so a
+# repeat would let them judge different values). Out = `bad` (1 when defective), `n` (record count, 0 when defective), `type`
+# or `body` of record <k>. KEEP THE TWO IN STEP: conformance/ceremony-binding.sh carries this block byte for byte (cell P1).
+# BEGIN kit_note_records
+kit_note_records() {
+  awk -v out="$1" -v k="${2:-0}" '
+    function hdr(s) { return s ~ /^(record|land): promotion / }
+    NF == 0 { next }
+    { if (NR == 1 && !hdr($0)) bad = 1
+      if (hdr($0)) { n++; typ[n] = $0; sub(/: .*/, "", typ[n]) } else if (n == 0) bad = 1
+      if ($0 !~ /^[A-Za-z0-9_-]+:( |$)/) bad = 1
+      else { key = $0; sub(/:.*/, "", key); if ((n, key) in seen) bad = 1; seen[n, key] = 1 }
+      if (n > 0) bod[n] = bod[n] $0 "\n" }
+    END { if (n > 64) bad = 1
+          if (bad) n = 0
+          if (out == "bad") print bad + 0; else if (out == "n") print n + 0
+          else if (out == "type") print typ[k]; else if (out == "body") printf "%s", bod[k] }'
+}
+# END kit_note_records
+# _pv_rec_field <record> <key> -> the first `<key>: ` value of a record (a record holds each key once).
+_pv_rec_field() { printf '%s\n' "$1" | sed -n "s/^$2: //p" | head -1; }
+# _pv_note_with <note> -> the note with the GO record keyed (scope, gate) = ($scope, $gate) replaced by $nbody, which goes last
+# (a different key is kept beside it: SWAS-323). Every record of another type is kept. A note with no whole record (a defective
+# one, which binds nothing) is replaced outright, as a re-record always did, and says so.
+_pv_note_with() {
+  _nw_out=""; _nw_kept=0; _nw_nl='
+'
+  _nw_n="$(printf '%s\n' "$1" | kit_note_records n)"; _nw_i=0
+  if [ "$_nw_n" = 0 ] && [ -n "$(printf '%s' "$1" | tr -d '[:space:]')" ]; then
+    echo "record: the note on $asha is not a well-formed list of records (it binds nothing); it is replaced by this record." >&2
+  fi
+  while [ "$_nw_i" -lt "$_nw_n" ]; do
+    _nw_i=$((_nw_i + 1))
+    _nw_rec="$(printf '%s\n' "$1" | kit_note_records body "$_nw_i")"
+    _nw_t="$(printf '%s\n' "$1" | kit_note_records type "$_nw_i")"
+    if [ "$_nw_t" = record ] \
+       && [ "$(_pv_rec_field "$_nw_rec" scope)" = "$scope" ] && [ "$(_pv_rec_field "$_nw_rec" gate)" = "$gate" ]; then
+      continue
+    fi
+    # SWAS-323b: a land record is keyed (scope, land), so a land record of the same scope is superseded by the one written with this GO.
+    _nw_sc="$(_pv_rec_field "$_nw_rec" scope)"
+    if [ "$_nw_t" = land ] && [ -n "${lbody:-}" ] && [ "$_nw_sc" = "$scope" ]; then
+      continue
+    fi
+    _nw_out="$_nw_out$_nw_rec$_nw_nl$_nw_nl"; _nw_kept=$((_nw_kept + 1))
+  done
+  # the land record, when this GO carries one, counts toward the cap beside the GO record (SWAS-323b)
+  if [ -n "${lbody:-}" ]; then _nw_kept=$((_nw_kept + 1)); fi
+  # The splitter calls a note of more than 64 records DEFECTIVE, so writing a 65th would make the note bind nothing and the next record
+  # would replace it outright. Refuse before the write, on the freshly synced note (R11).
+  if [ $((_nw_kept + 1)) -gt 64 ]; then
+    echo "record: the note on $asha already holds $_nw_kept other records and a note is capped at 64 records — refusing to record." >&2
+    return 2
+  fi
+  if [ -n "${lbody:-}" ]; then printf '%s%s%s%s\n' "$_nw_out" "$nbody" "$_nw_nl$_nw_nl" "$lbody"; return 0; fi
+  printf '%s%s\n' "$_nw_out" "$nbody"
+}
+# _pv_note_pick <note> <scope> <gate> -> prints the GO record keyed (scope, gate); rc 1 when the note holds none.
+_pv_note_pick() {
+  _np_n="$(printf '%s\n' "$1" | kit_note_records n)"; _np_i=0
+  while [ "$_np_i" -lt "$_np_n" ]; do
+    _np_i=$((_np_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_np_i")" = record ] || continue
+    _np_r="$(printf '%s\n' "$1" | kit_note_records body "$_np_i")"
+    if [ "$(_pv_rec_field "$_np_r" scope)" = "$2" ] && [ "$(_pv_rec_field "$_np_r" gate)" = "$3" ]; then
+      printf '%s\n' "$_np_r"; return 0
+    fi
+  done
+  return 1
+}
+# _pv_land_go <note> <land record> -> prints the GO record a land record BINDS; rc 1 when it binds none (SWAS-323b). Bound means BOTH: the
+# land record's go-record-sha256 is the sha256 of the bytes of a GO record live in this note (so a re-record of that GO leaves it dangling),
+# and its landed-tree equals that GO record's approved-tree (serial land: landed-tree = approved-tree). `trace` indexes a land record only
+# when this holds, because trace --recent is CI's recordless-merge backstop and landed-tree feeds it.
+_pv_land_go() {
+  _lg_h="$(_pv_rec_field "$2" go-record-sha256)"; _lg_t="$(_pv_rec_field "$2" landed-tree)"
+  if [ -z "$_lg_h" ] || [ -z "$_lg_t" ]; then return 1; fi
+  _lg_n="$(printf '%s\n' "$1" | kit_note_records n)"; _lg_i=0
+  while [ "$_lg_i" -lt "$_lg_n" ]; do
+    _lg_i=$((_lg_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_lg_i")" = record ] || continue
+    _lg_r="$(printf '%s\n' "$1" | kit_note_records body "$_lg_i")"
+    _lg_s="$(printf '%s\n' "$_lg_r" | pv_sha256)" || return 1
+    if [ "${#_lg_s}" != 64 ]; then return 1; fi   # no sha256 tool: nothing binds (fail closed)
+    if [ "$_lg_s" = "$_lg_h" ] && [ "$(_pv_rec_field "$_lg_r" approved-tree)" = "$_lg_t" ]; then printf '%s\n' "$_lg_r"; return 0; fi
+  done
+  return 1
+}
+# _pv_note_pick_land <note> <scope> -> prints the land record of that scope; rc 1 when the note holds none.
+_pv_note_pick_land() {
+  _pl2_n="$(printf '%s\n' "$1" | kit_note_records n)"; _pl2_i=0
+  while [ "$_pl2_i" -lt "$_pl2_n" ]; do
+    _pl2_i=$((_pl2_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_pl2_i")" = land ] || continue
+    _pl2_r="$(printf '%s\n' "$1" | kit_note_records body "$_pl2_i")"
+    if [ "$(_pv_rec_field "$_pl2_r" scope)" = "$2" ]; then printf '%s\n' "$_pl2_r"; return 0; fi
+  done
+  return 1
 }
 # _pv_scratch_free <mode> — the scratch ref must NOT pre-exist before anything is fetched into it: `fetch -f`
 # writes THROUGH a symbolic ref (B1), so a pre-planted `refs/kit/notes-remote-<pid>` -> the ledger would be
@@ -289,7 +393,7 @@ usage() {
   echo "  promotion-verify.sh actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
   echo "        --ref is the PR's head branch, fetched, and must equal <sha> (refused before any merge otherwise); a" >&2
   echo "        caller --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from" >&2
-  echo "        origin. The real shipped == approved check on the trunk is promotion-verify.sh trace --recent (the kit's CI runs it; adopter-gates.yml does not yet, so an adopter runs it on main)." >&2
+  echo "        origin. The real shipped == approved check on the trunk is promotion-verify.sh trace --recent (the kit's CI runs it on every pull request; on GitHub the trunk-trace job in adopter-trunk-trace.yml runs it on every push to your default branch, reporting only until you set TRUNK_TRACE_MODE: enforce; on another host, run it on your trunk yourself)." >&2
   echo "  promotion-verify.sh land --ref <pr|tag|merged-ref> --merge-cmd \"<cmd>\" \\" >&2
   echo "                           --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> \\" >&2
   echo "                           --class <c> --scope <s> --token <str> --go-by <the GO-giver> [--basis <t>]" >&2
@@ -313,8 +417,11 @@ usage() {
   echo "        origin, land does NOT merge. --no-push is REFUSED (a landing merge must publish the" >&2
   echo "        GO so it reaches origin — landing on a local-only note would reopen #658). Default" >&2
   echo "        merge: gh pr merge <ref> --squash --match-head-commit <sha> — NEVER --admin, NEVER --delete-branch." >&2
+  echo "        land also writes a LAND record beside the GO (one transaction) and refuses a head that origin's default branch is not an" >&2
+  echo "        ancestor of (serial land; it assumes the PR targets that branch). Exit 3 = the merge HAPPENED but origin's new tip carries a" >&2
+  echo "        tree that is not the landed tree (SHIPPED != APPROVED): never read 3 as 'refused, nothing merged'." >&2
   echo "        Verb-scoped: land refuses a recordless merge on its OWN path; the universal net for a" >&2
-  echo "        recordless merge is the recordless-merge backstop (promotion-verify.sh trace --recent: the kit's CI runs it, adopter-gates.yml does not yet)." >&2
+  echo "        recordless merge is the recordless-merge backstop (promotion-verify.sh trace --recent: the kit's CI runs it; on GitHub an adopter's trunk-trace job in adopter-trunk-trace.yml runs it on each push to the default branch, observe by default; on another host, run it on your trunk yourself)." >&2
   echo "  BOARD TAIL (land AND actuate): after the merge both verbs release the row's claim and, on a JIRA" >&2
   echo "        backend, close its card (\`board.sh release <ROW> --stale\`: card -> Done). On every run that MERGED" >&2
   echo "        the LAST line of stdout is exactly one of (a stable contract; read this line, not the exit code):" >&2
@@ -746,6 +853,51 @@ pv_token_file_load() {
 # was the GO) or `separate` for a held approval released by a typed GO; PV_REC_GOWORDS / PV_REC_GOSHA are the held review's words,
 # made safe, and the sha256 of the raw body.
 PV_REC_GOACT=""; PV_REC_GOWORDS=""; PV_REC_GOSHA=""
+# THE LAND RECORD (SWAS-323b). `land` alone sets PV_REC_LAND=1 (and PV_LAND_BASE, origin's default-branch tip) before it calls do_record, which
+# then writes the land record beside the GO record in the SAME transaction (one read-modify-write, one push). Plain assignments here at the
+# top of the script, so no environment variable of these names reaches a verb; the public `record` verb leaves both empty.
+PV_REC_LAND=""; PV_LAND_BASE=""
+# pv_compose_land — sets `lbody`, the land record of a serial land (a batch of one), from do_record's locals (asha, atree, scope, kitrow,
+# nbody, ts) and PV_LAND_BASE. It binds the exact GO by the sha256 of the GO record's bytes as the splitter returns them (the lines of
+# $nbody, each ending in a newline). It is the AUDIT projection of what land landed (no control decision reads it, design 4): `trace`
+# binds it only after checking the hash and the tree. landed-tree = tested-tree = approved-tree holds because land refused an
+# approved head that is not up to date with base (serial land); the queue and verdict fields read `(none: serial)`.
+pv_compose_land() {
+  _pl_full="$(git rev-parse -q --verify "${asha}^{commit}" 2>/dev/null)" || _pl_full=""
+  _pl_hash="$(printf '%s\n' "$nbody" | pv_sha256)" || _pl_hash=""   # pv_sha256 (sha256sum, shasum, openssl) prints nothing without a tool: fail closed
+  _pl_btree="$(git rev-parse -q --verify "${PV_LAND_BASE}^{tree}" 2>/dev/null)" || _pl_btree=""
+  if [ -z "$_pl_full" ] || [ "${#_pl_hash}" != 64 ] || [ -z "$_pl_btree" ]; then
+    echo "record: could not compose the land record (the approved commit, a sha256 tool or origin's base tree is unreadable) — nothing was written." >&2
+    return 2
+  fi
+  _pl_n="$(pv_ev_pr_number "$scope" 2>/dev/null)" || _pl_n=""
+  _pl_id="PR-$_pl_n"; if [ -z "$_pl_n" ]; then _pl_id="$scope"; fi
+  _pl_utc="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo unknown)"
+  lbody="$(printf '%s\n' \
+      "land: promotion LAND (approve->execute->log)" \
+      "approved-sha: $asha" \
+      "approved-tree: $atree" \
+      "scope: $scope" \
+      "kit-row: $kitrow" \
+      "go-record-sha256: $_pl_hash" \
+      "batch: serial-$_pl_utc-${_pl_n:-none}" \
+      "member: 1/1" \
+      "members: $_pl_id@$(printf '%s' "$_pl_full" | cut -c1-12)" \
+      "base-sha: $PV_LAND_BASE" \
+      "prefix-prev-tree: $_pl_btree" \
+      "landed-tree: $atree" \
+      "tested-tree: $atree" \
+      "queue-sha: (none: serial)" \
+      "queue-run: (none: serial)" \
+      "verdict-run: (none: serial)" \
+      "recorded-at: $ts")"
+  # the same belt as the GO record's: no line but the header may read as a record header
+  if printf '%s\n' "$lbody" | sed 1d | grep -Eq '^(record|land): promotion '; then
+    echo "record: a land-record line reads as a record header ('record: promotion ' or 'land: promotion ') — refusing to record." >&2
+    lbody=""; return 2
+  fi
+  return 0
+}
 
 # pv_record_goact — add the go-act lines to the note being composed (do_record's locals: assurance, goby, goby_line, _rec_extra).
 # A one-act note is written only if the forge STILL shows the authenticated approval at record time, and its go-by then carries the
@@ -778,7 +930,7 @@ go-words-sha256: $PV_REC_GOSHA" ;;
 
 do_record() {
   asha=""; aby=""; gate=""; rung=""; cls=""; scope=""; token=""; basis=""; nopush=0
-  goby=""; goby_given=0; tok_arg=0; tok_file=0; tokpath=""
+  goby=""; goby_given=0; tok_arg=0; tok_file=0; tokpath=""; lbody=""
   while [ $# -gt 0 ]; do
     case "$1" in
       # ARGUMENT ONLY, never an env var (security vet T3): the offline escape must be visible in the
@@ -923,6 +1075,17 @@ do_record() {
     return 2
   fi
   [ -n "$basis" ] || basis="(none recorded)"
+  # SWAS-323, AFTER every older per-field refusal (each keeps its own message): `git notes add -F` strips trailing whitespace, so a
+  # free-text value that ends in whitespace would be stored differently from the record `land` composed and read back as a misleading
+  # "mismatched". Refuse it here, naming the field.
+  for _p in "token=$token" "basis=$basis" "approved-by=$aby" "go-by=$goby" "scope=$scope" "rung=$rung" "gate=$gate"; do
+    _fn="${_p%%=*}"; _fv="${_p#*=}"
+    case "$_fv" in
+      *[[:space:]])
+        echo "record: --$_fn ends in whitespace — rejected (the ledger strips trailing whitespace, so the note would not say what was approved; remove it)" >&2
+        return 2 ;;
+    esac
+  done
   # THE GO-GIVER LINE: the name with a FIXED `[self-asserted]` literal (the kit never claims to authenticate
   # the person whose judgment the GO is — the forge review in approved-by is the one authenticated control),
   # or `(none recorded)` mirroring basis:. No byte of any derivation reaches this line.
@@ -993,8 +1156,8 @@ do_record() {
   _rec_extra=""
   if [ -n "$PV_REC_GOACT" ]; then pv_record_goact || return 2; fi
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-  # Bind the structured record to the approved commit as a note (tree-invariant). `-f` overwrites a
-  # prior note on the same commit (re-record supersedes) — honest: notes are mutable (see ceiling).
+  # Bind the structured record to the approved commit as a note (tree-invariant). `-f` writes the whole note back (SWAS-323: the
+  # note is a list of records and only the same (scope, gate) key is superseded) — honest: notes are mutable (see ceiling).
   # KIT_PROMOTION_FRONT_DOOR=1 is the FRONT-DOOR SENTINEL, scoped to this ONE command [B2 sec H1].
   # guard-core.sh's Δ4(i)′ arm denies raw `git notes` writes to the ledger; under `kit-guard
   # install-shims` every git invocation is routed through that arm, so without this the arm blocked
@@ -1030,6 +1193,14 @@ do_record() {
       "recorded-at: $ts")"
   if [ -n "$_rec_extra" ]; then nbody="$nbody
 $_rec_extra"; fi
+  # SWAS-323: no composed line but the first may read as a record header, or a note would split inside this record.
+  if printf '%s\n' "$nbody" | sed 1d | grep -Eq '^(record|land): promotion '; then
+    echo "record: a field line reads as a record header ('record: promotion ' or 'land: promotion ') — refusing to record." >&2
+    return 2
+  fi
+  # SWAS-323b: `land` alone asks for the land record, composed ONCE here beside the GO record (vet M3: the bytes of both are fixed before
+  # the transaction, and only the note that holds them is recomputed on a retry).
+  if [ "$PV_REC_LAND" = 1 ]; then pv_compose_land || return 2; fi
 
   _pv_rec_rc=0; _pv_record_txn || _pv_rec_rc=$?
   _pv_crit_leave    # a signal deferred inside the transaction stops the run HERE, published or unwound
@@ -1050,7 +1221,18 @@ _pv_record_txn() {
     # _pre is captured AFTER every sync-in (security vet T1): unwinding to a value captured before
     # the fetch would move the ref BACKWARDS past records the fetch legitimately brought in.
     _pre="$(git rev-parse -q --verify "refs/notes/$NOTES_REF" 2>/dev/null || true)"
-    if ! printf '%s\n' "$nbody" \
+    # SWAS-323: READ-MODIFY-WRITE on the freshly synced tip. The note holds a list of records; the one with this (scope, gate) key
+    # is replaced, every other record stays, and the whole note is written with the same `add -f`. Read AFTER the sync-in, so a
+    # record another lane published a moment ago is kept, not erased. A one-record note is byte-identical to before.
+    # FAIL CLOSED (SWAS-323): a note that exists but cannot be read is never treated as an empty note, or its records would be erased.
+    if git notes --ref="$NOTES_REF" list "$asha" >/dev/null 2>&1; then
+      _pv_old="$(git notes --ref="$NOTES_REF" show "$asha" 2>/dev/null)" || {
+        echo "record: a note exists on $asha but could not be read — refusing to write over it." >&2; return 2; }
+    else
+      _pv_old=""
+    fi
+    _pv_new="$(_pv_note_with "$_pv_old")" || return 2
+    if ! printf '%s\n' "$_pv_new" \
         | KIT_PROMOTION_FRONT_DOOR=1 git notes --ref="$NOTES_REF" add -f -F - "$asha" >/dev/null 2>&1; then
       echo "record: failed to write note refs/notes/$NOTES_REF on $asha" >&2; return 2
     fi
@@ -1183,7 +1365,26 @@ do_trace() {
   _tr_map=""
   _tr_unres=""
   for _tr_a in $(printf '%s\n' "$_tr_idx" | awk '{print $2}'); do
-    _tr_body="$(git notes --ref="$NOTES_REF" show "$_tr_a" 2>/dev/null)" || _tr_body=""
+    _tr_note="$(git notes --ref="$NOTES_REF" show "$_tr_a" 2>/dev/null)" || _tr_note=""
+    # SWAS-323: a note is a list of records. Every GO record is indexed by its own approved tree; a record of another type (a
+    # land record) is skipped, and a defective note holds no record, so it indexes nothing and its commit reds as recordless.
+    _tr_rn="$(printf '%s\n' "$_tr_note" | kit_note_records n)"; _tr_ri=0
+    # SWAS-323b: a land record is indexed FIRST, and only when it is BOUND (its go-record-sha256 is the sha256 of a GO record live on this
+    # object AND its landed-tree is that record's approved-tree); an unbound land record binds nothing. The entry carries the land record's
+    # index, so the claim stays per object while the record printed is the one that matched.
+    _tr_li=0
+    while [ "$_tr_li" -lt "$_tr_rn" ]; do
+      _tr_li=$((_tr_li + 1))
+      [ "$(printf '%s\n' "$_tr_note" | kit_note_records type "$_tr_li")" = land ] || continue
+      _tr_lb="$(printf '%s\n' "$_tr_note" | kit_note_records body "$_tr_li")"
+      _pv_land_go "$_tr_note" "$_tr_lb" >/dev/null || continue
+      _tr_map="$_tr_map$(_pv_rec_field "$_tr_lb" landed-tree) $_tr_a $_tr_li
+"
+    done
+    while [ "$_tr_ri" -lt "$_tr_rn" ]; do
+    _tr_ri=$((_tr_ri + 1))
+    [ "$(printf '%s\n' "$_tr_note" | kit_note_records type "$_tr_ri")" = record ] || continue
+    _tr_body="$(printf '%s\n' "$_tr_note" | kit_note_records body "$_tr_ri")"
     _tr_t="$(printf '%s\n' "$_tr_body" | sed -n 's/^approved-tree: //p' | head -1)"
     if [ -z "$_tr_t" ]; then
       # LEGACY FALLBACK. ⚠️ Resolve the tree of the sha the NOTE RECORDS, not of the object the note
@@ -1196,12 +1397,16 @@ do_trace() {
       [ -n "$_tr_asha" ] || _tr_asha="$_tr_a"
       _tr_t="$(git rev-parse -q --verify "$_tr_asha^{tree}" 2>/dev/null)" || _tr_t=""
       if [ -z "$_tr_t" ]; then
-        _tr_unres="$_tr_unres $_tr_a"
+        case " $_tr_unres " in
+          *" $_tr_a "*) ;;
+          *) _tr_unres="$_tr_unres $_tr_a" ;;
+        esac
         continue
       fi
     fi
-    _tr_map="$_tr_map$_tr_t $_tr_a
+    _tr_map="$_tr_map$_tr_t $_tr_a $_tr_ri
 "
+    done
   done
 
   # CLAIMED-NOTE LEDGER (security H-1 / review L2). THE TREE->NOTE PAIRING IS MANY-TO-ONE, and that
@@ -1216,7 +1421,9 @@ do_trace() {
     _tc="$(git rev-parse -q --verify "$1^{commit}" 2>/dev/null)" || {
       echo "trace: '$1' is not a commit in this repository" >&2; return 2; }
     _tt="$(git rev-parse "$_tc^{tree}")"
-    _ta="$(printf '%s' "$_tr_map" | awk -v t="$_tt" '$1 == t {print $2; exit}')"
+    # The map entry is `<tree> <annotated object> <record index>`: the object is what is claimed, the index is the record whose tree matched.
+    _tak="$(printf '%s' "$_tr_map" | awk -v t="$_tt" '$1 == t {print $2 " " $3; exit}')"
+    _ta="${_tak%% *}"; _tk="${_tak##* }"
     if [ -z "$_ta" ]; then
       # TWO DIFFERENT FAULTS, AND CONFLATING THEM SENDS THE READER TO THE WRONG REMEDY. A genuine
       # recordless merge means nobody recorded a GO. An unresolvable legacy note means a GO WAS
@@ -1241,7 +1448,15 @@ do_trace() {
         return 1 ;;
     esac
     _tr_claimed="$_tr_claimed $_ta"
-    _tn="$(git notes --ref="$NOTES_REF" show "$_ta" 2>/dev/null)" || _tn=""
+    # The claim above stays per OBJECT (one trunk commit claims an annotated sha once, whichever record matched: a per-record claim would
+    # let a revert-and-reapply take a second record on the same sha). What is PRINTED is the record whose approved tree matched (SWAS-323).
+    _tnw="$(git notes --ref="$NOTES_REF" show "$_ta" 2>/dev/null)" || _tnw=""
+    _tn="$(printf '%s\n' "$_tnw" | kit_note_records body "$_tk")"
+    # A commit bound through a land record prints the GO record that land record binds, and names the land (SWAS-323b).
+    _tland=""
+    if [ "$(printf '%s\n' "$_tnw" | kit_note_records type "$_tk")" = land ]; then
+      _tland="$_tn"; _tn="$(_pv_land_go "$_tnw" "$_tland")" || _tn=""
+    fi
     _trow="$(printf '%s\n' "$_tn" | sed -n 's/^kit-row: //p' | head -1)"
     # A note written BEFORE the projection existed carries no kit-row line. Say that, rather than
     # printing an empty value that reads as "no row was declared".
@@ -1272,6 +1487,10 @@ do_trace() {
       _tgid="$(printf '%s\n' "$_tn" | sed -n 's/^approval-token: "forge-review:\([0-9]*\)"$/\1/p' | head -1)"
       _tglogin="$(printf '%s' "${_taby%% \[*}" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)"
       if [ -n "$_tgid" ] && [ "${#_tgid}" -le 20 ]; then _tgx="  GO = forge review $_tgid by $_tglogin"; fi
+    fi
+    if [ -n "$_tland" ]; then
+      _tlb="$(printf '%s' "$(_pv_rec_field "$_tland" batch)" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)"
+      _tgx="$_tgx  land: $_tlb (bound)"
     fi
     printf '%s  kit-row: %s  approved-sha: %s  gate: %s  scope: %s  approved-by: %s  go-by: %s%s\n' \
       "$(printf '%s' "$_tc" | cut -c1-12)" "$_trow" "$(printf '%s' "$_ta" | cut -c1-12)" \
@@ -1522,7 +1741,7 @@ do_check() {
 # actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd "<cmd>"]
 #   --ref is the PR's head branch at the approved sha (step 0 refuses anything else before a merge); a caller
 #   --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from ORIGIN;
-#   the post-check repeats step 0 and the real shipped == approved check is CI's `trace --recent` (SWAS-207a).
+#   the post-check repeats step 0 and the real shipped == approved check is CI's `trace --recent` (SWAS-207a; the kit's ci.yml, and an adopter's `trunk-trace` job).
 #   The ORDINARY/SENSITIVE actuation GATE (control-plane is a pointer at `land`, step 1b). Fails CLOSED unless a
 #   recorded, SHA-bound GO exists on origin and the bar for the declared MERGE RELATIONSHIP holds — TEAM (the
 #   default, and every undeclared or unreadable case): the label is [authenticated: <forge>-review] AND the
@@ -1652,7 +1871,10 @@ pv_release_claim_ref() {
     echo "$_pvverb: WARN — board-claim.sh not found beside this script; claim on '$_pvkr' NOT released." >&2
     return 1
   fi
-  if sh "$_pvbc" release "$_pvkr" --stale; then
+  # SWAS-192: in a checkout that opted in, the release needs the holder's lease token (stripped at dispatch, kept in _pv_ltok)
+  set -- release "$_pvkr" --stale
+  [ -z "${_pv_ltok:-}" ] || set -- "$@" --lease-token "$_pv_ltok"
+  if sh "$_pvbc" "$@"; then
     echo "$_pvverb: board claim on '$_pvkr' released (refs/claims/$_pvkr deleted on origin)."
     return 0
   fi
@@ -1670,7 +1892,9 @@ pv_close_card_jira() {
     echo "        sh scripts/board.sh release $_pvkr --stale" >&2
     return 0
   fi
-  if _pvout=$(sh "$_pvbd" release "$_pvkr" --stale); then
+  set -- release "$_pvkr" --stale
+  [ -z "${_pv_ltok:-}" ] || set -- "$@" --lease-token "$_pv_ltok"
+  if _pvout=$(sh "$_pvbd" "$@"); then
     [ -z "$_pvout" ] || printf '%s\n' "$_pvout"
     case "$_pvout" in
       *'no claim to release'*) echo "$_pvverb: board card on '$_pvkr' Done (no claim ref; merge proof not checked)." ;;
@@ -2125,6 +2349,43 @@ pv_origin_note() {
   fi
   printf '%s\n' "$_onnote"
   return 0
+}
+
+# pv_actuate_pick <note> <head-branch> <approved-sha> -> prints the ONE GO record `actuate` judges; rc 1 = REFUSED (printed). SWAS-323:
+# a note is a list of records. A note holding exactly ONE GO record is judged as it always was, whatever its gate. Otherwise the
+# candidates are the merge-gate GO records (not a typed design or plan gate, not a record of another type): exactly one is judged;
+# none is the "no GO note" refusal; several are narrowed to the one whose scope, as PR digits, is the PR whose head is --ref
+# (`gh pr view`), and with no single such PR the pick REFUSES, naming every scope, rather than guess.
+pv_actuate_pick() {
+  _ap_n="$(printf '%s\n' "$1" | kit_note_records n)"; _ap_i=0; _ap_all=0; _ap_nc=0; _ap_cl=""; _ap_ci=0
+  while [ "$_ap_i" -lt "$_ap_n" ]; do
+    _ap_i=$((_ap_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_ap_i")" = record ] || continue
+    _ap_all=$((_ap_all + 1)); _ap_last="$_ap_i"
+    _ap_r="$(printf '%s\n' "$1" | kit_note_records body "$_ap_i")"
+    if ! pv_go_gate_typed "$(_pv_rec_field "$_ap_r" gate)"; then _ap_nc=$((_ap_nc + 1)); _ap_ci="$_ap_i"; _ap_cl="$_ap_cl $_ap_i"; fi
+  done
+  if [ "$_ap_all" = 1 ]; then printf '%s\n' "$1" | kit_note_records body "$_ap_last"; return 0; fi
+  if [ "$_ap_nc" = 1 ]; then printf '%s\n' "$1" | kit_note_records body "$_ap_ci"; return 0; fi
+  if [ "$_ap_nc" = 0 ]; then
+    echo "ACTUATE REFUSED: no GO note bound to $3 on origin that holds a merge-gate GO record (the note holds none: only design, plan or other records) — nothing was merged." >&2
+    return 1
+  fi
+  _ap_pr=""
+  if command -v gh >/dev/null 2>&1; then _ap_pr="$(gh pr view "$2" --json number --jq .number 2>/dev/null)" || _ap_pr=""; fi
+  case "$_ap_pr" in
+    ''|*[!0-9]*) _ap_pr="" ;;
+  esac
+  _ap_hit=0; _ap_hi=0; _ap_names=""
+  for _ap_i in $_ap_cl; do
+    _ap_sc="$(_pv_rec_field "$(printf '%s\n' "$1" | kit_note_records body "$_ap_i")" scope)"
+    _ap_names="$_ap_names '$(printf '%s' "$_ap_sc" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-60)'"
+    if [ -n "$_ap_pr" ] && [ "$(pv_ev_pr_number "$_ap_sc" 2>/dev/null || true)" = "$_ap_pr" ]; then _ap_hit=$((_ap_hit + 1)); _ap_hi="$_ap_i"; fi
+  done
+  if [ "$_ap_hit" = 1 ]; then printf '%s\n' "$1" | kit_note_records body "$_ap_hi"; return 0; fi
+  echo "ACTUATE REFUSED: the GO note on $3 holds $_ap_nc merge-gate GO records (scopes:$_ap_names) and none is the single record of the PR whose head is '$2' — nothing was merged." >&2
+  echo "                 Judging one of them by position could merge under another PR's GO. Record the GO for one scope per commit, or re-record the one that is current." >&2
+  return 1
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -2673,6 +2934,8 @@ do_actuate() {
   # 1. A GO note must bind EXACTLY this sha, as ORIGIN holds it (A3): a local-only or hand-written note is not what
   #    CI's recordless-merge backstop reads. Same read-back `land` makes; a fetch that fails refuses too.
   if ! note="$(pv_origin_note actuate "$asha")"; then return 1; fi
+  #    SWAS-323: the note is a LIST of records; every step below judges ONE merge-gate GO record, selected here.
+  if ! note="$(pv_actuate_pick "$note" "$ref" "$asha")"; then return 1; fi
 
   # 1b. CONTROL-PLANE IS NOT MERGED HERE — IT GOES THROUGH `land`, IN BOTH RELATIONSHIPS (D-241014-1 item 6: the owner CLOSED the
   #     Tier-3 sitting). This arm is a POINTER, and it runs BEFORE any label or relationship judgment: a control-plane note with ANY
@@ -2798,6 +3061,9 @@ do_actuate() {
   _act_pr="$(pv_ev_pr_number "$(printf '%s\n' "$note" | sed -n 's/^scope: //p' | head -1)")" || _act_pr=""
   pv_ci_evidence actuate "$_act_pr" "$asha" 0 "$ref" || return 1
 
+  # 3d. THE LAND LEASE (SWAS-192 slice B, B7), as `land` takes it: only in a checkout that opted in; HELD is rc 5 before any merge.
+  pv_land_lease_take actuate || return $?
+
   # 4. Execute the (swappable) NORMAL merge. Non-zero -> loud failure, propagate the code.
   if eval "$merge_cmd"; then mrc=0; else mrc=$?; fi
   if [ "$mrc" -ne 0 ]; then
@@ -2825,6 +3091,7 @@ do_actuate() {
   #    returning non-zero now would report a successful, verified promotion as failed, and no rc can
   #    un-merge it. What is printed is the exact command to run by hand.
   pv_release_claim "$note" actuate
+  pv_land_lease_return   # the land lease goes back after the claim release (the trap returns it on any other way out)
 
   # Honest success line: the note is RECORDED, not necessarily AUTHENTICATED — a git note is
   # self-authorable (the label bar is audit + defense-in-depth over it). Where the plan can enforce it, server-side
@@ -3210,7 +3477,9 @@ do_land() {
     #     SWAS-727 REVIEW MODE: the same read, widened (GO_GIVERS, the digits-only review id, the body), in place of the team one.
     #     It refuses with its own lines, so the team refusal below is not reached. A one-act GO takes no --token / --go-by: the
     #     review id is the recorded act; here the arguments record will receive are completed.
-    pv_land_review_derive || return $?
+    # rc 3 is RESERVED for "merged, tree mismatch" (SWAS-323b): a refusal here is 1 or 2, whatever the helper returned.
+    _lrd=0; pv_land_review_derive || _lrd=$?
+    if [ "$_lrd" -ne 0 ]; then if [ "$_lrd" -eq 3 ]; then _lrd=1; fi; return "$_lrd"; fi
     if [ "$_land_rkind" = oneact ]; then
       set -- "$@" --token "forge-review:$PV_FR_ID" --go-by "$land_aby"
       land_goby="$land_aby"
@@ -3240,16 +3509,40 @@ do_land() {
   _land_full="$(git -C "$ROOT" rev-parse -q --verify "${asha}^{commit}" 2>/dev/null || true)"
   pv_ci_evidence land "$_land_sn" "${_land_full:-$asha}" 1 || return 1
 
+  # 0f. THE SERIAL PRECONDITION (SWAS-323b, design 4). The land record says landed-tree = approved-tree, which holds only when origin's
+  #     default branch is an ancestor of the approved head (the up-to-date state the strict branch setting enforces today). Otherwise the
+  #     squash result is a different tree and the train, not this verb, computes the prefixes. It runs AFTER every check above, and BEFORE
+  #     any record is written, so a refusal writes nothing. The tip is read afresh from origin (pv_remote_ref_sha): it is the land record's
+  #     base-sha too.
+  _land_bref="${_mrhd:-refs/heads/main}"
+  _land_base="$(pv_remote_ref_sha "$_land_bref" || true)"
+  _land_brc=0
+  if [ -n "$_land_base" ]; then git -C "$ROOT" merge-base --is-ancestor "$_land_base" "${_land_full:-$asha}" >/dev/null 2>&1 || _land_brc=$?; fi
+  if [ -z "$_land_base" ] || [ "$_land_brc" -ne 0 ]; then
+    echo "LAND REFUSED: serial land needs an up-to-date head; the train computes prefixes." >&2
+    if [ -z "$_land_base" ]; then
+      echo "              Origin's ${_land_bref#refs/heads/} tip could not be read, so the head cannot be shown to be up to date. Nothing was recorded or merged." >&2
+    else
+      echo "              Origin's ${_land_bref#refs/heads/} tip $(printf '%s' "$_land_base" | cut -c1-12) is not an ancestor of the approved head $(printf '%s' "${_land_full:-$asha}" | cut -c1-12) (or is not in this clone): run \`git fetch origin ${_land_bref#refs/heads/}\` first, then update the branch, re-review, and record and land again. Nothing was recorded or merged." >&2
+    fi
+    echo "              (land assumes the PR targets origin's default branch, ${_land_bref#refs/heads/}; it does not read the PR's own base.)" >&2
+    return 1
+  fi
+
   # 1. RECORD FIRST — the whole point of the verb. do_record is a self-unwinding transaction (fetch,
   #    refuse on divergence, write, publish, unwind its own unpublished note on push reject); land
   #    inherits it whole and passes record's args through untouched. If record does not complete,
   #    REFUSE to merge and propagate its code — a merge without a recoverable GO note is refused BY
   #    THIS VERB (verb-scoped honesty: never "impossible", only "land will not merge").
+  #    SWAS-323b: record also writes the LAND record beside the GO record, in the same transaction (PV_REC_LAND).
+  PV_REC_LAND=1; PV_LAND_BASE="$_land_base"
   if do_record "$@"; then _lrc=0; else _lrc=$?; fi
+  PV_REC_LAND=""
   if [ "$_lrc" -ne 0 ]; then
     echo "LAND REFUSED: the GO record did not complete (rc $_lrc) — land will not merge without a" >&2
     echo "              recoverable GO note. This verb refuses a recordless merge on its OWN path;" >&2
     echo "              the universal net for a recordless merge is the CI recordless-merge backstop." >&2
+    if [ "$_lrc" -eq 3 ]; then _lrc=2; fi   # rc 3 is RESERVED for "merged, tree mismatch" (SWAS-323b)
     return "$_lrc"
   fi
 
@@ -3277,7 +3570,9 @@ do_land() {
     echo "              is the CI recordless-merge backstop." >&2
     return 1
   fi
-  if ! _land_cnote="$(git notes --ref="$_land_confirm" show "$asha" 2>/dev/null)"; then
+  # SWAS-323: the note on origin is a LIST of records; the one judged below is the record keyed (--scope, --gate) that record just wrote.
+  if ! _land_cwhole="$(git notes --ref="$_land_confirm" show "$asha" 2>/dev/null)" \
+     || ! _land_cnote="$(_pv_note_pick "$_land_cwhole" "$land_scope" "$land_gate")"; then
     git update-ref --no-deref -d "refs/notes/$_land_confirm" >/dev/null 2>&1 || true
     echo "LAND REFUSED: record reported success but no GO note is bound to $asha ON ORIGIN — land" >&2
     echo "              will not merge without a note that reached origin (fail closed). A note that" >&2
@@ -3340,6 +3635,20 @@ do_land() {
     echo "LAND REFUSED: the GO note on origin does not say what land judged (mismatched:$_land_bad) — land and record read" >&2
     echo "              the arguments differently. The note IS recorded; land will not merge on it. Fix the arguments" >&2
     echo "              and re-run land — record supersedes the note." >&2
+    return 1
+  fi
+  # SWAS-323: the LAST check. Every field above matched, and the record on origin under this (scope, gate) must still be, byte for byte,
+  # the record this land just composed and wrote ($nbody, set by do_record in this shell): a hand-minted record of the same key, or one
+  # a racing writer put there, is not judged.
+  if [ "$_land_cnote" != "$nbody" ]; then
+    echo "LAND REFUSED: the GO record on origin under this scope and gate is not the one land just wrote (mismatched: record) — land will not merge on it." >&2
+    echo "              The note IS recorded; inspect it with promotion-verify.sh log, then re-run land — record supersedes the record." >&2
+    return 1
+  fi
+  # SWAS-323b, also LAST: the land record on origin under this scope must be, byte for byte, the one this land composed beside the GO record.
+  if ! _land_clr="$(_pv_note_pick_land "$_land_cwhole" "$land_scope")" || [ "$_land_clr" != "$lbody" ]; then
+    echo "LAND REFUSED: the land record on origin under this scope is missing or is not the one land just wrote (mismatched: land record) — land will not merge on it." >&2
+    echo "              The note IS recorded; inspect it with promotion-verify.sh log, then re-run land — record supersedes the record." >&2
     return 1
   fi
 
@@ -3446,13 +3755,39 @@ do_land() {
   #     this verb UNCHANGED in SWAS-207a so `actuate` runs the very same vet. See pv_merge_cmd_vet.
   pv_merge_cmd_vet land "$merge_cmd" || return 1
 
+  # 4c. THE LAND LEASE (SWAS-192 slice B, B7): in a checkout that opted in to the checkout lease, the merge runs under the land lease on origin,
+  #     taken here with this process's own pid and the checkout token, and returned after step 6 (and by the EXIT/INT/TERM/HUP trap on any way out).
+  #     HELD is rc 5, before anything is merged; the GO note IS recorded and `land` can be re-run.
+  pv_land_lease_take land || return $?
+
   # 5. MERGE. Non-zero -> loud failure and propagate; the GO note IS already recorded and recoverable,
   #    so only the merge did not complete.
   if eval "$merge_cmd"; then _mrc=0; else _mrc=$?; fi
   if [ "$_mrc" -ne 0 ]; then
     echo "LAND FAILED: merge command exited $_mrc (the GO note IS recorded and recoverable; only the" >&2
     echo "             merge did not complete). Re-run the merge, or land again — record supersedes." >&2
+    if [ "$_mrc" -eq 3 ]; then _mrc=1; fi   # the merge command's own rc 3 must not read as "merged, tree mismatch" (SWAS-323b)
     return "$_mrc"
+  fi
+
+  # 5b. THE POST-MERGE TREE (SWAS-323b, design 4): the new tip of origin's default branch must carry the land record's landed-tree. A mismatch
+  #     is the loud SHIPPED != APPROVED line and rc 1, as `actuate`'s post-check prints it, and it never skips step 6 (the merge HAS happened).
+  #     When origin's default branch has not moved, the merge result is not visible yet (a forge that merges later, or a stubbed merge command):
+  #     that is said as UNVERIFIED, never as a pass, and `trace --recent` checks the trunk commit by tree once it lands.
+  _land_post=0
+  _land_ntip="$(pv_remote_ref_sha "$_land_bref" || true)"
+  if [ -n "$_land_ntip" ] && [ "$_land_ntip" != "$_land_base" ]; then
+    if git fetch --refmap= --no-tags origin "$_land_bref" >/dev/null 2>&1 && _land_ntree="$(git rev-parse -q --verify 'FETCH_HEAD^{tree}' 2>/dev/null)"; then
+      if [ "$_land_ntree" != "$atree" ]; then
+        echo "SHIPPED != APPROVED: origin's ${_land_bref#refs/heads/} tree after the merge ($_land_ntree) is not the land record's landed-tree ($atree) — the merge carried something the GO did not approve." >&2
+        echo "land: the merge HAPPENED (exit 3 = merged, tree mismatch; it is NOT 'refused, nothing merged')." >&2
+        _land_post=3
+      fi
+    else
+      echo "land: the new tip of origin's ${_land_bref#refs/heads/} could not be fetched, so the post-merge tree is UNVERIFIED here (trace --recent checks it by tree)."
+    fi
+  else
+    echo "land: origin's ${_land_bref#refs/heads/} (assumed to be the PR's base) has not moved yet, so the post-merge tree check is UNVERIFIED here (a merge queue or auto-merge lands later; trace --recent checks the trunk commit by tree once it lands)."
   fi
 
   # 6. RELEASE THE ROW'S OWN BOARD CLAIM — the same shared helper `actuate` calls, and the gap that
@@ -3461,6 +3796,7 @@ do_land() {
   #    wrote and confirmed on origin, so the `kit-row:` projection is the note's own, never a flag.
   _land_note="$(git notes --ref="$NOTES_REF" show "$asha" 2>/dev/null || true)"
   pv_release_claim "$_land_note" land
+  pv_land_lease_return   # the land lease goes back after the claim release (the trap returns it on any other way out)
 
   # Honest success line, VERB-SCOPED: the record was written BEFORE the merge, so THIS merge is
   # recoverable by this verb — not that recordless merges are impossible (they are detected later by
@@ -3482,7 +3818,7 @@ do_land() {
   echo "    required review is what binds; the net for a recordless merge is the CI recordless-merge"
   echo "    backstop."
   echo "${PV_BOARD_TAIL:-board: NOT CLOSED — see the WARN above}"
-  return 0
+  return "$_land_post"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -3509,9 +3845,43 @@ _pv_sig=""; _pv_crit=0
 _pv_die() { _pv_drop_scratch; _pv_drop_syncref; exit "$1"; }
 _pv_crit_enter() { [ -z "$_pv_sig" ] || _pv_die "$_pv_sig"; _pv_crit=1; }
 _pv_crit_leave() { _pv_crit=0; [ -z "$_pv_sig" ] || _pv_die "$_pv_sig"; }
-trap '_pv_drop_scratch; _pv_drop_syncref' EXIT
+# THE LAND LEASE (SWAS-192 slice B, B7). `land` and `actuate` take `refs/leases/land` on origin just before the merge and return it after the claim
+# release; the EXIT trap returns it on every other way out (a failed merge, a refused step, a signal: INT/TERM/HUP all exit through it). A trap runs
+# once the foreground merge command has ended, so a signal sent while the merge runs returns the lease when that command finishes. (A signal in the
+# instant between the lease push and the capture of its token leaves the lease held; this process is then dead, which checkout-lease.sh proves, so the
+# next holder breaks it at once, B8.) Only in a checkout
+# that opted in (`_pv_ltok`, the checkout token, is set); any other checkout runs as before, plus ONE warning line when the land lease is held.
+_pv_llt=""
+# pv_land_lease_take <verb> -> rc 0 (held, or nothing to take) · 5 refused (sentences printed; nothing merged)
+pv_land_lease_take() {
+  _pv_llt=""
+  if [ -z "${_pv_ltok:-}" ]; then
+    # one ls-remote, and only the line that ends in a tab and exactly this ref counts (a pattern also matches `<prefix>/refs/leases/land`)
+    if [ -f "${_pv_lsh:-/nonexistent}" ] && git ls-remote origin refs/leases/land 2>/dev/null | awk -F '\t' '$2 == "refs/leases/land" { f = 1 } END { exit !f }'; then
+      echo "$1: WARN — the land lease on origin (refs/leases/land) is held by another holder; this checkout has not opted in to the lease, so $1 runs as it always did." >&2
+    fi
+    return 0
+  fi
+  _pv_lrc=0; _pv_lout=$(sh "$_pv_lsh" acquire --lease land --purpose "$1" --pid "$$" --lease-token "$_pv_ltok" 2>&1) || _pv_lrc=$?   # MUT-LGATE
+  if [ "$_pv_lrc" -ne 0 ]; then
+    printf '%s\n' "$_pv_lout" | LC_ALL=C tr -cd '[:print:]\n' >&2
+    echo "$1: REFUSED — the land lease is held or could not be taken (above). The GO note IS recorded; nothing was merged. Re-run $1 once the land lease is released." >&2
+    return 5
+  fi
+  _pv_llt=$(printf '%s\n' "$_pv_lout" | sed -n 's/^lease-token: //p' | head -1)
+  return 0
+}
+# pv_land_lease_return -> returns the land lease this run took (idempotent; a failure is a WARN, never a new exit code)
+pv_land_lease_return() {
+  [ -n "${_pv_llt:-}" ] || return 0
+  _pv_lt=$_pv_llt; _pv_llt=""
+  sh "$_pv_lsh" release --lease land --lease-token "$_pv_lt" >/dev/null 2>&1 || echo "WARN — the land lease was not returned (refs/leases/land on origin may still be held, and the next land or actuate is refused (rc 5) until a person runs 'sh scripts/checkout-lease.sh break --lease land --reason <why>', outside any kit-guard shims; SWAS-842)." >&2
+  return 0
+}
+trap '_pv_drop_scratch; _pv_drop_syncref; pv_land_lease_return || :' EXIT   # MUT-LTRAP
 trap '_pv_sig=130; [ "$_pv_crit" = 1 ] || _pv_die 130' INT
 trap '_pv_sig=143; [ "$_pv_crit" = 1 ] || _pv_die 143' TERM
+trap '_pv_sig=129; [ "$_pv_crit" = 1 ] || _pv_die 129' HUP
 
 _pv_sync_clean() { LC_ALL=C tr -d '\000-\011\013-\037\177'; }
 _pv_sync_hex40() { case "$1" in
@@ -3589,7 +3959,19 @@ _pv_sync_refuse() { _sy_refused=$((_sy_refused + 1)); }
 _pv_sync_discarded() { # <sha> <why>
   _pv_sync_say "discarded-local $1 ($2)"; _sy_used="$_sy_used $1"; _sy_drop=$((_sy_drop + 1)); _sy_dn=$((_sy_dn + 1))
 }
+# SWAS-323: a note is a LIST of records, and the identity check below reads the first record only. Until sync learns a record-wise
+# union (its own card), a multi-record note on either side of a twin, or as a local-only candidate, is REFUSED (fail closed).
+_pv_sync_multi() { [ "$(printf '%s\n' "$1" | kit_note_records n)" -gt 1 ]; }
+_pv_sync_refuse_multi() { # <sha> <what>
+  printf '%s\n' "sync: REFUSED $1: $2 holds more than one record, and sync compares and publishes one record per commit (a record-wise union is not built)." >&2
+  printf '%s\n' "        remedy: sync --discard-local $1   (origin's note wins; nothing published), then re-record what you need" >&2
+  _pv_sync_refuse
+}
 _pv_sync_twin() { # <sha> <origin-body> <local-body>
+  if _pv_sync_multi "$2" || _pv_sync_multi "$3"; then
+    if _pv_sync_is_discard "$1"; then _pv_sync_discarded "$1" "multi-record twin"; return 0; fi
+    _pv_sync_refuse_multi "$1" "the note on one side of this twin"; return 0
+  fi
   if _pv_sync_same_identity "$2" "$3"; then
     _pv_sync_say "twin-origin-wins $1"; _sy_drop=$((_sy_drop + 1)); _sy_ow=$((_sy_ow + 1)); return 0
   fi
@@ -3608,6 +3990,8 @@ _pv_sync_local_only() { # <sha> <local-blob> — a candidate, unless origin's hi
     _pv_sync_refuse; return 0
   fi
   if _pv_sync_is_discard "$1"; then _pv_sync_discarded "$1" "candidate dropped"; return 0; fi
+  _lo_body="$(git cat-file blob "$2" 2>/dev/null)" || _lo_body=""
+  if _pv_sync_multi "$_lo_body"; then _pv_sync_refuse_multi "$1" "the local-only note"; return 0; fi
   _pv_sync_say "candidate $1"; _sy_cand=$((_sy_cand + 1))
   _sy_cands="$_sy_cands$1 $2
 "
@@ -4246,6 +4630,36 @@ do_sync() {
 
 cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
+
+# ── THE CHECKOUT LEASE (SWAS-192 slice A; scripts/checkout-lease.sh) ───────────────────────────────
+# `record`, `land` and `actuate` push refs/notes/promotions (and `land`/`actuate` merge), which is custody of the main
+# checkout. In a checkout that opted in (`kit.checkoutLease`) each needs the holder's `--lease-token <sha>`, stripped from
+# the arguments here so the verb's own parser never sees it. A checkout that never opted in runs exactly as before. The
+# key fails closed (a lease ref present, the key gone: refuse). The check runs at dispatch, after nothing of the verb has
+# run and before it reads or writes anything. DRIFT CONTROL between cooperating clients: the token is a ref's sha.
+case "$cmd" in
+  record|land|actuate)
+    _pv_ltok=""; _pv_n=$#
+    while [ "$_pv_n" -gt 0 ]; do
+      _pv_a=$1; shift; _pv_n=$((_pv_n - 1))
+      if [ "$_pv_a" = --lease-token ] && [ "$_pv_n" -gt 0 ]; then _pv_ltok=$1; shift; _pv_n=$((_pv_n - 1)); continue; fi
+      set -- "$@" "$_pv_a"
+    done
+    _pv_lsh=$(dirname -- "$0")/checkout-lease.sh
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+      :   # outside a repository there is no checkout to lease; the verb's own checks speak
+    elif [ -f "$_pv_lsh" ]; then
+      if [ -n "$_pv_ltok" ]; then
+        sh "$_pv_lsh" gate --verb "$cmd" --lease-token "$_pv_ltok" || exit $?
+      else
+        sh "$_pv_lsh" gate --verb "$cmd" || exit $?
+      fi
+    elif [ -n "$(git config --local --get kit.checkoutLease 2>/dev/null || true)" ]; then
+      echo "$cmd: REFUSED — kit.checkoutLease is set but scripts/checkout-lease.sh is missing; restore it, or a human removes the key." >&2
+      exit 5
+    fi ;;
+esac
+
 case "$cmd" in
   record)  if do_record  "$@"; then rc=0; else rc=$?; fi ;;
   sync)    if do_sync  "$@"; then rc=0; else rc=$?; fi ;;

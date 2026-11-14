@@ -3,7 +3,8 @@
 # AND bind the ENTRY CONTRACT (A1.3): §1 is byte-identical in every adapter's declared contextFile.
 # Asserts: (a) AGENTS.md exists; (b) it points at each canonical doc; (c) it stays within the line
 #   bound; (d) the entry-contract lock — every context document DECLARED by an adapter manifest opens
-#   with the SAME first "## " section, compared byte-for-byte.
+#   with the SAME first "## " section, compared byte-for-byte; (e) the operator-card pin (SWAS-775) — every
+#   red message docs/onboarding/operator-card.md quotes is the text the kit prints (see check_operator_card).
 #   sh conformance/agents-brief.sh [--selftest]
 # Exit: 0 = ok · 1 = a gap · 2 = bad usage, or UNVERIFIED (jq absent — NOT a pass; escalates to 1
 # under CI). POSIX sh; dash-clean. Run from the repo root.
@@ -93,7 +94,11 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # ⚠️ GOVERNED RE-MEASURE AT SWAS-614 (2026-11-02): the two-trailer rewrite of acts 2 and 4 shrank the region to 3062 bytes
 # with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all agree). The cap was 3263
 # and is now 3067 = the measured 3062 + the bite conformance/guard-wired.sh holds it to (GW_EC_BITE, 5).
-EC_MAX_BYTES=3067
+# ⚠️ GOVERNED BUMP AT SWAS-148 (2026-11-09): 3067 -> 3078, for the ONE change the design ratifies in §1: the "One command"
+# line is written `sh scripts/sparkwright start ...`, +11 bytes, because a bare `sparkwright` is "command not found" for a newcomer
+# (nothing puts it on PATH). The region measures 3073 bytes [M, the core on bedf87c1, this script's own ec_region_bytes], up from
+# 3062; the cap is 3073 + the 5-byte bite (GW_EC_BITE) = 3078. No other §1 wording moved. Owner's ruling: "148 (a)".
+EC_MAX_BYTES=3078
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {
@@ -884,6 +889,147 @@ FINAL
   return $ecf
 }
 
+# ─────────────────────── SWAS-775 — THE OPERATOR-CARD PIN ─────────────────────────────────────────────
+# docs/onboarding/operator-card.md is the one page a person reads instead of the four core documents. Its last section quotes the red messages
+# the kit prints, and a card that quotes a message the kit stopped printing is worse than none. Each entry between the two marker comments is a
+# heading (the exact text, in backticks), a `From:` line (the file that prints it) and a `Do:` line, and is read here by the file it names:
+#   · a file whose text is a LITERAL in its source (guard-core.sh, guard-wired.sh): the file exists and a line that is not a `#` comment
+#     carries the text. A text holding a `<` is matched as the prefix before it (`escape card R<n> <slug>` is `escape card R`).
+#   · scripts/doctor.sh: an OUTPUT match. The script is copied into a bare fixture (no origin, no conformance/, `env -i`, so no KIT_TRACKER_* and no CI)
+#     and run as exactly `sh scripts/doctor.sh --quick --require`; the text must open a line of the output. `--quick` skips conformance, which is what
+#     runs this check, so the run cannot loop; no network is reached (the kit-update leg needs a conformance/ script this fixture does not have).
+#   · scripts/preflight.sh: THE ONE HONEST COMPROMISE. Those two lines are built at run time (`FAIL $1: $2 ... and UNDECLARED`), so the text is not in the
+#     emitting code. Running preflight into those lines needs its sandbox seams and a clean full body, which preflight's own selftest builds and this leg
+#     does not repeat. So the text is matched in preflight.sh's source, where it sits as the needles of that selftest (`bnd_has ... 'FAIL egress: ...'`), and
+#     that selftest, CI-graded, locks each needle to the real output. One hop from the output, not the output.
+# Also pinned: the entry floor and the two caps (one page: lines and width), no card number in the card, the pointer line preflight and doctor print on a
+# FAIL (preflight: in its source; doctor: after the Overall line of the fixture run), and the one line above the escape card in runtime-guards.md.
+OC_CARD="docs/onboarding/operator-card.md"
+OC_POINTER='What this means for you: docs/onboarding/operator-card.md'
+OC_RG_LINE='For the human: docs/onboarding/operator-card.md'
+OC_FLOOR=9
+OC_MAX_LINES=70
+OC_MAX_COLS=100
+
+# oc_src_has <file> <fixed text>: 0 iff a line that is not a `#` comment carries the text.
+oc_src_has() {
+  LC_ALL=C grep -v '^[[:space:]]*#' "$1" 2>/dev/null | LC_ALL=C grep -qF -- "$2"
+}
+
+# oc_entries <card>: one "<text><TAB><From file>" line per entry between the markers (the From is empty when the entry names none).
+oc_entries() {
+  LC_ALL=C awk '
+    function flush() { if (have) printf "%s\t%s\n", t, f; have = 0 }
+    /operator-card:entries:begin/ { on = 1; next }
+    /operator-card:entries:end/ { flush(); on = 0; next }
+    on && /^### / { flush(); t = substr($0, 5); sub(/^`/, "", t); sub(/`[[:space:]]*$/, "", t); f = ""; have = 1; next }
+    on && /^From: / { f = substr($0, 7); next }
+    END { flush() }
+  ' "$1"
+}
+
+# oc_needle <entry text>: the text, or the part before its first `<` (a placeholder).
+oc_needle() {
+  printf '%s\n' "$1" | LC_ALL=C sed 's/<.*$//'
+}
+
+# oc_doctor_out <root>: the output of `sh scripts/doctor.sh --quick --require` run from a bare fixture tree built from <root>'s doctor.sh.
+oc_doctor_out() {
+  ocdx=$(mktemp -d) || return 0
+  mkdir -p "$ocdx/scripts"
+  cp "$1/scripts/doctor.sh" "$ocdx/scripts/doctor.sh" 2>/dev/null || { rm -rf "$ocdx"; printf '%s\n' "oc: $1/scripts/doctor.sh could not be copied"; return 0; }
+  # env -i is the control: no KIT_TRACKER_* (or any other variable) can reach the fixture run.
+  ocout=$( cd "$ocdx" && env -i PATH="$PATH" HOME="$ocdx" GIT_CEILING_DIRECTORIES="$ocdx" sh scripts/doctor.sh --quick --require 2>&1 ) || true
+  rm -rf "$ocdx"
+  printf '%s\n' "$ocout"
+}
+
+# check_operator_card <root> [<doctor-fixture-output>]: prints PASS/FAIL per rule; 0 = the card and the kit's output agree, 1 = a gap.
+# The optional second argument is output already taken from the fixture run (the selftest's mutants that never touch doctor.sh pass it, to run the fixture once).
+check_operator_card() {
+  ocr=$1; occ="$ocr/$OC_CARD"; ocf=0; ocn=0; ocdoc=${2:-}; octab=$(printf '\t')
+  if [ ! -f "$occ" ]; then
+    echo "FAIL: the operator card $OC_CARD is not a file — the person has no one-page card to read"
+    return 1
+  fi
+  ocl=$(awk 'END{print NR}' "$occ")
+  if [ "$ocl" -le "$OC_MAX_LINES" ]; then
+    echo "PASS: the operator card is $ocl lines (cap $OC_MAX_LINES)"
+  else
+    echo "FAIL: the operator card is $ocl lines, over the cap of $OC_MAX_LINES — it is one page"; ocf=1
+  fi
+  ocw=$(LC_ALL=C awk -v m="$OC_MAX_COLS" 'length($0) > m { n++ } END { print n + 0 }' "$occ")
+  if [ "$ocw" -eq 0 ]; then
+    echo "PASS: no line of the operator card is over $OC_MAX_COLS characters"
+  else
+    echo "FAIL: $ocw line(s) of the operator card are over $OC_MAX_COLS characters"; ocf=1
+  fi
+  if LC_ALL=C grep -q 'SWAS-' "$occ"; then
+    echo "FAIL: the operator card names a card number (SWAS-): an adopter cannot open it"; ocf=1
+  fi
+  ocents=$(oc_entries "$occ")
+  while IFS="$octab" read -r oct ocfile; do
+    [ -n "$oct" ] || continue
+    ocn=$((ocn + 1))
+    ocs=$(printf '%s' "$oct" | ec_san)
+    ocneedle=$(oc_needle "$oct")
+    if [ -z "$ocneedle" ]; then echo "FAIL: entry '$ocs' has no text before its placeholder to match"; ocf=1; continue; fi
+    case "$ocfile" in
+      '') echo "FAIL: entry '$ocs' names no source file (it needs a From: line)"; ocf=1; continue ;;
+      /*|*..*) echo "FAIL: entry '$ocs' names a file outside this tree — refusing to read it"; ocf=1; continue ;;
+    esac
+    ocfs=$(printf '%s' "$ocfile" | ec_san)
+    if [ ! -f "$ocr/$ocfile" ]; then
+      echo "FAIL: entry '$ocs' names '$ocfs', which is not a file"; ocf=1; continue
+    fi
+    case "$ocfile" in
+      scripts/doctor.sh)
+        if [ -z "$ocdoc" ]; then ocdoc=$(oc_doctor_out "$ocr"); fi
+        if printf '%s\n' "$ocdoc" | LC_ALL=C awk -v n="$ocneedle" 'index($0, n) == 1 { f = 1 } END { exit f ? 0 : 1 }'; then
+          echo "PASS: entry '$ocs' opens a line scripts/doctor.sh prints (output match: --quick --require on a bare fixture)"
+        else
+          echo "FAIL: entry '$ocs' opens no line of what scripts/doctor.sh prints under --quick --require on a bare fixture"; ocf=1
+        fi ;;
+      scripts/preflight.sh)
+        if oc_src_has "$ocr/$ocfile" "$ocneedle"; then
+          echo "PASS: entry '$ocs' is in $ocfs (matched as the needle of preflight's selftest, which locks it to the output; not run here)"
+        else
+          echo "FAIL: entry '$ocs' is not in $ocfs — the text the kit prints moved (see the card's From: line)"; ocf=1
+        fi ;;
+      *)
+        if oc_src_has "$ocr/$ocfile" "$ocneedle"; then
+          echo "PASS: entry '$ocs' is in $ocfs (source match, comment lines dropped)"
+        else
+          echo "FAIL: entry '$ocs' is not in $ocfs (outside its comments) — the text the kit prints moved"; ocf=1
+        fi ;;
+    esac
+  done <<OCENTRIES
+$ocents
+OCENTRIES
+  if [ "$ocn" -ge "$OC_FLOOR" ]; then
+    echo "PASS: the card holds $ocn entries between its markers (floor $OC_FLOOR)"
+  else
+    echo "FAIL: the card holds $ocn entries between its markers (floor $OC_FLOOR) — a pin over nothing is never a pass"; ocf=1
+  fi
+  if oc_src_has "$ocr/scripts/preflight.sh" "$OC_POINTER"; then
+    echo "PASS: scripts/preflight.sh carries the pointer line"
+  else
+    echo "FAIL: scripts/preflight.sh does not carry the pointer line '$OC_POINTER'"; ocf=1
+  fi
+  if [ -z "$ocdoc" ]; then ocdoc=$(oc_doctor_out "$ocr"); fi
+  if printf '%s\n' "$ocdoc" | LC_ALL=C awk -v p="$OC_POINTER" '/^Overall: FAIL/ { o = 1; next } o && $0 == p { f = 1 } END { exit f ? 0 : 1 }'; then
+    echo "PASS: scripts/doctor.sh prints the pointer line after an Overall: FAIL"
+  else
+    echo "FAIL: scripts/doctor.sh printed no pointer line after the Overall: FAIL of the fixture run"; ocf=1
+  fi
+  if grep -qxF -- "$OC_RG_LINE" "$ocr/docs/operations/runtime-guards.md" 2>/dev/null; then
+    echo "PASS: runtime-guards.md carries the one line that sends a person from the escape card to the operator card"
+  else
+    echo "FAIL: docs/operations/runtime-guards.md lacks the line '$OC_RG_LINE'"; ocf=1
+  fi
+  return $ocf
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   sfail=0
   # gap A — over-bound ONLY (all refs present, but exceeds the tiny bound)
@@ -1424,6 +1570,77 @@ if [ "${1:-}" = "--selftest" ]; then
   # (P3) THE REAL TREE — the lock must hold on this repo, not only on fixtures.
   ec_expect 0 "." "this repo's own declared context documents" "compared across"
 
+  # ── SWAS-775 · THE OPERATOR-CARD PIN — the real tree is the positive anchor; seven mutants, each on a throwaway tree ──
+  # Every negative pins its REASON, and a mutant that changed nothing is a FAIL of its own (a vacuous negative). The throwaway trees hold only the files
+  # the pin reads, copied from this tree. The mutants that never touch doctor.sh reuse the one fixture run taken from the real tree (ocdreal).
+  ocb=$(mktemp -d)
+  oc_root() {  # <dir>: a tree with exactly the files check_operator_card reads, copied from this one
+    mkdir -p "$1/docs/onboarding" "$1/docs/operations" "$1/.claude/hooks" "$1/conformance" "$1/scripts"
+    cp "$OC_CARD" "$1/$OC_CARD"; cp docs/operations/runtime-guards.md "$1/docs/operations/runtime-guards.md"
+    cp .claude/hooks/guard-core.sh "$1/.claude/hooks/guard-core.sh"; cp conformance/guard-wired.sh "$1/conformance/guard-wired.sh"
+    cp scripts/preflight.sh "$1/scripts/preflight.sh"; cp scripts/doctor.sh "$1/scripts/doctor.sh"
+  }
+  oc_applied() {  # <label> <original> <mutant>: rc 0 iff the mutation changed the file
+    if cmp -s "$2" "$3"; then echo "FAIL: selftest — $1 did not apply (the mutation matched nothing; its negative would be vacuous)"; sfail=1; return 1; fi
+    return 0
+  }
+  oc_expect() {  # <want-rc> <root> <label> <substring the output MUST contain> [doctor fixture output to reuse]
+    ocwe=$1; ocwr=$2; ocwl=$3; ocww=$4; ocwd=${5:-}
+    ocwo=$( ( check_operator_card "$ocwr" "$ocwd" ) 2>&1 ) && ocwg=0 || ocwg=$?
+    if [ "$ocwg" != "$ocwe" ]; then echo "FAIL: selftest — $ocwl: want rc $ocwe got $ocwg"; sfail=1; return 0; fi
+    if printf '%s\n' "$ocwo" | LC_ALL=C grep -qF -- "$ocww"; then
+      echo "PASS: selftest — $ocwl (rc $ocwg, reason pinned)"
+    else
+      echo "FAIL: selftest — $ocwl exited $ocwg but for the WRONG RULE — no '$ocww' in its output"; sfail=1
+    fi
+  }
+  ocdreal=$(oc_doctor_out ".")
+
+  # (P-oc) THE POSITIVE ANCHOR — the real card, the real source files and a real doctor fixture run must pass, or every negative below is bought by a check that only fails.
+  oc_expect 0 "." "operator card: this repo's own card agrees with the kit's output" "entries between its markers" "$ocdreal"
+  oc_expect 0 "." "operator card: ...and its doctor row is a real fixture run (no cached output)" "scripts/doctor.sh prints the pointer line after an Overall: FAIL"
+
+  # (m1) row 7's text is dropped from the emitting file (a copy of preflight.sh): the entry names a text the kit no longer prints.
+  ocm1="$ocb/m1"; oc_root "$ocm1"
+  sed 's/NOT ENFORCED and UNDECLARED/NOT ENFORCED/g' scripts/preflight.sh > "$ocm1/scripts/preflight.sh"
+  oc_applied "m1 (row 7 text dropped from preflight.sh)" scripts/preflight.sh "$ocm1/scripts/preflight.sh" \
+    && oc_expect 1 "$ocm1" "m1: row 7's text dropped from the emitting file" "entry 'FAIL egress: NOT ENFORCED and UNDECLARED [static]' is not in scripts/preflight.sh" "$ocdreal"
+
+  # (m2) the pointer path is changed in a copy of doctor.sh: its fixture run prints a pointer the card does not name.
+  ocm2="$ocb/m2"; oc_root "$ocm2"
+  sed 's#docs/onboarding/operator-card.md#docs/onboarding/OPERATOR.md#g' scripts/doctor.sh > "$ocm2/scripts/doctor.sh"
+  oc_applied "m2 (pointer path changed in doctor.sh)" scripts/doctor.sh "$ocm2/scripts/doctor.sh" \
+    && oc_expect 1 "$ocm2" "m2: the pointer path changed in doctor.sh" "scripts/doctor.sh printed no pointer line after the Overall: FAIL"
+
+  # (m3) an entry names a file that is not there.
+  ocm3="$ocb/m3"; oc_root "$ocm3"
+  sed 's#^From: .claude/hooks/guard-core.sh#From: .claude/hooks/gone-core.sh#' "$OC_CARD" > "$ocm3/$OC_CARD"
+  oc_applied "m3 (entries name a missing file)" "$OC_CARD" "$ocm3/$OC_CARD" \
+    && oc_expect 1 "$ocm3" "m3: an entry naming a missing file" "names '.claude/hooks/gone-core.sh', which is not a file" "$ocdreal"
+
+  # (m4) NON-VACUITY: a card with the markers and no entries must not pass (a pin over nothing).
+  ocm4="$ocb/m4"; oc_root "$ocm4"
+  printf '# Card\n\n<!-- operator-card:entries:begin -->\n<!-- operator-card:entries:end -->\n' > "$ocm4/$OC_CARD"
+  oc_expect 1 "$ocm4" "m4: an empty entry list" "the card holds 0 entries between its markers" "$ocdreal"
+
+  # (m5) a card of one line more than the cap.
+  ocm5="$ocb/m5"; oc_root "$ocm5"
+  ocm5n=$(awk 'END{print NR}' "$OC_CARD"); ocm5p=$((OC_MAX_LINES + 1 - ocm5n)); [ "$ocm5p" -ge 1 ] || ocm5p=1
+  { cat "$OC_CARD"; awk -v n="$ocm5p" 'BEGIN { for (i = 0; i < n; i++) print "padding" }'; } > "$ocm5/$OC_CARD"
+  oc_expect 1 "$ocm5" "m5: a card over the line cap" "lines, over the cap of $OC_MAX_LINES" "$ocdreal"
+
+  # (m6) an entry's text sits only in a `#` comment of the source file: a comment is not output.
+  ocm6="$ocb/m6"; oc_root "$ocm6"
+  sed 's/^\(.*escape card R30 cp-write.*\)$/# \1/' .claude/hooks/guard-core.sh > "$ocm6/.claude/hooks/guard-core.sh"
+  oc_applied "m6 (R30 text only in a comment)" .claude/hooks/guard-core.sh "$ocm6/.claude/hooks/guard-core.sh" \
+    && oc_expect 1 "$ocm6" "m6: an entry whose text sits only in a comment" "entry 'escape card R30 cp-write' is not in .claude/hooks/guard-core.sh" "$ocdreal"
+
+  # (m7) a card with one line of 101 characters.
+  ocm7="$ocb/m7"; oc_root "$ocm7"
+  { cat "$OC_CARD"; awk -v n="$((OC_MAX_COLS + 1))" 'BEGIN { s = ""; for (i = 0; i < n; i++) s = s "x"; print s }'; } > "$ocm7/$OC_CARD"
+  oc_expect 1 "$ocm7" "m7: a card line over the width cap" "line(s) of the operator card are over $OC_MAX_COLS characters" "$ocdreal"
+
+  rm -rf "$ocb"
   [ "$sfail" -eq 0 ] && { echo "OK: agents-brief selftest"; exit 0; } || { echo "FAIL: agents-brief selftest"; exit 1; }
 fi
 
@@ -1437,6 +1654,8 @@ ecbrc=0; ecerc=0
 check_brief "$BRIEF" "$MAX_LINES" || ecbrc=1
 echo "Entry-contract lock (§1 byte-identical in every adapter's declared contextFile):"
 check_entry_contract "." || ecerc=$?
+echo "Operator card pin (the red messages the card quotes are the ones the kit prints):"
+check_operator_card "." || ecbrc=1
 # UNVERIFIED never outranks a real FAIL, and under CI it is not a pass either.
 if [ "$ecerc" = "2" ] && { [ "$ecbrc" != "0" ] || [ -n "${CI:-}" ]; }; then ecerc=1; fi
 if [ "$ecbrc" = "0" ] && [ "$ecerc" = "0" ]; then

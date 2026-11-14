@@ -247,7 +247,7 @@ board is agent-writable besides. `MAX_WIP` absent or `0` → `N/A (MAX_WIP undec
 project without this key keeps claiming normally. A **stale** claim overcounts, conservatively;
 `board-claim.sh release <ROW> --stale` is the remedy, and it **refuses unless it can prove the claim is
 stale** (a MERGED same-repo PR with no OPEN sibling · the row in `## Done` on the default branch's board —
-"branch absent on origin" is evidence only). `sparkwright status` shows which claims are provably stale,
+"branch absent on origin" is evidence only). `sh scripts/sparkwright status` shows which claims are provably stale,
 and `refs/claims-log/*` records every release that was taken.
 
 ## The lock

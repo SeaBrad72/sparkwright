@@ -626,6 +626,7 @@ docs/enterprise/ratification-rbac.md
 docs/enterprise/secrets-at-scale.md
 docs/governance/promotion-contract.md
 docs/onboarding/first-feature-tdd.md
+docs/onboarding/operator-card.md
 docs/operations/agent-boundary-contract.md
 docs/operations/agentic-ops.md
 docs/operations/break-glass.md
@@ -674,6 +675,7 @@ profiles/.gitignore
 profiles/_TEMPLATE.md
 profiles/adopter-gates.yml
 profiles/adopter-tracker-gates.yml
+profiles/adopter-trunk-trace.yml
 profiles/data-engineering.md
 profiles/data-engineering/BRANCH-PROTECTION.md
 profiles/data-engineering/CODEOWNERS
@@ -872,7 +874,10 @@ profiles/python/scaffold/src/app/health.py
 profiles/python/scaffold/src/app/live_provider.py
 profiles/python/scaffold/src/app/server.py
 profiles/python/scaffold/src/app/telemetry.py
+profiles/python/scaffold/tests/__init__.py
+profiles/python/scaffold/tests/e2e/__init__.py
 profiles/python/scaffold/tests/e2e/test_journey.py
+profiles/python/scaffold/tests/integration/__init__.py
 profiles/python/scaffold/tests/integration/test_greeting.py
 profiles/python/scaffold/tests/test_flags.py
 profiles/python/scaffold/tests/test_health.py
@@ -973,12 +978,14 @@ profiles/typescript-node/scaffold/test/integration.test.ts
 profiles/typescript-node/scaffold/tsconfig.build.json
 profiles/typescript-node/scaffold/tsconfig.json
 profiles/typescript-node/scaffold/vitest.config.ts
+scripts/adopt.sh
 scripts/adopter-export.sh
 scripts/agent-trace.sh
 scripts/board-claim.sh
 scripts/board-migrate.sh
 scripts/board.sh
 scripts/branch-protection-apply.sh
+scripts/checkout-lease.sh
 scripts/containment-audit.sh
 scripts/coverage-ratchet.sh
 scripts/doctor-boundary.sh
@@ -992,6 +999,7 @@ scripts/fixtures/engineer-fixture.sh
 scripts/fixtures/otel-trace-sample.ndjson
 scripts/fixtures/sbom/sample-cyclonedx.json
 scripts/incept.sh
+scripts/inception-scan.sh
 scripts/install-shellcheck.sh
 scripts/kit-guard
 scripts/kit-update.sh
@@ -999,6 +1007,7 @@ scripts/license-check.sh
 scripts/model-tier.sh
 scripts/new-adapter.sh
 scripts/new-profile.sh
+scripts/new.sh
 scripts/orchestrator-run.sh
 scripts/otel-trace.sh
 scripts/otlp-export.sh
@@ -1010,6 +1019,7 @@ scripts/release-tag.sh
 scripts/runaway-guard.sh
 scripts/slice-resume.sh
 scripts/sod-check.sh
+scripts/solo-to-team.sh
 scripts/sparkwright
 scripts/start.sh
 scripts/tracker-conf.sh
@@ -1022,6 +1032,7 @@ skills/debugging/SKILL.md
 skills/demonstrate/SKILL.md
 skills/design/SKILL.md
 skills/evals/SKILL.md
+skills/inception-from-code/SKILL.md
 skills/operating/SKILL.md
 skills/plan/SKILL.md
 skills/review/SKILL.md
@@ -1040,6 +1051,7 @@ templates/DECISIONS-TEMPLATE.md
 templates/EVAL-PLAN-TEMPLATE.md
 templates/FEATURE-REQUEST-TEMPLATE.md
 templates/FIELD-REPORT-TEMPLATE.md
+templates/INCEPTION-DRAFT-TEMPLATE.md
 templates/JIRA-SETUP-TEMPLATE.md
 templates/KIT-FEEDBACK-TEMPLATE.md
 templates/MODEL-MAP-TEMPLATE.conf

@@ -59,10 +59,10 @@ proves nothing.
 ## Mechanizable axes now automated by `sparkwright doctor`
 
 The **mechanizable** axes (E and part of D — re-run conformance, re-check the claims-registry,
-re-establish git ground truth) are **now automated** by [`sparkwright doctor`](./doctor.md)
+re-establish git ground truth) are **now automated** by [`sh scripts/sparkwright doctor`](./doctor.md)
 (shipped 3.18.0). Run `sh scripts/sparkwright doctor` to execute the one-command posture sweep.
 
 The **semantic** axes (A/B intent & scope, C standards, D's overclaim judgment) remain agent/human
 judgment — a script cannot read intent. Run the full checklist above before requesting review,
-before a release, and at each long-session boundary. A green `sparkwright doctor` means the
+before a release, and at each long-session boundary. A green `sh scripts/sparkwright doctor` means the
 mechanizable checks pass; it does not substitute for axes A, B, C, or the judgment half of D.

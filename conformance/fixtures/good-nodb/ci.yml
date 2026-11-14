@@ -45,8 +45,8 @@ jobs:
         run: sh scripts/otel-trace.sh --emit
   provenance:
     needs: ci
-    # provenance precondition: attestations API unavailable on user-owned private repos — legibly skipped there.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    # provenance precondition: attestations on a private repo need GitHub Enterprise Cloud (KIT_ATTEST_PRIVATE) — legibly skipped without it.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || vars.KIT_ATTEST_PRIVATE == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1

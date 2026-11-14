@@ -63,7 +63,8 @@ extract_steps() {
                   ((.content|tostring|ascii_downcase) | test("denied")) and
                   ((.content|tostring|ascii_downcase) | test("guard|control-plane|deny")))}' "$1")
   # join: build a {tid: {err,denied}} map from results, map over uses in order.
-  _map=$(mktemp) || _map="/tmp/_at_map.$$"
+  # A failed mktemp stops the run: no fallback name in the shared /tmp (SWAS-754).
+  _map=$(mktemp) || { printf '%s\n' 'agent-trace: could not create a temporary file (mktemp failed); check TMPDIR, then rerun' >&2; exit 1; }
   printf '%s\n' "$_results" | jq -s '
       (reduce .[] as $r ({}; .[$r.tid] = {err:$r.err, denied:$r.denied})) as $m
       | $m' > "$_map" 2>/dev/null || printf '{}' > "$_map"
@@ -146,7 +147,7 @@ emit() {
   # shellcheck disable=SC2046  # word-splitting the token/timing fields is intended here
   set -- $(extract_tokens_timing "$_t") "" "" ""
   _in=${1:-0}; _out=${2:-0}; _cache=${3:-0}; _start=${4:-}; _end=${5:-}
-  _steps=$(extract_steps "$_t")
+  _steps=$(extract_steps "$_t")   # plain assignment: set -e stays live, so a failure here (mktemp, corrupt transcript) stops emit
   _run=$(jq -r 'select(.sessionId) | .sessionId' "$_t" | head -1)
   [ -n "$_run" ] || _run=$(basename "$_t" .jsonl)
   _cost=$(compute_cost "$_in" "$_out")    # echoes a number or the string unknown
@@ -243,8 +244,48 @@ selftest() {
   [ -e "$st_sd/.kit-run/session.id" ] \
     && { printf 'selftest FAIL: session.id — the emitter MINTED a file (only `claim` may)\n'; st_fail=1; }
   rm -rf "$st_sd"
+  # --- cell MK3 (SWAS-754): a failed mktemp stops the run — non-zero exit, one plain line, no trace
+  # written. The workdir is made BEFORE any stub is on PATH.
+  st_mk=$(mktemp -d)
+  trap 'rm -rf "$st_mk"' EXIT; trap 'rm -rf "$st_mk"; exit 130' INT; trap 'rm -rf "$st_mk"; exit 143' TERM
+  if st_mkout=$(mk3_cell "$0" "$fixture" "$st_mk/real" 2>&1); then
+    printf 'selftest PASS: MK3 a failed mktemp stops the run and writes no trace\n'
+  else
+    printf 'selftest FAIL: MK3 %s\n' "$st_mkout"; st_fail=1
+  fi
+  # Mutant MK3-M: a fixed-name fallback is put back in a COPY of the script (inside the cell's own temp
+  # dir, never the shared /tmp). MK3 MUST red on it.
+  mkdir -p "$st_mk/mut"
+  sed 's#^\(  _map=[$](mktemp)\) .*#\1 || _map="'"$st_mk"'/mut/_at_map.fixed"#' "$0" > "$st_mk/mut/agent-trace.sh"
+  if ! grep -qF "|| _map=\"$st_mk/mut/_at_map.fixed\"" "$st_mk/mut/agent-trace.sh"; then
+    printf 'selftest FAIL: MK3 mutant setup — the fallback was not restored in the copy\n'; st_fail=1
+  elif st_mkout=$(mk3_cell "$st_mk/mut/agent-trace.sh" "$fixture" "$st_mk/mut" 2>&1); then
+    printf 'selftest FAIL: MK3 mutant (fallback restored) — MK3 still PASSED (VACUOUS)\n'; st_fail=1
+  else
+    printf 'selftest PASS: MK3 mutant (fallback restored) killed -> %s\n' "$st_mkout"
+  fi
+  rm -rf "$st_mk"
   if [ "$st_fail" -ne 0 ]; then printf 'agent-trace --selftest: FAIL\n' >&2; return 1; fi
   printf 'agent-trace --selftest: OK (tokens/steps/outcomes/run.id all match the fixture)\n'
+  return 0
+}
+
+# MK3 helper, defined after selftest() on purpose (POSIX resolves calls at dispatch time).
+# mk3_cell <script> <fixture> <workdir> — run <script> on <fixture> with a `mktemp` stub that always
+# fails first on PATH. Returns 0 when the script fails closed; else prints why and returns 1.
+mk3_cell() {
+  mkdir -p "$3/bin" "$3/out"
+  printf '#!/bin/sh\nexit 1\n' > "$3/bin/mktemp"
+  chmod +x "$3/bin/mktemp"
+  _mk_rc=0
+  _mk_err=$(PATH="$3/bin:$PATH" sh "$1" "$2" --no-correlate --out "$3/out" 2>&1 >/dev/null) || _mk_rc=$?
+  if [ "$_mk_rc" -eq 0 ]; then printf 'exit 0 on a failed mktemp (wanted non-zero)'; return 1; fi
+  case "$_mk_err" in
+    *'agent-trace: could not create a temporary file (mktemp failed); check TMPDIR, then rerun'*) : ;;
+    *) printf 'rc %s but the plain line is missing: %s' "$_mk_rc" "$_mk_err"; return 1 ;;
+  esac
+  if [ -n "$(ls -A "$3/out")" ]; then printf 'a trace file was written despite the failed mktemp'; return 1; fi
+  printf 'rc %s, plain line printed, no trace written' "$_mk_rc"
   return 0
 }
 
@@ -278,6 +319,9 @@ else
   # Slug the filename: sessionId is untrusted-ish — a '../' or '/' must not escape $OUTDIR.
   # (The trace's run.id field still carries the true, unslugged sessionId.)
   _outrun=$(printf '%s' "$_outrun" | tr -c 'A-Za-z0-9._-' '_')
-  emit "$TRANSCRIPT" > "$OUTDIR/$_outrun.json"
+  # Build the trace first, write it only on success: a failed emit (e.g. mktemp failed) leaves no
+  # file, not even an empty one.
+  _trace=$(emit "$TRANSCRIPT")
+  printf '%s\n' "$_trace" > "$OUTDIR/$_outrun.json"
   printf 'agent-trace: wrote %s/%s.json\n' "$OUTDIR" "$_outrun"
 fi

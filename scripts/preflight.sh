@@ -11,7 +11,9 @@
 set -eu
 
 miss=0; rec=0
+bwarn=0; gpwarn=0   # SWAS-793: display-only counts for the summary line, never read by an exit. rec = advisory lines (each site adds one), bwarn = the boundary's notices (WARN lines and its lowercase warn lines), gpwarn = git-plants warnings
 bfail=0; bunv=0   # SWAS-355: bfail = an UNDECLARED opt-out or a malformed declaration (moves the exit); bunv = a boundary line that could not be judged
+_bnd_egress_gap=0; _bnd_nonegress=0   # SWAS-474: which kind of bfail the exit summary names (egress = the strict step; nonegress = any other part, or a bad declaration). Display only: never read by an exit
 # RULE 3 THROUGHOUT THIS FILE (see the K11 refusal block, "THE THREE OUTPUT RULES"): `printf '%s\n'`,
 # never `echo`, for any line carrying a VARIABLE. dash's builtin echo expands backslash escapes and dash
 # IS /bin/sh on the ubuntu-latest runner, so a `\n` inside an interpolated value forges a whole extra
@@ -48,8 +50,14 @@ recommend() {  # recommend <tool> <why+hint> — warns, never fails the run
     printf '%s\n' "  ok   $1"
   else
     printf '%s\n' "  warn $1 — $2"
-    rec=1
+    rec=$((rec + 1))
   fi
+}
+
+# SWAS-775: the one line a run that ends in FAIL closes with, so a person who sees red finds the one-page operator card. Called only on the boundary FAIL exit, after the closing summary
+# (so after the egress block, never inside it); no exit code moves. conformance/agents-brief.sh pins the card to the texts this script prints.
+operator_card_pointer() {
+  printf '%s\n' 'What this means for you: docs/onboarding/operator-card.md'
 }
 
 # --- T2: git version floor for `git merge-tree --write-tree` -------------------------------
@@ -115,7 +123,7 @@ check_git_capability() {  # advisory: does the installed git support `merge-tree
     printf '%s\n' "  warn git $_gmaj.$_gmin is below the $GIT_FLOOR_MAJOR.$GIT_FLOOR_MINOR floor — 'git merge-tree --write-tree' is unavailable."
     echo "       kit-update will use its temporary-worktree fallback instead of merge-tree. The fallback is"
     echo "       still non-mutating (your worktree is never touched); upgrading git only makes it faster."
-    rec=1
+    rec=$((rec + 1))
   fi
 }
 
@@ -193,7 +201,7 @@ check_sandbox() {
     echo "       but the guard files (.claude/, hooks/, .kit/, .git/hooks, .git/config) are not read-only to the shell."
     echo "       Fix: install the missing piece (Linux/WSL2: bubblewrap and socat), or accept the reduced"
     echo "       protection (the optional overlay sets failIfUnavailable to refuse instead). See docs/operations/runtime-guards.md, section \"Below the text layer: the OS sandbox and the deny-only overlay\"."
-    rec=1
+    rec=$((rec + 1))
   fi
 }
 
@@ -680,11 +688,13 @@ boundary_judge() {
         # The kit's own consequence sentence is printed once: when the repo's lost= sentence is identical to it, the "(kit: ...)" suffix is dropped.
         _bj_k=${7:-$5}; _bj_ks=" (kit: $_bj_k)"; [ "$_bcl" != "$_bj_k" ] || _bj_ks=""
         printf '%s\n' "  WARN $1: $2$_bj_dp $_bleg (opted out $_bcs, declared in .kit/boundary-optout.conf). Lost: $_bcl$_bj_ks"   # MUT-DECLWARN
+        bwarn=$((${bwarn:-0} + 1))   # MUT-BWARN: SWAS-793, a boundary notice for the summary line (display only: never miss, rec, bfail or bunv)
         :   # MUT-DECLARED
       else
         _bj_mv=""; [ -z "${BD_MOVED:-}" ] || _bj_mv=" origin has moved: git fetch origin, then re-run"   # m3: the declaration may be on the new tip
         printf '%s\n' "  FAIL $1: $2$_bj_dp and UNDECLARED $_bleg — $5. Fix: $6$_bj_mv"
         bfail=1   # MUT-BFAIL
+        case "$1" in egress) _bnd_egress_gap=1 ;; *) _bnd_nonegress=1 ;; esac   # MUT-EGRESSGAP: SWAS-474, only the UNDECLARED branch; a declared egress opt-out (the WARN branch above) never sets it
       fi ;;
   esac
 }
@@ -704,9 +714,72 @@ boundary_user_hosts() {  # <user settings file>: how many hosts the user-level a
   [ -f "$1" ] || return 0
   _bh_n=$(jq -r '.sandbox.network.allowedDomains | if type == "array" then length else 0 end' "$1" 2>/dev/null) || _bh_n=unreadable
   case "$_bh_n" in
-    ''|*[!0-9]*) printf '%s\n' "  warn egress: the user-level allowedDomains could not be counted (UNVERIFIED)"; bunv=1 ;;
+    ''|*[!0-9]*) printf '%s\n' "  warn egress: the user-level allowedDomains could not be counted (UNVERIFIED)"; bunv=1; bwarn=$((${bwarn:-0} + 1)) ;;
     *) printf '%s\n' "  info egress: the user-level allowedDomains holds $_bh_n host(s); under strictAllowlist this is the whole list (project allowedDomains are ignored, D1 measured) and no kit check grades it (SWAS-407)" ;;
   esac
+}
+# boundary_egress_block (SWAS-474): printed right after the UNDECLARED "egress NOT ENFORCED" FAIL line, and only there. It prints the user-level block to copy whole, built with jq so it is valid JSON,
+# and it carries NO host: every host comes from repo content (the project settings file, .kit/tracker.conf) that a cloned or forked repo controls, so each is printed apart, under its file's label, for the
+# human to review before it goes into the machine-wide file. Both host sources go through ONE grammar (the exact-host grammar of DC20), and the whole captured string is guarded against a newline (the jq
+# line anchors would match a line of a multi-line value). Every line starts with four spaces or "  info egress:", never "  warn", so the SWAS-793 notice count stays true. Display only: no verdict, no exit.
+boundary_egress_block() {
+  _eb_okh='def okhost: type == "string" and test("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$") and test("[a-z][a-z0-9-]*$");'
+  _eb_ph=""; _eb_pd=0; _eb_pok=0
+  if [ "${_bpread:-0}" -eq 1 ] && [ ! -L "$_bfile" ]; then   # the project scope was readable (recorded in the scope loop); a symlinked file is treated as unreadable here (SWAS-474 S2: its target is not the repo's file)
+    _eb_r=$(jq -r "$_eb_okh"'[.sandbox.network.allowedDomains | if type == "array" then .[] else empty end] as $a | ([$a[] | select(okhost)] | unique | .[:50]) as $h
+      | "\(($a | length) - ($h | length)) \($h | join(" "))"' "$_bfile" 2>/dev/null) || _eb_r=unreadable
+    case "$_eb_r" in *"$_bd_nl"*) _eb_r=unreadable ;; esac
+    _eb_pd=${_eb_r%% *}; _eb_ph=${_eb_r#* }
+    case "$_eb_pd" in ''|*[!0-9]*) _eb_pok=0 ;; *) _eb_pok=1 ;; esac
+  fi
+  [ "$_eb_pok" -eq 1 ] || { _eb_ph=""; _eb_pd=0; }
+  _eb_th=""
+  if [ -f .kit/tracker.conf ]; then   # the md backend has no tracker.conf: no label and no call. tracker-conf.sh get refuses a non-https URL, userinfo, a query, a fragment, an uppercase host and a non-digit port (rc 1, nothing printed)
+    _eb_tu=$(sh "$(dirname -- "$0")/tracker-conf.sh" get base_url .kit/tracker.conf 2>/dev/null) || _eb_tu=""
+    _eb_tu=${_eb_tu#https://}; _eb_tu=${_eb_tu%%/*}; _eb_tu=${_eb_tu%%:*}   # scheme, path and port stripped
+    _eb_th=$(jq -rn --arg h "$_eb_tu" "$_eb_okh"'if ($h | okhost) then $h else empty end' 2>/dev/null) || _eb_th=""
+    case "$_eb_th" in *"$_bd_nl"*) _eb_th="" ;; esac
+    if [ -n "$_eb_th" ]; then case " $_eb_ph " in *" $_eb_th "*) _eb_th="" ;; esac; fi   # SWAS-474 S3: already in the project list (an exact word match): listed once, there
+  fi
+  _eb_un=""
+  if [ -z "${SANDBOX_RUNTIME:-}" ] && [ -f "$_buser" ]; then
+    _eb_un=$(jq -r '.sandbox.network.allowedDomains | if type == "array" then length else 0 end' "$_buser" 2>/dev/null) || _eb_un=unreadable   # a COUNT, never a host
+  fi
+  _eb_blk=$(jq -cn '{sandbox: {network: {strictAllowlist: true, allowedDomains: []}}}') || _eb_blk=""   # MUT-BLOCK
+  printf '%s\n' "  info egress: the user-level block to copy whole into ~/.claude/settings.json (valid JSON, it carries no host):"
+  if [ -n "$_eb_blk" ]; then printf '%s\n' "    $_eb_blk"; else printf '%s\n' "    (the block could not be built here: set sandbox.network.strictAllowlist to true at user scope)"; fi
+  printf '%s\n' "  info egress: add the hosts below to any allowedDomains you already have; do not replace your list."
+  case "$_eb_un" in
+    ''|0) : ;;
+    *[!0-9]*) printf '%s\n' "  info egress: your user-level allowedDomains could not be counted here; add to whatever it holds." ;;
+    *) printf '%s\n' "  info egress: you already have $_eb_un host(s) in your user-level allowedDomains; add to them." ;;
+  esac
+  if [ "$_eb_pok" -eq 1 ]; then
+    printf '%s\n' "  info egress: From this repo's .claude/settings.json; review each before you add it:"
+    if [ -n "$_eb_ph" ]; then
+      set -f; for _eb_h in $_eb_ph; do printf '%s\n' "      $_eb_h"; done; set +f   # the hosts passed the grammar above, so nothing here can glob
+    else
+      printf '%s\n' "      (no exact hosts listed there)"
+    fi
+    [ "$_eb_pd" -eq 0 ] || printf '%s\n' "  info egress: $_eb_pd entr(y/ies) in that file were not copied (not an exact host, repeated, or past the first 50)."
+  else
+    printf '%s\n' "  info egress: this repo's .claude/settings.json could not be read here; add the hosts you use to allowedDomains yourself."
+  fi
+  [ -z "$_eb_th" ] || printf '%s\n' "  info egress: From this repo's .kit/tracker.conf (your board); review before you add it:" "      $_eb_th"
+}
+# boundary_summary (SWAS-474): the exit summary for a failed boundary. When egress is the failing part it leads with the strict step (the one act every adopter owes), then the declaration; when a
+# non-egress part failed as well (or egress did not fail) the old sentence follows or stands alone, unchanged. A plain line, never counted. The exit stays at the call site.
+boundary_summary() {
+  _bsm_strict=""; _bsm_old=""
+  if [ "${_bnd_egress_gap:-0}" -eq 1 ]; then
+    _bsm_strict="Agent boundary: egress is not enforced. (1) The one act every adopter owes, once per machine: merge the block printed under the egress line above into ~/.claude/settings.json, then add the hosts you trust from the list there to sandbox.network.allowedDomains (they come from this repo; review each first). (2) Or, to opt out on purpose, declare it in .kit/boundary-optout.conf."
+  fi
+  if [ "${_bnd_egress_gap:-0}" -eq 0 ] || [ "${_bnd_nonegress:-0}" -eq 1 ]; then
+    _bsm_old="Agent boundary: an UNDECLARED opt-out (or a malformed or UNTRUSTED declaration, or an unreadable declaration while a part is OFF) is listed above — declare it in .kit/boundary-optout.conf or remove the override (UNTRUSTED or UNVERIFIED: follow its Remedy)."
+  fi
+  _bsm_a=$_bsm_strict; _bsm_b=$_bsm_old   # MUT-SUMORDER
+  [ -z "$_bsm_a" ] || printf '%s\n' "$_bsm_a"
+  [ -z "$_bsm_b" ] || printf '%s\n' "$_bsm_b"
 }
 # boundary_webfetch_allows <local settings file> <enforced | open | session>: DC20 (Q20), the saved WebFetch(domain:) allows. One captured jq result or
 # unreadable (a Linux jq prints a partial result and then fails). A host is printed only when it passes the exact-host grammar (lowercase labels, two or
@@ -721,7 +794,7 @@ boundary_webfetch_allows() {
   esac
   _bwn=${_bw%% *}; _bwh=${_bw#* }
   case "$_bwn" in
-    ''|*[!0-9]*) printf '%s\n' "  warn egress: .claude/settings.local.json could not be read for saved WebFetch(domain:) allows (UNVERIFIED)"; bunv=1; return 0 ;;
+    ''|*[!0-9]*) printf '%s\n' "  warn egress: .claude/settings.local.json could not be read for saved WebFetch(domain:) allows (UNVERIFIED)"; bunv=1; bwarn=$((${bwarn:-0} + 1)); return 0 ;;
     0) return 0 ;;
   esac
   _bwm=$2
@@ -729,8 +802,8 @@ boundary_webfetch_allows() {
   _bwk=$#; _bwx=""; [ "$_bwn" -le "$_bwk" ] || _bwx=" (and $((_bwn - _bwk)) more entries not printed)"
   case "$_bwm" in
     enforced) printf '%s\n' "  ok   egress: $_bwn saved WebFetch(domain:) allow(s) are overridden by user-scope strictAllowlist (C35, measured)" ;;
-    session) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt if strictAllowlist is not set at user scope: ${_bwh:-none printable}$_bwx" ;;
-    *) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt: ${_bwh:-none printable}$_bwx" ;;
+    session) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt if strictAllowlist is not set at user scope: ${_bwh:-none printable}$_bwx"; bwarn=$((${bwarn:-0} + 1)) ;;
+    *) printf '%s\n' "  warn egress: $_bwn saved WebFetch(domain:) allow(s) in .claude/settings.local.json admit these hosts with no prompt: ${_bwh:-none printable}$_bwx"; bwarn=$((${bwarn:-0} + 1)) ;;
   esac
 }
 
@@ -740,6 +813,7 @@ boundary_has_tty() {  # rc 0 iff a terminal is attached (stdin, stdout or stderr
 }
 
 check_boundary() {
+  _bnd_egress_gap=0; _bnd_nonegress=0; _bpread=0   # SWAS-474: the summary's two kinds of bfail, and whether the project scope was readable (the egress block reads its allowedDomains only then)
   _bfile=".claude/settings.json"; _bloc=".claude/settings.local.json"; _buser="${HOME:-}/.claude/settings.json"
   case "$(uname -s 2>/dev/null)" in
     Darwin) _bmgd="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
@@ -755,6 +829,7 @@ check_boundary() {
   _bci=0; if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then _bci=1; fi
   if [ "$_bci" -eq 1 ] && boundary_has_tty; then   # MUT-CITTY
     printf '%s\n' "  WARN boundary: CI is set in an interactive terminal; judged as a human terminal"
+    bwarn=$((${bwarn:-0} + 1))
     printf '%s\n' "  Remedy: on a CI runner that allocates a TTY, run \`sh scripts/preflight.sh </dev/null 2>&1 | cat\` (CI runners only; this gives CI mode, which reads only the committed project block)"   # MUT-CIREMEDY
     _bci=0
   fi
@@ -776,6 +851,7 @@ check_boundary() {
         [ -n "$_beff" ] || [ -n "$_bblock" ] || _bblock=$_bn
         continue ;;
     esac
+    [ "$_bn" != project ] || _bpread=1
     _bv=$(printf '%s' "$_bs" | jq -r '[.e, .rt, .rh, .wp, .wu, .st, .wf, .ax, .au] | join(" ")')
     # shellcheck disable=SC2086  # deliberate word-split: nine plain words (a state word and eight booleans)
     set -- $_bv
@@ -830,18 +906,19 @@ check_boundary() {
         *) _bsep=": " ;;
       esac
       printf '%s\n' "  FAIL boundary: declaration MALFORMED (.kit/boundary-optout.conf$_bsep$BD_WHY) $_bleg — no part counts as declared"
-      bfail=1
+      bfail=1; _bnd_nonegress=1
     fi
     if [ "$_bds" = unreadable ] && boundary_decl_gates; then
       # S20 (owner ruling "355a: B revised"): with a part OFF, a declaration that could not be read FAILs from a terminal (it is the cheap way to switch the gate off),
       # unless --boundary-offline was typed on the command line (anyone can pass it: a visible act, not a control). --boundary-advisory and CI never move the exit (the same bfail); CI never reads the declaration at all.
       if [ "$BOUNDARY_OFFLINE" -eq 1 ]; then   # MUT-OFFLINE
         printf '%s\n' "  WARN boundary: declaration not verified (--boundary-offline typed on the command line; anyone can pass it: a visible act, not a control; the gate is not judged this run)"   # MUT-OFFLINELINE
+        bwarn=$((${bwarn:-0} + 1))
         _bds=offline
         bunv=1   # S26: a plain preflight still exits 0 (the owner ruling), but doctor --boundary reads UNVERIFIED, never PASS   # MUT-OFFLINEUNV
       else
         printf '%s\n' "  FAIL boundary: declaration UNVERIFIED ($BD_WHY) while a part is OFF. Remedy: $(boundary_unv_remedy)"
-        bfail=1   # MUT-UNVGATE
+        bfail=1; _bnd_nonegress=1   # MUT-UNVGATE
       fi
     fi
     if [ "$_bds" = untrusted ]; then
@@ -849,7 +926,7 @@ check_boundary() {
       # some part is OFF and so needs the declaration (I1): a fully ON user is told, not failed. boundary_decl_gates is the ONE gate condition.
       if boundary_decl_gates; then   # MUT-GATES
         printf '%s\n' "  FAIL boundary: declaration UNTRUSTED ($BD_WHY). Remedy: $BD_REMEDY"   # MUT-REMEDY
-        bfail=1
+        bfail=1; _bnd_nonegress=1
       else
         printf '%s\n' "  info boundary: declaration UNTRUSTED ($BD_WHY); not judged (no part is off). Remedy: $BD_REMEDY"
       fi
@@ -865,7 +942,7 @@ check_boundary() {
     nosandbox)
       boundary_judge boundary OFF "" @every "no scope enables the agent OS sandbox: $_bcons (where the default comes from: docs/operations/runtime-guards.md, \"The agent boundary: on by default\")" "declare it in .kit/boundary-optout.conf (part=all), $_bfix" "$_bcons" ;;
     unv)
-      bunv=1
+      bunv=1; bwarn=$((${bwarn:-0} + 1))
       printf '%s\n' "  warn boundary: UNVERIFIED $_bleg — the $_bblock scope is unreadable here, so whether the sandbox is on cannot be read; run 'sh scripts/preflight.sh' from a terminal" ;;
     on)
       _bnote=""; [ "$_buserunv" -eq 0 ] || _bnote="; the user scope is unreadable here (read-denied to the agent's shell by design), so it is not counted"
@@ -884,12 +961,13 @@ check_boundary() {
         [ -n "${SANDBOX_RUNTIME:-}" ] || boundary_user_hosts "$_buser"
         boundary_webfetch_allows "$_bloc" enforced
       elif [ "$_buserunv" -eq 1 ]; then
-        bunv=1
+        bunv=1; bwarn=$((${bwarn:-0} + 1))
         printf '%s\n' "  warn egress: UNVERIFIED $_bleg — strictAllowlist belongs at user scope, which is unreadable here; run 'sh scripts/preflight.sh' from a terminal to read it"
         boundary_webfetch_allows "$_bloc" session
       else
         _bign=""; [ "$_bstrepo" -eq 0 ] || _bign=" (a strictAllowlist in a repo file is ignored by Claude Code, docs-stated)"
-        boundary_judge egress "NOT ENFORCED" "" egress "strictAllowlist is not set at user or managed scope$_bign. Until it is, an unlisted host is a prompt a person can approve, and a mode that approves without a person (auto, bypass) lets it through" "(1) merge the user-level block into ~/.claude/settings.json: \"sandbox\": {\"network\": {\"strictAllowlist\": true, \"allowedDomains\": [<the hosts you use>]}} (one human act per machine; it applies to every project on this machine; see docs/operations/runtime-guards.md); or (2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf (reviewed as control-plane)" "$_bcons"
+        boundary_judge egress "NOT ENFORCED" "" egress "strictAllowlist is not set at user or managed scope$_bign. Until it is, an unlisted host is a prompt a person can approve, and a mode that approves without a person (auto, bypass) lets it through" "(1) merge the user-level block into ~/.claude/settings.json (the block is printed on the lines below, with the hosts to review, or why none could be listed; one human act per machine; it applies to every project on this machine; see docs/operations/runtime-guards.md); or (2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf (reviewed as control-plane)" "$_bcons"
+        [ "$_bnd_egress_gap" -eq 0 ] || boundary_egress_block   # SWAS-474: only on the UNDECLARED path (a declared opt-out, an unread or unreadable declaration never sets the flag)
         boundary_webfetch_allows "$_bloc" open
       fi ;;
   esac
@@ -907,7 +985,7 @@ check_boundary() {
 stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
   case "$1" in
     typescript-node) printf 'node|nodejs.org or nvm\nnpm|ships with Node\n' ;;
-    python|ml|data-engineering) printf 'python3|python.org or pyenv\npip3|ships with Python\n' ;;
+    python|ml|data-engineering) printf 'python3|python.org or pyenv\npip3|ships with Python\nuv|docs.astral.sh/uv\n' ;;
     go) printf 'go|go.dev/dl\n' ;;
     dotnet) printf 'dotnet|dotnet.microsoft.com/download\n' ;;
     rust) printf 'cargo|rustup.rs\n' ;;
@@ -999,16 +1077,16 @@ check_runtime_floor() {  # <stack> <.nvmrc path> — prints one report line; may
   _rtline=$(${_rtcmd} 2>/dev/null) || _rtline=""
   if [ -z "$_rtline" ]; then
     echo "  warn node runtime floor UNVERIFIED — could not run 'node --version'"
-    rec=1; return 0
+    rec=$((rec + 1)); return 0
   fi
   if ! _rtmaj=$(node_major "$_rtline"); then
     printf '%s\n' "  warn node runtime floor UNVERIFIED — unrecognised version string: $_rtline"   # Rule 3
-    rec=1; return 0
+    rec=$((rec + 1)); return 0
   fi
   if ! _rtfloor=$(read_runtime_floor "$RUNTIME_SRC"); then
     printf '%s\n' "  warn node runtime floor UNVERIFIED — $RUNTIME_SRC is missing, unreadable, or not a version"
     printf '%s\n' "       (running node $_rtline; nothing here has verified it against the profile's floor)"
-    rec=1; return 0
+    rec=$((rec + 1)); return 0
   fi
   RUNTIME_FOUND=$_rtline; RUNTIME_FLOOR=$_rtfloor
   # NUMERIC compare, deliberately — the git floor's lesson, one stack over: lexically "9" > "24", so a
@@ -1630,7 +1708,7 @@ check_guard_installed() {
       printf '%s\n' "       (global or system scope, not .git/config) redirects hooks to '$_hp'."
       printf '%s\n' "       Nothing in THIS repository asked for that, and the kit's guard is not running."
       printf '%s\n' "       Unset it, set a repo-local core.hooksPath, or install the guard at $_hp/pre-push."
-      rec=1
+      rec=$((rec + 1))
     fi
     return 0
   fi
@@ -1724,21 +1802,49 @@ check_guard_killswitch() {
   echo "  FAIL KIT_GUARD_SELFEDIT=1 is set in this environment — every guard refusal is OFF for this session and nothing reaches the deny log (unset it: it is a human maintenance switch, not a session setting)"
 }
 
-check_repo_class() {  # warn when the repo is user-owned PRIVATE (SLSA provenance gate skips there)
+# SWAS-813: does a PRIVATE repository declare GitHub Enterprise Cloud? Prints declared | absent | unverifiable. The declaration is the GitHub variable KIT_ATTEST_PRIVATE (repository or
+# organization level; `true` in any case). Same order and mapping as conformance/inception-done.sh (_id_attest_state): the repository variable decides when it exists, with any value;
+# the organization list is read only when the repository read is a 404; a 403 or any other status is unverifiable. The read seam PREFLIGHT_GH_VAR_CMD (called with the API path as
+# its last word) is honoured only under SEAMS=1, which only a flag sets (--selftest, --selftest-e2e), never the ambient environment.
+repo_attest_state() {
+  _rs_one="gh api"; _rs_all="gh api --paginate"
+  if [ "$SEAMS" -eq 1 ] && [ -n "${PREFLIGHT_GH_VAR_CMD:-}" ]; then _rs_one=$PREFLIGHT_GH_VAR_CMD; _rs_all=$PREFLIGHT_GH_VAR_CMD; fi
+  # shellcheck disable=SC2086  # deliberate: the command is a few words and must split (the seam or `gh api`)
+  _rs_o=$($_rs_one "repos/{owner}/{repo}/actions/variables/KIT_ATTEST_PRIVATE" 2>&1) && _rs_c=0 || _rs_c=$?
+  if [ "$_rs_c" -ne 0 ]; then
+    case "$_rs_o" in *"HTTP 404"*) : ;; *) echo unverifiable; return 0 ;; esac
+    # shellcheck disable=SC2086  # same as above
+    _rs_o=$($_rs_all "repos/{owner}/{repo}/actions/organization-variables" 2>&1) || { echo unverifiable; return 0; }
+    _rs_v=$(printf '%s' "$_rs_o" | jq -r '.variables[]? | select(.name == "KIT_ATTEST_PRIVATE") | .value' 2>/dev/null) || { echo unverifiable; return 0; }
+    _rs_v=$(printf '%s\n' "$_rs_v" | head -n 1)
+  else
+    _rs_v=$(printf '%s' "$_rs_o" | jq -r '.value // empty' 2>/dev/null) || { echo unverifiable; return 0; }
+  fi
+  _rs_v=$(printf '%s' "$_rs_v" | tr '[:upper:]' '[:lower:]')
+  if [ "$_rs_v" = true ]; then echo declared; else echo absent; fi
+}
+
+check_repo_class() {  # warn when the repo is PRIVATE and has not declared GitHub Enterprise Cloud (SLSA attest step(s) skip there); who owns the repo no longer decides
   if [ -z "${PREFLIGHT_GH_CMD:-}" ] && ! command -v gh >/dev/null 2>&1; then
     echo "  skip repo-class — gh not installed (cannot detect repo visibility)"; return 0
   fi
-  _json=$(${PREFLIGHT_GH_CMD:-gh repo view --json isPrivate,isInOrganization} 2>/dev/null) || _json=""
+  _json=$(${PREFLIGHT_GH_CMD:-gh repo view --json isPrivate} 2>/dev/null) || _json=""
   if [ -z "$_json" ]; then
     echo "  skip repo-class — gh unavailable/unauthenticated/offline (run 'gh auth login')"; return 0
   fi
   _priv=$(printf '%s' "$_json" | jq -r '.isPrivate' 2>/dev/null || echo "")
-  _org=$(printf '%s' "$_json"  | jq -r '.isInOrganization' 2>/dev/null || echo "")  # isInOrganization is gh's proxy for the gate's owner.type == 'Organization'
-  if [ "$_priv" = "true" ] && [ "$_org" = "false" ]; then
-    echo "  warn repo is user-owned PRIVATE — SLSA provenance gate will SKIP (make it public or move to an org for build attestation)"
-    rec=1
-  elif [ "$_priv" = "true" ] || [ "$_priv" = "false" ]; then
-    echo "  ok   repo class supports the provenance gate (public or org-owned)"
+  if [ "$_priv" = "false" ]; then
+    echo "  ok   repo class supports the provenance gate (public)"
+  elif [ "$_priv" = "true" ]; then
+    _ra=$(repo_attest_state)   # MUT-ATTEST
+    case "$_ra" in
+      declared) echo "  ok   repo class supports the provenance gate (private, KIT_ATTEST_PRIVATE declared)" ;;
+      absent)
+        echo "  warn repo is PRIVATE and KIT_ATTEST_PRIVATE is not set — the SLSA attest step(s) will SKIP (GitHub offers attestations on a private repository only with Enterprise Cloud): make the repo public, set the KIT_ATTEST_PRIVATE variable to true if you have Enterprise Cloud, or record a dated na for gate-provenance in conformance/gate-dispositions.txt"
+        rec=$((rec + 1))   # MUT-RECCOUNT
+        ;;
+      *) echo "  skip repo-class — could not read the KIT_ATTEST_PRIVATE variable (gh needs access to repository variables)" ;;
+    esac
   else
     echo "  skip repo-class — could not parse repo metadata"
   fi
@@ -1762,7 +1868,7 @@ check_workflows_valid() {  # surface workflow validity via the existing conforma
     echo "  ok   workflows valid (actionlint via conformance/actionlint-valid.sh)"
   else
     echo "  warn an invalid GitHub Actions workflow — run 'sh conformance/actionlint-valid.sh' for details"
-    rec=1
+    rec=$((rec + 1))
   fi
 }
 
@@ -1778,7 +1884,7 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
   [ "$_any" -eq 0 ] && return 0   # N/A — no CODEOWNERS yet (pre-inception): print nothing
   if [ -n "$_found" ]; then
     printf '%s\n' "  warn$_found still has @your-org/* placeholders — replace with real teams before enabling owner review"   # Rule 3
-    rec=1
+    rec=$((rec + 1))
   else
     echo "  ok   CODEOWNERS has no @your-org placeholders"
   fi
@@ -1794,7 +1900,7 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
 # config.worktree names an exec key, or a file git would open is a link or special, NO index read is made (gp_nogit). The one index read, for the registered-submodule list, is
 # `gp_git ls-files --stage`; it is never `status`.
 # EVERY printed name is checked first (Rule 2, Rule 3), under LC_ALL=C: a name with a non-printable or non-ASCII byte (a newline, an escape, a bidi mark) or the text `##[` is reported without
-# its name, so a planted name cannot forge a line or drive a terminal. NEVER MOVES AN EXIT: it prints `warn`, `info` and `unverified` lines and returns 0, and touches none of miss, rec, bfail or bunv.
+# its name, so a planted name cannot forge a line or drive a terminal. NEVER MOVES AN EXIT: it prints `warn`, `info` and `unverified` lines and returns 0, and touches none of miss, rec, bfail or bunv. SWAS-793: the main run now captures this report and counts its `  warn git-plants:` lines into gpwarn (gp_count_warns), for the summary line only: a display count, never an exit.
 # TIMING, stated plainly: it runs when preflight or doctor runs; git run before that (Claude Code's own start-up git, the person's own commands) may already have run a plant, so it REPORTS,
 # it does not prevent. CEILINGS: an agent can edit this script before the person runs it; the records git keeps (a worktree's gitdir file and back-link) are files an agent can forge too (see boundary_gitdir_trusted),
 # so they are NOT read: a nested gitfile naming ./.git/worktrees/<one name> (by shape, never by its path name) prints an info and its own `unverified git-plants:` line (a linked worktree or a plant: this check cannot tell which), and the run never reads ok; a nested gitfile
@@ -1819,6 +1925,10 @@ gp_one() {  # <file>: sets gp_1v to the file's whole content; rc 1 unless it is 
 }
 gp_w() { gp_warn=$((gp_warn + 1)); printf '%s\n' "  warn git-plants: $1"; }   # Rule 3
 gp_i() { printf '%s\n' "  info git-plants: $1"; }   # Rule 3
+gp_count_warns() {  # <a check_git_plants report> -> how many findings it printed (its `  warn git-plants:` lines); SWAS-793: gp_warn lives in the report's subshell, so the main run counts the lines it printed. Display only
+  _gcw=$(printf '%s\n' "$1" | grep -c '^  warn git-plants:') || _gcw=0   # MUT-GPCOUNT
+  printf '%s\n' "$_gcw"
+}
 gp_safe() { case "$1" in *[![:print:]]*|*'##['*) return 1 ;; esac; return 0; }
 gp_show() { if gp_safe "$1"; then printf '%s' "$1"; else printf '%s' '<a name it withholds (unprintable, or shaped like a credential), not shown>'; fi; }
 gp_git() {  # the only git C1 runs: an explicit git directory (no discovery, so a rejected ./.git is an error and a bare layout at the root is never entered), no config but the repository's own, never a monitor, a hook, a pager, a lazy fetch or an ext:: transport
@@ -2113,6 +2223,78 @@ gp_main() {
   return 0
 }
 
+# --- SWAS-784 / SWAS-785: which tree is this? ---------------------------------------------------
+# preflight reports on the directory it is run in. In the kit checkout, or in a directory that is no project at all, a report read as
+# an all-clear for the wrong tree (rehearsal A, findings #3 and #6). The class below answers exactly one of incepted | kit | export | other,
+# first match wins. It runs as the first act of the main body, so nothing is reported before it; the early-exit modes (--selftest,
+# --git-plants-only, --boundary-only, --url-kind) exit before the main body and are unchanged.
+project_root_top() {  # -> stdout: T, the git toplevel, only inside a work tree with no git environment redirect (as guard_tree_class anchors) and only when it differs from $PWD; else nothing
+  _prt=""
+  if ! git_env_redirected; then _prt=$(git rev-parse --show-toplevel 2>/dev/null) || _prt=""; fi
+  if [ "$_prt" = "$PWD" ] || [ "$_prt" = "$(pwd -P)" ]; then _prt=""; fi
+  printf '%s\n' "$_prt"
+}
+prc_has_marker() {  # <dir> -> rc 0 iff a KIT_INTERNAL_MARKERS marker sits in <dir>, 1 iff none, 2 when the marker list cannot be read
+  # the one-line list incept.sh refuses on, read from the incept.sh beside this script by the parse scripts/adopter-export.sh uses. Missing, unreadable or empty
+  # refuses: an empty list would read the kit as an export.
+  _phm_list=$(sed -n "s/^KIT_INTERNAL_MARKERS='\\(.*\\)'.*/\\1/p" "$(dirname -- "$0")/incept.sh" 2>/dev/null) || _phm_list=""
+  [ -n "$_phm_list" ] || return 2   # MUT-PRLIST
+  case $- in *f*) _phm_nf=1 ;; *) _phm_nf=0 ;; esac   # restore the caller's noglob state, never assume it was off
+  set -f   # the markers are glob-free literals; no pathname expansion on the split
+  _phm_rc=1
+  for _phm_m in $_phm_list; do
+    if [ -e "$1/$_phm_m" ]; then _phm_rc=0; break; fi
+  done
+  [ "$_phm_nf" -eq 1 ] || set +f
+  return "$_phm_rc"
+}
+prc_is_principles() {  # <dir> -> rc 0 iff <dir>/CLAUDE.md carries the principles heading, the marker incept keys on
+  [ -f "$1/CLAUDE.md" ] && grep -q "Engineering Principles & Definition of Done" "$1/CLAUDE.md" 2>/dev/null
+}
+project_root_is_kit_root() {  # <dir> -> rc 0 iff <dir> is the kit root: a marker AND the principles CLAUDE.md, and no ENGINEERING-PRINCIPLES.md; rc 2 when the marker list cannot be read
+  if [ -f "$1/ENGINEERING-PRINCIPLES.md" ]; then return 1; fi
+  _pkr_rc=0; prc_has_marker "$1" || _pkr_rc=$?
+  [ "$_pkr_rc" -eq 0 ] || return "$_pkr_rc"
+  prc_is_principles "$1"   # MUT-PRKROOT
+}
+project_root_class() {  # <dir> -> stdout: incepted | kit | export | other ; rc 2 (nothing printed) when the kit-internal marker list cannot be read
+  _prc_a=$1
+  # incepted FIRST: ENGINEERING-PRINCIPLES.md is inception's own artifact and the kit source never has it, so an incepted adopter tree is never read as the kit
+  # (a plugin may create docs/superpowers or .superpowers in an adopter tree, and both are kit markers).
+  if [ -f "$_prc_a/ENGINEERING-PRINCIPLES.md" ]; then echo incepted; return 0; fi   # MUT-PRINC
+  _prc_h=0; prc_has_marker "$_prc_a" || _prc_h=$?
+  [ "$_prc_h" -ne 2 ] || return 2
+  if [ "$_prc_h" -eq 0 ]; then echo kit; return 0; fi
+  # export: the principles CLAUDE.md, the marker incept keys on. An export is not a git repo before incept, so the test is the file, not git.
+  if prc_is_principles "$_prc_a"; then echo export; return 0; fi
+  echo other
+}
+project_root_resolve() {  # sets PROJECT_CLASS and _prc_anchor (the directory whose class applied); rc 2 when the marker list cannot be read. The errata's anchor rule (SWAS-784):
+  # T is the git toplevel and $PWD is the directory itself; each is classified by project_root_class's order. 1: T is the kit root -> kit. 2: $PWD reads anything but other -> that.
+  # 3: else T's class, or other when there is no T. A package that is itself a project reads by itself; anything inside the kit root is the kit; a subdirectory of an incepted repo reads incepted.
+  _prs_t=$(project_root_top)
+  _prs_r=0
+  if [ -n "$_prs_t" ]; then
+    project_root_is_kit_root "$_prs_t" || _prs_r=$?
+    [ "$_prs_r" -ne 2 ] || return 2
+    if [ "$_prs_r" -eq 0 ]; then PROJECT_CLASS=kit; _prc_anchor=$_prs_t; return 0; fi   # MUT-PRKROOT1
+  fi
+  PROJECT_CLASS=$(project_root_class "$PWD") || return 2   # MUT-PRPWD
+  _prc_anchor=$PWD
+  if [ "$PROJECT_CLASS" = other ] && [ -n "$_prs_t" ]; then   # MUT-PRFALLBACK
+    PROJECT_CLASS=$(project_root_class "$_prs_t") || return 2
+    _prc_anchor=$_prs_t
+  fi
+  return 0
+}
+prc_show() {  # <path> -> a path safe to print: a control character replaces the whole path (RULE 2); callers print it with printf '%s\n' (RULE 3)
+  if guard_path_hostile "$1"; then printf '%s\n' '<unprintable path>'; else printf '%s\n' "$1"; fi   # MUT-PRHOSTILE
+}
+prc_refuse_other() {  # exit 1 before any report line, writing nothing
+  printf '%s\n' "preflight: $(prc_show "$PWD") is not a project root. It is neither an exported Sparkwright kit (a CLAUDE.md with the principles heading) nor an incepted project (ENGINEERING-PRINCIPLES.md). cd to your project's root and re-run." >&2
+  exit 1
+}
+
 # SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
 # on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
 STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0; BOUNDARY_ONLY=0; BOUNDARY_ADVISORY=0; BOUNDARY_OFFLINE=0; SELFTEST_CELL=""; GIT_PLANTS_ONLY=0
@@ -2192,7 +2374,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     }
     # the mutants of the new controls: a sed mutation of a COPY must turn the scenario red (the ORIGINAL prints it, the mutant does not), and must apply and parse.
     _bnd_kill() {  # <name> <sed expr> <flags> <has|moves|rc> <substring | the original's moves value | the original's rc>
-      _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"
+      _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"; cp "$(dirname -- "$_self")/incept.sh" "$_bk/incept.sh"   # SWAS-784: the copy reads the marker list from the incept.sh beside it
       if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
       if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -rf "$_bk"; return 0; fi
       if [ "$4" = moves ]; then
@@ -2240,7 +2422,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     _cvog=$(mktemp -d); _cvgx='-c user.name=kit -c user.email=kit@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null'
     git init -q --bare "$_cvog/origin.git"; git -C "$_cvog/origin.git" symbolic-ref HEAD refs/heads/main
     git init -q "$_cvog/work"; git -C "$_cvog/work" symbolic-ref HEAD refs/heads/main; git -C "$_cvog/work" remote add origin "$_cvog/origin.git"
-    printf 'x\n' > "$_cvog/work/f"; git -C "$_cvog/work" add f
+    printf 'x\n' > "$_cvog/work/f"; printf 'Engineering Principles & Definition of Done\n' > "$_cvog/work/CLAUDE.md"; git -C "$_cvog/work" add f CLAUDE.md   # SWAS-784: an export-shaped root, or the real body refuses the fixture as no project
     # shellcheck disable=SC2086  # $_cvgx is a fixed flag list
     git -C "$_cvog/work" $_cvgx commit -q -m base; git -C "$_cvog/work" push -q origin main 2>/dev/null
     _cvs_proj=$_g_proj; _cvs_user=$_g_user; _cvs_decl=$_g_decl; _cvs_env=$_g_env; _cvs_ci=$_g_ci; _cvs_dir=$_g_dir
@@ -2275,6 +2457,12 @@ if [ "$SELFTEST" -eq 1 ]; then
     # The trailer must NOT be the line the full selftest ends with: a consumer that greps the full selftest's trailer must not read this cell's output as a full run (SWAS-487); keep it distinct.
     [ "$fail" -eq 0 ] && { echo "OK: preflight cell case-variant (not the full selftest)"; exit 0; } || { echo "FAIL: preflight cell case-variant"; exit 1; }   # MUT-CVTRAILER
   fi
+  # SWAS-784: the real body now classifies the tree it runs in (project_root_class), and the selftest's own cwd is the kit checkout, which reads `kit` and earns no
+  # all-clear. So a real-body call whose verdict needs the all-clear runs from _pr_xp, an export-shaped fixture (the principles CLAUDE.md, no kit marker, no repo, plus the
+  # stack's .nvmrc the node-floor cells read). _pr_self is this script's absolute path, because those calls change directory first.
+  _pr_self=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+  _pr_xp=$(mktemp -d); printf 'Engineering Principles & Definition of Done\n' > "$_pr_xp/CLAUDE.md"
+  mkdir -p "$_pr_xp/profiles/typescript-node/scaffold"; printf '24\n' > "$_pr_xp/profiles/typescript-node/scaffold/.nvmrc"
   # The hermetic entry is load-bearing: the unscoped self-invocations below (kill-switch, git floor, node floor, go stack, sandbox) would otherwise run in CI mode on a runner
   # that exports CI (the sandbox cell's "cannot start" warning is skipped under CI). The check reads the line right after the selftest entry; a mutant that deletes it must go red.
   _hm_ok() {  # <script file>: rc 0 iff the first line of the selftest block unsets CI and GITHUB_ACTIONS
@@ -2314,25 +2502,142 @@ if [ "$SELFTEST" -eq 1 ]; then
   if command -v sh >/dev/null 2>&1; then echo "PASS: present tool (sh) detected"; else echo "FAIL: sh not detected"; fail=1; fi
   if stack_tools __nope__ >/dev/null 2>&1; then echo "FAIL: unknown stack not handled"; fail=1; else echo "PASS: unknown stack handled gracefully"; fi
   if stack_tools python >/dev/null 2>&1; then echo "PASS: known stack mapped"; else echo "FAIL: known stack not mapped"; fail=1; fi
+  # SWAS-786: python, ml and data-engineering name uv as their deps tool and run every standard command through it, so each stack's row carries a `uv|` line
+  # (a `need`, so a machine without uv fails preflight with an install hint, not at its first `uv run pytest`).
+  _uv_has() {  # <stack_tools output> -> rc 0 iff it carries the uv row
+    case "$1" in *"uv|docs.astral.sh/uv"*) return 0 ;; esac
+    return 1
+  }
+  for _uv_s in python ml data-engineering; do
+    if _uv_has "$(stack_tools "$_uv_s" 2>/dev/null)"; then echo "PASS: swas-786 [$_uv_s] stack_tools prints the uv row"; else echo "FAIL: swas-786 [$_uv_s] stack_tools has no uv row"; fail=1; fi
+  done
+  # mutant uv-row-dropped: a temp copy of this script without the uv row; its stack_tools (extracted and evaluated in a subshell) must lose the row, or the cell above proves nothing.
+  _uv_m=$(mktemp -d); sed 's#\\nuv|docs.astral.sh/uv##' "$0" > "$_uv_m/preflight.sh"
+  if cmp -s "$0" "$_uv_m/preflight.sh"; then echo "FAIL: mutant uv-row-dropped did not apply (the sed expression matched nothing)"; fail=1
+  else
+    _uv_mo=$( eval "$(sed -n '/^stack_tools() {/,/^}/p' "$_uv_m/preflight.sh")"; stack_tools python 2>/dev/null ) || _uv_mo=""
+    case "$_uv_mo" in
+      "") echo "FAIL: mutant uv-row-dropped printed no stack_tools output (vacuous)"; fail=1 ;;
+      *) if _uv_has "$_uv_mo"; then echo "FAIL: mutant uv-row-dropped survived (the row is still there)"; fail=1; else echo "PASS: mutant uv-row-dropped is killed"; fi ;;
+    esac
+  fi
+  # the real body on a PATH with no uv prints `MISS uv` and exits non-zero. The shim directory holds a symlink to every executable the real PATH offers EXCEPT uv, so every other
+  # tool the body calls still resolves; the cell first proves `command -v uv` fails there (else it would be vacuous). /bin/sh runs the body by absolute path, from the export-shaped
+  # fixture (SWAS-784), with the seams live and the boundary advisory.
+  _uv_b="$_uv_m/bin"; mkdir -p "$_uv_b"
+  _uv_oifs=$IFS; IFS=:
+  for _uv_d in $PATH; do
+    [ -d "$_uv_d" ] || continue
+    ls -1A "$_uv_d" 2>/dev/null | while IFS= read -r _uv_n; do
+      [ "$_uv_n" = uv ] && continue
+      [ -x "$_uv_d/$_uv_n" ] && [ ! -d "$_uv_d/$_uv_n" ] && [ ! -e "$_uv_b/$_uv_n" ] && ln -s "$_uv_d/$_uv_n" "$_uv_b/$_uv_n" 2>/dev/null || :
+    done
+  done
+  IFS=$_uv_oifs
+  _uv_run() {  # <script> -> _uv_out, _uv_rc : the real body for --stack python on the uv-less PATH
+    _uv_rc=0
+    _uv_out=$(cd "$_pr_xp" && env -u CI -u GITHUB_ACTIONS PATH="$_uv_b" PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ /bin/sh "$1" --selftest-e2e --boundary-advisory --stack python 2>&1 </dev/null) || _uv_rc=$?
+  }
+  if env PATH="$_uv_b" /bin/sh -c 'command -v uv' >/dev/null 2>&1; then
+    echo "FAIL: swas-786 the shim PATH still resolves uv, so the MISS uv cell below would be vacuous"; fail=1
+  else
+    _uv_run "$_pr_self"
+    case "$_uv_out" in *"Universal prerequisites:"*) _uv_live=1 ;; *) _uv_live=0 ;; esac
+    if [ "$_uv_live" -eq 0 ]; then echo "FAIL: swas-786 the real body never ran on the uv-less PATH (vacuous): $_uv_out"; fail=1
+    elif [ "$_uv_rc" -ne 0 ] && printf '%s\n' "$_uv_out" | grep -qF '  MISS uv — docs.astral.sh/uv'; then
+      echo "PASS: swas-786 a real python run on a PATH with no uv prints 'MISS uv — docs.astral.sh/uv' and exits non-zero"
+    else echo "FAIL: swas-786 a real python run on a PATH with no uv did not print MISS uv with a non-zero exit (rc $_uv_rc): $_uv_out"; fail=1; fi
+    # mutant uv-row-dropped, end to end: the same run of the mutated copy must NOT print the line.
+    cp "$(dirname -- "$0")/incept.sh" "$_uv_m/incept.sh"
+    _uv_run "$_uv_m/preflight.sh"
+    case "$_uv_out" in
+      *"Universal prerequisites:"*)
+        if printf '%s\n' "$_uv_out" | grep -qF '  MISS uv'; then echo "FAIL: mutant uv-row-dropped survived end to end (MISS uv still printed)"; fail=1; else echo "PASS: mutant uv-row-dropped is killed end to end (no MISS uv without the row)"; fi ;;
+      *) echo "FAIL: mutant uv-row-dropped never ran the real body on the uv-less PATH (vacuous): $_uv_out"; fail=1 ;;
+    esac
+  fi
+  rm -rf "$_uv_m"
+  # incept's two sentences name BOTH causes and the right remedy: the cause line says a tool may be missing (not only below a floor), and the escape line says
+  # --allow-runtime-mismatch waives only a version floor, never a missing tool (SWAS-807 reworded both sentences). A source lock, as the interactive refusal needs a terminal; each half has a mutant that restores the old text.
+  _uv_ic="$(dirname -- "$0")/incept.sh"
+  _uv_inc_ok() {  # <incept.sh> -> rc 0 iff both new sentences are in it
+    grep -qF 'toolchain check failed: a required tool is missing or below its declared floor (run sh scripts/preflight.sh --stack' "$1" \
+      && grep -qF 'echo "  install each tool preflight lists as MISS, and upgrade each one below its floor." >&2' "$1" \
+      && grep -qF '"  (--allow-runtime-mismatch waives only a version floor; it installs nothing.)"' "$1" \
+      && ! grep -qF 'To proceed anyway, accepting that the emitted project may not build, re-run with:' "$1"
+  }
+  if _uv_inc_ok "$_uv_ic"; then echo "PASS: swas-786 incept's cause line names a missing tool and its escape line says the flag never waives one"; else echo "FAIL: swas-786 incept's cause or escape line does not carry the new sentence"; fail=1; fi
+  _uv_m=$(mktemp -d)
+  for _uv_mut in \
+    'cause-old|s/toolchain check failed: a required tool is missing or below its declared floor/toolchain does not meet its declared floor/' \
+    'escape-old|s/install each tool preflight lists as MISS, and upgrade each one below its floor\./To proceed anyway, accepting that the emitted project may not build, re-run with:/;s/--allow-runtime-mismatch waives only a version floor; it installs nothing\./  --allow-runtime-mismatch/'; do
+    sed "${_uv_mut#*|}" "$_uv_ic" > "$_uv_m/incept.sh"
+    if cmp -s "$_uv_ic" "$_uv_m/incept.sh"; then echo "FAIL: mutant incept-${_uv_mut%%|*} did not apply (the sed expression matched nothing)"; fail=1
+    elif _uv_inc_ok "$_uv_m/incept.sh"; then echo "FAIL: mutant incept-${_uv_mut%%|*} survived (the sentence check stayed green)"; fail=1
+    else echo "PASS: mutant incept-${_uv_mut%%|*} is killed"; fi
+  done
+  rm -rf "$_uv_m"
   miss=0; recommend kit_definitely_absent_tool_xyz "x" >/dev/null 2>&1
   if [ "$miss" -eq 0 ]; then echo "PASS: recommend warns without failing (miss untouched)"; else echo "FAIL: recommend set miss"; fail=1; fi
 
-  # — S2: repo-class check (PREFLIGHT_GH_CMD seam) ————————————————————————————
-  out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}' check_repo_class 2>&1)
-  case "$out" in *warn*PRIVATE*) echo "PASS: user-private repo warns (provenance skip)";; *) echo "FAIL: user-private repo did not warn ($out)"; fail=1;; esac
+  # — S2: repo-class check (PREFLIGHT_GH_CMD seam; SWAS-813: the KIT_ATTEST_PRIVATE declaration through the PREFLIGHT_GH_VAR_CMD seam) ————————————
+  # _ra_mk <repo-answer> <org-answer>: a gh-api stand-in that answers the repository variable read and the organization list read from two snippets of shell.
+  _ra_t=$(mktemp -d); _ra_404='echo "gh: Not Found (HTTP 404)" >&2; exit 1'; _ra_403='echo "gh: Resource not accessible (HTTP 403)" >&2; exit 1'
+  _ra_org_true='printf "%s\n" "{\"total_count\":1,\"variables\":[{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"true\"}]}"'
+  _ra_org_none='printf "%s\n" "{\"total_count\":0,\"variables\":[]}"'
+  _ra_repo_true='printf "%s\n" "{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"true\"}"'
+  _ra_repo_false='printf "%s\n" "{\"name\":\"KIT_ATTEST_PRIVATE\",\"value\":\"false\"}"'
+  _ra_mk() { printf '%s\n' '#!/bin/sh' 'case "$1" in' "  */actions/variables/KIT_ATTEST_PRIVATE) $1 ;;" "  */actions/organization-variables) $2 ;;" 'esac' > "$_ra_t/stub.sh"; }
+  _ra_priv='printf {"isPrivate":true,"isInOrganization":false}'
+  _ra_privorg='printf {"isPrivate":true,"isInOrganization":true}'
+  _ra_mk "$_ra_404" "$_ra_org_none"
+  out=$(PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *warn*PRIVATE*KIT_ATTEST_PRIVATE*"dated na"*) echo "PASS: private repo without the declaration warns, naming KIT_ATTEST_PRIVATE and the na route (provenance skip)";; *) echo "FAIL: private repo without the declaration did not warn ($out)"; fail=1;; esac
 
   out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":false,"isInOrganization":false}' check_repo_class 2>&1)
   case "$out" in *ok*) echo "PASS: public repo ok, no warn";; *) echo "FAIL: public repo not ok ($out)"; fail=1;; esac
 
-  out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":true}' check_repo_class 2>&1)
-  case "$out" in *ok*) echo "PASS: org-owned private ok (provenance runs via org)";; *) echo "FAIL: org repo not ok ($out)"; fail=1;; esac
+  out=$(PREFLIGHT_GH_CMD="$_ra_privorg" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *warn*PRIVATE*) echo "PASS: org-owned private without the declaration warns (the owner type no longer passes the gate)";; *) echo "FAIL: org-owned private repo did not warn ($out)"; fail=1;; esac
+
+  _ra_mk "$_ra_repo_true" "$_ra_org_none"
+  out=$(PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *ok*declared*) echo "PASS: private repo with the repository variable true is ok";; *) echo "FAIL: declared private repo not ok ($out)"; fail=1;; esac
+
+  _ra_mk "$_ra_404" "$_ra_org_true"
+  out=$(PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *ok*declared*) echo "PASS: private repo with only the organization variable true is ok";; *) echo "FAIL: org-declared private repo not ok ($out)"; fail=1;; esac
+
+  _ra_mk "$_ra_repo_false" "$_ra_org_true"
+  out=$(PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *warn*PRIVATE*) echo "PASS: repository variable false beats organization variable true (the repository value decides)";; *) echo "FAIL: repository false did not decide ($out)"; fail=1;; esac
+
+  _ra_mk "$_ra_403" "$_ra_org_true"
+  out=$(PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1)
+  case "$out" in *"skip repo-class"*"could not read"*) echo "PASS: a 403 on the variable read degrades to a skip line, never ok";; *) echo "FAIL: a 403 read was not a skip ($out)"; fail=1;; esac
+
+  # the read seam is honoured only under SEAMS=1: with it off, a stand-in that would say declared is ignored and a failing gh on PATH decides (unverifiable)
+  mkdir -p "$_ra_t/nogh"; printf '%s\n' '#!/bin/sh' 'echo "gh: Resource not accessible (HTTP 403)" >&2' 'exit 1' > "$_ra_t/nogh/gh"; chmod +x "$_ra_t/nogh/gh"
+  _ra_mk "$_ra_repo_true" "$_ra_org_true"
+  out=$( SEAMS=0; PATH="$_ra_t/nogh:$PATH"; PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1 )
+  case "$out" in *declared*) echo "FAIL: PREFLIGHT_GH_VAR_CMD was honoured with SEAMS=0 ($out)"; fail=1;; *"skip repo-class"*) echo "PASS: PREFLIGHT_GH_VAR_CMD is ignored unless SEAMS=1";; *) echo "FAIL: SEAMS=0 cell printed neither the skip nor declared ($out)"; fail=1;; esac
 
   out=$(PREFLIGHT_GH_CMD='false' check_repo_class 2>&1)
   case "$out" in *skip*) echo "PASS: gh-failure degrades to skip";; *) echo "FAIL: gh-failure not skipped ($out)"; fail=1;; esac
 
   # WARN-only invariant: a warning must NOT set miss
-  miss=0; PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}' check_repo_class >/dev/null 2>&1
+  _ra_mk "$_ra_404" "$_ra_org_none"
+  miss=0; PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class >/dev/null 2>&1
   if [ "$miss" -eq 0 ]; then echo "PASS: repo-class warn leaves miss untouched"; else echo "FAIL: repo-class warn set miss"; fail=1; fi
+
+  # mutant attest-state-dropped: the declaration is no longer read (the answer is forced to declared), so the private cell with both reads absent must stop warning.
+  _ra_mut=$(sed '/# MUT-ATTEST$/s/.*/    _ra=declared/' "$0" | sed -n '/^check_repo_class() {/,/^}/p')
+  if [ -z "$_ra_mut" ] || [ "$_ra_mut" = "$(sed -n '/^check_repo_class() {/,/^}/p' "$0")" ]; then echo "FAIL: mutant attest-state-dropped did not apply (the sed expression matched nothing)"; fail=1
+  else
+    out=$( eval "$_ra_mut"; PREFLIGHT_GH_CMD="$_ra_priv" PREFLIGHT_GH_VAR_CMD="sh $_ra_t/stub.sh" check_repo_class 2>&1 )
+    case "$out" in *warn*) echo "FAIL: mutant attest-state-dropped survived (the private cell still warns)"; fail=1;; *ok*) echo "PASS: mutant attest-state-dropped is killed (the private cell stops warning)";; *) echo "FAIL: mutant attest-state-dropped never ran the repo-class check (vacuous: $out)"; fail=1;; esac
+  fi
+  rm -rf "$_ra_t"
 
   # — S2: CODEOWNERS placeholder check ————————————————————————————————————————
   _t=$(mktemp -d)
@@ -2357,6 +2662,38 @@ if [ "$SELFTEST" -eq 1 ]; then
   case "$out" in *skip*) echo "PASS: unavailable check degrades to skip";; *) echo "FAIL: unavailable check not skipped ($out)"; fail=1;; esac
   miss=0; ACTIONLINT_VALID_CMD='false' check_workflows_valid >/dev/null 2>&1
   if [ "$miss" -eq 0 ]; then echo "PASS: workflow warn leaves miss untouched"; else echo "FAIL: workflow warn set miss"; fail=1; fi
+
+  # — SWAS-793: rec is a COUNT of advisory lines, not a flag. Two advisory sites run in THIS shell (a $( ) would lose rec): a user-owned PRIVATE repo and an @your-org CODEOWNERS.
+  # rec is reset first because the cells above raised it in subshells or never read it. Red when every site sets rec=1: the two sites then read 1, not 2.
+  _rc2_d=$(mktemp -d); printf '* @your-org/team\n' > "$_rc2_d/CODEOWNERS"
+  # SWAS-813: the PRIVATE-repo site now reads the KIT_ATTEST_PRIVATE declaration; this stand-in answers 404 for the repository variable and an empty organization list (absent), so the site warns.
+  printf '%s\n' '#!/bin/sh' 'case "$1" in' '  */actions/variables/KIT_ATTEST_PRIVATE) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;' '  */actions/organization-variables) printf "%s\n" "{\"total_count\":0,\"variables\":[]}" ;;' 'esac' > "$_rc2_d/stub.sh"
+  _rc2_two() {  # -> _rc2_n: rec after the two advisory sites. CODEOWNERS runs FIRST and the PRIVATE-repo site LAST, so a site that goes back to rec=1 resets the count and the run reads 1, not 2.
+    # The three seam variables are saved and restored (an inherited value comes back, an unset one stays unset), so nothing leaks into a later cell.
+    _rc2_sg=${PREFLIGHT_GH_CMD-__unset__}; _rc2_sc=${CODEOWNERS_PATHS-__unset__}; _rc2_sv=${PREFLIGHT_GH_VAR_CMD-__unset__}
+    rec=0
+    CODEOWNERS_PATHS="$_rc2_d/CODEOWNERS"; check_codeowners_placeholders >/dev/null 2>&1
+    PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}'; PREFLIGHT_GH_VAR_CMD="sh $_rc2_d/stub.sh"; check_repo_class >/dev/null 2>&1
+    if [ "$_rc2_sv" = __unset__ ]; then unset PREFLIGHT_GH_VAR_CMD; else PREFLIGHT_GH_VAR_CMD=$_rc2_sv; fi
+    if [ "$_rc2_sg" = __unset__ ]; then unset PREFLIGHT_GH_CMD; else PREFLIGHT_GH_CMD=$_rc2_sg; fi
+    if [ "$_rc2_sc" = __unset__ ]; then unset CODEOWNERS_PATHS; else CODEOWNERS_PATHS=$_rc2_sc; fi
+    _rc2_n=$rec; rec=0
+  }
+  _rc2_two
+  if [ "$_rc2_n" -eq 2 ]; then echo "PASS: swas-793 [rec-counts] two advisory sites in one run make rec 2, not a flag at 1"; else echo "FAIL: swas-793 [rec-counts] two advisory sites made rec $_rc2_n, expected 2"; fail=1; fi
+  # mutant rec-flag-restored: the PRIVATE-repo site goes back to rec=1 (the extracted check_repo_class of a mutated copy replaces the live one in a subshell); the same two-site run must then read 1.
+  _rc2_m=$(mktemp -d); sed '/# MUT-RECCOUNT$/s/rec=\$((rec + 1))/rec=1/' "$0" > "$_rc2_m/preflight.sh"
+  if cmp -s "$0" "$_rc2_m/preflight.sh"; then echo "FAIL: mutant rec-flag-restored did not apply (the sed expression matched nothing)"; fail=1
+  elif ! sh -n "$_rc2_m/preflight.sh" 2>/dev/null; then echo "FAIL: mutant rec-flag-restored does not parse (a mutant that cannot run would read as killed)"; fail=1
+  else
+    _rc2_mo=$( eval "$(sed -n '/^check_repo_class() {/,/^}/p' "$_rc2_m/preflight.sh")"; _rc2_two; printf '%s' "$_rc2_n" ) || _rc2_mo=""
+    case "$_rc2_mo" in
+      1) echo "PASS: mutant rec-flag-restored is killed (the two sites read 1)" ;;
+      2) echo "FAIL: mutant rec-flag-restored survived (the two sites still read 2)"; fail=1 ;;
+      *) echo "FAIL: mutant rec-flag-restored never ran the two-site run (vacuous: '$_rc2_mo')"; fail=1 ;;
+    esac
+  fi
+  rm -rf "$_rc2_m" "$_rc2_d"
 
   # — T2: git version floor + `git merge-tree --write-tree` capability ————————————————
   # The floor exists because kit-update prefers `git merge-tree --write-tree` (git >= 2.38, 2022).
@@ -2425,7 +2762,9 @@ if [ "$SELFTEST" -eq 1 ]; then
   printf '#!/bin/sh\ntouch "%s"\necho git version 2.25.1\n' "$_marker" > "$_sd/fakegit"
   chmod +x "$_sd/fakegit"
   # R7: CI=1 keeps this real run off the network (under CI the declaration is not read, so origin is never contacted)
-  env CI=1 PREFLIGHT_GIT_VERSION_CMD="$_sd/fakegit" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" >/dev/null 2>&1 </dev/null || true
+  _ign_o=$(env CI=1 PREFLIGHT_GIT_VERSION_CMD="$_sd/fakegit" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" 2>&1 </dev/null) || true
+  # SWAS-784 liveness: this run is on the kit cwd, which reads kit (a notice, then the report). The marker's absence proves nothing unless the body ran past the class line.
+  case "$_ign_o" in *"Universal prerequisites:"*) : ;; *) echo "FAIL: the ambient git-version cell never ran the real body (vacuous): $_ign_o"; fail=1 ;; esac
   if [ -e "$_marker" ]; then
     echo "FAIL: an AMBIENT PREFLIGHT_GIT_VERSION_CMD was honored in a real run (env, not flag)"; fail=1
   else
@@ -2455,7 +2794,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   # red), and the mutation MUST apply (a vacuous mutant proves nothing).
   _ks_mut() {  # <name> <sed expr> <env-value> <must-print: 1|0> : run the mutated copy's real body; FAIL if it behaves like the original
     _ks_m=$(mktemp -d)
-    sed "$2" "$0" > "$_ks_m/preflight.sh"
+    sed "$2" "$0" > "$_ks_m/preflight.sh"; cp "$(dirname -- "$0")/incept.sh" "$_ks_m/incept.sh"   # SWAS-784: the copy reads the marker list from the incept.sh beside it
     if cmp -s "$0" "$_ks_m/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_ks_m"; return 0; fi
     _ks_o=$(KIT_GUARD_SELFEDIT="$3" sh "$_ks_m/preflight.sh" --selftest-e2e --boundary-advisory 2>&1) || true
     case "$_ks_o" in *"Recommended (GitHub-based flows"*) : ;; *) echo "FAIL: mutant $1 never ran the real body past the kill-switch call (vacuous)"; fail=1 ;; esac
@@ -2471,6 +2810,129 @@ if [ "$SELFTEST" -eq 1 ]; then
     if [ -f "$(dirname "$0")/../.claude/hooks/guard.sh" ]; then echo "FAIL: coupling - the kit's guard.sh is present but guard-core.sh is missing, so the selfedit truthiness cannot be checked"; fail=1; fi
   elif grep -qF 'selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }' "$_ks_core"; then echo "PASS: coupling - the guard's selfedit truthiness is still exactly 1"
   else echo "FAIL: coupling - the guard's selfedit truthiness moved; mirror it in check_guard_killswitch (preflight) and doctor"; fail=1; fi
+
+  # — SWAS-784 / SWAS-785: the tree class, PR1-PR7. Each cell asserts an exit code AND a sentence, and each refusal and notice has a mutant (a sed mutation of a temp copy of
+  # this script, with incept.sh beside it so the copy can read the marker list) that must turn the cell red; a mutant that does not apply, or does not parse, is a FAIL.
+  _pr_t=$(mktemp -d)
+  _pr_run() {  # <dir> <script> [flags...] -> _pr_out, _pr_rc : the real body, seams live, boundary advisory, run from <dir> (every env var a cell sets is set by the cell)
+    _prr_d=$1; _prr_s=$2; shift 2
+    _pr_rc=0
+    _pr_out=$( cd "$_prr_d" && env -u CI -u GITHUB_ACTIONS -u GIT_DIR -u GIT_WORK_TREE PREFLIGHT_GH_CMD=false ACTIONLINT_VALID_CMD=__skip__ sh "$_prr_s" --selftest-e2e --boundary-advisory "$@" 2>&1 </dev/null ) || _pr_rc=$?
+  }
+  _pr_fx() {  # <name> <kit|export|incepted|other> -> stdout: a fresh fixture directory of that kind
+    _prf=$_pr_t/$1; mkdir -p "$_prf"
+    case $2 in
+      kit)      printf 'Engineering Principles & Definition of Done\n' > "$_prf/CLAUDE.md"; mkdir -p "$_prf/.superpowers" ;;
+      export)   printf 'Engineering Principles & Definition of Done\n' > "$_prf/CLAUDE.md" ;;
+      incepted) : > "$_prf/ENGINEERING-PRINCIPLES.md"; mkdir -p "$_prf/docs/superpowers" ;;
+    esac
+    printf '%s\n' "$_prf"
+  }
+  _pr_has() {  # <needle> -> 0 iff the last _pr_run's output carries it
+    case "$_pr_out" in *"$1"*) return 0 ;; *) return 1 ;; esac
+  }
+  _pr_mut() {  # <name> <sed expr> -> sets _pr_mp (the mutated copy, incept.sh beside it); rc 1 and a FAIL when it did not apply or does not parse
+    _prm_d=$(mktemp -d "$_pr_t/mut-XXXXXX"); sed "$2" "$_pr_self" > "$_prm_d/preflight.sh"; cp "$(dirname -- "$_pr_self")/incept.sh" "$_prm_d/incept.sh"
+    if cmp -s "$_pr_self" "$_prm_d/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; return 1; fi
+    if ! sh -n "$_prm_d/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; return 1; fi
+    _pr_mp=$_prm_d/preflight.sh
+  }
+  _pr_kill() {  # <name> <sed expr> <fixture dir> <pattern> <hit in the original: 1|0> <empty-list: 1|0> [flags...] : the mutant must flip whether <pattern> is in the output
+    _prk_n=$1; _prk_e=$2; _prk_d=$3; _prk_p=$4; _prk_o=$5; _prk_l=$6; shift 6
+    _pr_mut "$_prk_n" "$_prk_e" || return 0
+    [ "$_prk_l" -eq 0 ] || printf "KIT_INTERNAL_MARKERS=''\n" > "$(dirname -- "$_pr_mp")/incept.sh"
+    _pr_run "$_prk_d" "$_pr_mp" "$@"
+    if [ -z "$_pr_out" ]; then echo "FAIL: mutant $_prk_n printed nothing (vacuous)"; fail=1; return 0; fi
+    if _pr_has "$_prk_p"; then _prk_h=1; else _prk_h=0; fi
+    if [ "$_prk_h" -eq "$_prk_o" ]; then echo "FAIL: mutant $_prk_n survived (the pattern '$_prk_p' is in the output: $_prk_h, as in the original)"; fail=1
+    else echo "PASS: mutant $_prk_n is killed"; fi
+  }
+
+  # PR1 kit: one kit marker plus the principles CLAUDE.md -> the notice, no all-clear, the not-an-all-clear last line, rc 0 (nothing sets miss)
+  _prd0=$(_pr_fx pr1 kit); _pr_run "$_prd0" "$_pr_self"
+  if _pr_has "this is the Sparkwright kit checkout" && _pr_has "not your project" && _pr_has "sh scripts/adopter-export.sh <dir>" && ! _pr_has "All prerequisites present." \
+     && _pr_has "Prerequisites checked on the kit checkout, not a project: this is not an all-clear." && [ "$_pr_rc" -eq 0 ]; then
+    echo "PASS: PR1 [kit] a kit checkout prints the kit notice, ends without the all-clear, and exits 0"
+  else echo "FAIL: PR1 [kit] a kit checkout did not print the notice and the not-an-all-clear line with rc 0 (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr1-notice-removed '/MUT-PRKITNOTICE$/d' "$_prd0" "this is the Sparkwright kit checkout" 1 0
+  _pr_kill pr1-all-clear-restored '/MUT-PRKITLAST$/d' "$_prd0" "All prerequisites present." 0 0
+  # PR2 other: an empty directory -> rc 1, the sentence names the cwd, and no report line prints
+  _prd0=$(_pr_fx pr2 other); _pr_run "$_prd0" "$_pr_self"
+  if [ "$_pr_rc" -eq 1 ] && _pr_has "$(basename -- "$_prd0") is not a project root" && _pr_has "cd to your project's root and re-run." && ! _pr_has "Universal prerequisites" && ! _pr_has "Sparkwright — preflight"; then
+    echo "PASS: PR2 [other] a directory that is no project refuses with rc 1, names the cwd, and prints no report line"
+  else echo "FAIL: PR2 [other] a directory that is no project did not refuse plainly with rc 1 and no report (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr2-refusal-dropped '/MUT-PROTHER$/d' "$_prd0" "is not a project root" 1 0
+  # PR3 export: the principles CLAUDE.md and no marker -> unchanged: the all-clear, rc 0, and no class sentence (the non-vacuity anchor: the class does not refuse everything)
+  _prd0=$(_pr_fx pr3 export); _pr_run "$_prd0" "$_pr_self"
+  if [ "$_pr_rc" -eq 0 ] && _pr_has "All prerequisites present." && ! _pr_has "kit checkout" && ! _pr_has "is not a project root"; then
+    echo "PASS: PR3 [export] an export is unchanged: the all-clear, rc 0, no class sentence"
+  else echo "FAIL: PR3 [export] an export did not keep its all-clear with rc 0 (rc $_pr_rc): $_pr_out"; fail=1; fi
+  # PR4 incepted: ENGINEERING-PRINCIPLES.md plus a docs/superpowers directory (a kit marker a plugin may create) -> read as incepted, output unchanged. Pins the order.
+  _prd0=$(_pr_fx pr4 incepted); _pr_run "$_prd0" "$_pr_self"
+  if [ "$_pr_rc" -eq 0 ] && _pr_has "All prerequisites present." && ! _pr_has "kit checkout" && ! _pr_has "is not a project root"; then
+    echo "PASS: PR4 [incepted] an incepted tree holding docs/superpowers is read as incepted: the all-clear, rc 0, no kit notice"
+  else echo "FAIL: PR4 [incepted] an incepted tree holding a kit marker was not read as incepted (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr4-incepted-not-first '/MUT-PRINC$/d' "$_prd0" "this is the Sparkwright kit checkout" 0 0
+  # PR5 list unreadable: no incept.sh beside the script, then an incept.sh whose list line is empty -> rc 1 and the reinstall sentence, never an export reading
+  mkdir -p "$_pr_t/pr5-bare" "$_pr_t/pr5-empty"; cp "$_pr_self" "$_pr_t/pr5-bare/preflight.sh"; cp "$_pr_self" "$_pr_t/pr5-empty/preflight.sh"
+  printf "KIT_INTERNAL_MARKERS=''\n" > "$_pr_t/pr5-empty/incept.sh"
+  _prd0=$(_pr_fx pr5 export)
+  for _pr5 in bare empty; do
+    _pr_run "$_prd0" "$_pr_t/pr5-$_pr5/preflight.sh"
+    if [ "$_pr_rc" -eq 1 ] && _pr_has "cannot read the kit-internal marker list in" && _pr_has "reinstall the kit scripts" && ! _pr_has "All prerequisites present."; then
+      echo "PASS: PR5 [list-$_pr5] an unreadable or empty marker list refuses with rc 1 and the reinstall sentence, never an export reading"
+    else echo "FAIL: PR5 [list-$_pr5] an unreadable or empty marker list did not refuse (rc $_pr_rc): $_pr_out"; fail=1; fi
+  done
+  _pr_kill pr5-empty-list-passes '/MUT-PRLIST$/d' "$_prd0" "cannot read the kit-internal marker list" 1 1
+  # PR6 nested: a subdirectory of an incepted repo, run with --allow-nested -> classified by its repo (incepted), not refused by the class
+  _prd0=$(_pr_fx pr6 incepted); ( cd "$_prd0" && git init -q ); mkdir -p "$_prd0/pkg"; _pr_run "$_prd0/pkg" "$_pr_self" --allow-nested
+  # rc 1 here is the incepted tree's own pre-push-guard refusal (the fixture is an incepted repo with no hook, and a nested run offers no install): the whole body ran, so the class did not refuse
+  if [ "$_pr_rc" -eq 1 ] && ! _pr_has "is not a project root" && ! _pr_has "kit checkout" && _pr_has "Universal prerequisites:" && _pr_has "pre-push runtime guard is not in force"; then
+    echo "PASS: PR6 [nested] a --allow-nested package of an incepted repo is classified by its repo and not refused by the class (rc 1, from the pre-push guard check that only an incepted tree meets)"
+  else echo "FAIL: PR6 [nested] a --allow-nested package of an incepted repo was refused or misread by the class (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr6-no-toplevel-fallback '/MUT-PRFALLBACK$/s/\[ -n "\$_prs_t" \]/false/' "$_prd0/pkg" "is not a project root" 0 0 --allow-nested
+  # PR6b nested export (the errata): a package that is itself an export (the principles CLAUDE.md) inside a parent git repo that is no project -> reads export by itself, is not refused, rc 0
+  _prd0=$(_pr_fx pr6b other); ( cd "$_prd0" && git init -q ); : > "$_prd0/.keep"; mkdir -p "$_prd0/pkg"; printf 'Engineering Principles & Definition of Done\n' > "$_prd0/pkg/CLAUDE.md"
+  _pr_run "$_prd0/pkg" "$_pr_self" --allow-nested
+  if [ "$_pr_rc" -eq 0 ] && ! _pr_has "is not a project root" && ! _pr_has "kit checkout" && _pr_has "All prerequisites present."; then
+    echo "PASS: PR6b [nested-export] an export package in a parent repo that is no project reads export by itself: not refused, the all-clear, rc 0"
+  else echo "FAIL: PR6b [nested-export] an export package in a parent repo that is no project was refused or misread (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr6b-toplevel-first '/MUT-PRPWD$/s/project_root_class "\$PWD"/project_root_class "${_prs_t:-$PWD}"/' "$_prd0/pkg" "is not a project root" 0 0 --allow-nested
+  # PR6c: PR6b with .superpowers at the parent (a plugin's marker at a monorepo root, no principles CLAUDE.md there) -> that root is not the kit root: no refusal, no kit notice
+  _prd0=$(_pr_fx pr6c other); ( cd "$_prd0" && git init -q ); mkdir -p "$_prd0/.superpowers" "$_prd0/pkg"; printf 'Engineering Principles & Definition of Done\n' > "$_prd0/pkg/CLAUDE.md"
+  _pr_run "$_prd0/pkg" "$_pr_self" --allow-nested
+  if [ "$_pr_rc" -eq 0 ] && ! _pr_has "is not a project root" && ! _pr_has "kit checkout" && _pr_has "All prerequisites present."; then
+    echo "PASS: PR6c [nested-plugin] a package under a plugin-marked parent (no principles CLAUDE.md there) is not refused and gets no kit notice"
+  else echo "FAIL: PR6c [nested-plugin] a package under a plugin-marked parent was refused or read as the kit (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr6c-kit-root-needs-no-claude '/MUT-PRKROOT$/s/prc_is_principles "\$1"/true/' "$_prd0/pkg" "kit checkout" 0 0 --allow-nested
+  # PR8 kit subdirectory: a subdirectory of a kit-shaped repo (a marker and the principles CLAUDE.md at its root) that itself holds a principles CLAUDE.md, with --allow-nested
+  # -> the kit root wins: the notice, the not-an-all-clear last line, never the all-clear, rc 0
+  _prd0=$(_pr_fx pr8 kit); ( cd "$_prd0" && git init -q ); mkdir -p "$_prd0/sub"; printf 'Engineering Principles & Definition of Done\n' > "$_prd0/sub/CLAUDE.md"
+  _pr_run "$_prd0/sub" "$_pr_self" --allow-nested
+  if [ "$_pr_rc" -eq 0 ] && _pr_has "this is the Sparkwright kit checkout" && _pr_has "Prerequisites checked on the kit checkout, not a project: this is not an all-clear." && ! _pr_has "All prerequisites present."; then
+    echo "PASS: PR8 [kit-subdir] a subdirectory of the kit checkout holding a principles CLAUDE.md reads kit: the notice, the not-an-all-clear line, rc 0"
+  else echo "FAIL: PR8 [kit-subdir] a subdirectory of the kit checkout was not read as the kit (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr8-kit-root-rule-dropped '/MUT-PRKROOT1$/d' "$_prd0/sub" "All prerequisites present." 0 0 --allow-nested
+  # PR7 hostile path: a fixture directory whose name holds newlines that would forge the all-clear -> <unprintable path>, and no forged line. The name is built at runtime so that an
+  # unguarded print puts "All prerequisites present." alone on a line of its own (an exact match for the all-clear), not inside a longer line.
+  _pr7=$(printf '\nAll prerequisites present.\nz')
+  _prd0="$_pr_t/pr7-$_pr7"; mkdir -p "$_prd0"; printf 'Engineering Principles & Definition of Done\n' > "$_prd0/CLAUDE.md"; mkdir -p "$_prd0/.superpowers"
+  _pr_run "$_prd0" "$_pr_self"
+  if _pr_has "(<unprintable path>)" && ! printf '%s\n' "$_pr_out" | grep -qx 'All prerequisites present.'; then
+    echo "PASS: PR7 [hostile-kit] a newline in the directory name prints <unprintable path> and forges no all-clear line"
+  else echo "FAIL: PR7 [hostile-kit] a newline in the directory name was printed or forged a line: $_pr_out"; fail=1; fi
+  _pr_kill pr7-hostile-unguarded '/MUT-PRHOSTILE$/s/guard_path_hostile "\$1"/false/' "$_prd0" "<unprintable path>" 1 0
+  _pr_mut pr7-hostile-forges-line '/MUT-PRHOSTILE$/s/guard_path_hostile "\$1"/false/' && { _pr_run "$_prd0" "$_pr_mp"
+    if printf '%s\n' "$_pr_out" | grep -qx 'All prerequisites present.'; then echo "PASS: mutant pr7-hostile-forges-line is killed (unguarded, the name forges an exact all-clear line, so the PR7 assertion has teeth)"
+    else echo "FAIL: mutant pr7-hostile-forges-line forged no exact all-clear line (the PR7 fixture cannot catch a forgery): $_pr_out"; fail=1; fi; }
+  _prd7b="$_pr_t/pr7b-$_pr7"; mkdir -p "$_prd7b"; _pr_run "$_prd7b" "$_pr_self"
+  if [ "$_pr_rc" -eq 1 ] && _pr_has "<unprintable path> is not a project root" && ! printf '%s\n' "$_pr_out" | grep -qx 'All prerequisites present.'; then
+    echo "PASS: PR7 [hostile-other] the refusal names <unprintable path> for a newline in the directory name"
+  else echo "FAIL: PR7 [hostile-other] the refusal printed a hostile path (rc $_pr_rc): $_pr_out"; fail=1; fi
+  _pr_kill pr7-hostile-other-unguarded '/MUT-PRHOSTILE$/s/guard_path_hostile "\$1"/false/' "$_prd7b" "<unprintable path> is not a project root" 1 0
+  _pr_mut pr7-hostile-other-forges-line '/MUT-PRHOSTILE$/s/guard_path_hostile "\$1"/false/' && { _pr_run "$_prd7b" "$_pr_mp"
+    if printf '%s\n' "$_pr_out" | grep -qx 'All prerequisites present.'; then echo "PASS: mutant pr7-hostile-other-forges-line is killed (unguarded, the refusal forges an exact all-clear line)"
+    else echo "FAIL: mutant pr7-hostile-other-forges-line forged no exact all-clear line (the PR7 fixture cannot catch a forgery): $_pr_out"; fail=1; fi; }
 
   # NO GLOB: the version line is word-SPLIT, never pathname-expanded. `for _w in $1` unquoted splits AND
   # globs; a '*' in the string would expand against the CWD, so a file named e.g. '9.9.9' sitting in the
@@ -2500,6 +2962,56 @@ if [ "$SELFTEST" -eq 1 ]; then
   new_rc=0
   PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e --boundary-advisory >/dev/null 2>&1 || new_rc=$?
   if [ "$e2e_rc" -eq "$new_rc" ]; then echo "PASS: the git floor does not change preflight's exit code (advisory, not blocking)"; else echo "FAIL: old git CHANGED the exit code (old=$e2e_rc modern=$new_rc)"; fail=1; fi
+
+  # — SWAS-793: the summary line's numbers match the lines printed, and each number names its own kind. The REAL body, in an export-shaped fixture (the `_pr_xp` shape: the principles
+  # CLAUDE.md, a typescript-node .nvmrc) that is also a git repository so the checkout report runs: a github origin (so the repo-class and CODEOWNERS checks run), a CODEOWNERS with an
+  # @your-org placeholder, a core.hooksPath that points inside the checkout (one git-plants warning), a stub `gh` on PATH (recommend gh and gh auth read PATH, and the same stub answers the KIT_ATTEST_PRIVATE variable read that sets `repo_attest_state`; PREFLIGHT_GH_CMD reaches
+  # only check_repo_class), the git-version and node seams, and CI plus PREFLIGHT_TTY_SEAM=1 (the boundary prints its CI-in-a-terminal WARN; the fake origin could not be fetched, so the
+  # declaration seam is @absent). HOME, the sandbox seams and the git config are pinned. The assertion is machine-independent: each number in the summary is compared with the count of its
+  # own kind of line in the SAME output (advisory = `  warn ` lines that are not git-plants, boundary or egress; boundary = `  WARN`/`  warn` boundary and egress lines; git-plants =
+  # `  warn git-plants:` lines), never with a fixed literal. Each kind must also be above 0 here (and the advisory count above 1), or the cell proves nothing.
+  _sm_d=$(mktemp -d); _sm_h=$_sm_d/home; _sm_w=$_sm_d/work
+  _sm_g() { env -i PATH="$PATH" HOME="$_sm_h" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git "$@"; }   # the fixture build: no developer config
+  mkdir -p "$_sm_h" "$_sm_d/bin" "$_sm_w/.github" "$_sm_w/profiles/typescript-node/scaffold"
+  printf 'Engineering Principles & Definition of Done\n' > "$_sm_w/CLAUDE.md"; printf '24\n' > "$_sm_w/profiles/typescript-node/scaffold/.nvmrc"; printf '* @your-org/team\n' > "$_sm_w/.github/CODEOWNERS"
+  printf '#!/bin/sh\nexit 0\n' > "$_sm_d/bin/gh"; chmod +x "$_sm_d/bin/gh"
+  _sm_run() {  # <script> -> _sm_out: the real body in the fixture
+    _sm_out=$(cd "$_sm_w" && env -i PATH="$_sm_d/bin:$PATH" HOME="$_sm_h" GIT_CONFIG_NOSYSTEM=1 CI=true PREFLIGHT_TTY_SEAM=1 PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}' \
+      PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' PREFLIGHT_NODE_VERSION_CMD=false ACTIONLINT_VALID_CMD=__skip__ PREFLIGHT_BOUNDARY_OPTOUT=@absent \
+      PREFLIGHT_SANDBOX_SETTINGS="$_sm_d/none" PREFLIGHT_SANDBOX_LOCAL="$_sm_d/none" PREFLIGHT_SANDBOX_USER="$_sm_d/none" PREFLIGHT_SANDBOX_MANAGED="$_sm_d/none" PREFLIGHT_SANDBOX_OS=Darwin PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 \
+      sh "$1" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1 </dev/null) || :
+  }
+  _sm_check() {  # <label> -> sets _sm_res to ok, or the reason the summary does not match the lines above it
+    _sm_nr=$(printf '%s\n' "$_sm_out" | awk '/^  warn / && !/^  warn (git-plants|boundary|egress):/ { n++ } END { print n + 0 }')
+    _sm_nb=$(printf '%s\n' "$_sm_out" | awk '/^  WARN (boundary|egress):/ || /^  warn (boundary|egress):/ { n++ } END { print n + 0 }')
+    _sm_ng=$(printf '%s\n' "$_sm_out" | awk '/^  warn git-plants:/ { n++ } END { print n + 0 }')
+    _sm_sr=$(printf '%s\n' "$_sm_out" | sed -n 's/^\([0-9][0-9]*\) advisory warning(s) above.*/\1/p')
+    _sm_sb=$(printf '%s\n' "$_sm_out" | sed -n 's/^[0-9].* advisory warning(s) above.*[^0-9]\([0-9][0-9]*\) boundary notice(s).*/\1/p')
+    _sm_sg=$(printf '%s\n' "$_sm_out" | sed -n 's/^[0-9].* advisory warning(s) above.*[^0-9]\([0-9][0-9]*\) git-plant warning(s).*/\1/p')
+    if [ "$_sm_nr" -lt 2 ] || [ "$_sm_nb" -lt 1 ] || [ "$_sm_ng" -lt 1 ]; then _sm_res="the fixture did not print every kind (advisory $_sm_nr, boundary $_sm_nb, git-plants $_sm_ng): vacuous"
+    elif [ "$_sm_sr" != "$_sm_nr" ]; then _sm_res="the summary says '$_sm_sr' advisory warning(s) but $_sm_nr such lines printed"
+    elif [ "$_sm_sb" != "$_sm_nb" ]; then _sm_res="the summary says '$_sm_sb' boundary notice(s) but $_sm_nb such lines printed"
+    elif [ "$_sm_sg" != "$_sm_ng" ]; then _sm_res="the summary says '$_sm_sg' git-plant warning(s) but $_sm_ng such lines printed"
+    else _sm_res=ok; fi
+  }
+  if ! { _sm_g -C "$_sm_w" init -q . && _sm_g -C "$_sm_w" remote add origin https://github.com/example/summary-fixture.git && _sm_g -C "$_sm_w" config core.hooksPath .husky; } >/dev/null 2>&1; then
+    echo "FAIL: swas-793 [summary-matches-lines] the fixture repository could not be built (its assertions are void)"; fail=1
+  else
+    _sm_run "$_pr_self"; _sm_check
+    case "$_sm_out" in *"Universal prerequisites:"*) : ;; *) _sm_res="the real body never ran (vacuous): $_sm_out" ;; esac
+    if [ "$_sm_res" = ok ]; then echo "PASS: swas-793 [summary-matches-lines] the real body's summary says $_sm_sr advisory, $_sm_sb boundary and $_sm_sg git-plant, each the count of its own lines in the same output"
+    else echo "FAIL: swas-793 [summary-matches-lines] $_sm_res: $_sm_out"; fail=1; fi
+    # mutant summary-drops-boundary: the boundary clause is gated off in a copy; the same run's summary then lacks the boundary number, so the match goes red.
+    if _pr_mut summary-drops-boundary '/# MUT-SUMBND$/s/\[ "\$bwarn" -gt 0 \]/[ "$bwarn" -gt 99999 ]/'; then
+      _sm_run "$_pr_mp"; _sm_check
+      case "$_sm_res" in
+        ok) echo "FAIL: mutant summary-drops-boundary survived (the summary still matches the lines)"; fail=1 ;;
+        *vacuous*) echo "FAIL: mutant summary-drops-boundary never ran the fixture (vacuous): $_sm_res"; fail=1 ;;
+        *) echo "PASS: mutant summary-drops-boundary is killed ($_sm_res)" ;;
+      esac
+    fi
+  fi
+  rm -rf "$_sm_d"
 
   # — T5 (CP-7 K3/K5): the DECLARED Node floor is ENFORCED, not merely declared ————————————
   # Field defect (cold run 4): preflight checked only that `node` EXISTS, so an operator on Node 20.10
@@ -2624,8 +3136,8 @@ if [ "$SELFTEST" -eq 1 ]; then
   # the main path, and a defined-but-unacted-on check is decorative (the exact class that shipped twice
   # in this repo). Drive all three legs through the REAL body via --selftest-e2e.
   rf_bad_rc=0
-  rf_bad=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_bad_rc=$?
+  rf_bad=$(cd "$_pr_xp" && PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$_pr_self" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_bad_rc=$?   # SWAS-784: from the export-shaped fixture, not the kit cwd
   case "$rf_bad" in *v20.20.2*) echo "PASS: a real below-floor run names the RUNNING version";; *) echo "FAIL: real run did not name the running version (rc=$rf_bad_rc): $rf_bad"; fail=1;; esac
   case "$rf_bad" in *"Node 24"*|*"node >= 24"*|*">= 24"*) echo "PASS: a real below-floor run names the REQUIRED floor";; *) echo "FAIL: real run did not name the floor: $rf_bad"; fail=1;; esac
   case "$rf_bad" in *--allow-runtime-mismatch*) echo "PASS: the refusal NAMES the escape in the same message (signpost, don't relax)";; *) echo "FAIL: refusal does not name --allow-runtime-mismatch: $rf_bad"; fail=1;; esac
@@ -2633,13 +3145,13 @@ if [ "$SELFTEST" -eq 1 ]; then
   case "$rf_bad" in *"All prerequisites present"*) echo "FAIL: a refused run still printed the green"; fail=1;; *) echo "PASS: a refused run prints NO 'All prerequisites present' green";; esac
 
   rf_ok_rc=0
-  rf_ok=$(PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_ok_rc=$?
+  rf_ok=$(cd "$_pr_xp" && PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$_pr_self" --selftest-e2e --boundary-advisory --stack typescript-node 2>&1) || rf_ok_rc=$?   # SWAS-784: from the export-shaped fixture, not the kit cwd
   case "$rf_ok" in *"meets the Node 24 floor"*) echo "PASS: a real in-floor run states the version it verified";; *) echo "FAIL: in-floor run did not state the verified floor (rc=$rf_ok_rc): $rf_ok"; fail=1;; esac
 
   rf_esc_rc=0
-  rf_esc=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --selftest-e2e --boundary-advisory --stack typescript-node --allow-runtime-mismatch 2>&1) || rf_esc_rc=$?
+  rf_esc=$(cd "$_pr_xp" && PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$_pr_self" --selftest-e2e --boundary-advisory --stack typescript-node --allow-runtime-mismatch 2>&1) || rf_esc_rc=$?   # SWAS-784: from the export-shaped fixture, not the kit cwd
   case "$rf_esc" in *UNSUPPORTED*) echo "PASS: a real waived run says UNSUPPORTED";; *) echo "FAIL: waived run does not say UNSUPPORTED (rc=$rf_esc_rc): $rf_esc"; fail=1;; esac
   # A SUPPRESSED REFUSAL MUST NEVER READ AS A PASS. DIFFERENTIAL, not absolute: assert the green is
   # absent under the escape *given that the same environment prints it in-floor* — an absolute assert
@@ -2712,8 +3224,10 @@ if [ "$SELFTEST" -eq 1 ]; then
   _nd=$(mktemp -d); _nmarker="$_nd/ran"
   printf '#!/bin/sh\ntouch "%s"\necho v24.18.0\n' "$_nmarker" > "$_nd/fakenode"
   chmod +x "$_nd/fakenode"
-  env CI=1 PREFLIGHT_NODE_VERSION_CMD="$_nd/fakenode" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
-    sh "$0" --stack typescript-node >/dev/null 2>&1 </dev/null || true   # R7: CI=1 and no TTY (S25), so no origin read
+  _ign_o=$(env CI=1 PREFLIGHT_NODE_VERSION_CMD="$_nd/fakenode" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --stack typescript-node 2>&1 </dev/null) || true   # R7: CI=1 and no TTY (S25), so no origin read
+  # SWAS-784 liveness: on the kit cwd (class kit) the body still runs; the marker's absence proves nothing unless it ran past the class line.
+  case "$_ign_o" in *"Universal prerequisites:"*) : ;; *) echo "FAIL: the ambient node-version cell never ran the real body (vacuous): $_ign_o"; fail=1 ;; esac
   if [ -e "$_nmarker" ]; then
     echo "FAIL: an AMBIENT PREFLIGHT_NODE_VERSION_CMD was honored in a real run (env, not flag) — a blocking check the environment can redirect"; fail=1
   else
@@ -3637,6 +4151,8 @@ if [ "$SELFTEST" -eq 1 ]; then
   _mpbase_rc='unset'
   _mpbare=$(mktemp -d) || _mpbare=""
   [ -n "$_mpbare" ] || { echo "FAIL: K11/MP4 fixture unbuildable (mktemp -d failed — disk full?) — its assertions are void"; fail=1; _mpbare=$K11_NOFX; }
+  # SWAS-784: still a non-repo directory, but export-shaped (the principles CLAUDE.md), or the real body refuses it as no project and the exit-0 half is unobservable. Under the unbuildable sentinel the write fails and `|| true` keeps the leg's own FAIL.
+  printf 'Engineering Principles & Definition of Done\n' > "$_mpbare/CLAUDE.md" 2>/dev/null || true
   out=$(k11_mp "$_mpbare") || out="<k11_mp aborted>"
   rm -rf "$_mpbare" 2>/dev/null || true
   _mpbase_rc=${out##*MP_RC=}
@@ -4463,7 +4979,7 @@ EOF
   # Load-bearing mutants: a sed mutation of a TEMP COPY; the copy must stop printing what the original prints, and the mutation MUST apply.
   _bnd_mut() {  # <name> <sed expr> <project> <user> <runtime-env or ""> <substring the ORIGINAL prints>
     _bm=$(mktemp -d)
-    sed "$2" "$0" > "$_bm/preflight.sh"
+    sed "$2" "$0" > "$_bm/preflight.sh"; cp "$(dirname -- "$0")/incept.sh" "$_bm/incept.sh"   # SWAS-784: the copy reads the marker list from the incept.sh beside it
     if cmp -s "$0" "$_bm/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bm"; return 0; fi
     _bm_o=$(_bnd_e2e "$3" "$4" "$5" "$_bm/preflight.sh" "${7:-Darwin}")
     case "$_bm_o" in *"Recommended (GitHub-based flows"*) : ;; *) echo "FAIL: mutant $1 never ran the real body past the boundary call (vacuous)"; fail=1 ;; esac
@@ -4576,12 +5092,13 @@ EOF
   bnd_has cannot-start-declared-by-all '[static] (opted out 2026-10-23, declared in'
   bnd_no cannot-start-declared-by-all 'UNDECLARED'
   # 5: egress. Undeclared names the user-level act FIRST and the declaration second (L3); declared is loud; in a session it is UNVERIFIED with no judgement.
-  bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"
+  out=$( cd "$_bnd" || exit 1; bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"; printf '%s' "$out" )   # SWAS-474 R3: from a directory with no .kit/tracker.conf, so a FAIL dump never carries the kit's own tracker host
   bnd_has egress-undeclared 'FAIL egress: NOT ENFORCED and UNDECLARED [static]'
   case "$out" in
-    *"Fix: (1) merge the user-level block into ~/.claude/settings.json"*"(2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf"*) echo "PASS: boundary [egress-fix-order] the fix names the user-level act first and the declaration second" ;;
+    *"Fix: (1) merge the user-level block into ~/.claude/settings.json (the block is printed on the lines below, with the hosts to review, or why none could be listed;"*"(2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf"*) echo "PASS: boundary [egress-fix-order] the fix names the user-level act first and the declaration second" ;;   # SWAS-474: the fix line no longer carries the block; it points at the lines below
     *) echo "FAIL: boundary [egress-fix-order] the egress fix text is not (1) the user-level act, (2) the declaration ($out)"; fail=1 ;;
   esac
+  bnd_no egress-fix-no-placeholder '<the hosts you use>'   # SWAS-474: the old inline block carried a placeholder and was not valid JSON
   bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json" "" "" "" "$_bnd/d-egress.conf"
   bnd_has egress-declared 'WARN egress: NOT ENFORCED [static] (opted out 2026-10-23, declared in .kit/boundary-optout.conf). Lost: an unlisted host is a prompt (kit: '   # a lost= sentence that differs from the kit's keeps the "(kit: ...)" suffix
   bnd_no egress-declared 'UNDECLARED'
@@ -4668,6 +5185,218 @@ EOF
   bnd_no user-host-count-not-in-session 'allowedDomains holds'
   bnd_case "$_bnd/full.json" "" "$_bnd/user-plain.json"
   bnd_no user-host-count-not-before-enforced 'allowedDomains holds'
+
+  # ---- SWAS-474: the egress fix prints a block that parses and carries no host; the repo's hosts are listed apart, under their file's label; the exit summary leads with the strict step when egress is the gap.
+  # The block cells run the REAL body from a fixture directory (so the kit's own .kit/tracker.conf never leaks in) through the existing seams (_bnd_run, PREFLIGHT_SANDBOX_*; no new knob). Hostile bytes are built at
+  # run time (printf '\033', a \u001b escape inside a JSON string), so no control byte ships. The summary cells call the real check_boundary and then the real boundary_summary in one shell.
+  _e4=$(mktemp -d); _e4_esc=$(printf '\033'); _e4_rj=$(command -v jq)
+  mkdir -p "$_e4/trk/.kit" "$_e4/hui/.kit" "$_e4/hesc/.kit" "$_e4/md" "$_e4/stub"
+  printf 'version=1\nbackend=jira\nbase_url=https://exfil2.example:8443/x\nproject=SWAS\n' > "$_e4/trk/.kit/tracker.conf"
+  printf 'version=1\nbackend=jira\nbase_url=https://user@exfil3.example/x\nproject=SWAS\n' > "$_e4/hui/.kit/tracker.conf"
+  printf 'version=1\nbackend=jira\nbase_url=https://exfil4.example%s/x\nproject=SWAS\n' "$_e4_esc" > "$_e4/hesc/.kit/tracker.conf"
+  # six allowedDomains entries: two exact hosts (one of them twice), a scheme, a wildcard and a control byte (an escape inside the JSON string): four are not copied
+  printf '{"sandbox":{"enabled":true,"network":{"allowedDomains":["exfil.example","exfil.example","https://x.example","*.x.com","ev\\u001bil.example","api.example.org"]},"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}},"permissions":{"deny":["WebFetch"]}}\n' > "$_e4/hostsettings.json"
+  printf '{"sandbox":{"network":{"allowedDomains":["a.example","b.example"]}}}\n' > "$_e4/user-hosts.json"
+  _e4_run() {  # <dir> <project> <user> [local] [env word] [PATH prefix]: the real body, --boundary-only, in <dir>; output in $_br_out
+    _g_dir=$1; _g_proj=$2; _g_user=$3; _g_local=${4:-}; _g_decl=@absent; _g_env=${5:-}; _g_path=${6:-}
+    _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  }
+  _e4_blk() { printf '%s\n' "$1" | sed -n 's/^    \({"sandbox".*}\)$/\1/p'; }   # the one block line, indent stripped
+  _e4_blk_ok() {  # <output>: rc 0 iff exactly one block line, valid JSON (jq -e), strictAllowlist true, allowedDomains empty, nothing else
+    _e4_bn=$(printf '%s\n' "$1" | grep -c '^    {"sandbox"' || true)
+    [ "$_e4_bn" -eq 1 ] || return 1
+    _e4_blk "$1" | jq -e '.sandbox.network.strictAllowlist == true and .sandbox.network.allowedDomains == [] and (keys == ["sandbox"])' >/dev/null 2>&1
+  }
+  _e4_nohost() {  # <output>: rc 0 iff the block line names none of the fixture hosts
+    _e4_b=$(_e4_blk "$1"); [ -n "$_e4_b" ] || return 1
+    case "$_e4_b" in *exfil*|*api.example.org*) return 1 ;; esac
+    return 0
+  }
+  _e4_sect() { printf '%s\n' "$1" | awk -v l="$2" 'index($0, l) { f = 1; next } f && /^      / { print; next } { f = 0 }'; }   # the host lines under one label
+  _e4_chk() {  # <label> <what> <predicate fn> <output>: PASS iff the predicate holds for the output (errexit-safe: the predicate sits in an if)
+    if "$3" "$4"; then echo "PASS: swas-474 [$1] $2"; else echo "FAIL: swas-474 [$1] $2 (not so: $4)"; fail=1; fi
+  }
+  _e4_pl="From this repo's .claude/settings.json"; _e4_tl="From this repo's .kit/tracker.conf"
+  # 1: the printed block parses, carries no host; the hosts sit apart, each under its own file's label (the second with its port, scheme and path stripped)
+  _e4_run "$_e4/trk" "$_e4/hostsettings.json" "$_bnd/user-plain.json"
+  out=$_br_out
+  bnd_has egress-block-fix-line 'FAIL egress: NOT ENFORCED and UNDECLARED [static]'
+  bnd_has egress-block-add-line 'add the hosts below to any allowedDomains you already have; do not replace your list.'
+  _e4_chk egress-block-parses "the printed block is one line of valid JSON (jq -e), strictAllowlist true, allowedDomains empty" _e4_blk_ok "$out"
+  _e4_chk egress-block-has-no-host "no host is inside the block" _e4_nohost "$out"
+  _e4_ps=$(_e4_sect "$out" "$_e4_pl"); _e4_ts=$(_e4_sect "$out" "$_e4_tl")
+  if [ "$_e4_ps" = "$(printf '      api.example.org\n      exfil.example')" ]; then echo "PASS: swas-474 [project-hosts-listed] the project file's two exact hosts are listed once each, under its label"; else echo "FAIL: swas-474 [project-hosts-listed] ($_e4_ps) in $out"; fail=1; fi
+  if [ "$_e4_ts" = "      exfil2.example" ]; then echo "PASS: swas-474 [tracker-host-listed] the tracker host is listed under its own label, with scheme, port and path stripped"; else echo "FAIL: swas-474 [tracker-host-listed] ($_e4_ts) in $out"; fail=1; fi
+  bnd_has egress-filtered-count '4 entr(y/ies) in that file were not copied'
+  bnd_no egress-hostile-bytes-not-copied 'https://x.example'
+  bnd_no egress-hostile-bytes-not-copied '*.x.com'
+  bnd_no egress-hostile-bytes-not-copied '8443'
+  case "$out" in *"$_e4_esc"*) echo "FAIL: swas-474 [egress-no-control-byte] an escape byte reached the output"; fail=1 ;; *) echo "PASS: swas-474 [egress-no-control-byte] no escape byte reached the output" ;; esac
+  # 2: a hostile base_url (userinfo; an escape byte) is refused by tracker-conf.sh get and never printed; the block still parses and no tracker label prints
+  for _e4_h in hui:exfil3 hesc:exfil4; do
+    _e4_run "$_e4/${_e4_h%%:*}" "$_e4/hostsettings.json" "$_bnd/user-plain.json"
+    out=$_br_out
+    bnd_no "tracker-conf-refused-${_e4_h%%:*}" "${_e4_h#*:}"
+    bnd_no "tracker-conf-refused-${_e4_h%%:*}" "$_e4_tl"
+    case "$out" in *"$_e4_esc"*) echo "FAIL: swas-474 [tracker-conf-refused-${_e4_h%%:*}] an escape byte reached the output"; fail=1 ;; *) echo "PASS: swas-474 [tracker-conf-refused-${_e4_h%%:*}] no escape byte reached the output" ;; esac
+    _e4_chk "tracker-conf-refused-${_e4_h%%:*}-block" "the block still parses" _e4_blk_ok "$out"
+  done
+  # 3: the md backend (no .kit/tracker.conf): no tracker label, the block parses
+  _e4_run "$_e4/md" "$_e4/hostsettings.json" "$_bnd/user-plain.json"
+  out=$_br_out
+  bnd_no md-backend-no-tracker-label "$_e4_tl"
+  _e4_chk md-backend-block "the block parses" _e4_blk_ok "$out"
+  # 4: an unreadable project file (the sandbox comes from the local scope): the block parses, one line says to add the hosts you use
+  _e4_run "$_e4/md" /nonexistent-e4-project "$_bnd/user-plain.json" "$_bnd/full.json"
+  out=$_br_out
+  bnd_has project-unreadable 'FAIL egress: NOT ENFORCED and UNDECLARED'
+  bnd_has project-unreadable "this repo's .claude/settings.json could not be read here; add the hosts you use to allowedDomains yourself."
+  bnd_no project-unreadable "$_e4_pl"
+  _e4_chk project-unreadable-block "the block parses" _e4_blk_ok "$out"
+  # 5: the user file's existing hosts are counted, never printed; no count when it holds none
+  _e4_run "$_e4/md" "$_bnd/full.json" "$_e4/user-hosts.json"
+  out=$_br_out
+  bnd_has user-has-hosts 'you already have 2 host(s) in your user-level allowedDomains; add to them.'
+  bnd_no user-has-hosts 'a.example'
+  bnd_no user-has-hosts 'allowedDomains holds'
+  _e4_run "$_e4/md" "$_bnd/full.json" "$_bnd/user-plain.json"
+  out=$_br_out
+  bnd_no user-has-no-hosts 'host(s) in your user-level allowedDomains'
+  # 6: in a session (SANDBOX_RUNTIME) the run reads UNVERIFIED (errata E1): no copy-whole block, no host list, and the new code reads no user-level allowedDomains (a jq stub logs every call)
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec %s "$@"\n' "$_e4/log" "$_e4_rj" > "$_e4/stub/jq"; chmod +x "$_e4/stub/jq"; : > "$_e4/log"
+  _e4_run "$_e4/trk" "$_bnd/full.json" "$_e4/user-hosts.json" "" SANDBOX_RUNTIME=1 "$_e4/stub"
+  out=$_br_out
+  bnd_has in-session-unverified 'warn egress: UNVERIFIED [static, agent-reported]'
+  bnd_no in-session-no-block 'the user-level block to copy whole'
+  bnd_no in-session-no-block "$_e4_pl"
+  bnd_no in-session-no-block 'a.example'
+  if [ "$(printf '%s\n' "$out" | grep -c '^    {"sandbox"' || true)" -eq 0 ]; then echo "PASS: swas-474 [in-session-no-block] no copy-whole block line is printed"; else echo "FAIL: swas-474 [in-session-no-block] a block line was printed ($out)"; fail=1; fi
+  if [ -s "$_e4/log" ] && ! grep -q 'allowedDomains' "$_e4/log"; then echo "PASS: swas-474 [in-session-no-user-allowedDomains-read] jq ran (non-vacuous) and no call read a user-level allowedDomains list (the older scope read in boundary_read_scope stays)"; else echo "FAIL: swas-474 [in-session-no-user-allowedDomains-read] the stub log is empty or a call read allowedDomains: $(cat "$_e4/log")"; fail=1; fi
+  # 6b (S2): a project settings file that is a symlink counts as unreadable for the host list (the sandbox comes from the local scope here); the block still parses
+  ln -s "$_e4/hostsettings.json" "$_e4/hostlink.json"
+  _e4_run "$_e4/trk" "$_e4/hostlink.json" "$_bnd/user-plain.json" "$_bnd/full.json"
+  out=$_br_out
+  bnd_has project-symlink 'FAIL egress: NOT ENFORCED and UNDECLARED'
+  bnd_has project-symlink "this repo's .claude/settings.json could not be read here; add the hosts you use to allowedDomains yourself."
+  bnd_no project-symlink "$_e4_pl"
+  bnd_no project-symlink 'api.example.org'
+  _e4_chk project-symlink-block "the block parses" _e4_blk_ok "$out"
+  # 6c (S3): the tracker host is not listed a second time when the project list already holds it (it stays under the project label only)
+  printf '{"sandbox":{"enabled":true,"network":{"allowedDomains":["exfil2.example","api.example.org"]},"filesystem":{"denyRead":["**/.env","~/.ssh"],"denyWrite":["./.claude","~/.claude/settings.json"]}},"permissions":{"deny":["WebFetch"]}}\n' > "$_e4/hostsettings2.json"
+  _e4_run "$_e4/trk" "$_e4/hostsettings2.json" "$_bnd/user-plain.json"
+  out=$_br_out
+  _e4_ps=$(_e4_sect "$out" "$_e4_pl")
+  if [ "$_e4_ps" = "$(printf '      api.example.org\n      exfil2.example')" ]; then echo "PASS: swas-474 [tracker-host-in-project-list] the shared host is listed under the project label"; else echo "FAIL: swas-474 [tracker-host-in-project-list] ($_e4_ps) in $out"; fail=1; fi
+  bnd_no tracker-host-in-project-list "$_e4_tl"
+  # 7: a declared egress opt-out prints no block (the WARN path); an undeclared read-deny beside it gives the old summary, not the strict step
+  _g_dir="$_e4/trk"; _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-plain.json"; _g_local=""; _g_env=""; _g_path=""; _g_decl="$_bnd/d-egress.conf"
+  _bnd_run "$_self" "--boundary-only --boundary-advisory"
+  out=$_br_out
+  bnd_has declared-egress-warn 'WARN egress: NOT ENFORCED [static] (opted out'
+  bnd_no declared-egress-no-block 'the user-level block to copy whole'
+  # 8: the exit summary. check_boundary then boundary_summary, in one shell; the flags are set by the real judge
+  bnd_sum() {  # <project> <user> <declaration seam> [dir] [home] [keep]: output in $out. Runs in <dir> (default: the no-tracker fixture), so the kit's own .kit/tracker.conf is never read
+    out=$( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME
+      cd "${4:-$_e4/md}" || exit 1
+      if [ -n "${5:-}" ]; then HOME="$5"; export HOME; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_NOSYSTEM; fi
+      PREFLIGHT_SANDBOX_SETTINGS="$1"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_USER="${2:-/nonexistent-user}"; PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed; PREFLIGHT_BOUNDARY_OPTOUT="$3"
+      PREFLIGHT_SANDBOX_OS=Darwin; PREFLIGHT_SANDBOX_TOOLS=sandbox-exec; PREFLIGHT_SANDBOX_BWRAP_OK=1
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED PREFLIGHT_BOUNDARY_OPTOUT PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      bfail=0; bunv=0
+      if [ -n "${6:-}" ]; then check_boundary 2>&1; else check_boundary >/dev/null 2>&1; fi   # a sixth word keeps check_boundary's lines (for a scenario that must show which site fired)
+      boundary_summary )
+  }
+  _e4_old='an UNDECLARED opt-out (or a malformed or UNTRUSTED declaration'; _e4_new='Agent boundary: egress is not enforced. (1) The one act every adopter owes, once per machine: merge the block printed under the egress line above into ~/.claude/settings.json'
+  bnd_sum "$_bnd/full.json" "$_bnd/user-plain.json" @absent   # egress is the only gap
+  bnd_has summary-egress-leads "$_e4_new"
+  bnd_has summary-egress-leads 'then add the hosts you trust from the list there to sandbox.network.allowedDomains (they come from this repo; review each first). (2) Or, to opt out on purpose, declare it in .kit/boundary-optout.conf.'
+  bnd_no summary-egress-alone "$_e4_old"
+  bnd_sum "$_bnd/noread.json" "$_bnd/user-plain.json" "$_bnd/d-egress.conf"   # egress declared (the WARN path), read-deny undeclared: not the strict step
+  bnd_no summary-declared-egress-is-not-the-gap 'egress is not enforced'
+  bnd_has summary-declared-egress-is-not-the-gap "$_e4_old"
+  bnd_sum "$_bnd/noread.json" "$_bnd/user-strict.json" @absent   # only read-deny
+  bnd_no summary-read-deny-only 'egress is not enforced'
+  bnd_has summary-read-deny-only "$_e4_old"
+  bnd_sum "$_bnd/off.json" "" @absent   # the sandbox is off
+  bnd_no summary-sandbox-off 'egress is not enforced'
+  bnd_has summary-sandbox-off "$_e4_old"
+  bnd_sum "$_bnd/full.json" "$_bnd/user-plain.json" "$_bnd/m-eq.conf"   # egress plus a MALFORMED declaration: the strict step first, then today's sentence
+  case "$out" in
+    *"egress is not enforced"*"$_e4_old"*) echo "PASS: swas-474 [summary-mixed] egress plus a malformed declaration: the strict step first, today's sentence after it" ;;
+    *) echo "FAIL: swas-474 [summary-mixed] ($out)"; fail=1 ;;
+  esac
+  # the call site is wired: the line after the bfail gate calls the summary (a structural lock; the gate itself needs a clean full run, which the ambient environment may not give)
+  _e4_w=$(awk '/^if \[ "\$bfail" -ne 0 \] && \[ "\$BOUNDARY_ADVISORY" -eq 0 \]/ { getline; print; exit }' "$_self")
+  case "$_e4_w" in *boundary_summary*) echo "PASS: swas-474 [summary-wired] the bfail gate calls boundary_summary" ;; *) echo "FAIL: swas-474 [summary-wired] the line after the gate is '$_e4_w'"; fail=1 ;; esac
+  # SWAS-775: the operator-card pointer. The FAIL exit ends with it, on the line after the summary (so after the egress block, never inside it); a run that does not fail never prints it. The exit itself needs a clean full run (as above),
+  # so the order is shown the way the summary cells show it (the real check_boundary, the real summary, then the real pointer function, in one shell) and the wiring by a structural lock with a mutant.
+  _op_ptr='What this means for you: docs/onboarding/operator-card.md'
+  _op_wired() {  # <file>: rc 0 iff the line after the call to boundary_summary calls operator_card_pointer
+    case "$(awk '/^  boundary_summary/ { getline; print; exit }' "$1")" in *operator_card_pointer*) return 0 ;; esac
+    return 1
+  }
+  _op_ptr_of() {  # <file>: the pointer function of <file>, extracted and run in a subshell
+    ( eval "$(sed -n '/^operator_card_pointer() {/,/^}/p' "$1")"; operator_card_pointer )
+  }
+  bnd_sum "$_e4/hostsettings.json" "$_bnd/user-plain.json" @absent "$_e4/md" "" keep   # egress is the gap: the block, then the summary
+  _op_o=$(printf '%s\n%s\n' "$out" "$(_op_ptr_of "$_self")")
+  case "$out" in *"$_op_ptr"*) echo "FAIL: swas-775 [pointer-not-in-summary] boundary_summary printed the pointer itself"; fail=1 ;; *) echo "PASS: swas-775 [pointer-not-in-summary] the summary does not print the pointer (the exit does)" ;; esac
+  if [ "$(printf '%s\n' "$_op_o" | tail -n 1)" = "$_op_ptr" ]; then echo "PASS: swas-775 [pointer-last] the pointer function prints the card's path"; else echo "FAIL: swas-775 [pointer-last] the pointer function does not print the card's path ($_op_o)"; fail=1; fi
+  _e4_chk pointer-after-block "the egress block still parses with the pointer after it" _e4_blk_ok "$_op_o"
+  _op_c=$(_bnd_e2e "$_bnd/full.json" "$_bnd/user-strict.json")   # a clean boundary: the real body, advisory
+  out=$_op_c
+  bnd_has pointer-not-on-a-clean-run 'boundary: ON [static]'   # (the run reached the boundary line: not vacuous)
+  case "$_op_c" in *"$_op_ptr"*) echo "FAIL: swas-775 [pointer-not-on-a-clean-run] a run that did not fail printed the pointer"; fail=1 ;; *) echo "PASS: swas-775 [pointer-not-on-a-clean-run] a run that did not fail prints no pointer" ;; esac
+  if _op_wired "$_self"; then echo "PASS: swas-775 [pointer-wired] the original calls operator_card_pointer right after boundary_summary"; else echo "FAIL: swas-775 [pointer-wired] the original does not call the pointer after the summary"; fail=1; fi
+  _op_miss() {  # <file>: rc 0 iff the line after the missing-prerequisite echo calls operator_card_pointer
+    case "$(awk '/^  echo "Missing prerequisites above/ { getline; print; exit }' "$1")" in *operator_card_pointer*) return 0 ;; esac
+    return 1
+  }
+  if _op_miss "$_self"; then echo "PASS: swas-775 [pointer-wired-missing-prereq] the missing-prerequisite exit calls operator_card_pointer"; else echo "FAIL: swas-775 [pointer-wired-missing-prereq] the line after the missing-prerequisite echo does not call the pointer"; fail=1; fi
+  _op_mk=$(mktemp -d); sed '/^  echo "Missing prerequisites above/{n;s/.*/  :/;}' "$_self" > "$_op_mk/miss-dropped.sh"
+  if cmp -s "$_self" "$_op_mk/miss-dropped.sh" || ! sh -n "$_op_mk/miss-dropped.sh" 2>/dev/null; then echo "FAIL: mutant pointer-missing-prereq-call-dropped did not apply or does not parse"; fail=1
+  elif _op_miss "$_op_mk/miss-dropped.sh"; then echo "FAIL: mutant pointer-missing-prereq-call-dropped survived (the call is gone and the lock still reads wired)"; fail=1
+  else echo "PASS: mutant pointer-missing-prereq-call-dropped is killed"; fi
+  sed '/^  operator_card_pointer /s/.*/  :/' "$_self" > "$_op_mk/call-dropped.sh"; sed 's#docs/onboarding/operator-card.md#docs/gone.md#' "$_self" > "$_op_mk/path-changed.sh"
+  if cmp -s "$_self" "$_op_mk/call-dropped.sh" || ! sh -n "$_op_mk/call-dropped.sh" 2>/dev/null; then echo "FAIL: mutant pointer-call-dropped did not apply or does not parse"; fail=1
+  elif _op_wired "$_op_mk/call-dropped.sh"; then echo "FAIL: mutant pointer-call-dropped survived (the call is gone and the lock still reads wired)"; fail=1
+  else echo "PASS: mutant pointer-call-dropped is killed"; fi
+  if cmp -s "$_self" "$_op_mk/path-changed.sh" || ! sh -n "$_op_mk/path-changed.sh" 2>/dev/null; then echo "FAIL: mutant pointer-path-changed did not apply or does not parse"; fail=1
+  elif [ "$(_op_ptr_of "$_op_mk/path-changed.sh")" = "$_op_ptr" ]; then echo "FAIL: mutant pointer-path-changed survived (the pointer still reads the card's path)"; fail=1
+  else echo "PASS: mutant pointer-path-changed is killed"; fi
+  rm -rf "$_op_mk"
+  # mutants: each runs a COPY (incept.sh and tracker-conf.sh beside it), must apply and parse; the ORIGINAL must satisfy the predicate first, the mutant must lose it
+  _e4_mut() {  # <name> <sed expr> <predicate fn>
+    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"; cp "$_sd/incept.sh" "$_bk/incept.sh"; cp "$_sd/tracker-conf.sh" "$_bk/tracker-conf.sh"
+    if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
+    if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -rf "$_bk"; return 0; fi
+    _e4_run "$_e4/trk" "$_e4/hostsettings.json" "$_bnd/user-plain.json"; _e4_orig=$_br_out
+    _bnd_run "$_bk/preflight.sh" "--boundary-only --boundary-advisory"; _e4_mutd=$_br_out
+    rm -rf "$_bk"
+    if ! "$3" "$_e4_orig"; then echo "FAIL: mutant $1 scenario is vacuous (the original does not satisfy $3: $_e4_orig)"; fail=1; return 0; fi
+    case "$_e4_mutd" in *"FAIL egress: NOT ENFORCED"*) : ;; *) echo "FAIL: mutant $1 never ran the egress block (vacuous)"; fail=1; return 0 ;; esac
+    if "$3" "$_e4_mutd"; then echo "FAIL: mutant $1 survived (it still satisfies $3)"; fail=1; else echo "PASS: mutant $1 is killed"; fi
+  }
+  _e4_mut block-placeholder-restored '/# MUT-BLOCK$/s/allowedDomains: \[\]/allowedDomains: ["<the hosts you use>"]/' _e4_blk_ok   # (the marker is anchored at the end of the line, so only the product line matches)
+  _e4_mut block-carries-hosts '/# MUT-BLOCK$/s/jq -cn \(.\)/jq -cn --arg h "$_eb_ph" \1/;/# MUT-BLOCK$/s/allowedDomains: \[\]/allowedDomains: ($h | split(" "))/' _e4_nohost
+  _e4_sumord() {  # <file> <gap> <nonegress>: the summary function of <file>, extracted and run with those two flags
+    ( eval "$(sed -n '/^boundary_summary() {/,/^}/p' "$1")"; _bnd_egress_gap=$2; _bnd_nonegress=$3; boundary_summary )
+  }
+  _e4_sw=$(mktemp -d); sed '/# MUT-SUMORDER$/s/_bsm_a=\$_bsm_strict; _bsm_b=\$_bsm_old/_bsm_a=$_bsm_old; _bsm_b=$_bsm_strict/' "$_self" > "$_e4_sw/preflight.sh"
+  _e4_o1=$(_e4_sumord "$_self" 1 1); _e4_o2=$(_e4_sumord "$_e4_sw/preflight.sh" 1 1)
+  _e4_vac=0
+  case "$_e4_o1" in *"egress is not enforced"*"$_e4_old"*) : ;; *) _e4_vac=1 ;; esac
+  if cmp -s "$_self" "$_e4_sw/preflight.sh"; then echo "FAIL: mutant summary-order-swapped did not apply (the sed expression matched nothing)"; fail=1
+  elif [ "$_e4_vac" -eq 1 ]; then echo "FAIL: mutant summary-order-swapped scenario is vacuous (the original does not lead with the strict step: $_e4_o1)"; fail=1
+  else
+    case "$_e4_o2" in
+      *"egress is not enforced"*"$_e4_old"*) echo "FAIL: mutant summary-order-swapped survived (the strict step still leads)"; fail=1 ;;
+      *"$_e4_old"*"egress is not enforced"*) echo "PASS: mutant summary-order-swapped is killed (the declaration now leads)" ;;
+      *) echo "FAIL: mutant summary-order-swapped never printed both sentences (vacuous: $_e4_o2)"; fail=1 ;;
+    esac
+  fi
+  rm -rf "$_e4_sw" "$_e4"
+  _g_proj=""; _g_user=""; _g_local=""; _g_mgd=""; _g_decl=""; _g_os=""; _g_env=""; _g_dir=""; _g_path=""; _g_home=""; _g_ci=""; _g_tty=""
 
   # ---- the real body: does an UNDECLARED opt-out move the EXIT (and only it)? Differential: plain rc versus the same run under --boundary-advisory, so an ambient
   # failure (a missing tool) cannot fake or hide the effect. Globals _g_* describe the scenario; CI, GITHUB_ACTIONS and SANDBOX_RUNTIME are cleared first.
@@ -4760,7 +5489,7 @@ EOF
   _og=$(mktemp -d); _gx='-c user.name=kit -c user.email=kit@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null'
   git init -q --bare "$_og/origin.git"; git -C "$_og/origin.git" symbolic-ref HEAD refs/heads/main
   git init -q "$_og/work"; git -C "$_og/work" symbolic-ref HEAD refs/heads/main; git -C "$_og/work" remote add origin "$_og/origin.git"
-  printf 'x\n' > "$_og/work/f"; git -C "$_og/work" add f
+  printf 'x\n' > "$_og/work/f"; printf 'Engineering Principles & Definition of Done\n' > "$_og/work/CLAUDE.md"; git -C "$_og/work" add f CLAUDE.md   # SWAS-784: an export-shaped root (and so every clone of origin), or the real body refuses the fixture as no project
   # shellcheck disable=SC2086  # $_gx is a fixed flag list
   git -C "$_og/work" $_gx commit -q -m base; git -C "$_og/work" push -q origin main 2>/dev/null
   _g_decl=real; _g_dir="$_og/work"
@@ -5004,6 +5733,17 @@ EOF
     *) echo "FAIL: origin reader [uploadpack-set] ($_br_out)"; fail=1 ;;
   esac
   _ut uploadpack "remote.origin.uploadpack or remote.origin.vcs is set" "git config --unset remote.origin.uploadpack"
+  # SWAS-474 R1: egress undeclared plus an UNTRUSTED declaration (the uploadpack just set): the summary's strict step first, today's sentence after it (the UNTRUSTED site sets _bnd_nonegress)
+  mkdir -p "$_bnd/emptyhome"
+  bnd_sum "$_bnd/full.json" "$_bnd/user-plain.json" real "$_og/work" "$_bnd/emptyhome" keep
+  case "$out" in
+    *"declaration UNTRUSTED"*) : ;;
+    *) echo "FAIL: swas-474 [summary-mixed-untrusted] the scenario is vacuous (no UNTRUSTED declaration was read, so the UNTRUSTED site is not what set the flag): $out"; fail=1 ;;
+  esac
+  case "$out" in
+    *"egress is not enforced"*"$_e4_old"*) echo "PASS: swas-474 [summary-mixed-untrusted] egress plus an UNTRUSTED declaration: the strict step first, today's sentence after it" ;;
+    *) echo "FAIL: swas-474 [summary-mixed-untrusted] ($out)"; fail=1 ;;
+  esac
   _bnd_kill uploadpack-check-deleted '/MUT-UPLOADPACK/d' "--boundary-only --boundary-advisory" has 'remote.origin.uploadpack or remote.origin.vcs is set'
   git -C "$_og/work" config --unset remote.origin.uploadpack
   git -C "$_og/work" config remote.origin.vcs nothing
@@ -5125,6 +5865,7 @@ EOF
   # D-241026-2, the realistic-config battery (fixture HOME and temp repos only; a dead local port stands in for the forge, so nothing leaves the machine).
   # 1. a global https -> ssh insteadOf rewrite (the commonest real trigger): a one-time FAIL that prints the set-url fix, then a pass after the fix.
   git init -q "$_og/rw"; git -C "$_og/rw" remote add origin 'https://127.0.0.1:1/x.git'
+  printf 'Engineering Principles & Definition of Done\n' > "$_og/rw/CLAUDE.md"   # SWAS-784: export-shaped, or the plain-run exit cells below read the real body's refusal as no project and go weak
   mkdir -p "$_og/home3"; printf '[url "ssh://git@127.0.0.1:1/"]\n\tinsteadOf = https://127.0.0.1:1/\n' > "$_og/home3/.gitconfig"
   _g_home="$_og/home3"; _g_dir="$_og/rw"; _g_proj="$_bnd/off.json"; _g_decl=real; _g_env=""
   _bnd_run "$_self" "--boundary-only --boundary-advisory"
@@ -5410,7 +6151,7 @@ EOF
   if [ "$_bn_low" -ge 1 ] && [ "$_bn_low" -eq "$_bn_off" ]; then echo "PASS: stall-bound every ls-remote carried http.lowSpeedLimit and http.lowSpeedTime"; else echo "FAIL: stall-bound $_bn_low of $_bn_off ls-remote calls carried the http stall bound"; fail=1; fi
   # S8 / S13: each option is load-bearing, shown red: a copy without it records ls-remote calls that lack it. N1: the mutant must apply (cmp), parse (sh -n) and reach ls-remote.
   _bn_mutrun() {  # <name> <sed expr> <grep pattern the original carries>: sets _bn_mutl (ls-remote calls the mutant made) and _bn_muth (of them carrying the pattern); _bn_mutl=-1 if it did not apply or parse
-    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"; _bn_mutl=-1; _bn_muth=0
+    _bk=$(mktemp -d); sed "$2" "$_self" > "$_bk/preflight.sh"; cp "$(dirname -- "$_self")/incept.sh" "$_bk/incept.sh"; _bn_mutl=-1; _bn_muth=0   # SWAS-784: the copy reads the marker list from the incept.sh beside it
     if cmp -s "$_self" "$_bk/preflight.sh"; then echo "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -rf "$_bk"; return 0; fi
     if ! sh -n "$_bk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant $1 does not parse"; fail=1; rm -rf "$_bk"; return 0; fi
     : > "$_gl"; _g_proj="$_bnd/off.json"; _g_user=""; _g_path="$_gs"; _g_dir="$_og/work"; _g_decl=real
@@ -5524,7 +6265,7 @@ EOF
     _ic_n=$(grep -c -e '--boundary-advisory' "$_ic/calls" 2>/dev/null || true); _ic_n=${_ic_n:-0}
     case "$_ic_out" in
       *"missing prerequisites"*) echo "FAIL: incept-not-blocked-by-bfail a boundary exit aborted incept at the prerequisites gate ($_ic_out)"; fail=1 ;;
-      *"does not meet its declared floor"*) if [ "$_ic_n" -eq 2 ]; then echo "PASS: incept-not-blocked-by-bfail both preflight calls (:416 and the --stack floor call) pass --boundary-advisory and incept got past the prerequisites gate"; else echo "FAIL: incept-not-blocked-by-bfail $_ic_n of 2 preflight calls passed --boundary-advisory"; fail=1; fi ;;
+      *"below its declared floor"*) if [ "$_ic_n" -eq 2 ]; then echo "PASS: incept-not-blocked-by-bfail both preflight calls (:416 and the --stack floor call) pass --boundary-advisory and incept got past the prerequisites gate"; else echo "FAIL: incept-not-blocked-by-bfail $_ic_n of 2 preflight calls passed --boundary-advisory"; fail=1; fi ;;
       *) echo "FAIL: incept-not-blocked-by-bfail incept did not reach the stack floor call ($_ic_out)"; fail=1 ;;
     esac
     sed 's/preflight\.sh --boundary-advisory \$_pf_nested/preflight.sh $_pf_nested/' "$_sd/incept.sh" > "$_ic/m1.sh"
@@ -5559,6 +6300,33 @@ EOF
   done
   _sc "$_bnd/twodoc.json" "" "" "" @absent ""
   _bnd_kill one-document-check-deleted '/in   # MUT-ONEDOC$/,/^  esac$/d' "--boundary-only --boundary-advisory" has 'warn boundary: UNVERIFIED'
+  # SWAS-793: bwarn counts the boundary's notices (its WARN lines and its lowercase warn lines) for the summary line, and nothing else moves. Like the accumulator cell above, one direct
+  # check_boundary call in a subshell with the seams, printing bwarn: a DECLARED opt-out is one WARN (1), a boundary scope that cannot be read is one `warn boundary: UNVERIFIED` (1), and an
+  # UNDECLARED opt-out is a FAIL line, which is no notice (0). A third argument loads boundary_judge from a mutated copy of this script, so the mutant below changes only the site it names.
+  _bwcell() {  # <project> <declaration seam> [mutated copy of this script] -> bwarn after one check_boundary call (CI and the marker cleared)
+    ( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME
+      [ -z "${3:-}" ] || eval "$(sed -n '/^boundary_judge() {/,/^}/p' "$3")"
+      miss=0; rec=0; bfail=0; bunv=0; bwarn=0
+      PREFLIGHT_SANDBOX_SETTINGS="$1"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_USER=/nonexistent-user; PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed; PREFLIGHT_BOUNDARY_OPTOUT="$2"
+      PREFLIGHT_SANDBOX_OS=Darwin; PREFLIGHT_SANDBOX_TOOLS=sandbox-exec; PREFLIGHT_SANDBOX_BWRAP_OK=1
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED PREFLIGHT_BOUNDARY_OPTOUT PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      check_boundary >/dev/null 2>&1
+      printf '%s' "$bwarn" )
+  }
+  for _bw in "declared-warn|$_bnd/off.json|$_bnd/d-all.conf|1" "unreadable-scope-warn|$_bnd/twodoc.json|@absent|1" "undeclared-is-a-fail|$_bnd/off.json|@absent|0"; do
+    _bwl=$(printf '%s' "$_bw" | cut -d'|' -f1); _bww=$(printf '%s' "$_bw" | cut -d'|' -f4)
+    _bwg=$(_bwcell "$(printf '%s' "$_bw" | cut -d'|' -f2)" "$(printf '%s' "$_bw" | cut -d'|' -f3)")
+    if [ "$_bwg" = "$_bww" ]; then echo "PASS: swas-793 [bwarn-$_bwl] one check_boundary call counts bwarn = $_bwg"; else echo "FAIL: swas-793 [bwarn-$_bwl] expected bwarn '$_bww', got '$_bwg'"; fail=1; fi
+  done
+  # mutant bwarn-decl-dropped: the increment after the declared opt-out's WARN line is deleted from a copy, and the declared scenario must then read 0 (the original reads 1).
+  if _pr_mut bwarn-decl-dropped '/^ *bwarn=\$((\${bwarn:-0} + 1)) *# MUT-BWARN:/d'; then
+    _bwm=$(_bwcell "$_bnd/off.json" "$_bnd/d-all.conf" "$_pr_mp")
+    case "$_bwm" in
+      0) echo "PASS: mutant bwarn-decl-dropped is killed (the declared opt-out counts 0)" ;;
+      1) echo "FAIL: mutant bwarn-decl-dropped survived (the declared opt-out still counts 1)"; fail=1 ;;
+      *) echo "FAIL: mutant bwarn-decl-dropped never ran the declared scenario (vacuous: '$_bwm')"; fail=1 ;;
+    esac
+  fi
   # DC20 follows the same rule: a jq that prints two lines for the WebFetch read (rc 0) reads as unreadable, never a listing (a two-document local file is already
   # refused by the scope read, so the guard is proved with a PATH-stub jq).
   _j2=$(mktemp -d)
@@ -6064,9 +6832,33 @@ x"; mkdir -p "$_gp_bad"; printf 'ref: refs/heads/main\n' > "$_gp_bad/HEAD"
     if [ "$_gp_rc" -eq 0 ]; then echo "PASS: git-plants [GP22b] and the exit is unchanged"; else echo "FAIL: git-plants [GP22b] rc $_gp_rc"; fail=1; fi
     chmod 755 "$_gp_d/d1"
   fi
+  # SWAS-793: the main run prints the checkout report and counts its `  warn git-plants:` lines into gpwarn (gp_count_warns), for the summary line only. A seam run with ONE plant (a
+  # core.hooksPath that points inside the checkout) must count 1, and a clean repository 0 (so the 1 is not a constant). The report is read from the fixture in a subshell, as the main run reads it.
+  _gpc_n() {  # <dir> [mutated copy of this script] -> gp_count_warns of that directory's report
+    ( cd "$1" || exit 1
+      [ -z "${2:-}" ] || eval "$(sed -n '/^gp_count_warns() {/,/^}/p' "$2")"
+      gp_count_warns "$(check_git_plants)" )
+  }
+  _gp_repo gpc0; _gpc0=$_gp_d
+  _gp_repo gpc1; _gp_g -C "$_gp_d" config core.hooksPath .husky; _gpc1=$_gp_d
+  _gpc_a=$(_gpc_n "$_gpc0") || _gpc_a="<aborted>"; _gpc_b=$(_gpc_n "$_gpc1") || _gpc_b="<aborted>"
+  if [ "$_gpc_a" = 0 ] && [ "$_gpc_b" = 1 ]; then echo "PASS: swas-793 [gpwarn-counts] a clean repository counts 0 git-plants warnings and one plant counts 1"; else echo "FAIL: swas-793 [gpwarn-counts] clean '$_gpc_a' (expected 0), one plant '$_gpc_b' (expected 1)"; fail=1; fi
+  # mutant gpwarn-count-dropped: the counter no longer matches the warning prefix in a copy, so the one-plant run must read 0 where the original reads 1.
+  _gk=$(mktemp -d); sed "/# MUT-GPCOUNT\$/s/'\\^  warn git-plants:'/'^  NOPE git-plants:'/" "$_self" > "$_gk/preflight.sh"
+  if cmp -s "$_self" "$_gk/preflight.sh"; then echo "FAIL: mutant gpwarn-count-dropped did not apply (the sed expression matched nothing)"; fail=1
+  elif ! sh -n "$_gk/preflight.sh" 2>/dev/null; then echo "FAIL: mutant gpwarn-count-dropped does not parse (a mutant that cannot run would read as killed)"; fail=1
+  else
+    _gpc_m=$(_gpc_n "$_gpc1" "$_gk/preflight.sh") || _gpc_m="<aborted>"
+    case "$_gpc_m" in
+      0) echo "PASS: mutant gpwarn-count-dropped is killed (the plant counts 0)" ;;
+      1) echo "FAIL: mutant gpwarn-count-dropped survived (the plant still counts 1)"; fail=1 ;;
+      *) echo "FAIL: mutant gpwarn-count-dropped never ran the plant fixture (vacuous: '$_gpc_m')"; fail=1 ;;
+    esac
+  fi
+  rm -rf "$_gk"
   rm -rf "$_gp_t"
 
-  rm -rf "$_bnd"
+  rm -rf "$_bnd" "$_pr_t" "$_pr_xp"
 
   [ "${_pf_skips:-0}" -eq 0 ] || echo "NOTE: preflight selftest: ${_pf_skips} SKIP (coverage WEAK)"
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
@@ -6085,13 +6877,28 @@ if [ "$BOUNDARY_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+# SWAS-784 / SWAS-785: which tree is this? The first act of the main body, so nothing is reported before it. kit: say so first, run as today, end without the all-clear
+# (exit unchanged, nothing sets miss). other: refuse before any report line (exit 1, nothing written). export and incepted: unchanged. A marker list that cannot be read
+# refuses (the class would otherwise read the kit as an export).
+_prc_rc=0
+PROJECT_CLASS=""; _prc_anchor=$PWD
+project_root_resolve || _prc_rc=$?
+if [ "$_prc_rc" -ne 0 ]; then
+  printf '%s\n' "preflight: cannot read the kit-internal marker list in $(prc_show "$(dirname -- "$0")/incept.sh"); reinstall the kit scripts" >&2
+  exit 1
+fi
+[ "$PROJECT_CLASS" != other ] || prc_refuse_other   # MUT-PROTHER
+[ "$PROJECT_CLASS" != kit ] || printf '%s\n' "preflight: this is the Sparkwright kit checkout ($(prc_show "$_prc_anchor")), not your project. The checks below describe the kit. To check your project, export the kit and run preflight there: sh scripts/adopter-export.sh <dir>"   # MUT-PRKITNOTICE
+
 echo "Sparkwright — preflight"
 echo "Universal prerequisites:"
 need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
 echo "Checkout git (parse-only; reported after the fact):"
-check_git_plants
+_gpo=$(check_git_plants)   # SWAS-793: captured, printed as before, and its warnings counted for the summary line (display only)
+printf '%s\n' "$_gpo"
+gpwarn=$(gp_count_warns "$_gpo")
 echo "Git capability, sandbox and boundary:"
 check_git_capability
 check_sandbox
@@ -6102,7 +6909,7 @@ echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
 if command -v gh >/dev/null 2>&1; then
   # shellcheck disable=SC2034  # rec mirrors miss for recommended tools; warnings don't fail the run
-  if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=1; fi
+  if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=$((rec + 1)); fi
 fi
 
 if git_env_redirected; then
@@ -6187,9 +6994,21 @@ EOF
   check_runtime_floor "$STACK" "profiles/$STACK/scaffold/.nvmrc"
 fi
 
-if [ "$rec" -gt 0 ]; then
+# SWAS-793: the summary names each kind of line it counts, so a reader can match each number to the lines above. The lead is the first non-zero kind (advisory warnings,
+# then the boundary's notices, then git-plants warnings); the others follow as "also ...". A kind at 0 is left out, and the whole line when all three are 0. "advisory warning(s) above"
+# stays one unbroken substring whenever rec > 0. None of the three counts feeds an exit code.
+_sumh=""; _sumx=""
+[ "$rec" -le 0 ] || _sumh="$rec advisory warning(s) above"
+if [ "$bwarn" -gt 0 ]; then if [ -z "$_sumh" ]; then _sumh="$bwarn boundary notice(s) above"; else _sumx="$bwarn boundary notice(s)"; fi; fi   # MUT-SUMBND
+if [ "$gpwarn" -gt 0 ]; then
+  if [ -z "$_sumh" ]; then _sumh="$gpwarn git-plant warning(s) above"
+  elif [ -z "$_sumx" ]; then _sumx="$gpwarn git-plant warning(s)"
+  else _sumx="$_sumx and $gpwarn git-plant warning(s)"; fi
+fi
+if [ -n "$_sumh" ]; then
   echo ""
-  printf '%s\n' "$rec advisory warning(s) above — non-blocking (they do not affect this check's result)."   # Rule 3
+  _sumt=""; [ -z "$_sumx" ] || _sumt="; also $_sumx"
+  printf '%s\n' "$_sumh — non-blocking (they do not affect this check's result)$_sumt."   # Rule 3
 fi
 
 if [ "$RUNTIME_REFUSE" -eq 1 ]; then
@@ -6231,16 +7050,16 @@ fi
 #
 # DOWNSTREAM INTERACTION WITH incept.sh — MEASURED, not reasoned (finding J9, T2 fix-loop, 2026-07-21).
 # scripts/incept.sh runs `sh scripts/preflight.sh` as a HARD precondition (grep `incept: missing
-# prerequisites`) BEFORE its own already-incepted refusal (grep `already incepted`). This block therefore
-# CHANGES WHICH MESSAGE incept prints when it is re-run in an already-incepted tree whose guard is
+# prerequisites`). It used to run it BEFORE its own already-incepted refusal (grep `already incepted`), so this
+# block CHANGED WHICH MESSAGE incept printed when it was re-run in an already-incepted tree whose guard was
 # missing. Differential measured on two fixtures identical except for `.git/hooks/pre-push`:
 #     guard ABSENT    -> "incept: missing prerequisites. Run 'sh scripts/preflight.sh' ... Aborting."  rc 1
 #     guard INSTALLED -> "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting."        rc 1
-# NO FAIL-OPEN — both refuse, and this one refuses EARLIER — but the operator is handed the less specific
-# of the two reasons, and the pointer it gives (re-run preflight) does print the real cause. Accepted as
-# a disclosed cost rather than fixed from here: reordering incept's precondition is incept's decision,
-# not this check's, and it is a separate slice. Recorded so the next reader of that message knows this
-# block is why it moved.
+# That ordering was a disclosed cost, and SWAS-784 retires it: incept's tree checks (already incepted, the principles
+# CLAUDE.md, the kit-internal markers) now run AHEAD of the preflight call, so the already-incepted tree gets its
+# specific sentence whatever its guard, and a directory that is no un-incepted export gets incept's own sentence naming
+# the cwd instead of the generic line. No refusal was loosened: only their order and one message changed. Locked by
+# conformance/incept-containment.sh (IC-OTHER).
 #
 # THE THREE OUTPUT RULES, STATED ONCE AND APPLIED EVERYWHERE IN THIS BLOCK. Every finding this block
 # collected in the final fix-loop was a PARTIAL application of a rule already written down here, so the
@@ -6512,13 +7331,15 @@ fi
 
 if [ "$miss" -ne 0 ]; then
   echo "Missing prerequisites above — install them, then re-run."
+  operator_card_pointer   # SWAS-775: the card follows the missing-prerequisite exit too
   exit 1
 fi
 
 # SWAS-355: an opt-out from the agent boundary with no matching entry in .kit/boundary-optout.conf (or a malformed declaration) fails the run.
 # --boundary-advisory keeps the line and drops the exit, for a caller whose rc means something else.
 if [ "$bfail" -ne 0 ] && [ "$BOUNDARY_ADVISORY" -eq 0 ]; then   # MUT-ADVISORY
-  echo "Agent boundary: an UNDECLARED opt-out (or a malformed or UNTRUSTED declaration, or an unreadable declaration while a part is OFF) is listed above — declare it in .kit/boundary-optout.conf or remove the override (UNTRUSTED or UNVERIFIED: follow its Remedy)."
+  boundary_summary   # SWAS-474: the strict step first when egress is the gap; the old sentence otherwise (or after it, when a non-egress part failed as well)
+  operator_card_pointer   # SWAS-775: the line after the summary, so after the egress block
   exit 1
 fi
 
@@ -6533,5 +7354,6 @@ if [ "$RUNTIME_WAIVED" -eq 1 ]; then
   exit 0
 fi
 
+if [ "$PROJECT_CLASS" = kit ]; then echo "Prerequisites checked on the kit checkout, not a project: this is not an all-clear."; exit 0; fi   # MUT-PRKITLAST
 echo "All prerequisites present."
 exit 0

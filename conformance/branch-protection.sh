@@ -517,9 +517,9 @@ classify() {
     _bp_rc_count=$(printf '%s' "$body" | tr -d ' \t\n' \
       | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
     if [ -z "$_bp_rc_count" ]; then
-      printf '%s\n' "FAIL: $BRANCH does not declare required_approving_review_count — the merge of an unratified control-plane PR is blocked by that count, and the control-plane-ratification check is GREEN while waiting BECAUSE of it (DEVELOPMENT-PROCESS.md §13). Absent, nothing blocks. Run: sh scripts/branch-protection-apply.sh --apply"; ok=1
+      printf '%s\n' "FAIL: $BRANCH does not declare required_approving_review_count — the merge of an unratified control-plane PR is blocked by that count, and the control-plane-ratification check is GREEN while waiting BECAUSE of it (DEVELOPMENT-PROCESS.md §13). Absent, nothing blocks. Fix it (an admin act, done by a human) in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → approvals 1 or more), not with branch-protection-apply.sh --apply, which only adds status-check contexts. branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."; ok=1  # MUT-BPCOUNT
     elif [ "$_bp_rc_count" -lt 1 ]; then
-      printf '%s\n' "FAIL: $BRANCH sets required_approving_review_count=$_bp_rc_count — a review requirement of ZERO. The required_pull_request_reviews block being PRESENT means nothing on its own; with a count of 0 an unratified control-plane PR merges with a GREEN ratification check (that check explains the wait, it does not block it). Run: sh scripts/branch-protection-apply.sh --apply"; ok=1
+      printf '%s\n' "FAIL: $BRANCH sets required_approving_review_count=$_bp_rc_count — a review requirement of ZERO. The required_pull_request_reviews block being PRESENT means nothing on its own; with a count of 0 an unratified control-plane PR merges with a GREEN ratification check (that check explains the wait, it does not block it). Fix it (an admin act, done by a human) with the admin PATCH (not branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F required_approving_review_count=1, or the Settings UI (Branches → edit the rule → 'Require approvals', 1 or more). branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."; ok=1  # MUT-BPCOUNT
     fi
     # ★★ THE TWO SETTINGS THAT CARRY review-lane's RETIRED ATTESTATION LEG
     # (REVIEW-LANE-WAITING-IS-GREEN, 2026-09-05). Until then `conformance/review-lane.sh` read the
@@ -539,8 +539,11 @@ classify() {
     # red, with nothing telling them why. The honest remedies are the admin PATCH below (one setting,
     # nothing else overwritten) or the Settings UI. `--replace` would also work, but it is a full PUT
     # that resets every other protection setting, so it is not what this line recommends. The
-    # pre-existing count arms above keep their own `--apply` line: that one is about establishing
-    # protection on a fresh repo, which is `--replace`'s job and their own history.
+    # count arms above no longer end in `Run: ... --apply` either (SWAS-164): the count-below-1 arm
+    # names the same admin PATCH, the count-absent arm (no review count, usually no reviews block at
+    # all) leads with the Settings UI, and both name `--replace` with its rewrite-to-a-profile caveat. Only the
+    # declared-context arm keeps `--apply`, because adding contexts is what it does. The two flag arms below lead with the
+    # Settings UI when the reviews block is absent (SWAS-812).
     _bp_rc_flat=$(printf '%s' "$body" | tr -d ' \t\n')
     # ONE-ACT GO (SWAS-727): when this tree's dial file sets GO_ACT=review, an APPROVED review on the head IS the merge GO, and
     # this setting is what lets a later push retire it. The assertion above is unconditional (it already was); the FAIL says why
@@ -549,10 +552,20 @@ classify() {
     if go_act_review "$REPO_ROOT"; then
       _bp_goact=" This tree's .kit/dials.conf sets GO_ACT=review: there an APPROVED review on the head is the merge GO, so a push that does not dismiss it leaves the GO standing on a head nobody approved."
     fi
+    # SWAS-812: with no reviews block at all, a PATCH of one key may have nothing to patch, so the two cures below lead with
+    # the Settings UI there (the count-absent arm's shape); with the block present they stay the admin PATCH, byte for byte.
+    _bp_rv_absent=0; printf '%s' "$body" | grep -q '"required_pull_request_reviews"' || _bp_rv_absent=1  # MUT-BPSIB
+    if [ "$_bp_rv_absent" = 1 ]; then
+      _bp_ds_cure="Fix it (an admin act, done by a human) in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → 'Dismiss stale pull request approvals when new commits are pushed'), not with branch-protection-apply.sh --apply, which only adds status-check contexts. Once the rule requires pull requests, the admin PATCH sets it alone: gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F dismiss_stale_reviews=true. branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."
+      _bp_lp_cure="Fix it (an admin act, done by a human) in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → 'Require approval of the most recent reviewable push'), not with branch-protection-apply.sh --apply, which only adds status-check contexts. Once the rule requires pull requests, the admin PATCH sets it alone: gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F require_last_push_approval=true. branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."
+    else
+      _bp_ds_cure="Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F dismiss_stale_reviews=true — or the Settings UI, Branches, edit the rule, 'Dismiss stale pull request approvals when new commits are pushed'."
+      _bp_lp_cure="Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F require_last_push_approval=true — or the Settings UI, Branches, edit the rule, 'Require approval of the most recent reviewable push'."
+    fi
     printf '%s' "$_bp_rc_flat" | grep -q '"dismiss_stale_reviews":true' \
-      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F dismiss_stale_reviews=true — or the Settings UI, Branches, edit the rule, 'Dismiss stale pull request approvals when new commits are pushed'.${_bp_goact}"; ok=1; }
+      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. ${_bp_ds_cure}${_bp_goact}"; ok=1; }
     printf '%s' "$_bp_rc_flat" | grep -q '"require_last_push_approval":true' \
-      || { printf '%s\n' "FAIL: $BRANCH does not set require_last_push_approval to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting replaces review-lane's deleted rl_role_swap heuristic, which guessed at the role swap by matching an approver's forge login against the head commit's author/committer identity. As a server-side rule it is stronger and it is the only control left for the property: without it whoever pushed the head can approve their own push. Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F require_last_push_approval=true — or the Settings UI, Branches, edit the rule, 'Require approval of the most recent reviewable push'."; ok=1; }
+      || { printf '%s\n' "FAIL: $BRANCH does not set require_last_push_approval to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting replaces review-lane's deleted rl_role_swap heuristic, which guessed at the role swap by matching an approver's forge login against the head commit's author/committer identity. As a server-side rule it is stronger and it is the only control left for the property: without it whoever pushed the head can approve their own push. ${_bp_lp_cure}"; ok=1; }
     printf '%s' "$body" | grep -q '"required_status_checks"' || { printf '%s\n' "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
     # advisory (non-fatal): CODEOWNER-review enforcement is recommended but not required by this gate
     # (an adopter who never fills CODEOWNERS can leave builder=reviewer paths under-covered — §12).
@@ -624,6 +637,11 @@ classify() {
   # 401, rate-limit, empty/transient body) is NOT determinable here -> UNVERIFIED (never a pass).
   if printf '%s' "$body" | grep -q 'Branch not protected'; then
     printf '%s\n' "FAIL: $BRANCH on ${REPO:-?} has no branch protection."; exit 1
+  fi
+  # A free private repository's 403 carries GitHub's own upgrade text in the body (gh prints it on stdout): name the
+  # cause in doctor's wording (scripts/doctor.sh, mirror-locked by the selftest) so nobody chases a missing admin right.
+  if printf '%s' "$body" | grep -qF 'or make this repository public to enable this feature'; then   # MUT-BPPLAN
+    unverifiable "protection endpoint returned non-200 on ${REPO:-?}: this plan cannot enforce protection on a private repository (a public repository or a paid plan can)"
   fi
   unverifiable "protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on ${REPO:-?}"
 }
@@ -1245,7 +1263,7 @@ case "$*" in
   *"api user"*) echo stub-login ;;
   *"repo view"*) echo "me/repo" ;;
   *"/invitations"*) [ -z "${STUB_INVITES_FAIL:-}" ] || exit 1; for l in ${STUB_INVITES:-}; do echo "$l"; done ;;
-  *"branches/main/protection"*) printf '%s' "$STUB_PROTECTION" ;;
+  *"branches/main/protection"*) printf '%s' "$STUB_PROTECTION"; exit "${STUB_PROT_RC:-0}" ;;
   *) [ -z "${STUB_REPO_FAIL:-}" ] || exit 1; printf '%s' "$STUB_REPOJSON" ;;
 esac
 STUBE2E
@@ -1270,6 +1288,97 @@ STUBE2E
   e2e "solo declared + team live + merge commits allowed" 0 "ADVISORY: merge methods" "$_TEAM_LIVE" "$_RJ_ALL"
   rm -f "$_e2e/CLAUDE.md"
   e2e "no CLAUDE.md (kit tree / pre-incept) -> undeclared, solo protection passes" 0 "settings: enforce_admins=false" "$_SOLO_LIVE" "$_RJ_ALL"
+
+  # ── SWAS-212: a free private repository's 403 names its cause. Real gh prints the message in the JSON body on
+  # stdout, which run() captures; the cause is doctor's wording (scripts/doctor.sh), pinned on both sides below.
+  _bp_plan='this plan cannot enforce protection on a private repository (a public repository or a paid plan can)'
+  bp_up() { printf '%s' '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":"403"}'; }
+  clsd 2 "UNVERIFIED: protection endpoint returned non-200 on selftest: $_bp_plan" 0 1 "$(bp_up)" "/nonexistent-required-checks-$$" "upgrade-text 403 -> UNVERIFIED naming the plan cause (SWAS-212)"
+  clsd 1 "FAIL: branch-protection could not verify (protection endpoint returned non-200 on selftest: $_bp_plan)" 1 1 "$(bp_up)" "/nonexistent-required-checks-$$" "upgrade-text 403 + --require -> FAIL, still naming the plan cause"
+  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; classify 1 '{"message":"Must have admin rights to Repository."}' ) 2>&1 ) && g=0 || g=$?
+  if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF 'non-200 (token may lack repo-admin' && ! printf '%s\n' "$out" | grep -qF -e "$_bp_plan"; then
+    echo "selftest PASS: a plain 403 keeps the generic cause (rc alone is not the upgrade signal)"
+  else
+    echo "selftest FAIL: plain 403 cause (rc=$g out=[$out])"; st=1
+  fi
+  e2e "upgrade-text 403 through run(): the plan cause reaches stdout" 2 "$_bp_plan" "$(bp_up)" "$_RJ_SQ" STUB_PROT_RC=1
+  # mutant: the recognition dropped (the anchor never matches) -> the positive cell above must red
+  sed '/# MUT-BPPLAN$/s/or make this repository public to enable this feature/@@never-matches@@/' "$0" > "$_e2e/conformance/branch-protection.sh"
+  if cmp -s "$0" "$_e2e/conformance/branch-protection.sh"; then
+    echo "selftest FAIL: the MUT-BPPLAN mutant did not apply"; st=1
+  else
+    out=$( ( PATH="$_e2e/bin:$PATH"; STUB_PROTECTION="$(bp_up)"; STUB_REPOJSON="$_RJ_SQ"; STUB_PROT_RC=1; export STUB_PROTECTION STUB_REPOJSON STUB_PROT_RC; env CI='' REQUIRE=0 sh "$_e2e/conformance/branch-protection.sh" ) 2>&1 ) || true
+    if printf '%s\n' "$out" | grep -qF -e "$_bp_plan" || ! printf '%s\n' "$out" | grep -qF 'non-200 (token may lack repo-admin'; then echo "selftest FAIL: the MUT-BPPLAN mutant survived or crashed (it must fall back to the generic cause) (the plan-cause cell would stay green)"; st=1; else echo "selftest PASS: the MUT-BPPLAN mutant is caught (the plan cause vanishes, the positive cell reds)"; fi
+  fi
+  cp "$0" "$_e2e/conformance/branch-protection.sh"
+  # mirror lock: the cause wording is doctor's, and inception-done keys on it. Both producers must carry the whole phrase.
+  if [ -f "$REPO_ROOT/scripts/doctor.sh" ]; then
+    if grep -qF -e "$_bp_plan" "$REPO_ROOT/scripts/doctor.sh" && grep -qF -e "$_bp_plan" "$REPO_ROOT/conformance/inception-done.sh" && grep -E '^[[:space:]]+unverifiable "' "$0" | grep -qF -e "$_bp_plan"; then
+      echo "selftest PASS: the plan-cause phrase is verbatim in doctor.sh, inception-done.sh and this script's unverifiable call (mirror lock)"
+    else
+      echo "selftest FAIL: the plan-cause wording drifted between scripts/doctor.sh and conformance/branch-protection.sh (inception-done keys on it too) — update ALL sides"; st=1
+    fi
+  else
+    echo "selftest n/a: mirror lock skipped — scripts/doctor.sh absent on this tree"
+  fi
+
+  # ── SWAS-164: the two review-count FAILs name a cure that works. `--apply` only adds status-check contexts and
+  # touches no review setting, so ending these lines `Run: ... --apply` sent an adopter to a command that succeeds and
+  # leaves the gate red. Both bodies are real 200s (the arms sit inside the HTTP 200 branch), so the cells use classify().
+  bp_cabs() { printf '%s' '{"required_status_checks":{}}'; }
+  bp_c0() { printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":0,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{}}'; }
+  _bp_old='Run: sh scripts/branch-protection-apply.sh --apply'
+  clsd 1 "in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → approvals 1 or more)" 0 0 "$(bp_cabs)" "/nonexistent-required-checks-$$" "count ABSENT (no reviews block) -> FAIL whose cure leads with the Settings UI (SWAS-164)"
+  clsd 1 "gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_pull_request_reviews -F required_approving_review_count=1" 0 0 "$(bp_c0)" "/nonexistent-required-checks-$$" "count of ZERO -> FAIL whose cure is the admin PATCH (SWAS-164)"
+  clst_not 1 "$_bp_old" 0 undeclared unknown "" "$(bp_cabs)" "count ABSENT -> the FAIL never ends 'Run: ... --apply' (that command touches no review setting)"
+  clst_not 1 "$_bp_old" 0 undeclared unknown "" "$(bp_c0)" "count of ZERO -> the FAIL never ends 'Run: ... --apply' (that command touches no review setting)"
+  # mutant: both endings restored to the old `Run: ... --apply` -> each negative cell must red
+  sed '/# MUT-BPCOUNT$/s|Fix it [^"]*"; ok=1|'"$_bp_old"'"; ok=1|' "$0" > "$_e2e/conformance/branch-protection.sh"
+  if cmp -s "$0" "$_e2e/conformance/branch-protection.sh"; then
+    echo "selftest FAIL: the MUT-BPCOUNT mutant did not apply"; st=1
+  elif ! sh -n "$_e2e/conformance/branch-protection.sh" 2>/dev/null; then
+    echo "selftest FAIL: the MUT-BPCOUNT mutant does not parse"; st=1
+  else
+    _bp_mut_ok=1
+    for _bp_mf in bp_cabs bp_c0; do
+      out=$( ( PATH="$_e2e/bin:$PATH"; STUB_PROTECTION="$($_bp_mf)"; STUB_REPOJSON="$_RJ_SQ"; export STUB_PROTECTION STUB_REPOJSON; env CI='' REQUIRE=0 sh "$_e2e/conformance/branch-protection.sh" ) 2>&1 ) || true
+      printf '%s\n' "$out" | grep -qF -e "$_bp_old" || _bp_mut_ok=0
+    done
+    if [ "$_bp_mut_ok" = 1 ]; then echo "selftest PASS: the MUT-BPCOUNT mutant is caught (the old ending returns, both negative cells would red)"; else echo "selftest FAIL: the MUT-BPCOUNT mutant did not restore the old ending on both arms (the negative cells would stay green)"; st=1; fi
+  fi
+  cp "$0" "$_e2e/conformance/branch-protection.sh"
+
+  # ── SWAS-812: the dismiss-stale and last-push FAILs lead with a cure that works when the reviews block is absent. With no
+  # block a PATCH of one key may have nothing to patch, so those two lines lead with the Settings UI there (as SWAS-164's
+  # count-absent line does); with the block present they stay the admin PATCH, byte for byte. Real 200 bodies, so classify().
+  bp_nods() { printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1,"require_last_push_approval":true},"required_status_checks":{}}'; }
+  bp_nolp() { printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true},"required_status_checks":{}}'; }
+  _bp_sib_lead='Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_pull_request_reviews'
+  _bp_sib_ds_abs="in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → 'Dismiss stale pull request approvals when new commits are pushed')"
+  _bp_sib_lp_abs="in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → 'Require approval of the most recent reviewable push')"
+  _bp_sib_ds_old="$_bp_sib_lead -F dismiss_stale_reviews=true — or the Settings UI"
+  _bp_sib_lp_old="$_bp_sib_lead -F require_last_push_approval=true — or the Settings UI"
+  clsd 1 "$_bp_sib_ds_abs" 0 0 "$(bp_cabs)" "/nonexistent-required-checks-$$" "dismiss_stale_reviews with NO reviews block -> FAIL whose cure leads with the Settings UI path to that box (SWAS-812)"
+  clsd 1 "$_bp_sib_lp_abs" 0 0 "$(bp_cabs)" "/nonexistent-required-checks-$$" "require_last_push_approval with NO reviews block -> FAIL whose cure leads with the Settings UI path to that box (SWAS-812)"
+  clsd 1 "$_bp_sib_ds_old" 0 0 "$(bp_nods)" "/nonexistent-required-checks-$$" "dismiss_stale_reviews missing, block PRESENT -> FAIL whose cure stays the admin PATCH (SWAS-812)"
+  clsd 1 "$_bp_sib_lp_old" 0 0 "$(bp_nolp)" "/nonexistent-required-checks-$$" "require_last_push_approval missing, block PRESENT -> FAIL whose cure stays the admin PATCH (SWAS-812)"
+  clst_not 1 "Once the rule requires pull requests" 0 undeclared unknown "" "$(bp_nods)" "dismiss_stale_reviews missing, block PRESENT -> the FAIL never carries the block-absent wording (SWAS-812)"
+  clst_not 1 "Once the rule requires pull requests" 0 undeclared unknown "" "$(bp_nolp)" "require_last_push_approval missing, block PRESENT -> the FAIL never carries the block-absent wording (SWAS-812)"
+  clst_not 1 "Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply" 0 undeclared unknown "" "$(bp_cabs)" "NO reviews block -> neither flag line leads with the bare admin PATCH (SWAS-812)"
+  # mutant: the absent flag pinned to 0 -> both lines print the block-present lead on a block-less body; each line asserted on its own
+  sed '/# MUT-BPSIB$/s/.*/    _bp_rv_absent=0/' "$0" > "$_e2e/conformance/branch-protection.sh"
+  if cmp -s "$0" "$_e2e/conformance/branch-protection.sh"; then
+    echo "selftest FAIL: the MUT-BPSIB mutant did not apply"; st=1
+  elif ! sh -n "$_e2e/conformance/branch-protection.sh" 2>/dev/null; then
+    echo "selftest FAIL: the MUT-BPSIB mutant does not parse"; st=1
+  else
+    out=$( ( PATH="$_e2e/bin:$PATH"; STUB_PROTECTION="$(bp_cabs)"; STUB_REPOJSON="$_RJ_SQ"; export STUB_PROTECTION STUB_REPOJSON; env CI='' REQUIRE=0 sh "$_e2e/conformance/branch-protection.sh" ) 2>&1 ) || true
+    _bp_sib_ok=1
+    printf '%s\n' "$out" | grep -qF -e "$_bp_sib_ds_old" || _bp_sib_ok=0
+    printf '%s\n' "$out" | grep -qF -e "$_bp_sib_lp_old" || _bp_sib_ok=0
+    if [ "$_bp_sib_ok" = 1 ]; then echo "selftest PASS: the MUT-BPSIB mutant is caught (both lines print the old lead on a block-less body, the absent cells would red)"; else echo "selftest FAIL: the MUT-BPSIB mutant did not restore the old lead on both lines (the absent cells would stay green)"; st=1; fi
+  fi
+  cp "$0" "$_e2e/conformance/branch-protection.sh"
 
   [ "$st" = "0" ] && echo "branch-protection --selftest: OK"
   return "$st"

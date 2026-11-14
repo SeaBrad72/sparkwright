@@ -59,6 +59,9 @@ GL_TOML="${KIT_GITLEAKS_TOML:-.gitleaks.toml}"
 GI_NAME=".gitleaksignore"
 GI_FILE="${KIT_GITLEAKSIGNORE:-$GI_NAME}"
 DRIFT_FILE="${KIT_DRIFT_FILE:-.github/workflows/drift-watch.yml}"
+# SWAS-833: the sweep's gitleaks invocation as drift-watch.yml carries it, a fixed-string fragment (the
+# same bytes drift-watch-wired.sh pins whole): the redacted report, the all-refs scope, the captured code.
+SWEEP_INV='gitleaks git . --no-banner --redact --report-format json --report-path "$GL_RPT" --log-opts="--full-history --all" || gl_rc=$?'
 
 # The parity surface (design §3 / plan Task 2): every site that must run `gitleaks git .`, never
 # `gitleaks dir .`. Two buckets — files carrying the LITERAL invocation, and the incept manifests
@@ -301,7 +304,7 @@ check_sweep() {
     && printf '%s\n' "$_swj" | grep -Eq 'id:[[:space:]]*gate-secret-scan' \
     && printf '%s\n' "$_swj" | grep -Fq -e "GL_VER=$GL_VER" \
     && printf '%s\n' "$_swj" | grep -Fq -e 'sha256sum -c' \
-    && printf '%s\n' "$_swj" | grep -Fq -e 'gitleaks git . --no-banner --redact --log-opts="--full-history --all"'; then
+    && printf '%s\n' "$_swj" | grep -Fq -e "$SWEEP_INV"; then
     echo "OK: $_sw carries the weekly all-refs 'secret-scan-sweep' job (fetch-depth: 0, id: gate-secret-scan, --full-history --all)"
     return 0
   fi
@@ -706,12 +709,20 @@ selftest() {
   _PARITY_INVOCATION_FILES=$_sv_inv; _PARITY_MANIFEST_FILES=$_sv_man
 
   # --- the weekly all-refs sweep job ---
-  printf 'jobs:\n  secret-scan-sweep:\n    steps:\n      - uses: x\n        with:\n          fetch-depth: 0\n      - id: gate-secret-scan\n        run: |\n          GL_VER=%s\n          echo "sum  /tmp/gitleaks.tgz" | sha256sum -c -\n          gitleaks git . --no-banner --redact --log-opts="--full-history --all"\n' "$GL_VER" > "$d/sweep.yml"
+  printf 'jobs:\n  secret-scan-sweep:\n    steps:\n      - uses: x\n        with:\n          fetch-depth: 0\n      - id: gate-secret-scan\n        run: |\n          GL_VER=%s\n          echo "sum  /tmp/gitleaks.tgz" | sha256sum -c -\n          %s\n' "$GL_VER" "$SWEEP_INV" > "$d/sweep.yml"
   grep -vF 'sha256sum -c' "$d/sweep.yml" > "$d/sweep-nosum.yml"
   if check_sweep "$d/sweep-nosum.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without its sha256sum -c line passed"; sf=1; else echo "selftest PASS: sweep without its sha256sum -c line -> FAIL"; fi
   if check_sweep "$d/sweep.yml" >/dev/null 2>&1; then echo "selftest PASS: sweep job wired -> PASS"; else echo "selftest FAIL: wired sweep job failed"; sf=1; fi
   sed 's/ --all"/"/' "$d/sweep.yml" > "$d/sweep-neg.yml"
   if check_sweep "$d/sweep-neg.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without the all-refs scope passed"; sf=1; else echo "selftest PASS: sweep without the all-refs scope -> FAIL"; fi
+  sed 's/ --redact//' "$d/sweep.yml" > "$d/sweep-noredact.yml"
+  if check_sweep "$d/sweep-noredact.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without --redact passed"; sf=1; else echo "selftest PASS: sweep without --redact -> FAIL"; fi
+  sed 's/--full-history //' "$d/sweep.yml" > "$d/sweep-nofullhist.yml"
+  if check_sweep "$d/sweep-nofullhist.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without --full-history passed"; sf=1; else echo "selftest PASS: sweep without --full-history -> FAIL"; fi
+  sed "s/GL_VER=$GL_VER/GL_VER=8.24.2/" "$d/sweep.yml" > "$d/sweep-badver.yml"
+  if check_sweep "$d/sweep-badver.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep with a changed GL_VER pin passed"; sf=1; else echo "selftest PASS: sweep with a changed GL_VER pin -> FAIL"; fi
+  sed 's/|| gl_rc=\$?/|| true/' "$d/sweep.yml" > "$d/sweep-notrc.yml"
+  if check_sweep "$d/sweep-notrc.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep that swallows gitleaks' code passed"; sf=1; else echo "selftest PASS: sweep that swallows gitleaks' code -> FAIL"; fi
 
   # --- the ignore-file shape lock (§2.3) and the not-shipped lock (§2.4 a) ---
   _fp=0123456789abcdef0123456789abcdef01234567; _new="$_fp:scripts/x.sh:generic-api-key:12"

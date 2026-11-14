@@ -10,7 +10,7 @@
 4. **Carry the Entry Declaration as commit trailers** — `Kit-Row` + `Kit-Class`, every class. `conformance/loop-state.sh` checks them on your PR's final commit: present once each, row on the board, class matching. A `Kit-Plan`, `Kit-Review` or `Kit-Scope` you carry is checked too; any other `Kit-*` field is ignored. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
 5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff. **Seats:** the conductor dispatches each build task to a **builder** seat, each review to a **reviewer** seat, and on Sensitive or Control-plane work a separate **security** seat. Each is typed by its `agents/*.agent.md` definition and dispatched through the harness's native binding where one exists (`START-HERE.md` step 7, `docs/operations/harness-adapters.md`). The conductor prefers a typed builder seat; when it builds, the Builder line says `conductor` (conduct, not enforced). The review record names each seat's role; `review-lane` grades the names and cannot see the dispatch.
 
-**One command:** `sparkwright start <ROW-ID> [--changed <listing>]` runs acts 1 and 3 and prints this trailer block; the printed class is provisional — the gate re-derives it.
+**One command:** `sh scripts/sparkwright start <ROW-ID> [--changed <listing>]` runs acts 1 and 3 and prints this trailer block; the printed class is provisional — the gate re-derives it.
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
 

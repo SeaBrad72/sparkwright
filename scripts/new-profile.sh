@@ -183,12 +183,21 @@ jobs:
           path: dist/**          # TODO: your built artifact path
           if-no-files-found: error
 
-  # NOTE (provenance precondition): the SLSA attestations API is unavailable on user-owned PRIVATE
-  # repos, so this job is gated to run only on public or org-owned repos — otherwise `main` would go
-  # red on first merge with no in-repo explanation. Make the repo public or move it to a GitHub org.
+      # Attestation needs a public repository or GitHub Enterprise Cloud: say so when the provenance job below skips.
+      - name: Build provenance skipped (notice)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private != false && vars.KIT_ATTEST_PRIVATE != 'true'
+        run: |
+          echo "::notice::Build provenance skipped: attestations on a private repository need GitHub Enterprise Cloud; set KIT_ATTEST_PRIVATE once you have it"
+
+  # NOTE (provenance precondition): GitHub offers artifact attestations on PUBLIC repositories, and on
+  # private or internal ones only with GitHub Enterprise Cloud, so this job is gated to run only where it
+  # can pass — otherwise `main` would go red on first merge with no in-repo explanation. To enable it:
+  # make the repo public, or, if you have Enterprise Cloud, set the KIT_ATTEST_PRIVATE variable to true
+  # (a repository or organization variable). A notice names the cause wherever it is skipped. Where the
+  # gate does not apply to you, record a dated `na` for gate-provenance in conformance/gate-dispositions.txt.
   provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || vars.KIT_ATTEST_PRIVATE == 'true')
     runs-on: ubuntu-24.04
     permissions:
       contents: read

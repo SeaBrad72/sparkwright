@@ -263,7 +263,7 @@ selftest() {
     # it constantly), so the assertion is on the WARNING, not on the exit status. A silent proceed — the
     # pre-v3.173.0 behaviour — fails here.
     _sf_out=$( cd "$_sf_veh" && sh scripts/incept.sh $_sf_args 2>&1 ) && _sf_rc=0 || _sf_rc=$?
-    if printf '%s' "$_sf_out" | grep -q 'does not meet its declared floor'; then
+    if printf '%s' "$_sf_out" | grep -q 'below its declared floor'; then
       echo "PASS: selftest — (0a) incept SURFACES an unmeetable runtime floor (warn-and-proceed under --noninteractive)"
     else
       echo "FAIL: selftest — (0a) incept was SILENT about an unmeetable runtime floor (declared but NOT enforced — this is K2)"; _sf=1

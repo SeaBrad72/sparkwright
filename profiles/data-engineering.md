@@ -39,6 +39,7 @@ docs/architecture/              # ADRs (incl. ADR-000)
 pyproject.toml · uv.lock · .sqlfluff · packages.yml · .env.example · .gitignore
 ```
 Baselines: `.sqlfluff` dialect = your warehouse (default postgres); dbt model **contracts** enforced; coverage fail_under = 80; GE checkpoint `main`.
+Every test folder carries an `__init__.py` (`tests/`, `tests/unit/`, ...), so two test files may share a name.
 
 ## 3. Standard commands
 ```

@@ -44,6 +44,7 @@ Read the matching `skills/<name>/SKILL.md` and follow it. Process skills first.
 | operating | `skills/operating` | Handle a live signal safely: assess blast radius, map to an autonomy tier, surface—don’t actuate (the human commands the catastrophic action). |
 | build | `skills/build` | A presented plan → a built, reviewed, integrated branch (dispatch each task to a fresh executor, review between tasks, keep a durable ledger). |
 | demonstrate | `skills/demonstrate` | Surface a working increment for human taste/judgment before a Go/No-Go (produce the observable, frame the specific judgment call, record the verdict in a UAT sign-off). |
+| inception-from-code | `skills/inception-from-code` | Adopting the kit into an existing repository: draft the Inception artifacts from the code, only under `docs/inception-draft/`, each fact tagged, for a person to ratify. |
 
 The index names **every** spine skill on disk. A keystone that forgets one is incomplete — the index is exhaustive by design, and `check_keystone` enforces it against every `skills/*` on disk, so every new skill brick must add its row here.
 

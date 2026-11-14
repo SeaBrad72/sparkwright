@@ -1,0 +1,230 @@
+# Reference ADOPTER-TRUNK-TRACE workflow — the after-the-fact "shipped equals approved" check the kit
+# runs on itself, ported for an adopted project: the `trunk-trace` job walks the last 10 commits of your
+# default branch and checks that each one is bound to a recorded GO note (`promotion-verify.sh trace
+# --recent`). THE SINGLE, STACK-NEUTRAL SOURCE — like profiles/adopter-gates.yml it runs no toolchain
+# step, so it is identical for every stack and lives here once. scripts/incept.sh installs it for EVERY
+# stack on GitHub, unconditionally; conformance/adopter-gates-parity.sh locks that it stays the sole,
+# wired, stack-neutral copy.
+# COPY & ADAPT: incept copies this file to your project's .github/workflows/adopter-trunk-trace.yml. It is
+# INERT here in the kit repo (GitHub only runs workflows under .github/workflows/). The kit's own
+# equivalent is the last step of the `loop-state` job in .github/workflows/ci.yml.
+#
+# WHY ITS OWN FILE. This job runs on a push to the default branch. adopter-gates.yml triggers on
+# `pull_request` only, and its four jobs are required-check names. Had a `push:` trigger been added
+# there, a push to a PR's head branch would start an adopter-gates run in which those four jobs SKIP,
+# and GitHub reports a skipped required check as success on that head sha: a red gate could read green
+# after one more push. In its own file, a push run holds only `trunk-trace`, which is never a required
+# context, so no required job can skip on a push.
+#
+# ⚠️ NEVER BIND `trunk-trace` AS A REQUIRED CONTEXT. It never runs on a pull request, so a bound
+# context would wait forever. incept does not add it to REQUIRED-CHECKS.md; do not add it yourself.
+#
+# HONEST CEILING — READ BEFORE TRUSTING A GREEN.
+#   * DETECTIVE, AFTER THE MERGE. The job reports on commits that have already landed. It never prevents
+#     one, and a note binds, it does not authenticate (D-240805-3): a fabricated note satisfies it.
+#   * OBSERVE BY DEFAULT. As shipped, the job prints its verdict and exits 0 whatever the trace found
+#     (see the dial below). It can only red once you flip TRUNK_TRACE_MODE to enforce.
+#   * SQUASH MERGES ONLY. The trace pairs each trunk commit with a note by tree and walks all parents. A
+#     merge-commit or rebase merge, or a squash of a head that was not up to date, reds, because the tree
+#     differs or the feature commits have no note. The kit's documented merge is a squash pinned with
+#     --match-head-commit (`promotion-verify.sh land` and `actuate`).
+#   * FORKS. A push event never comes from a fork, and a fork's own copy of this file runs against the
+#     fork's trunk and notes, not yours.
+#   * FETCH COST. The job fetches the whole trunk history to walk 10 commits, so its run time grows with
+#     your history [estimate, not measured].
+#   * REACH, NOT RUNTIME. conformance/adopter-gates-parity.sh proves this source is present, marked,
+#     wired, stack-neutral and installed universally. It does NOT run this YAML on GitHub's runners; only
+#     a live run does.
+#   * OTHER HOSTS. This file is GitHub Actions. On GitLab or another host no job ships; run the same
+#     check on your trunk yourself:
+#         git fetch origin '+refs/notes/*:refs/notes/*'
+#         sh scripts/promotion-verify.sh trace --recent 10 --from refs/remotes/origin/<default-branch>
+#
+# ── THE trunk-trace OBSERVE/ENFORCE DIAL ──
+#     TRUNK_TRACE_MODE: observe   (DEFAULT — the trace's verdict is printed; the job always exits 0)
+#     TRUNK_TRACE_MODE: enforce   (the trace's rc is the job's exit; a recordless recent commit REDS the run)
+# It ships `observe` because a fresh project has no GO notes and its first commits (incept's bootstrap,
+# any imported history) have none either, so the trace reds on them by design. Observe covers only the
+# VERDICT (the trace's rc 1 or 2). A failed fetch, a failed shallow test, a failed credential drop or a
+# missing default-branch ref exits non-zero in either mode: those are real errors, not findings.
+# The observe state carries its named exit condition (D-240811-2.1).
+#
+# Cost, said plainly: on a private repository each push to the default branch bills about one job-minute
+# [estimate]; a push to any other branch starts a run in which the job is skipped (no billed minutes).
+name: Adopter Trunk Trace
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+env:
+  # THE DIAL. Ships `observe`.
+  #
+  #   EXIT CONDITION: flip to `enforce` when this job's OK line reads k/k on your trunk, with k = 10, or
+  #   the whole history if it is shorter, that is, every recent merge went through
+  #   promotion-verify.sh record, land or actuate.
+  #
+  # In `observe` the job RUNS THE TRACE, prints the verdict to the log and the step summary, and ALWAYS
+  # EXITS 0 on that verdict.
+  TRUNK_TRACE_MODE: observe
+
+jobs:
+  # ── trunk-trace ─────────────────────────────────────────────────────────────────────────────────
+  # The gate in `if:` is the push-to-default-branch filter: GitHub's `on.push.branches` cannot name "the
+  # default branch", and a literal `main` would leave a repository whose default is `master` or `trunk`
+  # silently unchecked. A push to any other branch starts a run in which this job skips.
+  #
+  # CREDENTIALS. The checkout credential is kept for the two fetches only, then the SWAS-250 drop below
+  # removes it before any repository script runs. No API token is bound anywhere in this job: on an
+  # adopter layout the trace reads git only. The drop block is byte-identical to ceremony-binding's in
+  # adopter-gates.yml (locked by conformance/adopter-gates-parity.sh); keep commentary here, never inside it.
+  #
+  # NO SHORT NAMES. The trunk is fetched into a full ref and read by it (`--from refs/remotes/origin/...`),
+  # and every fetch carries --no-tags, so a pushed tag named like the trunk can never stand in for it.
+  trunk-trace:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+          # NO persist-credentials: false HERE — the fetches below run AFTER checkout and need the
+          # persisted credential. It is removed EXPLICITLY at the end of that step, before the trace runs.
+      - name: Fetch the trunk and the GO ledger, then drop the credential
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$DEFAULT_BRANCH" in
+            ''|*[!A-Za-z0-9._/-]*) echo "trunk-trace: the default branch name is empty or has an unexpected character - refusing"; exit 1 ;;
+          esac
+          shallow=$(git rev-parse --is-shallow-repository) || { echo "trunk-trace: cannot tell whether this checkout is shallow - refusing"; exit 1; }
+          case "$shallow" in
+            true) git fetch --no-tags --unshallow origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" ;;
+            false) git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" ;;
+            *) echo "trunk-trace: unexpected answer ($shallow) to the shallow test - refusing"; exit 1 ;;
+          esac
+          git fetch --no-tags origin '+refs/notes/*:refs/notes/*'
+          git show-ref --verify -q "refs/remotes/origin/${DEFAULT_BRANCH}" || exit 1
+          # CRED-DROP-BEGIN (SWAS-250)
+          set -f
+          cd_count() {  # <label>: counts only, never a value
+            _l=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _a=$(git config --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _f=0; [ -z "${RUNNER_TEMP:-}" ] || _f=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' | wc -l | tr -d ' ')
+            echo "cred-drop: $1 - local extraheader keys=$(printf '%s' "$_l" | grep -c . || true), includes-following=$(printf '%s' "$_a" | grep -c . || true), credential files=$_f"
+          }
+          cd_count before
+          _keys=$(git config --local --name-only --get-regexp '^includeif\..*\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            _vals=$(git config --local --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            for _p in $_vals; do
+              case "$_p" in */git-credentials-*.config) rm -f -- "$_p" ;; esac
+            done
+            git config --local --unset-all "$_k" 'git-credentials-[0-9a-fA-F-]*\.config$' && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          [ -z "${RUNNER_TEMP:-}" ] || find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' -exec rm -f {} +
+          _keys=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            git config --local --unset-all "$_k" && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          # CRED-DROP-VERIFY
+          _left=$(git config --show-origin --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in
+            1) ;;
+            0) printf 'cred-drop: a credential header is STILL readable (origin and key only):\n%s\n' "$_left"; exit 1 ;;
+            *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;;
+          esac
+          _inc=$(git config --name-only --get-regexp '^include(if\..*)?\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_inc; do
+            _vals=$(git config --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            case "$_vals" in *git-credentials-*) echo "cred-drop: $_k still names a credentials file - refusing"; exit 1 ;; esac
+          done
+          if [ -n "${RUNNER_TEMP:-}" ] && [ -n "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config')" ]; then
+            echo "cred-drop: a credentials file remains in RUNNER_TEMP - refusing"; exit 1
+          fi
+          # CRED-DROP-VERIFY-END
+          cd_count after
+          set +f
+          # CRED-DROP-END
+          echo "trunk-trace: trunk and GO ledger fetched; checkout credential removed."
+      # The trace needs no credential: on an adopter layout it reads git only (its forge evidence leg
+      # prints one N/A line). A skew probe guards the upgrade path where profiles/ and scripts/ advance out
+      # of step: a promotion-verify.sh with no --from cannot be told the full ref, so the run reports
+      # NOT CHECKED (rc 2) rather than reading a short name.
+      - name: Trace the last 10 trunk commits against the GO ledger
+        id: gate
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set +e
+          if [ ! -f scripts/promotion-verify.sh ] || ! grep -q -- '--from' scripts/promotion-verify.sh; then
+            echo "trunk-trace: NOT CHECKED — scripts/promotion-verify.sh is absent or predates --from (profiles/ and scripts/ out of step)."
+            rc=2
+          else
+            {
+              sh scripts/promotion-verify.sh trace --recent 10 --from "refs/remotes/origin/${DEFAULT_BRANCH}"
+              rc=$?
+            } > "$RUNNER_TEMP/trunk-trace.out" 2>&1
+            cat "$RUNNER_TEMP/trunk-trace.out"
+            { printf 'trunk-trace output (the last 10 trunk commits):\n\n'; cut -b1-200 "$RUNNER_TEMP/trunk-trace.out" | sed 's/^/    /'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fi
+          set -e
+          case "$rc" in
+            0|1|2) ;;
+            *) echo "trunk-trace: unexpected rc=$rc from the trace; reporting 2 (anomaly)."; rc=2 ;;
+          esac
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "trunk-trace => rc=$rc (0 every recent commit bound · 1 an unbound commit or no ledger · 2 anomaly)"
+      - name: Verdict — observe reports and passes, enforce exits on the trace's rc
+        if: ${{ !cancelled() }}
+        env:
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+        run: |
+          case "$GATE_RC" in
+            0|1|2) rc=$GATE_RC ;;
+            *) echo "trunk-trace: the trace produced no usable rc ('$GATE_RC'); reporting 2."; rc=2 ;;
+          esac
+          case "$rc" in
+            0) reason="every one of the last 10 trunk commits is bound to a GO note." ;;
+            1) reason="a recent trunk commit is not bound to a GO note, or no GO ledger exists yet." ;;
+            *) reason="the trace could not be evaluated (see the trace step log above)." ;;
+          esac
+          mode="${TRUNK_TRACE_MODE:-observe}"
+          case "$mode" in
+            enforce)
+              title="trunk-trace: ENFORCE mode"
+              summary="$(printf 'ENFORCE mode (TRUNK_TRACE_MODE: enforce): %s The trace rc is this job'"'"'s exit, so a recent trunk commit with no record REDS this run. See the trace step log for the full verdict.' "$reason")"
+              ;;
+            *)
+              title="trunk-trace: observe mode — not enforcing yet"
+              summary="$(printf 'OBSERVE mode: %s Enforcement is OFF — this job ALWAYS exits 0 on the trace verdict. EXIT CONDITION: flip TRUNK_TRACE_MODE to enforce at the top of .github/workflows/adopter-trunk-trace.yml when this job'"'"'s OK line reads k/k on your trunk (k = 10, or the whole history if it is shorter): every recent merge went through promotion-verify.sh record, land or actuate. Never bind this job as a required context.' "$reason")"
+              ;;
+          esac
+          {
+            printf '%s\n' "$title"
+            printf '%s\n' "$summary"
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          echo "trunk-trace => mode=$mode rc=$rc"
+          # One ::notice in observe when the trace did not read clean (never ::error, so a nudge never
+          # looks like a failure). Enforce annotates with ::error below, and only there.
+          if [ "$rc" != 0 ] && [ "$mode" != enforce ]; then
+            printf '::notice title=%s::%s\n' "trunk-trace: observe mode, not 10 of 10 yet" "$reason"
+          fi
+          # THE DIAL, expressed as the exit. observe: always 0. enforce: the trace's own rc decides.
+          [ "$mode" = enforce ] || exit 0
+          if [ "$rc" != 0 ]; then
+            printf '::error title=%s::%s\n' "trunk-trace: BLOCKING - a recent trunk commit has no GO record" "$reason"
+          fi
+          # THE EXIT STAYS ON ITS OWN LINE — the kit's parity locks anchor this exact literal.
+          [ "$rc" = 0 ] || exit 1

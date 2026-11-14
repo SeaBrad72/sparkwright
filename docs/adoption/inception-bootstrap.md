@@ -11,6 +11,10 @@ order is not arbitrary. The loop's design/build **mechanics** (commit-the-spec-f
 do not govern Phase 0; the design **principle** (architecture-first) still does, satisfied by Inception's own
 gate — the charter + ADR-000. See the "Inception exception" notes in `skills/design` + `skills/build`.
 
+## One command: `sparkwright new`
+
+From a kit checkout, `sh scripts/sparkwright new <dest-dir>` runs the whole front half of the order below for you. It asks five questions (stack, how many forge accounts the work runs under, board `md` or `jira`, harness, project name), then runs `adopter-export`, a toolchain `preflight` in the export, `incept --noninteractive` and a final `preflight`, in that order, showing each step's output in full. If a step fails it prints one stop line and stops; nothing later runs. It never passes `--allow-nested`, never writes a dial, and never asks for a tracker token. It ends with the list of what is still owed, which it also appends to the project's `CLAUDE.md` under `## Owed from Inception`; the intent owner is stamped `[owed]` until a person names one. For CI and tests, `--noninteractive` takes all five answers as flags (`--stack`, `--team solo|team`, `--board md|jira`, `--harness`, `--name`). The commit, protection and first-slice steps below are still yours. The hand route (the order below, step by step) still works, and other boards (github, ado, linear, gitlab) stay on `incept`.
+
 ## The canonical order
 
 ```

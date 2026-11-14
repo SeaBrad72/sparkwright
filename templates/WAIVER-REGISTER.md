@@ -4,11 +4,13 @@
 
 > **Non-negotiable gates — NEVER waivable, even at adoption:**
 > - **`secret-scan`** — a repo must never ship secrets. If your secret-scan can't run day one, that is a hard blocker (fix it), not a waiver.
-> - **`branch-protection`** — segregation of duties is day-one.
+> - **`branch-protection`** — segregation of duties is day-one. It stays non-negotiable: one narrow cause has its own id below (`branch-protection-plan`), and that id is not a way to waive `branch-protection` itself.
 >
 > A waiver naming either is **invalid** and fails `waivers-valid.sh`.
 
-> **Waivable during the adoption window** (each needs an owner, a remediation plan, and an expiry): `coverage`, `sbom`, `provenance`, `dependency-vuln`, `a11y`, `container-image`, `board-governance`.
+> **Waivable during the adoption window** (each needs an owner, a remediation plan, and an expiry): `coverage`, `sbom`, `provenance`, `dependency-vuln`, `a11y`, `container-image`, `board-governance`, `branch-protection-plan`.
+>
+> **`branch-protection-plan`** is the free-private-repository gap, and only that. On a private repository GitHub's free plan cannot enforce branch protection, so `conformance/inception-done.sh` cannot verify it and would stay red. A ratified row here lets Inception-Done print `WAIVED: branch protection — NOT ENFORCED` instead, naming the owner and the expiry, and only when GitHub itself reports that the plan is the cause. It does nothing for any other branch-protection failure (protection set up wrong, `gh` not signed in, the repository not reachable). The way out is to make the repository public or move to a paid plan, then delete the row. Ceiling: this proves a name and a date were written in this file, not that a second person agreed (one person may fill both cells), and nothing re-reads the row after you enter the loop unless someone re-runs `inception-done.sh`. An md-backend adopter creates this file from this template.
 >
 > **`board-governance`** is the hosted-tracker gap. The kit's board-bound gates (`backlog-presence`, `backlog-current`, `loop-state`'s row check) read `BACKLOG.md` only, so on a `github`/`jira`/`ado`/`linear`/`gitlab` backend they report **NOT ENFORCED** and go red. A ratified row here renders them green **with the notice still printed on every run** — the exception is never invisible, and the gate is still not enforced. `incept` stamps this row for you with `[owner]` and `[security-owner]` placeholders; a bracketed placeholder does **not** satisfy `sh conformance/waivers-valid.sh --active board-governance`, so a human must fill both cells. On `jira`, binding the trusted job (`tracker-board-gates` as a required context) closes the gap for real, and this row is the way out only where branch protection cannot be set (for example a free-plan private repository); one person may fill both cells. Other backends have no closer yet.
 >

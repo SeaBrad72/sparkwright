@@ -88,11 +88,17 @@ operating, with an audit trail.
 
 ## Upgrade to two-human SoD — one verb, zero rework of evidence
 
-GitHub branch protection on `main` already requires **one non-author approval**. Solo, you satisfy it
-with an **owner admin-merge** (`gh pr merge --admin`, `enforce_admins: false`) — GitHub logs the bypass,
-and that log is the audit trail of "solo maintainer self-ratified" (see `../../START-HERE.md`). When a
+GitHub branch protection on `main` already requires **one non-author approval**. Solo, you merge on the
+owner's recorded GO in a repository that declares solo (`MERGE_RELATIONSHIP=solo`, `D-241014-1`), or by the
+owner's own hand when it is undeclared; with `enforce_admins: false` GitHub logs any admin bypass, and that log
+and the recorded GO are the audit trail of "solo maintainer self-ratified" (see `../../START-HERE.md`). When a
 **second human with write access** joins, you tighten to real, *enforced* two-human SoD:
 
+- first, a person runs **`sh scripts/sparkwright team <@handle> [<@handle> ...]`** on a branch. It declares
+  team in the three tracked files `land` and `conformance/branch-protection.sh` read (the `CLAUDE.md`
+  Governance value, a `solo` dial in `.kit/dials.conf`, and the `CODEOWNERS` governing rule), prints the
+  invitation and protection steps, and writes no protection and makes no forge call. You read the diff and
+  merge it like any PR. Solo stays a supported shape: this is optional, never the expected path.
 - *they* approve the PR — the existing required-review rule is now met by a real second party, **and**
 - an admin runs **`sh scripts/branch-protection-apply.sh --replace --team`** so an owner admin-merge can
   no longer bypass that required review. It writes `enforce_admins:true`, `require_code_owner_reviews:true`,

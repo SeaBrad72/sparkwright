@@ -260,9 +260,17 @@ jobs:
           path: target/*.jar          # the built jar
           if-no-files-found: error
 
+      # Attestation needs a public repository or GitHub Enterprise Cloud: say so when the provenance job below skips.
+      - name: Build provenance skipped (notice)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private != false && vars.KIT_ATTEST_PRIVATE != 'true'
+        run: |
+          echo "::notice::Build provenance skipped: attestations on a private repository need GitHub Enterprise Cloud; set KIT_ATTEST_PRIVATE once you have it"
+
+  # Attestations run on a public repository, or on a private one that declares GitHub Enterprise Cloud with the
+  # KIT_ATTEST_PRIVATE variable (repository or organization level) set to true.
   provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || vars.KIT_ATTEST_PRIVATE == 'true')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -307,8 +315,14 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+      # The image push above needs no Enterprise Cloud; only the attestation does (public, or KIT_ATTEST_PRIVATE).
+      - name: Image provenance skipped (notice)
+        if: github.event.repository.private != false && vars.KIT_ATTEST_PRIVATE != 'true'
+        run: |
+          echo "::notice::Image provenance skipped: attestations on a private repository need GitHub Enterprise Cloud; set KIT_ATTEST_PRIVATE once you have it"
       - name: Attest image provenance (digest-bound)
         id: gate-image-provenance
+        if: github.event.repository.private == false || vars.KIT_ATTEST_PRIVATE == 'true'
         uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-name: ${{ steps.image.outputs.name }}

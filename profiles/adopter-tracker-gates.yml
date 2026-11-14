@@ -1,11 +1,9 @@
-# Adopter TRACKER-BACKED board gate — the trusted job (TBG-TRUSTED-JOB, Milestone B · JOIN).
-# Design of record: docs/architecture/2026-09-22-tbg-trusted-job-design.md, confirming
-# docs/architecture/2026-09-19-tracker-backed-governance-design.md §4.2/§4.3, §6a S-1/S-10/S-14,
-# §6b R1(a/b/c), §8.3. Ruling D-240919-2(3): `pull_request_target` is admitted for this job ONLY
+# Adopter TRACKER-BACKED board gate — the trusted job.
+# `pull_request_target` is admitted for this job ONLY
 # under three conditions that travel together — read-only `permissions: contents: read` +
-# `pull-requests: read` (amended by D-241001-1), NO head-tree code,
+# `pull-requests: read`, NO head-tree code,
 # and the pairing conformance leg (conformance/proportional-gate-wired.sh). Do not weaken any one
-# of the three without re-opening that ruling.
+# of the three.
 #
 # WHAT THIS IS. On a hosted-tracker backlog backend, `adopter-gates.yml`'s backlog-presence job reads
 # BACKLOG.md only and returns rc 3 NOT ENFORCED — a real, named gap, not a silent one. This workflow
@@ -14,7 +12,7 @@
 # only, reads the PR head's commit message and changed-file listing via the GitHub API (DATA, never
 # code — fixes the private/enterprise hard-fail a `git fetch` of an anonymous remote would hit,
 # fix-round M-4), reads the head commit's `Kit-Row` trailer under the row grammar, runs the TRUSTED
-# READER (scripts/tracker-read.sh) from base against the BASE conf (L-4 pin) to write a §4.3 record
+# READER (scripts/tracker-read.sh) from base against the BASE conf (L-4 pin) to write a record
 # to a FIXED path (S-10 — never from env), then runs the seam-consuming board gate(s) from base with
 # SEAM_ROOT pinned to the base checkout, SEAM_HEAD = the PR head sha, SEAM_RECORD = that fixed path
 # (N-3 — this job is the ONLY setter of SEAM_RECORD; conformance/proportional-gate-wired.sh's N-3
@@ -24,14 +22,14 @@
 #
 # SKIPS ENTIRELY ON `md` (R1a) — zero new cost for the common case: a repo with no `.kit/tracker.conf`
 # never runs the reader or the gates; the resolve step exits before any read of PR data. A PRESENT
-# but MALFORMED conf is a real misconfiguration, never silently skipped (fix-round M-5,
-# NON-MD-BACKEND-NEVER-SILENT D-240903-1) — only "absent" or "backend=md" take the skip.
+# but MALFORMED conf is a real misconfiguration, never silently skipped (fix-round M-5)
+# — only "absent" or "backend=md" take the skip.
 #
-# THE ONE CROSS-LANE DEPENDENCY (§6 of the design doc) — RESOLVED. The trusted reader
-# (scripts/tracker-read.sh) now takes <head-sha> as its pinned 5th positional argument
-# (TBG-READER-FLAGS-LIST landed); the step below still PROBES the live `--help` usage line for the capability (never a hardcoded flag) and FAILS CLOSED (fix-round H-2(i)) if it is ever missing again.
+# THE ONE CROSS-LANE DEPENDENCY — RESOLVED. The trusted reader
+# (scripts/tracker-read.sh) now takes <head-sha> as its pinned 5th positional argument;
+# the step below still PROBES the live `--help` usage line for the capability (never a hardcoded flag) and FAILS CLOSED (fix-round H-2(i)) if it is ever missing again.
 #
-# WHY A SEPARATE FILE, NOT A JOB FOLDED INTO adopter-gates.yml (design §10). Mixing a
+# WHY A SEPARATE FILE, NOT A JOB FOLDED INTO adopter-gates.yml. Mixing a
 # `pull_request_target` job with `pull_request` jobs in one workflow file is exactly the S-1
 # footgun this design exists to avoid — separation is a security-isolation property, not a style
 # preference. conformance/adopter-gates-parity.sh covers the fleet list this file joins.
@@ -44,8 +42,8 @@
 # still binds it live with `sh scripts/branch-protection-apply.sh --replace` on an unprotected main (first time), `--apply` once it is protected (a human repo-admin act)
 # before the first PR (RUNBOOK). `tracker-board-drift` runs
 # daily (`schedule:`) and on `workflow_dispatch`, from the default branch (`workflow_dispatch --ref`
-# runs the chosen ref's definition, a write-access act; design §7), running board-drift.sh's
-# tracker arm (design §2/§4.5): a merged PR whose `Kit-Row` key is still in-progress/in-review on the
+# runs the chosen ref's definition, a write-access act), running board-drift.sh's
+# tracker arm: a merged PR whose `Kit-Row` key is still in-progress/in-review on the
 # tracker reds, naming the row. It reads with the trusted reader on an ANCHOR subject — a merged
 # in-project key, not the PR that triggered the run (there is none) — because the verdict comes from
 # the reader's project-wide lists, not the anchor itself. It is a DETECTOR, not a merge gate: nothing
@@ -74,7 +72,7 @@ permissions:
 jobs:
   tracker-board-gates:
     if: github.event_name == 'pull_request_target'
-    # RUNNER KNOB (TRACKER-PREFLIGHT-TIER-CARD): a Jira behind an IP allowlist or VPN is unreachable
+    # RUNNER KNOB: a Jira behind an IP allowlist or VPN is unreachable
     # from GitHub-hosted runners; set the repository VARIABLE KIT_TRACKER_RUNNER (not a secret: a
     # label is not sensitive) to a self-hosted runner label inside the network. Unset = unchanged.
     # TWO RISKS: (1) an unmatched label queues forever, and because this job is a REQUIRED check
@@ -84,7 +82,7 @@ jobs:
     runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04' }}
     steps:
       # Ahead of the checkout, so no later skip or failure can hide it. Inert, warn-only: risk (2) above, made
-      # visible on the run (TRACKER-RUNNER-PUBLIC-SELFHOSTED-WARN; pinned by proportional-gate-wired.sh).
+      # visible on the run (pinned by proportional-gate-wired.sh).
       # Silent where runner.environment is unset (older GHES, runners pinned with --disableupdate or a
       # pinned image) and on internal repos (private: true, yet every enterprise member can fork-PR).
       - name: Warn when a public repo runs this job on a self-hosted runner (never fails the job)
@@ -96,7 +94,7 @@ jobs:
 
       # ── base checkout ONLY. No PR-tree code runs in this job (S-1). ────────────────────────────
       # nosemgrep justification: base-only checkout (ref: base.sha), NOT the PR head; no head-tree
-      # code executes — S-1 / D-240919-2. The head is fetched as objects only and the seam-consuming
+      # code executes — S-1. The head is fetched as objects only and the seam-consuming
       # gates run from base. Enforced by conformance/proportional-gate-wired.sh's S-1 pairing leg +
       # the control-plane ratification. Security-seat verified (three rounds).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
@@ -233,7 +231,7 @@ jobs:
       # required, user is required ONLY when `auth=basic` — reading `auth` from the BASE conf
       # (`.kit/tracker.conf`, L-4 pin: the base tree, never anything head-controlled) via the base's
       # OWN `scripts/tracker-conf.sh get auth`, defaulting to `basic` when the key/file is absent,
-      # exactly as the reader step below does. RD-5 / D-240919-2(3): the failure names the missing
+      # exactly as the reader step below does. RD-5: the failure names the missing
       # variable's NAME ONLY (never its value, length, or host/project) and says where the secret
       # belongs — an Actions secret (in the job's environment, if it declares one), never a value
       # pasted anywhere else. Presence-only tests (`[ -n … ]`) — the
@@ -315,9 +313,9 @@ jobs:
           echo "tracker-board-gates: loop-state rc=$rc_ls · backlog-presence rc=$rc_bp · backlog-current rc=$rc_bc"
           [ "$rc_ls" = 0 ] && [ "$rc_bp" = 0 ] && [ "$rc_bc" = 0 ]
 
-  # ── tracker-board-drift (TRACKER-DRIFT-SCHEDULED-WIRING). Daily + workflow_dispatch, from the
+  # ── tracker-board-drift. Daily + workflow_dispatch, from the
   # default branch (no `ref:` — never the head of anything; `workflow_dispatch --ref` runs the chosen
-  # ref's definition, a write-access act; design §7). Runs board-drift.sh's tracker arm: a PR
+  # ref's definition, a write-access act). Runs board-drift.sh's tracker arm: a PR
   # merged in the last 7 days whose Kit-Row key is still in-progress/in-review on the tracker reds,
   # naming the row. It is a DETECTOR, not a merge gate. The tracker secret lives on TWO steps (the
   # read step and the preflight step) as HYGIENE — S-1 already holds a job's steps share its
@@ -358,7 +356,7 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
 
-      # ── PREFLIGHT FROM THIS RUNNER (TRACKER-PREFLIGHT-TIER-CARD, design §7/§14h). By hand only
+      # ── PREFLIGHT FROM THIS RUNNER. By hand only
       # (workflow_dispatch: Actions → Adopter Tracker Gates → Run workflow), so no daily noise.
       # Placed right after resolve so enum's rc 1 can never skip it. It prints the card's non-PASS
       # lines as notices and NEVER fails the job. Notices carry only the card's own fixed text

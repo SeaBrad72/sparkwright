@@ -79,7 +79,7 @@ ran — seat security, verdict: ___
 
 ## Task status  *(RECOMMENDED, UNGRADED — `conformance/review-lane.sh` neither requires nor reads it)*
 One row per numbered task in the plan, so a slice that is parked mid-build can be resumed cold.
-`sparkwright resume <ROW>` READS this table: a `pending` row is what it names as the next step, and
+`sh scripts/sparkwright resume <ROW>` READS this table: a `pending` row is what it names as the next step, and
 its absence simply means the resume falls back to "task 1 of N". Keep it or delete it — the graded
 shape is unaffected either way.
 

@@ -11,6 +11,53 @@
 # RESIDUAL — arbitrary core CONTENT, including a core that exits during sourcing: that
 # is not reachable by truncation, and it still exits 0 SILENTLY (measured). Core
 # integrity is git's job (a tracked file + review), not this hook's.
+# SWAS-883 (docs/architecture/2026-11-14-guard-first-push-883-design.md §3.8): a push to main/master is
+# decided RIGHT HERE, inline, BEFORE ROOT, CORE or KIT_GUARD_CORE is read and before anything is
+# sourced. Why: the decision on a main line must not depend on the environment (GIT_DIR and
+# GIT_WORK_TREE move ROOT; KIT_GUARD_CORE names the code that decides; a core that exits 0 while being
+# sourced ends this hook silently, see RESIDUAL above), and the Bash tool's shell carries variables the
+# PreToolUse guard never sees. So the rule is applied here in shell string tests over git's own
+# protocol lines: a delete denies, a non-zero remote sha denies, and ONLY an all-zero remote sha (the
+# first push, which creates main) passes. NOTHING in this block may read ROOT, CORE, KIT_GUARD_CORE, a
+# file under ROOT, or run git, and it uses shell builtins only (no PATH binary). guard_check_push
+# repeats the same rule below, as a second layer. The deny text matches guard_check_push's, minus its
+# core-only stop pointer (the core is not loaded yet). The selftest's F2/F3/F12/F15/F16 cells and the
+# `MUT-883-*` mutants lock this block and the four legs' main early returns.
+_kit_zero=0000000000000000000000000000000000000000
+_kit_main_scan() { # stdin: git's "<local-ref> <local-sha> <remote-ref> <remote-sha>" lines. Prints the
+  # refusal reason for the first main/master line that must be denied; prints nothing otherwise.
+  while read -r _kms_lref _kms_lsha _kms_rref _kms_rsha; do
+    case "$_kms_rref" in
+      refs/heads/main | refs/heads/master) : ;;
+      *) continue ;;
+    esac
+    if [ "$_kms_lsha" = "$_kit_zero" ]; then
+      printf '%s' '13: deleting main/master is destructive and bypasses review - human-gated.'
+      return 0
+    fi
+    if [ "$_kms_rsha" != "$_kit_zero" ]; then
+      printf '%s' '13: pushing directly to main/master bypasses review - human-gated.'
+      return 0
+    fi
+  done
+  return 0
+}
+_kit_stdin=""
+if [ "$#" -ne 1 ] || [ "${1:-}" != "--selftest" ]; then   # the selftest is exactly ONE argument: a remote named --selftest (two args from git) is a push
+  # The whole of stdin is read once, with builtins, so the loop at the bottom can run over the SAME
+  # lines (a here-document, so its `status` survives: a pipe into `while` would run it in a subshell).
+  # The accumulation below is quadratic in the number of stdin lines (a push of many refs); accepted.
+  while IFS= read -r _kit_in_line || [ -n "$_kit_in_line" ]; do
+    _kit_stdin="$_kit_stdin$_kit_in_line
+"
+  done
+  _kit_inline_reason=$(printf '%s\n' "$_kit_stdin" | _kit_main_scan)   # MUT-883-INLINE
+  if [ -n "${_kit_inline_reason:-}" ]; then
+    printf '%s\n' "kit guard: $_kit_inline_reason" >&2
+    printf '%s\n' "  override (deliberate): git push --no-verify" >&2
+    exit 1
+  fi
+fi
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
 CORE="${KIT_GUARD_CORE:-$ROOT/.claude/hooks/guard-core.sh}"
 refuse_no_core() { # reason — refuse the push and name the recovery (never a bypass)
@@ -242,7 +289,7 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
     *) return 0 ;;                                  # all-zero local_sha — a deletion, nothing to grade
   esac
   case "$_decl_remote_ref" in
-    refs/heads/main | refs/heads/master) return 0 ;; # Δ2 — trunk squash commits carry no trailers
+    refs/heads/main | refs/heads/master) return 0 ;; # Δ2 — trunk squash commits carry no trailers  # MUT-883-LEG-DECL
   esac
   # Defense-in-depth: a genuine push local_sha is always a hex object id. Reject (silently skip)
   # anything else so an option-like value (e.g. a string starting with "-") can never reach the
@@ -560,7 +607,7 @@ go_check_ref() { # local_ref local_sha remote_ref remote_sha
     *) return 0 ;;                                  # all-zero local_sha — a deletion
   esac
   case "$_go_ref" in
-    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here  # MUT-883-LEG-GO
   esac
   # Defense-in-depth (inherited): only a hex object id may reach any argv below.
   case "$_go_sha" in
@@ -727,7 +774,7 @@ cite_check_ref() { # local_ref local_sha remote_ref remote_sha
     *) return 0 ;;                                  # all-zero local_sha — a deletion
   esac
   case "$_cite_ref" in
-    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here  # MUT-883-LEG-CITE
   esac
   # Defense-in-depth (inherited shape, not an active control here: this leg passes NO argv to the
   # predicate — the hex guard is kept for uniformity with the sibling legs, whose argv it protects).
@@ -844,7 +891,7 @@ presence_check_ref() { # local_ref local_sha remote_ref remote_sha
     *) return 0 ;;                                  # all-zero local_sha — a deletion
   esac
   case "$_pr_ref" in
-    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here  # MUT-883-LEG-PRES
   esac
   case "$_pr_sha" in
     *[!0-9a-fA-F]*) return 0 ;;                     # defense-in-depth: only a hex id reaches argv
@@ -1098,7 +1145,10 @@ $_pr_undernote"
   return 0
 }
 
-if [ "${1:-}" = "--selftest" ]; then
+if [ "$#" -eq 1 ] && [ "${1:-}" = "--selftest" ]; then
+  # F20a's probe sets KIT_PP_F20_INNER so a dispatch that wrongly reached the selftest prints a marker and stops, never recursing.
+  # It exits 3, never 0: a leaked KIT_PP_F20_INNER reds the selftest instead of passing it vacuously.
+  if [ -n "${KIT_PP_F20_INNER:-}" ]; then printf '%s\n' 'F20-INNER-SELFTEST-REACHED'; exit 3; fi
   fail=0
   Z=0000000000000000000000000000000000000000
   # Hermetic: build a throwaway 2-commit repo so ancestry (merge-base) is deterministic
@@ -2775,10 +2825,195 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   [ -z "$pp_out" ] && echo "PASS: PP an absent presence predicate is silent (D2, first-run-green)" \
     || { echo "FAIL: PP an absent presence predicate must be silent, got: $pp_out"; fail=1; }
 
+  # ---------------------------------------------------------------------------------------------
+  # SWAS-883 — the INLINE MAIN DECISION (design docs/architecture/2026-11-14-guard-first-push-883-design.md
+  # §3.8) and the four legs' main early returns. Every cell re-invokes THIS file with the push protocol
+  # on stdin, as git does. $TM is a throwaway repo whose four predicates are planted STUBS that ALL
+  # FAIL, with every leg's dial set to enforce: a feature-branch push is refused by all four (the
+  # positive control below), so a first push to main that is ALLOWED proves each leg's main early
+  # return let it through. Dials set for F2: KIT_PUSH_DECL, KIT_PUSH_GO, KIT_PUSH_CITE and
+  # KIT_PUSH_PRESENCE, all `enforce` (an env var may only escalate; the leg reads it through
+  # _kit_dial, whose fallback is the bare env read under the permissive core).
+  # ---------------------------------------------------------------------------------------------
+  TM=$(mktemp -d)
+  ( cd "$TM" && git init -q \
+      && printf 'seed\n' > README.md && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c0 \
+      && git update-ref refs/remotes/origin/main HEAD \
+      && printf 'one\n' > f.txt && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c1 )
+  MHEAD=$(cd "$TM" && git rev-parse HEAD)
+  go_mkledger "$TM"
+  mkdir -p "$TM/conformance"
+  {
+    echo '#!/bin/sh'
+    echo 'echo "loop-state: stub declaration reason" >&2'
+    echo 'exit 1'
+  } > "$TM/conformance/loop-state.sh"
+  {
+    echo '#!/bin/sh'
+    echo 'echo "DECAYED  stub citation site"'
+    echo 'exit 1'
+  } > "$TM/conformance/citation-live.sh"
+  {
+    echo '#!/bin/sh'
+    echo 'case "$1" in --pre-push) echo "stub GO wait" >&2; exit 1 ;; esac'
+    echo 'case "$1" in --print-scope-key) printf "branch/feature/x\n"; exit 0 ;; esac'
+    echo 'exit 2'
+  } > "$TM/conformance/ceremony-binding.sh"
+  chmod +x "$TM/conformance/loop-state.sh" "$TM/conformance/citation-live.sh" "$TM/conformance/ceremony-binding.sh"
+  pp_plant_class "$TM" control-plane
+  pp_plant_pred "$TM" 1
+  M_FIRST="refs/heads/main $MHEAD refs/heads/main $Z"
+  M_FEAT="refs/heads/feature/x $MHEAD refs/heads/feature/x $Z"
+
+  f_hook() { # hook-file core-file ref-line(s) -> f_out, f_rc (all four dials enforce, cwd $TM)
+    f_out=$(cd "$TM" && printf '%s\n' "$3" \
+      | KIT_GUARD_CORE="$2" KIT_PUSH_DECL=enforce KIT_PUSH_GO=enforce KIT_PUSH_CITE=enforce \
+        KIT_PUSH_PRESENCE=enforce sh "$1" 2>&1); f_rc=$?
+  }
+
+  # F2 positive control FIRST: the same fixture refuses a feature-branch push, and each of the four
+  # legs' own verdict is in the output. Without it an always-allow hook would satisfy F2 below.
+  f_hook "$SELF" "$DECL_CORE" "$M_FEAT"
+  decl_expect_rc "$f_rc" refuse "F2 control: a feature-branch push is refused with all four legs failing and enforcing"
+  decl_expect_contains "F2 control: the declaration leg is live" "stub declaration reason" "$f_out"
+  decl_expect_contains "F2 control: the GO leg is live" "stub GO wait" "$f_out"
+  decl_expect_contains "F2 control: the citation leg is live" "stub citation site" "$f_out"
+  decl_expect_contains "F2 control: the presence leg is live" "stub verdict" "$f_out"
+
+  # F2 — the first push is ALLOWED: all-zero remote sha, every leg enforcing. Proves the four legs'
+  # main early returns (and the inline decision) let a first push through.
+  f_hook "$SELF" "$DECL_CORE" "$M_FIRST"
+  decl_expect_rc "$f_rc" allow "F2: the first push of main (all-zero remote sha) is allowed, every leg enforcing"
+  f_hook "$SELF" "$DECL_CORE" "refs/heads/master $MHEAD refs/heads/master $Z"
+  decl_expect_rc "$f_rc" allow "F2: the first push of master is allowed, every leg enforcing"
+
+  # F3 — a non-zero remote sha (the remote already has main) is denied; so are a delete and master.
+  f_hook "$SELF" "$ROOT/.claude/hooks/guard-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F3: a non-zero remote sha for main is denied (real core)"
+  decl_expect_contains "F3: the denial names the push-to-main rule" "pushing directly to main" "$f_out"
+  decl_expect_contains "F3: the denial keeps the honesty line" "git push --no-verify" "$f_out"
+  f_hook "$SELF" "$DECL_CORE" "refs/heads/main $Z refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F3: deleting main is denied before the core is read"
+  decl_expect_contains "F3: the delete denial names the delete rule" "deleting main/master" "$f_out"
+  f_hook "$SELF" "$DECL_CORE" "refs/heads/master $MHEAD refs/heads/master $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F3: a non-zero remote sha for master is denied"
+  f_hook "$SELF" "$DECL_CORE" "$M_FEAT
+refs/heads/main $MHEAD refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F3: a main line AFTER a feature line is still graded"
+  f_hook "$SELF" "$DECL_CORE" "refs/heads/main $MHEAD refs/heads/main"
+  decl_expect_rc "$f_rc" refuse "F3: a main line with no remote sha fails closed"
+
+  # F12 — the decision does not rest on the environment or the core. (a) KIT_GUARD_CORE names a core
+  # whose guard_check_push allows everything; (b) GIT_CONFIG_GLOBAL names a file carrying
+  # core.hooksPath, set only in the hook's own shell. Both with a non-zero main sha: DENIED inline.
+  f_hook "$SELF" "$DECL_CORE" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F12a: an allow-everything KIT_GUARD_CORE does not admit a non-zero main sha"
+  decl_expect_contains "F12a: the inline denial text" "pushing directly to main" "$f_out"
+  printf '[core]\n\thooksPath = %s/no-such-hooks\n' "$TM" > "$TM/gitconfig-global"
+  f_out=$(cd "$TM" && printf '%s\n' "refs/heads/main $MHEAD refs/heads/main $MHEAD" \
+    | GIT_CONFIG_GLOBAL="$TM/gitconfig-global" KIT_GUARD_CORE="$DECL_CORE" sh "$SELF" 2>&1); f_rc=$?
+  decl_expect_rc "$f_rc" refuse "F12b: with GIT_CONFIG_GLOBAL naming core.hooksPath and an allow-everything KIT_GUARD_CORE, the hook run directly (sh, not through git's hook lookup) still denies a non-zero main sha"
+  decl_expect_contains "F12b: the inline denial text" "pushing directly to main" "$f_out"
+  # F20 — the selftest is exactly ONE argument. (a) two arguments do NOT run it (the hook takes the normal path, empty stdin);
+  # (b) git passes `<remote-name> <url>`, so a remote NAMED --selftest gives `--selftest https://x`: a non-zero main sha is DENIED.
+  f_out=$(cd "$TM" && printf '' \
+    | KIT_PP_F20_INNER=1 KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce KIT_PUSH_GO=enforce KIT_PUSH_CITE=enforce \
+      KIT_PUSH_PRESENCE=enforce sh "$SELF" --selftest extra 2>&1); f_rc=$?
+  case "$f_out" in
+    *F20-INNER-SELFTEST-REACHED*) echo "FAIL: F20a two arguments (--selftest extra) ran the selftest"; fail=1 ;;
+    *) echo "PASS: F20a two arguments (--selftest extra) do not run the selftest" ;;
+  esac
+  f_out=$(cd "$TM" && printf '%s\n' "refs/heads/main $MHEAD refs/heads/main $MHEAD" \
+    | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce KIT_PUSH_GO=enforce KIT_PUSH_CITE=enforce \
+      KIT_PUSH_PRESENCE=enforce sh "$SELF" --selftest https://x 2>&1); f_rc=$?
+  decl_expect_rc "$f_rc" refuse "F20b: a remote named --selftest (args --selftest https://x) with a non-zero main sha on stdin is denied"
+  decl_expect_contains "F20b: the inline denial text" "pushing directly to main" "$f_out"
+
+  # F15 — a core that exits 0 while being sourced (the RESIDUAL at the top of this file): the inline
+  # decision denies BEFORE the core is read. Control: on a feature line the same core ends the hook
+  # silently with rc 0, which proves the core really does exit when sourced.
+  printf 'exit 0\n' > "$TM/exit-core.sh"
+  f_hook "$SELF" "$TM/exit-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F15: a core that exits 0 on source does not admit a non-zero main sha"
+  decl_expect_contains "F15: the inline denial text" "pushing directly to main" "$f_out"
+  f_hook "$SELF" "$TM/exit-core.sh" "$M_FEAT"
+  decl_expect_rc "$f_rc" allow "F15 control: the same core ends the hook with rc 0 on a feature line (the core is live)"
+
+  # F16 — THE LOCK: on a main deny, nothing is sourced first. A fake core writes a probe file when
+  # sourced; a non-zero main sha is denied AND the probe is absent. Control: a first push (no inline
+  # deny) does source the core, so the probe appears, which proves the absence above is meaningful.
+  M_PROBE="$TM/probe-sourced"
+  printf ': > "%s"\nguard_check_push() { return 0; }\n' "$M_PROBE" > "$TM/probe-core.sh"
+  rm -f "$M_PROBE"
+  f_hook "$SELF" "$TM/probe-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+  decl_expect_rc "$f_rc" refuse "F16: a non-zero main sha is denied with a probing fake core named"
+  if [ -f "$M_PROBE" ]; then
+    echo "FAIL: F16 the core was SOURCED before the inline main decision (probe file written)"; fail=1
+  else
+    echo "PASS: F16 nothing was sourced before the inline main decision (probe file absent)"
+  fi
+  rm -f "$M_PROBE"
+  f_hook "$SELF" "$TM/probe-core.sh" "$M_FIRST"
+  decl_expect_rc "$f_rc" allow "F16 control: a first push is allowed, with the probing core sourced"
+  if [ -f "$M_PROBE" ]; then
+    echo "PASS: F16 control: the probing core writes its probe when it IS sourced"
+  else
+    echo "FAIL: F16 control: the probing core never wrote its probe, so the absence above proves nothing"; fail=1
+  fi
+  rm -f "$M_PROBE"
+
+  # MUTANTS (hand-built: hooks/* is outside non-vacuity.sh's sweep). Each copies THIS file, deletes
+  # the ONE line carrying a trailing marker with sed, re-runs the named cell on the copy and expects
+  # the verdict to FLIP. The copy is asserted to differ from the original and the marker to occur
+  # exactly once, so a rotted marker reds here instead of "killing" nothing.
+  mut_make() { # marker-name out-file -> a copy of $SELF without the marked line; sets mut_ok=1|0
+    mut_ok=0
+    _mm_n=$(grep -c "# $1\$" "$SELF" || true)
+    if [ "$_mm_n" != 1 ]; then
+      echo "FAIL: mutant $1: the marker must end exactly ONE line of the hook (found $_mm_n)"; fail=1; return 0
+    fi
+    sed "/# $1\$/d" "$SELF" > "$2"
+    if cmp -s "$SELF" "$2"; then
+      echo "FAIL: mutant $1: the sed changed nothing"; fail=1; return 0
+    fi
+    mut_ok=1
+  }
+  # inline-after-source: with the inline decision gone, the denial can only come from the core.
+  mut_make MUT-883-INLINE "$TM/mut-inline.sh"
+  if [ "$mut_ok" = 1 ]; then
+    f_hook "$TM/mut-inline.sh" "$TM/exit-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+    decl_expect_rc "$f_rc" allow "MUT inline-after-source: F15 flips to ALLOW (a core that exits on source ends the hook silently)"
+    rm -f "$M_PROBE"
+    f_hook "$TM/mut-inline.sh" "$TM/probe-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
+    if [ -f "$M_PROBE" ]; then
+      echo "PASS: MUT inline-after-source: F16 flips (the core is sourced before any main decision)"
+    else
+      echo "FAIL: MUT inline-after-source: F16 did not flip (probe still absent)"; fail=1
+    fi
+    rm -f "$M_PROBE"
+  fi
+  # Each leg's main early return, one mutant each: F2 flips to a refusal naming THAT leg.
+  mut_leg() { # marker-name needle-that-leg-prints label
+    mut_make "$1" "$TM/mut-leg.sh"
+    [ "$mut_ok" = 1 ] || return 0
+    f_hook "$TM/mut-leg.sh" "$DECL_CORE" "$M_FIRST"
+    decl_expect_rc "$f_rc" refuse "MUT $3: dropping the main early return flips F2 to a refusal"
+    decl_expect_contains "MUT $3: the refusal comes from that leg" "$2" "$f_out"
+  }
+  mut_leg MUT-883-LEG-DECL "stub declaration reason" "decl_check_ref"
+  mut_leg MUT-883-LEG-GO "stub GO wait" "go_check_ref"
+  mut_leg MUT-883-LEG-CITE "stub citation site" "cite_check_ref"
+  mut_leg MUT-883-LEG-PRES "stub verdict" "presence_check_ref"
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
 # Normal invocation: git passes "<local-ref> <local-sha> <remote-ref> <remote-sha>" per line on stdin.
+# SWAS-883: stdin was read once at the top of this file (the inline main decision), so the loop runs over
+# that SAME text through a here-document at top level (not inside a function). A pipe into `while` would
+# run the loop in a subshell and lose `status`; a temp file would add a write and a failure path.
 status=0
 # shellcheck disable=SC2034  # local_ref is required by the git hook protocol (4-field stdin)
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -2794,5 +3029,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   go_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   cite_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   presence_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
-done
+done <<KIT_883_STDIN || status=1
+$_kit_stdin
+KIT_883_STDIN
 exit $status

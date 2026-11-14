@@ -660,30 +660,86 @@ aa_rows() { awk -F'\t' -v n="$2" 'NF == n { ok = 1; for (i = 1; i <= n; i++) if 
 #   RED <line> a delta entry on a gate other than GTM-G21
 # then `BLOCKS <n>` = how many gated blocks it saw, so a caller can refuse a vacuous read. The one named exception is GTM-G21: its gate line
 # ends in || [ "$AA_DELTA" = 1 ], so --delta enters the block and its assert_allow records; without that clause the block is gated and reds.
-# Four gate shapes are read, by indentation (the file's own convention): `if ! aa_cell_skip` .. `fi` (the body is gated), `if aa_cell_skip .. else`
-# .. `fi` (the else body), `aa_cell_skip .. || {` .. `}` and a function's `aa_cell_skip .. && return 0` (the rest of the function), plus the
-# one-line and elif forms the cells below plant. Ceiling, stated: the fall-through is default-allow, so a gate in a shape not read here passes
-# silently and loses its cell under --delta (a security seat traced several, SWAS-667's card); command position only on the line; a recorder
-# spelled through a variable, `eval` or a different helper is out of its scope.
+# SWAS-667: the scan REJECTS BY DEFAULT. A GATE is the word aa_cell_skip in COMMAND POSITION: every word-bounded occurrence (no letter, digit or _
+# on either side) counts unless the character right before it is a quote, =, / or a letter. Blanks are not skipped, so `gated by aa_cell_skip`
+# in a string counts; spell such a mention another way (a variable, or a bracket such as a[a]_cell_skip). Gate shapes it READS, by indentation
+# (the file's own convention): S1 the whole line `if ! aa_cell_skip "L"; then`, `if [ .. ] && ! aa_cell_skip "L"; then`, or GTM-G21's
+# `|| [ "$AA_DELTA" = 1 ]; then` entry, .. `fi` (the body is gated; any other tail is unread); S2 the whole line
+# `if aa_cell_skip "L"; then` (or `then :; else`) .. `fi` (the else body, and every later branch; any other tail is unread); S3 the whole line `aa_cell_skip "L" || {`
+# .. `}`; S4 a function's `aa_cell_skip .. && return` (the rest of the function); S5 the gsr wrapper line, which must begin exactly `gsr_deny() {` or
+# `gsr_allow() {` and then hold `[ "$AA_DELTA" = 1 ] || { aa_cell_skip "$1" && return 0; };` (a delta entry); S6 a positive `elif aa_cell_skip "L"; then`
+# whole line, whose branch is gated when the if before it was a positive skip test (it is then reached only when the test ran). A closer line (`fi`,
+# `}`) that also holds a gate, and a line whose trailing-comment cut changes the gate count, are unread. A one-line gate-or-act
+# (`aa_cell_skip "L" || <cmd>` or `&& <cmd>`) is not read; spell it as S1 or S2 over lines. Every other line that holds a gate
+# prints `RED <line> an aa_cell_skip in a shape ...` : a line with two gates, a gate line that ends in a continuation (backslash, ||, && or |), a
+# negated elif, a gate after a test, a case arm, and so on. Rewrite it to S1-S4. Exactly two EXEMPTIONS, each the FIRST only: E1 the aa_cell_skip()
+# definition at column 0, E2 the body of this function. Printed as `EXEMPT 2`, `UNREAD <n>`, then `BLOCKS <n>`. isrec also reads a recorder with an
+# unquoted first argument and a continued call (recorder name, then a blank or a backslash). Ceiling, stated: the scan reads text, not the shell's
+# parse; it does not track quotes (a string in command position reds); a gate or a recorder spelled through a variable, `eval`, an alias or a
+# different helper is invisible to it. Also invisible (carded for later): a quoted command word, a recorder name next to a quote, a recorder
+# reached through a local helper, an inner { } group that closes an S4 frame early, and a gate result carried in a flag variable (`if aa_cell_skip "L";
+# then go=0; fi`, then a later `[ "$go" = 1 ] && <recorder>`), and flow control (continue, break, return, exit) inside a block that runs when the cell
+# is skipped, such as `if aa_cell_skip "L"; then return 0; fi` or an S1 else that returns: it loses the recorders after the fi with no RED.
 aa_gblk_scan() {
   awk '
     function ind(s) { match(s, /^[ \t]*/); return RLENGTH }
-    function isrec(s) { return s ~ /(^|[^A-Za-z0-9_$])(assert_deny|assert_allow|scp_deny|gsr_deny|gsr_allow)[ \t]+(["$]|\047)/ }
+    function cmdpos(s, name, endok,  c, k, rest, i, len, pre, post) {
+      c = 0; k = 0; rest = s; len = length(name)
+      while ((i = index(rest, name)) > 0) {
+        pre = (k + i > 1) ? substr(s, k + i - 1, 1) : ""
+        post = substr(rest, i + len, 1)
+        if (pre !~ /[A-Za-z0-9_]/ && post !~ /[A-Za-z0-9_]/ && pre != "\"" && pre != "\047" && pre != "=" && pre != "/") {
+          if (!endok || post == "" || post == " " || post == "\t" || post == "\\") c++
+        }
+        k += i + len - 1; rest = substr(rest, i + len)
+      }
+      return c
+    }
+    function ngate(s) { return cmdpos(s, "aa_cell_skip", 0) }
+    function isrec(s,  nm, nn, j) {
+      if (s ~ /(^|[^A-Za-z0-9_$])(assert_deny|assert_allow|scp_deny|gsr_deny|gsr_allow)[ \t]+(["$]|\047)/) return 1
+      nn = split("assert_deny assert_allow scp_deny gsr_deny gsr_allow", nm, " ")
+      for (j = 1; j <= nn; j++) if (cmdpos(s, nm[j], 1) > 0) return 1
+      return 0
+    }
+    function unread() { print "RED " NR " an aa_cell_skip in a shape this scan does not read (rewrite it to a read shape)"; nunread++; reded = 1 }
+    function samerec(s,  i, before, rest) {
+      i = index(s, "aa_cell_skip"); before = substr(s, 1, i - 1); rest = substr(s, i + 12)
+      if (isrec(rest) && before !~ /"\$AA_DELTA" = 1 \] \|\|/) { print "RED " NR " the gate is tested before the recorder on one line (only [ \"$AA_DELTA\" = 1 ] || may precede it)"; reded = 1 }
+    }
     function push(g, ci, ck, lbl, wk, ii) { sp++; gated[sp] = g; cind[sp] = ci; ckind[sp] = ck; glabel[sp] = lbl; gline[sp] = NR; wasskip[sp] = wk; isif[sp] = ii; if (g) blocks++ }
     function anygate(  i) { for (i = 1; i <= sp; i++) if (gated[i]) return i; return 0 }
     function label_of(s,  r) { r = s; sub(/^.*aa_cell_skip[ \t]+"/, "", r); sub(/".*$/, "", r); return r }
     {
       t = $0
+      if (inbody) { if (t ~ /^}/) inbody = 0; next }
+      if (!e2 && t ~ /^aa_gblk_scan\(\) \{/) { e2 = 1; inbody = 1; nexempt++; next }
+      if (!e1 && t ~ /^aa_cell_skip\(\) \{/) { e1 = 1; nexempt++; next }
       if (t ~ /^[ \t]*#/) next
       sub(/[ \t]#[ \t].*$/, "", t)
-      n = ind(t)
+      n = ind(t); reded = 0
+      g1 = ngate(t)
+      # a trailing comment cut that hides a gate (a " # " inside a string) changes the count: unread
+      if (ngate($0) != g1) { unread(); next }
+      # the gate count is taken BEFORE the closer test, so a closer that also holds a gate is unread, not just popped
       if (sp > 0 && n == cind[sp]) {
-        if (ckind[sp] == "fi" && t ~ /^[ \t]*fi([ \t;]|$)/) { sp--; next }
-        if (ckind[sp] == "}" && t ~ /^[ \t]*}/) { sp--; next }
+        if (ckind[sp] == "fi" && t ~ /^[ \t]*fi([ \t;]|$)/) { if (g1 > 0) unread(); sp--; next }
+        if (ckind[sp] == "}" && t ~ /^[ \t]*}/) { if (g1 > 0) unread(); sp--; next }
       }
-      # a branch line of an open if: after a skip test, every later branch (else, or an elif that is not itself a skip test) is the run side
+      if (g1 >= 2 || (g1 == 1 && t ~ /(\\|&&|\|)[ \t]*$/)) { unread(); next }
+      # a branch line of an open if. After a positive skip test the elif is reached only when the test ran, so under --delta (test answers SKIP) it is
+      # gated: gated comes from the OLD wasskip, set before wasskip is set to 1 for the elif own test. After a negated test the elif is the run side.
       if (t ~ /^[ \t]*(else|elif)([ \t]|$)/ && sp > 0 && n == cind[sp] && ckind[sp] == "fi") {
-        if (t ~ /^[ \t]*elif aa_cell_skip /) { gated[sp] = 0; isif[sp] = 1; wasskip[sp] = 1 }
+        if (g1 == 1 && t ~ /^[ \t]*elif aa_cell_skip /) {
+          samerec(t)
+          if (t ~ /^[ \t]*elif aa_cell_skip "[^"]*"; then( :; else)?[ \t]*$/) {
+            gated[sp] = (wasskip[sp] ? 1 : 0); if (gated[sp]) blocks++
+            glabel[sp] = label_of(t); gline[sp] = NR; isif[sp] = 1; wasskip[sp] = 1
+            if (t ~ /else[ \t]*$/) { if (!gated[sp]) blocks++; gated[sp] = 1; isif[sp] = 0 }
+          }
+          else if (!reded) unread()
+        }
+        else if (g1 > 0) unread()
         else if (wasskip[sp] && !gated[sp]) { gated[sp] = 1; isif[sp] = 0; blocks++ }
         g = anygate()
         if (g && isrec(t)) print "RED " NR " recorder inside a block gated by aa_cell_skip (gate " glabel[g] " at line " gline[g] ")"
@@ -691,12 +747,17 @@ aa_gblk_scan() {
         next
       }
       # an elif skip test whose outer if is not on the stack (the outer if is no gate): open its chain here, closed by the chain fi
-      if (t ~ /^[ \t]*elif aa_cell_skip /) { push(0, n, "fi", label_of(t), 1, 1); if (t ~ /;[ \t]*fi[ \t]*$/) sp--; next }
-      if (t ~ /aa_cell_skip/) {
-        i = index(t, "aa_cell_skip"); before = substr(t, 1, i - 1); rest = substr(t, i + 12)
-        if (isrec(rest) && before !~ /"\$AA_DELTA" = 1 \] \|\|/) print "RED " NR " the gate is tested before the recorder on one line (only [ \"$AA_DELTA\" = 1 ] || may precede it)"
+      if (g1 == 1 && t ~ /^[ \t]*elif aa_cell_skip /) {
+        samerec(t)
+        if (t ~ /^[ \t]*elif aa_cell_skip "[^"]*"; then( :; else)?[ \t]*$/) {
+          push(0, n, "fi", label_of(t), 1, 1)
+          if (t ~ /else[ \t]*$/) { gated[sp] = 1; isif[sp] = 0; blocks++ }
+        }
+        else if (!reded) unread()
+        next
       }
-      if (t ~ /^[ \t]*if [!\[]/ && t ~ /! aa_cell_skip / && t !~ /fi[ \t]*$/) {
+      if (g1 > 0) samerec(t)
+      if (t ~ /^[ \t]*if ! aa_cell_skip "[^"]*"; then[ \t]*$/ || t ~ /^[ \t]*if \[ [^;&|]* \] && ! aa_cell_skip "[^"]*"; then[ \t]*$/ || t ~ /^[ \t]*if ! aa_cell_skip "[^"]*" \|\| \[ "\$AA_DELTA" = 1 \]; then[ \t]*$/) {
         lbl = label_of(t)
         if (t ~ /\|\| \[ "\$AA_DELTA" = 1 \]/) {
           if (lbl != "GTM-G21") print "RED " NR " a delta entry on a gate other than GTM-G21 (" lbl ")"
@@ -704,17 +765,21 @@ aa_gblk_scan() {
         } else push(1, n, "fi", lbl, 0, 0)
         next
       }
-      if (t ~ /^[ \t]*if aa_cell_skip / && t !~ /fi[ \t]*$/) {
+      if (t ~ /^[ \t]*if aa_cell_skip "[^"]*"; then( :; else)?[ \t]*$/) {
         push(0, n, "fi", label_of(t), 1, 1)
         if (t ~ /else[ \t]*$/) { gated[sp] = 1; isif[sp] = 0; blocks++ }
         next
       }
-      if (t ~ /^[ \t]*aa_cell_skip .*\|\| \{[ \t]*$/) { push(1, n, "}", label_of(t), 0, 0); next }
-      if (t ~ /^[ \t]*aa_cell_skip "[^"]*" && return 0[ \t]*$/) { push(1, n - 2, "}", label_of(t), 0, 0); next }
+      if (t ~ /^[ \t]*aa_cell_skip "[^"]*" \|\| \{[ \t]*$/) { push(1, n, "}", label_of(t), 0, 0); next }
+      if (t ~ /^[ \t]*aa_cell_skip "[^"]*" && return( 0)?[ \t]*$/) { push(1, n - 2, "}", label_of(t), 0, 0); next }
+      s5 = (match(t, /\[ "\$AA_DELTA" = 1 \] \|\| \{ aa_cell_skip "\$1" && return 0; \};/) && substr(t, 1, RSTART - 1) ~ /^gsr_(deny|allow)\(\) \{[ \t]*$/)
+      if (g1 == 1 && !reded && !s5) unread()
       g = anygate()
+      # inside a gated block, a comment cut that hides a recorder (a " # " inside a string) reds with the gate-before-recorder reason
+      if (g && !isrec(t) && isrec($0)) print "RED " NR " the gate is tested before the recorder on one line (only [ \"$AA_DELTA\" = 1 ] || may precede it)"
       if (g && isrec(t)) print "RED " NR " recorder inside a block gated by aa_cell_skip (gate " glabel[g] " at line " gline[g] ")"
     }
-    END { print "BLOCKS " blocks + 0 }
+    END { print "EXEMPT " nexempt + 0; print "UNREAD " nunread + 0; print "BLOCKS " blocks + 0 }
   ' "$1"
 }
 
@@ -1081,6 +1146,7 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [B2-A ]
 [B2-B ]
 [B2-C ]
+[LCL795 ]
 [GTM-A15 tracker-contract --preflight --conf]
 [GTM-A16 tracker-contract --preflight --as ci --conf]
 [GTM-A17 tracker-contract flags in another order]
@@ -2534,6 +2600,18 @@ assert_allow "CORPUS-PIN interpreter to an ordinary /tmp path stays allowed" \
 # presence+values lock (committed disarms), the human-reviewed commit — and now this real-time deny.
 assert_deny "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, CURED)" \
   '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x > dials.conf"}}'
+
+# --- SWAS-795: raw git writes to refs/local-claims/*, one fixture per mutation form (the control-plane completeness discipline) ---
+# Each moves ALLOW -> DENY against the pristine core, so the label prefix `LCL795 ` is on EXPECTED_DELTA (deny cells only).
+assert_deny "LCL795 update-ref write"   '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/local-claims/ROW-1 abc1234"}}'
+assert_deny "LCL795 refspec write"      '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/claims/ROW-1:refs/local-claims/ROW-1"}}'
+assert_deny "LCL795 symbolic-ref write" '{"tool_name":"Bash","tool_input":{"command":"git symbolic-ref refs/local-claims/ROW-1 refs/heads/main"}}'
+# The flat reads: a quoted pipe, a backslash-newline and a bare newline cannot hide an unresolvable operand or a bare push.
+assert_deny "LCL795 brace after a quoted pipe"          '{"tool_name":"Bash","tool_input":{"command":"git update-ref -m \"a|b\" refs/lo{cal,heads/x}-claims/ROW-1"}}'
+assert_deny "LCL795 brace after a backslash-newline"    '{"tool_name":"Bash","tool_input":{"command":"git symbolic-ref \\\nrefs/lo{cal-claims/ROW-1,} refs/heads/main"}}'
+assert_deny "LCL795 bare push split by a backslash-newline" '{"tool_name":"Bash","tool_input":{"command":"git push origin \\\nrefs/local-claims/ROW-1"}}'
+assert_deny "LCL795 quote-split verb with a brace operand" '{"tool_name":"Bash","tool_input":{"command":"git upd'"''"'ate-ref -d refs/lo{cal-claims/R,cal-claims/R}"}}'
+assert_deny "LCL795 fetch refspec destination with a brace" '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/claims/R:refs/lo{cal-claims/R,cal-claims/R}"}}'
 
 # --- TBG-TRACKER-CONF T2: .kit/tracker.conf is control-plane, one fixture per mutation form -------
 # The pin the jira SSRF/token control depends on (design §5, §6a S-12): if it can be silently
@@ -4132,23 +4210,32 @@ fi
 # _cp8b_pathhit, not the fold route. (b) is read by shadowing _guard_vanished, which only the fold route
 # calls; a positive control (an uppercase probe must call it) proves the shadow is bound. On a host
 # without bash 3.2 collation (Linux CI) the leg passes trivially and says so below.
-dt_locale_route_ok() {   # <guard-core path>
+# (SWAS-722) Part (b) runs in an EXPLICIT shell, /bin/sh by default (the shell the hook runs as `sh`), not in
+# whatever shell runs this selftest: the local pre-push lane puts a dash shim first on PATH, and dash ignores
+# the locale for bracket ranges, so the leg read green there whether the guard was right or not. The probe is
+# one fixed literal; the core and the marker reach it only as "$1" and "$2", never inside its text. Part (a)
+# stays in the running shell (extracting its text would be a new mechanism); the PASS line says so.
+dt_locale_route_ok() {   # <guard-core path> [shell, default /bin/sh]
   ( LC_ALL=en_US.UTF-8; export LC_ALL
     dt_root_corpus_ok "$1" || { echo "  the root-corpus gate FAILS under en_US.UTF-8" >&2; exit 1; }
-    # shellcheck disable=SC1090
+    # SC2016: the probe is single-quoted ON PURPOSE, so nothing of ours expands inside it.
+    # shellcheck disable=SC2016
+    _dlp='_dlm=$2; rm -f "$_dlm"
     . "$1" >/dev/null 2>&1 || { echo "  cannot source the core: $1" >&2; exit 1; }
-    _dlm="${TMPDIR:-/tmp}/.dlm.$$"; rm -f "$_dlm"
     _guard_vanished() { : > "$_dlm"; }
     _cp8b_pathhit "Z > codeowners" || { echo "  ROUTE: the uppercase probe did not hit" >&2; rm -f "$_dlm"; exit 1; }
     [ -e "$_dlm" ] || { echo "  ROUTE: the fold route did not call the shadow, so the leg is unbound" >&2; exit 1; }
     rm -f "$_dlm"
     _cp8b_pathhit "z > codeowners" || { echo "  ROUTE: the all-lowercase probe did not hit" >&2; exit 1; }
     if [ -e "$_dlm" ]; then echo "  ROUTE: under en_US.UTF-8 an all-lowercase command took the FOLD route in _cp8b_pathhit (a letter range widened)" >&2; rm -f "$_dlm"; exit 1; fi
-    exit 0 )
+    exit 0'
+    _dlm="${TMPDIR:-/tmp}/.dlm.$$"; rm -f "$_dlm"
+    env LC_ALL=en_US.UTF-8 "${2:-/bin/sh}" -c "$_dlp" dlr "$1" "$_dlm"; _dlrc=$?
+    rm -f "$_dlm"; exit $_dlrc )
 }
 if [ "$(uname -s)" = Darwin ] && locale -a 2>/dev/null | grep -qx 'en_US.UTF-8'; then
   if dt_locale_route_ok ".claude/hooks/guard-core.sh"; then
-    echo "PASS locale-route : under en_US.UTF-8 the root gate holds and an all-lowercase command takes the all-lowercase route in _cp8b_pathhit (host: $(uname -s) $(uname -r))"
+    echo "PASS locale-route : root gate held (running shell, LC_ALL=en_US.UTF-8); all-lowercase route held (/bin/sh, en_US.UTF-8) (host: $(uname -s) $(uname -r))"
   else
     echo "FAIL locale-route : under en_US.UTF-8 the guard's fast path or the root gate differs from the C locale (detail above)"; fail=1
   fi
@@ -4687,16 +4774,18 @@ if [ "${GPAB_G:-}" != "" ]; then
   #     resolver), and its reason must differ from the generic control-plane one.
   assert_deny_at "$GPAB_G" "C2: unresolvable path denies (write)" "$(gpab_write "$GPAB_TMP/cycA")"
   assert_deny_at "$GPAB_G" "C2: unresolvable path denies (read)"  "$(gpab_read  "$GPAB_TMP/cycA")"
-  # Scope gate (C-A): the C2 spawn is skipped by the ONE predicate under its own label, so _c2r is assigned in
-  # every mode (read below under `set -u`), and the case that grades it runs only where the spawn did.
+  # Scope gate (C-A): the C2 spawn, its count and the case that grades it are one block gated by the one predicate,
+  # and _c2r is still assigned in every mode (read below under `set -u`).
   _c2l="C2 names the unresolvable path, not the generic deny"   # a PREFIX of the PASS/FAIL text below (F5)
   _c2r=''
-  aa_cell_skip "$_c2l" || _c2r=$(printf '%s' "$(gpab_write "$GPAB_TMP/cycA")" | sh "$GPAB_G" 2>/dev/null)
-  aa_cell_skip "$_c2l" || AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
-  aa_cell_skip "$_c2l" || case "$_c2r" in
-    *"could not be resolved"*) echo "PASS reason  : $_c2l" ;;
-    *) echo "FAIL reason  : $_c2l — it must carry its own reason, not the control-plane text"; fail=1 ;;
-  esac
+  if ! aa_cell_skip "$_c2l"; then
+    _c2r=$(printf '%s' "$(gpab_write "$GPAB_TMP/cycA")" | sh "$GPAB_G" 2>/dev/null)
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    case "$_c2r" in
+      *"could not be resolved"*) echo "PASS reason  : $_c2l" ;;
+      *) echo "FAIL reason  : $_c2l — it must carry its own reason, not the control-plane text"; fail=1 ;;
+    esac
+  fi
   # G: an ordinary temp file is untouched — it must discriminate or it is pure friction.
   printf 'x\n' > "$GPAB_TMP/plain-note.md"
   assert_allow_at "$GPAB_G" "G: genuine ordinary temp file" "$(gpab_write "$GPAB_TMP/plain-note.md")"
@@ -5136,6 +5225,336 @@ if [ "${GPAB_G:-}" != "" ]; then
     fi
   fi
 
+  # === SWAS-795: the refs/local-claims/* arm (_lc795_denied) - mutants, each on a copy of the core, each required to flip ======
+  # The lines the sed programs address end in a `# 795-<NAME>` marker in guard-core.sh. Pristine verdicts: every json below DENIES
+  # except the two read cells, which ALLOW; gpab_mutant asserts the flip and that the sed changed the file.
+  _lc_ju='{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/local-claims/ROW-1 abc1234"}}'
+  _lc_jf='{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/claims/ROW-1:refs/local-claims/ROW-1"}}'
+  _lc_jp='{"tool_name":"Bash","tool_input":{"command":"git push . abc1234:refs/local-claims/ROW-1"}}'
+  _lc_js='{"tool_name":"Bash","tool_input":{"command":"git symbolic-ref refs/local-claims/ROW-1 refs/heads/main"}}'
+  _lc_jc='{"tool_name":"Bash","tool_input":{"command":"git config remote.o.fetch refs/local-claims/ROW-1"}}'
+  _lc_jU='{"tool_name":"Bash","tool_input":{"command":"git update-ref REFS/LOCAL-CLAIMS/ROW-1 abc1234"}}'
+  _lc_jv='{"tool_name":"Bash","tool_input":{"command":"git symbolic-ref refs/lo{cal-claims/ROW-1,} refs/heads/main"}}'
+  _lc_jn='{"tool_name":"Bash","tool_input":{"command":"git symbolic-ref \nrefs/lo{cal-claims/ROW-1,} refs/heads/main"}}'
+  _lc_jq='{"tool_name":"Bash","tool_input":{"command":"git upd'"''"'ate-ref -d refs/lo{cal-claims/R,cal-claims/R}"}}'
+  _lc_jx='{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/claims/R:refs/lo{cal-claims/R,cal-claims/R}"}}'
+  _lc_jb='{"tool_name":"Bash","tool_input":{"command":"git push origin refs/local-claims/ROW-1"}}'
+  _lc_jr='{"tool_name":"Bash","tool_input":{"command":"git rev-parse --verify refs/local-claims/ROW-1"}}'
+  gpab_mutant "LCL795-M1: the arm's call dropped -> a raw update-ref flips to ALLOW" \
+    '/# 795-CALL$/ s@_lc795_denied "\$cmd" "\$_b2_claims_cmd"@false@' "$_lc_ju" allow
+  gpab_mutant "LCL795-M3a: the ':' destination leg dropped -> the refspec fetch flips to ALLOW" \
+    '/# 795-DEST$/ s@if _gmq lc-dest@if false \&\& _gmq lc-dest@' "$_lc_jf" allow
+  gpab_mutant "LCL795-M3b: the ':' destination leg dropped -> the push to self flips to ALLOW" \
+    '/# 795-DEST$/ s@if _gmq lc-dest@if false \&\& _gmq lc-dest@' "$_lc_jp" allow
+  gpab_mutant "LCL795-M4: the write-verb set widened to any verb -> a rev-parse read flips to DENY" \
+    '/# 795-REFVERB$/ s@(update-ref|symbolic-ref)@([a-z-]+)@' "$_lc_jr" deny
+  gpab_mutant "LCL795-M5: symbolic-ref dropped from the verb set -> the symbolic-ref write flips to ALLOW" \
+    '/# 795-REFVERB$/ s@(update-ref|symbolic-ref)@(update-ref)@' "$_lc_js" allow
+  gpab_mutant "LCL795-M6: the remote.*.fetch key dropped -> the config refspec flips to ALLOW" \
+    '/# 795-CFG$/ s@(fetch|push)@(push)@' "$_lc_jc" allow
+  gpab_mutant "LCL795-M7: the case fold dropped -> the upper-case spelling flips to ALLOW" \
+    '/# 795-NS$/ s@-Eiq@-Eq@' "$_lc_jU" allow
+  gpab_mutant "LCL795-M8: the fail-closed { $ backtick test dropped -> an unresolvable ref flips to ALLOW" \
+    '/# 795-UNRES$/ s@if _gmq lc-unres@if false \&\& _gmq lc-unres@' "$_lc_jv" allow
+  # M10: graded on the R37 SENTENCE, not the verdict. The fixture uses a BARE newline because a backslash-newline is re-checked
+  # joined by the L3 view, where R37 fires with or without the fold. The leg grades on the R37 sentence.
+  _lc_t='(escape card R37 local-claims)'
+  if aa_cell_skip "LCL795-M10: the newline fold of the third view dropped -> a brace operand after a bare newline loses the R37 sentence"; then :; else
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    _lc_o=$(printf '%s' "$_lc_jn" | sh "$GPAB_G" 2>/dev/null) || :
+    sed '/# 795-FOLDU$/ s@ | tr .\\n. . .)@)@' "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : LCL795-M10 - the mutation expression matched NOTHING; the leg is unbound"; fail=1
+    elif ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : LCL795-M10 - the mutant does not parse (sh -n)"; fail=1
+    else
+      _lc_m=$(printf '%s' "$_lc_jn" | sh "$GPAB_G" 2>/dev/null) || :
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      case "$_lc_o" in
+        *"$_lc_t"*)
+          case "$_lc_m" in
+            *"$_lc_t"*) echo "FAIL mutant : LCL795-M10 - the mutant still carries the R37 sentence; the leg proves nothing"; fail=1 ;;
+            *) echo "PASS mutant : LCL795-M10 (R37 sentence present -> absent, killed as required)" ;;
+          esac ;;
+        *) echo "FAIL mutant : LCL795-M10 - the real core does not carry the R37 sentence for the bare-newline brace operand"; fail=1 ;;
+      esac
+    fi
+  fi
+  gpab_mutant "LCL795-M11: the third view made the raw command again -> a quote-split verb with a brace operand flips to ALLOW" \
+    '/# 795-FOLDU$/ s@tr -d .* | tr @cat | tr @' "$_lc_jq" allow
+  gpab_mutant "LCL795-M12: the refspec unreadable-destination leg dropped -> a fetch to a brace destination flips to ALLOW" \
+    '/# 795-UNREF$/ s@if _gmq lc-unref@if false \&\& _gmq lc-unref@' "$_lc_jx" allow
+  gpab_mutant "LCL795-M9: the bare-ref push leg dropped -> a bare refs/local-claims push flips to ALLOW" \
+    '/# 795-BARE$/ s@if _gmq lc-bare@if false \&\& _gmq lc-bare@' "$_lc_jb" allow
+  # M2: the sentinel check dropped. The sentinel is read from the guard's PROCESS ENVIRONMENT, so this leg runs the copy with it set:
+  # on the real core a raw update-ref is admitted, on the mutant it is denied (board-claim's own writes would be refused under shims).
+  if aa_cell_skip "LCL795-M2"; then :; else
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    _lc_o=$(printf '%s' "$_lc_ju" | KIT_CLAIM_FRONT_DOOR=1 sh "$GPAB_G" 2>/dev/null) || :
+    sed '/# 795-SENT$/ s@if \[ "\${KIT_CLAIM_FRONT_DOOR:-}" != "1" \]; then@if true; then@' "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : LCL795-M2 - the mutation expression matched NOTHING; the leg is unbound"; fail=1
+    elif ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : LCL795-M2 - the mutant does not parse (sh -n)"; fail=1
+    else
+      _lc_m=$(printf '%s' "$_lc_ju" | KIT_CLAIM_FRONT_DOOR=1 sh "$GPAB_G" 2>/dev/null) || :
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      # Graded on the R37 SENTENCE. The earlier verdict test matched its first pattern by mistake, because the joined case subject had more colons inside the mutant's deny JSON.
+      case "$_lc_o" in
+        *"$_lc_t"*) echo "FAIL mutant : LCL795-M2 - the real core already carries the R37 sentence with the sentinel in the environment"; fail=1 ;;
+        *)
+          case "$_lc_m" in
+            *"$_lc_t"*) echo "PASS mutant : LCL795-M2 (R37 sentence absent -> present with the sentinel in the environment, killed as required)" ;;
+            *) echo "FAIL mutant : LCL795-M2 - the mutant does not carry the R37 sentence with the sentinel; the leg proves nothing"; fail=1 ;;
+          esac ;;
+      esac
+    fi
+  fi
+
+  # === SWAS-842: the leased-delete admission (_lda842_admitted) - the red-first end-to-end cells (F1 to F3) ====================
+  # The kit's own compare-and-swap deletes (board-claim.sh release, checkout-lease.sh land release and break) carry --force-with-lease and are
+  # refused by the force-push rule under `kit-guard install-shims`. These cells run each verb's own shape with its sentinel in the guard's PROCESS
+  # environment (never in the text) and want ALLOW. Cell helpers: lda_verdict <kind v|p> <sentinel none|lease|claim|both> <text> sets _lda_verd
+  # (deny|allow|fault(rc=N) for v; admit|refuse|absent for p); lda_v and lda_p grade one verdict; lda_k grades the shim adapter (`kit-guard cmd`).
+  # Every cell sets BOTH sentinels explicitly (an inherited one would change the verdict).
+  _lda_S=0123456789abcdef0123456789abcdef01234567
+  lda_verdict() {
+    _lda_sl=''; _lda_sc=''
+    case "$2" in lease) _lda_sl=1 ;; claim) _lda_sc=1 ;; both) _lda_sl=1; _lda_sc=1 ;; esac
+    if [ "$1" = p ]; then
+      # shellcheck disable=SC1090  # the core under test (the live copy in the synthetic root, or a mutated copy of it)
+      _lda_verd=$( . "$GPAB_GC" >/dev/null 2>&1 || exit 9
+                   command -v _lda842_admitted >/dev/null 2>&1 || { echo absent; exit 0; }
+                   if KIT_LEASE_FRONT_DOOR=$_lda_sl KIT_CLAIM_FRONT_DOOR=$_lda_sc _lda842_admitted "$3"; then echo admit; else echo refuse; fi ) || _lda_verd=fault
+      return 0
+    fi
+    AA_SRC=0
+    _lda_o=$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$3" | KIT_LEASE_FRONT_DOOR=$_lda_sl KIT_CLAIM_FRONT_DOOR=$_lda_sc sh "$GPAB_G" 2>/dev/null) || AA_SRC=$?
+    case "$_lda_o" in
+      *'"permissionDecision":"deny"'*) _lda_verd=deny ;;
+      *) if [ "$AA_SRC" = 0 ]; then _lda_verd=allow; else _lda_verd="fault(rc=$AA_SRC)"; fi ;;
+    esac
+    return 0
+  }
+  lda_v() {   # <label> <want allow|deny> <sentinel> <text>
+    aa_cell_skip "$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    lda_verdict v "$3" "$4"
+    if [ "$_lda_verd" = "$2" ]; then echo "PASS 842 : $1 ($_lda_verd)"; else echo "FAIL 842 : $1 - wanted $2, got $_lda_verd [$4]"; fail=1; fi
+  }
+  lda_p() {   # <label> <want admit|refuse> <sentinel> <text>
+    aa_cell_skip "$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    lda_verdict p "$3" "$4"
+    if [ "$_lda_verd" = "$2" ]; then echo "PASS 842 : $1 (predicate $_lda_verd)"; else echo "FAIL 842 : $1 - wanted predicate $2, got $_lda_verd [$4]"; fail=1; fi
+  }
+  lda_k() {   # <label> <want allow|deny> <sentinel> <text> - the shim adapter: `kit-guard cmd` (rc 0 allows), the sentinel in its environment
+    aa_cell_skip "$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    _lda_sl=''; _lda_sc=''
+    case "$3" in lease) _lda_sl=1 ;; claim) _lda_sc=1 ;; both) _lda_sl=1; _lda_sc=1 ;; esac
+    if KIT_GUARD_LOG=0 KIT_LEASE_FRONT_DOOR=$_lda_sl KIT_CLAIM_FRONT_DOOR=$_lda_sc sh scripts/kit-guard cmd "$4" >/dev/null 2>&1; then _lda_verd=allow; else _lda_verd=deny; fi
+    if [ "$_lda_verd" = "$2" ]; then echo "PASS 842 : $1 ($_lda_verd)"; else echo "FAIL 842 : $1 - wanted $2, got $_lda_verd [$4]"; fail=1; fi
+  }
+  _lda_f1="git push origin --force-with-lease=refs/claims/ROW-1:$_lda_S :refs/claims/ROW-1"
+  _lda_f2="git -C /tmp/x push -q --force-with-lease=refs/leases/land:$_lda_S"
+  lda_v "842-F1 the claim release delete (board-claim's shape) is admitted under the claims sentinel" allow claim "$_lda_f1"
+  lda_v "842-F2 https the land lease delete (checkout-lease's shape) is admitted under the lease sentinel" allow lease "$_lda_f2 https://example.invalid/owner-login/repo-a.git :refs/leases/land"
+  lda_v "842-F2 scp form" allow lease "$_lda_f2 git@example.invalid:owner-login/repo-a.git :refs/leases/land"
+  lda_v "842-F2 ssh form" allow lease "$_lda_f2 ssh://git@example.invalid/owner-login/repo-a.git :refs/leases/land"
+  # The file:// leg is a PRE-EXISTING deny (errata item 8): the control-plane target rule's URL masker never masks file:// (a file URL is a path), so its
+  # `.git` path is judged. The cell asserts that deny AND its reason, prints the verdict, and reds on an allow; the predicate still admits the form.
+  if aa_cell_skip "842-F2 file form"; then :; else
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    lda_verdict v lease "$_lda_f2 file:///tmp/x/o.git :refs/leases/land"
+    echo "MEASURED 842 : F2 file form : $_lda_verd"
+    case "$_lda_verd" in
+      deny)
+        case "$_lda_o" in
+          *"writes/executes against a resolved control-plane target"*) echo "PASS 842 : 842-F2 file form (deny, the control-plane target reason)" ;;
+          *) echo "FAIL 842 : 842-F2 file form - denied, but not by the control-plane target rule [$_lda_o]"; fail=1 ;;
+        esac ;;
+      *) echo "FAIL 842 : 842-F2 file form - wanted deny (the pre-existing control-plane target rule), got $_lda_verd"; fail=1 ;;
+    esac
+  fi
+  # The bare-path leg is the same pre-existing deny (errata item 8): a `.git`-ending path is not url-shaped, so it is not masked and the path rule judges it.
+  if aa_cell_skip "842-F2 local path form"; then :; else
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    lda_verdict v lease "$_lda_f2 /tmp/x/o.git :refs/leases/land"
+    echo "MEASURED 842 : F2 local path form : $_lda_verd"
+    case "$_lda_verd" in
+      deny)
+        case "$_lda_o" in
+          *"writes/executes against a resolved control-plane target"*) echo "PASS 842 : 842-F2 local path form (deny, the control-plane target reason)" ;;
+          *) echo "FAIL 842 : 842-F2 local path form - denied, but not by the control-plane target rule [$_lda_o]"; fail=1 ;;
+        esac ;;
+      *) echo "FAIL 842 : 842-F2 local path form - wanted deny (the pre-existing control-plane target rule), got $_lda_verd"; fail=1 ;;
+    esac
+  fi
+  lda_k "842-F3 shim adapter: the claim release delete" allow claim "$_lda_f1"
+  lda_k "842-F3 shim adapter: the land lease delete (https)" allow lease "$_lda_f2 https://example.invalid/owner-login/repo-a.git :refs/leases/land"
+  # --- the grammar's refusals (A to E, N): every cell is DENY (verdict) or REFUSE (predicate), with its sentinel set, before and after the
+  # admission. They are regression anchors; their load comes from the mutants further down. `_lda_lq` is the JSON-escaped double quote.
+  _lda_L="--force-with-lease=refs/leases/land:$_lda_S"
+  _lda_R1="--force-with-lease=refs/claims/R1:$_lda_S"
+  _lda_lq='\"'
+  lda_v "842-A1 --force with the lease sentinel" deny lease "git push --force origin :refs/leases/land"
+  lda_v "842-A2 -f with the claims sentinel" deny claim "git push -f origin :refs/claims/R1"
+  lda_v "842-A3 a forced refspec" deny lease "git push origin +$_lda_S:refs/leases/land"
+  lda_v "842-A4 --mirror" deny both "git push --mirror origin"
+  lda_v "842-A5a --force, no sentinel" deny none "git push --force origin :refs/leases/land"
+  lda_v "842-A5b -f, no sentinel" deny none "git push -f origin :refs/claims/R1"
+  lda_v "842-A5c a forced refspec, no sentinel" deny none "git push origin +$_lda_S:refs/leases/land"
+  lda_v "842-A5d --mirror, no sentinel" deny none "git push --mirror origin"
+  lda_v "842-A6 an extra --force beside the lease option" deny lease "git push $_lda_L --force origin :refs/leases/land"
+  lda_v "842-B1 refs/heads/x" deny both "git push --force-with-lease=refs/heads/x:$_lda_S origin :refs/heads/x"
+  lda_v "842-B2a refs/tags/v1" deny both "git push --force-with-lease=refs/tags/v1:$_lda_S origin :refs/tags/v1"
+  lda_v "842-B2b refs/notes/promotions" deny both "git push --force-with-lease=refs/notes/promotions:$_lda_S origin :refs/notes/promotions"
+  lda_v "842-B2c refs/kit/base" deny both "git push --force-with-lease=refs/kit/base:$_lda_S origin :refs/kit/base"
+  lda_v "842-B3a refs/heads/leases/land" deny lease "git push --force-with-lease=refs/heads/leases/land:$_lda_S origin :refs/heads/leases/land"
+  lda_v "842-B3b refs/leasesx/land" deny lease "git push --force-with-lease=refs/leasesx/land:$_lda_S origin :refs/leasesx/land"
+  lda_v "842-B3c refs/leases/land/x" deny lease "git push --force-with-lease=refs/leases/land/x:$_lda_S origin :refs/leases/land/x"
+  lda_v "842-B3d refs/Leases/land" deny lease "git push --force-with-lease=refs/Leases/land:$_lda_S origin :refs/Leases/land"
+  lda_v "842-B3e leases/land (a short name)" deny lease "git push --force-with-lease=leases/land:$_lda_S origin :leases/land"
+  lda_v "842-B4a refs/leases-log/land (the logs are append-only)" deny both "git push --force-with-lease=refs/leases-log/land:$_lda_S origin :refs/leases-log/land"
+  lda_v "842-B4b refs/claims-log/R1 (the logs are append-only)" deny both "git push --force-with-lease=refs/claims-log/R1:$_lda_S origin :refs/claims-log/R1"
+  lda_v "842-C1 the lease delete, no sentinel" deny none "git push $_lda_L origin :refs/leases/land"
+  lda_p "842-C2 the lease delete, no sentinel (predicate)" refuse none "git push $_lda_L origin :refs/leases/land"
+  lda_v "842-C3a a lease ref under the claims sentinel alone" deny claim "git push $_lda_L origin :refs/leases/land"
+  lda_v "842-C3b a claims ref under the lease sentinel alone" deny lease "git push $_lda_R1 origin :refs/claims/R1"
+  lda_p "842-C3c a lease ref under the claims sentinel alone (predicate)" refuse claim "git push $_lda_L origin :refs/leases/land"
+  lda_p "842-C3d a claims ref under the lease sentinel alone (predicate)" refuse lease "git push $_lda_R1 origin :refs/claims/R1"
+  lda_v "842-C4a the sentinel typed as text, not in the environment (hook adapter)" deny none "KIT_LEASE_FRONT_DOOR=1 git push $_lda_L origin :refs/leases/land"
+  lda_k "842-C4b the sentinel typed as text, not in the environment (kit-guard cmd)" deny none "KIT_LEASE_FRONT_DOOR=1 git push $_lda_L origin :refs/leases/land"
+  lda_v "842-D1 refs/heads/main" deny both "git push --force-with-lease=refs/heads/main:$_lda_S origin :refs/heads/main"
+  lda_v "842-D2a refs/heads/feature" deny both "git push --force-with-lease=refs/heads/feature:$_lda_S origin :refs/heads/feature"
+  lda_v "842-D2b refs/tags/v1" deny both "git push --force-with-lease=refs/tags/v1:$_lda_S origin :refs/tags/v1"
+  lda_v "842-D2c refs/notes/promotions" deny both "git push --force-with-lease=refs/notes/promotions:$_lda_S origin :refs/notes/promotions"
+  lda_v "842-E1 the lease names another lease ref than the one deleted" deny lease "git push --force-with-lease=refs/leases/other:$_lda_S origin :refs/leases/land"
+  lda_v "842-E2 the lease names another claim ref than the one deleted" deny claim "git push --force-with-lease=refs/claims/R1:$_lda_S origin :refs/claims/R2"
+  lda_v "842-N1a the bare --force-with-lease" deny lease "git push --force-with-lease origin :refs/leases/land"
+  lda_v "842-N1b the one-part --force-with-lease=<ref>" deny lease "git push --force-with-lease=refs/leases/land origin :refs/leases/land"
+  lda_v "842-N1c the empty expectation" deny lease "git push --force-with-lease=refs/leases/land: origin :refs/leases/land"
+  lda_v "842-N2a a short sha" deny lease "git push --force-with-lease=refs/leases/land:abc123 origin :refs/leases/land"
+  lda_v "842-N2b an uppercase sha" deny lease "git push --force-with-lease=refs/leases/land:0123456789ABCDEF0123456789ABCDEF01234567 origin :refs/leases/land"
+  lda_v "842-N2c a ref name as the expectation (HEAD)" deny lease "git push --force-with-lease=refs/leases/land:HEAD origin :refs/leases/land"
+  lda_v "842-N2d a ref name as the expectation (main)" deny lease "git push --force-with-lease=refs/leases/land:main origin :refs/leases/land"
+  lda_v "842-N3a --force-if-includes beside the lease" deny lease "git push $_lda_L --force-if-includes origin :refs/leases/land"
+  lda_v "842-N3b --delete with the lease" deny lease "git push $_lda_L --delete origin refs/leases/land"
+  lda_v "842-N3c -d with the lease" deny lease "git push $_lda_L -d origin refs/leases/land"
+  lda_v "842-N4a git -c remote.origin.push=x" deny lease "git -c remote.origin.push=x push $_lda_L origin :refs/leases/land"
+  lda_v "842-N4b git --config-env" deny lease "git --config-env=remote.origin.push=KIT_X push $_lda_L origin :refs/leases/land"
+  lda_v "842-N4c git --git-dir" deny lease "git --git-dir=/x push $_lda_L origin :refs/leases/land"
+  lda_v "842-N4d git --namespace" deny lease "git --namespace=n push $_lda_L origin :refs/leases/land"
+  lda_v "842-N4e -C twice" deny lease "git -C /a -C /b push $_lda_L origin :refs/leases/land"
+  lda_v "842-N4f a glued -C/x" deny lease "git -C/x push $_lda_L origin :refs/leases/land"
+  lda_v "842-N5a a second refspec" deny lease "git push $_lda_L origin :refs/leases/land :refs/leases/other"
+  lda_v "842-N5b --all" deny lease "git push --all $_lda_L origin :refs/leases/land"
+  lda_v "842-N5c --tags" deny lease "git push --tags $_lda_L origin :refs/leases/land"
+  lda_v "842-N5d --prune" deny lease "git push --prune $_lda_L origin :refs/leases/land"
+  lda_v "842-N5e --atomic" deny lease "git push --atomic $_lda_L origin :refs/leases/land"
+  lda_v "842-N5f -o x" deny lease "git push -o x $_lda_L origin :refs/leases/land"
+  lda_v "842-N6v-a the lease option quoted" deny lease "git push ${_lda_lq}$_lda_L${_lda_lq} origin :refs/leases/land"
+  lda_v "842-N6v-b the refspec quoted" deny lease "git push $_lda_L origin ':refs/leases/land'"
+  lda_v "842-N6v-c a backslash in the ref" deny lease "git push $_lda_L origin :refs/leases/lan\\\\d"
+  lda_v "842-N6v-d a variable in the expectation" deny lease 'git push --force-with-lease=refs/leases/land:$S origin :refs/leases/land'
+  lda_v "842-N6v-e a command substitution as the remote" deny lease "git push $_lda_L \$(echo origin) :refs/leases/land"
+  lda_v "842-N6v-f chained with ;" deny lease "git push $_lda_L origin :refs/leases/land; id"
+  lda_v "842-N6v-g chained with &&" deny lease "git push $_lda_L origin :refs/leases/land && id"
+  lda_v "842-N6v-h piped" deny lease "git push $_lda_L origin :refs/leases/land | cat"
+  lda_v "842-N6v-i a newline" deny lease "git push $_lda_L origin\\n:refs/leases/land"
+  lda_v "842-N6v-j a trailing comment" deny lease "git push $_lda_L origin :refs/leases/land # c"
+  lda_p "842-N6a-p a semicolon in the remote (predicate)" refuse lease "git push $_lda_L origin;id :refs/leases/land"
+  lda_p "842-N6a-q a command substitution in the remote (predicate)" refuse lease "git push $_lda_L \$(id) :refs/leases/land"
+  lda_p "842-N6a-r a backtick in the remote (predicate)" refuse lease 'git push '"$_lda_L"' o`id` :refs/leases/land'
+  lda_p "842-N6a-s a tilde remote (predicate)" refuse lease "git push $_lda_L ~/x.git :refs/leases/land"
+  lda_p "842-N6b-p a command substitution in the -C operand (predicate)" refuse lease "git -C \$(x) push $_lda_L origin :refs/leases/land"
+  lda_p "842-N6b-q a semicolon in the -C operand (predicate)" refuse lease "git -C /tmp/a;id push $_lda_L origin :refs/leases/land"
+  lda_p "842-N6b-r a tilde -C operand (predicate)" refuse lease "git -C ~/x push $_lda_L origin :refs/leases/land"
+  lda_p "842-N6c-p a leading space (predicate)" refuse lease " git push $_lda_L origin :refs/leases/land"
+  lda_p "842-N6c-q a trailing space (predicate)" refuse lease "git push $_lda_L origin :refs/leases/land "
+  lda_p "842-N6c-r a double space (predicate)" refuse lease "git push $_lda_L origin  :refs/leases/land"
+  lda_v "842-N6c-s a double space between tokens, the shape of an empty argv element" deny lease "git push $_lda_L origin  :refs/leases/land"
+  lda_v "842-N7a env git push" deny lease "env git push $_lda_L origin :refs/leases/land"
+  lda_v "842-N7b /usr/bin/git push" deny lease "/usr/bin/git push $_lda_L origin :refs/leases/land"
+  lda_v "842-N7c GIT_TRACE=1 git push" deny lease "GIT_TRACE=1 git push $_lda_L origin :refs/leases/land"
+  lda_v "842-N7d command git push" deny lease "command git push $_lda_L origin :refs/leases/land"
+  lda_p "842-N10a git send-pack (predicate)" refuse lease "git send-pack $_lda_L origin :refs/leases/land"
+  lda_p "842-N10b an alias in the push position (predicate)" refuse lease "git p $_lda_L origin :refs/leases/land"
+  lda_p "842-P1 the admitted lease form (predicate)" admit lease "git -C /tmp/x push -q $_lda_L origin :refs/leases/land"
+  lda_p "842-P2 the admitted claims form (predicate)" admit claim "git push origin $_lda_R1 :refs/claims/R1"
+  lda_p "842-P3 a 64-hex sha is admitted (predicate)" admit lease "git push --force-with-lease=refs/leases/land:${_lda_S}0123456789abcdef01234567 origin :refs/leases/land"
+  lda_p "842-P4 a row id of 65 bytes is a priced over-deny (predicate)" refuse claim "git push --force-with-lease=refs/claims/R$(printf 'A%.0s' $(seq 1 64)):$_lda_S origin :refs/claims/R$(printf 'A%.0s' $(seq 1 64))"
+  # SWAS-842 review and security follow-ups. Bytes that must never be literal in a shipped file are built at run time with printf octal escapes.
+  _lda_cr=$(printf '\r'); _lda_hi=$(printf '\303\251')
+  _lda_a63=$(printf 'A%.0s' $(seq 1 63)); _lda_l31=$(printf 'a%.0s' $(seq 1 31))
+  lda_p "842-P5 a row id of 64 bytes is admitted (predicate)" admit claim "git push --force-with-lease=refs/claims/R${_lda_a63}:$_lda_S origin :refs/claims/R${_lda_a63}"
+  lda_p "842-P6a a lease name of 32 characters is admitted (predicate)" admit lease "git push --force-with-lease=refs/leases/l${_lda_l31}:$_lda_S origin :refs/leases/l${_lda_l31}"
+  lda_p "842-P6b a lease name of 33 characters is refused (predicate)" refuse lease "git push --force-with-lease=refs/leases/l${_lda_l31}a:$_lda_S origin :refs/leases/l${_lda_l31}a"
+  lda_p "842-ONE-a two lease options, the delete's own first: refused (predicate)" refuse lease "git push $_lda_L --force-with-lease=refs/heads/main:$_lda_S origin :refs/leases/land"
+  lda_p "842-ONE-b two lease options, the delete's own last: refused (predicate; the cell the ONE mutant flips)" refuse lease "git push --force-with-lease=refs/heads/main:$_lda_S $_lda_L origin :refs/leases/land"
+  lda_p "842-RM1 a remote shaped origin:refs/heads/main is admitted; it deletes only the named ref, in whichever repository the remote names (predicate)" admit lease "git push $_lda_L origin:refs/heads/main :refs/leases/land"
+  lda_p "842-RM2 a remote shaped host:path is admitted; it deletes only the named ref, in whichever repository the remote names (predicate)" admit lease "git push $_lda_L host:path :refs/leases/land"
+  lda_p "842-RM3 a remote shaped a=b is admitted; it deletes only the named ref, in whichever repository the remote names (predicate)" admit lease "git push $_lda_L a=b :refs/leases/land"
+  lda_p "842-LIT-cr a CR byte in the remote (predicate)" refuse lease "git push $_lda_L origin$_lda_cr :refs/leases/land"
+  lda_p "842-LIT-hi a byte above 0x7f in the remote (predicate)" refuse lease "git push $_lda_L origin$_lda_hi :refs/leases/land"
+  lda_p "842-NS-first a lease name that starts with a digit (predicate)" refuse lease "git push --force-with-lease=refs/leases/1x:$_lda_S origin :refs/leases/1x"
+  lda_p "842-P-CAP a valid-looking push with 20 tokens is refused by the token cap (predicate)" refuse lease "git push $_lda_L origin :refs/leases/land a b c d e f g h i j k l m n o"
+  lda_p "842-NS-case a claim row id that starts with a lower case letter (predicate)" refuse claim "git push --force-with-lease=refs/claims/a1:$_lda_S origin :refs/claims/a1"
+  # the measurements: printed, never asserted (M1 and M2 are the pre-existing plain deletes the threat model compares against; M3 and X1 are recorded)
+  lda_m() {   # <label> <sentinel> <text>
+    aa_cell_skip "$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    lda_verdict v "$2" "$3"
+    echo "MEASURED 842 : $1 -> $_lda_verd [$3]"
+  }
+  lda_m "842-M1 a plain delete of refs/leases/land under the lease sentinel (pre-existing)" lease "git push origin :refs/leases/land"
+  lda_m "842-M2 a plain delete of refs/claims/ROW-1 under the claims sentinel (pre-existing)" claim "git push origin :refs/claims/ROW-1"
+  lda_m "842-M3 a plain delete of a branch, no sentinel (recorded, Q-842-3)" none "git push origin :feature-x"
+  lda_m "842-X1 a lease named main under the lease sentinel (push-to-main decides)" lease "git push --force-with-lease=refs/leases/main:$_lda_S origin :refs/leases/main"
+  lda_m "842-N10c git send-pack --force-with-lease under the lease sentinel (recorded)" lease "git send-pack $_lda_L origin :refs/leases/land"
+  # --- the mutants: each on a copy of the core (the synthetic root's copy, restored after), each required to flip the cell it names. The lines the sed
+  # programs address end in a `# 842-<NAME>` marker in guard-core.sh. A mutant whose unmutated verdict already equals the wanted one proves nothing and reds.
+  lda_mut() {   # <label> <sed-expr> <kind v|p> <sentinel> <text> <want-after> [<required unmutated verdict>]
+    aa_cell_skip "$1" && return 0
+    lda_verdict "$3" "$4" "$5"; _lda_pv=$_lda_verd
+    if [ -n "${7:-}" ] && [ "$_lda_pv" != "$7" ]; then echo "N/A  mutant : $1 - not killable by this form: the unmutated verdict is $_lda_pv, not $7"; return 0; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : $1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    if ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; echo "FAIL mutant : $1 - the mutant does not parse (sh -n)"; fail=1; return
+    fi
+    lda_verdict "$3" "$4" "$5"; _lda_mv=$_lda_verd
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    if [ "$_lda_pv" = "$_lda_mv" ]; then echo "FAIL mutant : $1 - verdict did not change ($_lda_pv before and after); the leg proves nothing"; fail=1
+    elif [ "$_lda_mv" = "$6" ]; then echo "PASS mutant : $1 ($_lda_pv -> $_lda_mv, killed the cell as required)"
+    else echo "FAIL mutant : $1 - got $_lda_mv, wanted $6"; fail=1; fi
+  }
+  _lda_wipe() { printf '/# 842-%s$/ s@return 1@:@' "$1"; }
+  lda_mut "842-MUT-NS the namespace widened to refs/*: refs/heads/x flips to ALLOW (B1)" '/# 842-NS$/ s@refs/leases/@refs/*/@g' v both "git push --force-with-lease=refs/heads/x:$_lda_S origin :refs/heads/x" allow
+  lda_mut "842-MUT-NS the namespace widened to refs/*: refs/heads/feature flips to ALLOW (D2a)" '/# 842-NS$/ s@refs/leases/@refs/*/@g' v both "git push --force-with-lease=refs/heads/feature:$_lda_S origin :refs/heads/feature" allow
+  lda_mut "842-MUT-NS the namespace widened to refs/*: refs/tags/v1 flips to ALLOW (D2b)" '/# 842-NS$/ s@refs/leases/@refs/*/@g' v both "git push --force-with-lease=refs/tags/v1:$_lda_S origin :refs/tags/v1" allow
+  lda_mut "842-MUT-PAIR either sentinel admits either namespace (C3c, predicate)" '/# 842-PAIR$/ s@_l8_sv=\${KIT_[A-Z]*_FRONT_DOOR:-}@_l8_sv=${KIT_LEASE_FRONT_DOOR:-}${KIT_CLAIM_FRONT_DOOR:-}@' p claim "git push $_lda_L origin :refs/leases/land" admit
+  lda_mut "842-MUT-PAIR either sentinel admits either namespace (C3d, predicate)" '/# 842-PAIR$/ s@_l8_sv=\${KIT_[A-Z]*_FRONT_DOOR:-}@_l8_sv=${KIT_LEASE_FRONT_DOOR:-}${KIT_CLAIM_FRONT_DOOR:-}@' p lease "git push $_lda_R1 origin :refs/claims/R1" admit
+  lda_mut "842-MUT-SENT the sentinel test dropped (C2, predicate)" "$(_lda_wipe SENT)" p none "git push $_lda_L origin :refs/leases/land" admit
+  lda_mut "842-MUT-EQ the lease ref and the delete ref not compared (E1)" "$(_lda_wipe EQ)" v lease "git push --force-with-lease=refs/leases/other:$_lda_S origin :refs/leases/land" allow
+  lda_mut "842-MUT-EQ the lease ref and the delete ref not compared (E2)" "$(_lda_wipe EQ)" v claim "git push --force-with-lease=refs/claims/R1:$_lda_S origin :refs/claims/R2" allow
+  lda_mut "842-MUT-SHA any non-empty expectation accepted (N2a)" "$(_lda_wipe SHA)" v lease "git push --force-with-lease=refs/leases/land:abc123 origin :refs/leases/land" allow
+  lda_mut "842-MUT-LIT the byte-set test dropped: a semicolon in the remote (N6a, predicate)" "$(_lda_wipe LIT)" p lease "git push $_lda_L origin;id :refs/leases/land" admit
+  lda_mut "842-MUT-LIT the byte-set test dropped: a semicolon in the -C operand (N6b, predicate)" "$(_lda_wipe LIT)" p lease "git -C /tmp/a;id push $_lda_L origin :refs/leases/land" admit
+  lda_mut "842-MUT-SPACE the single-space test dropped: a leading space (N6c, predicate)" "$(_lda_wipe SPACE)" p lease " git push $_lda_L origin :refs/leases/land" admit
+  lda_mut "842-MUT-SPACE the single-space test dropped: a double space (N6c-s, verdict)" "$(_lda_wipe SPACE)" v lease "git push $_lda_L origin  :refs/leases/land" allow
+  lda_mut "842-MUT-OPT unknown options accepted (A6)" '/# 842-OPT$/ s@return 1@:@' v lease "git push $_lda_L --force origin :refs/leases/land" allow
+  lda_mut "842-MUT-OPT unknown options accepted (N5b --all)" '/# 842-OPT$/ s@return 1@:@' v lease "git push --all $_lda_L origin :refs/leases/land" allow
+  lda_mut "842-MUT-POS the positional count relaxed (N5a)" '/# 842-POS$/ s@= 2 \]@-ge 2 ]@' v lease "git push $_lda_L origin :refs/leases/land :refs/leases/other" allow
+  lda_mut "842-MUT-CALL the call-site admission removed, the old rule (F1)" '/# 842-CALL$/ s@_fpt=[^ ]*@:@' v claim "$_lda_f1" deny
+  lda_mut "842-MUT-CALL the call-site admission removed, the old rule (F2)" '/# 842-CALL$/ s@_fpt=[^ ]*@:@' v lease "$_lda_f2 https://example.invalid/owner-login/repo-a.git :refs/leases/land" deny
+  lda_mut "842-MUT-EARLY the call site returns 0 instead of skipping the one rule (X1, only if push-to-main denies a lease named main)" '/# 842-CALL$/ s@_fpt=[^ ]*@return 0@' v lease "git push --force-with-lease=refs/leases/main:$_lda_S origin :refs/leases/main" allow deny
+  lda_mut "842-MUT-ONE the one-lease-option test dropped: two lease options, the delete's own last (ONE-b, predicate)" "$(_lda_wipe ONE)" p lease "git push --force-with-lease=refs/heads/main:$_lda_S $_lda_L origin :refs/leases/land" admit
+
   # SC-T1 (security M4, X12t-style): the arm's own cost. Per-call time is the sourced core's guard_check_command with the arm and with
   # the arm neutered (SC-M1's expression), over N calls and whole seconds, so the added time is the difference; the worst case is
   # one command just under the whole-command token cap made of quoted words (each forks a de-quote). Bounds are generous (they catch a regression of an
@@ -5380,7 +5799,8 @@ if [ "${GPAB_G:-}" != "" ]; then
   # /bin/bash only where that is 3.2; the script writes only a marker inside a mktemp dir and the cell asserts
   # the marker was NOT created. The guard's verdict for the same shape is recorded by the cell helper below.
   _p230_label="SWAS230 P1 pin: backtick-wrapped heredoc with a ) in the body is inert under bash 3.2"
-  if aa_cell_skip "$_p230_label"; then :
+  if aa_cell_skip "$_p230_label"; then
+    :
   elif ! /bin/bash --version 2>/dev/null | head -1 | grep -q 'version 3\.2'; then
     echo "SKIP $_p230_label (/bin/bash is not bash 3.2 here; the measurement is 3.2-specific)"
   else
@@ -5595,11 +6015,14 @@ if [ "${GPAB_G:-}" != "" ]; then
     "$(_w232 'git -C /tmp/a\\  diff HEAD --output=/tmp/f')" allow
   # MW5: a byte check, so the leg mutates a COPY of the guard core and runs the SAME predicate the B1 cell runs on the real file
   sed 's#_cp8b_optval_exp "\$2" "\$_gm"#_cp8b_optval_exp "$2" u#' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/mw5.core"
-  if aa_cell_skip "SWAS232 MW5"; then :
+  if aa_cell_skip "SWAS232 MW5"; then
+    :
   elif cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/mw5.core"; then echo "FAIL mutant : SWAS232 MW5 — the mutation matched NOTHING; the leg is unbound"; fail=1
   elif _aa_b1_ok "$GPAB_TMP/gc.pristine" && ! _aa_b1_ok "$GPAB_TMP/mw5.core"; then echo "PASS mutant : SWAS232 MW5: a direct mode-u call outside the span helper -> B1 PASS flips (killed the leg as required)"
   else echo "FAIL mutant : SWAS232 MW5 — B1 did not flip pass -> fail on a direct mode-u call"; fail=1; fi
-  aa_cell_skip "SWAS232 MW5" || AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  if ! aa_cell_skip "SWAS232 MW5"; then
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  fi
 
   # === Leg K-CWD mutants (GUARD-CWD-CONFIDENCE-UNKNOWN) ==========================================
   # M-CWD3 — the CORE SEED. Neutered by forcing the pre-slice initialisation ('' / confident) at the
@@ -6262,7 +6685,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   if ! sh -n "$GPAB_GC" 2>/dev/null; then
     cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
     echo "FAIL mutant : K-N2-ctl — the mutant does not parse (sh -n); the leg proves nothing"; fail=1
-  elif aa_cell_skip "K-N2-ctl: single-/./ still denies under the tb-removal"; then :   # skipped by the ONE predicate (the spawn primitive denied_at carries no scope check)
+  # the next branch is skipped by the ONE predicate (the spawn primitive denied_at carries no scope check)
+  elif aa_cell_skip "K-N2-ctl: single-/./ still denies under the tb-removal"; then
+    :
   elif denied_at "$GPAB_G" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./pre-push"}}'; then
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     echo "PASS mutant : K-N2-ctl: single-/./ still denies under the tb-removal (only repeated /./ needs the fixpoint)"
@@ -7276,6 +7701,12 @@ if [ "${GPAB_G:-}" != "" ]; then
   if [ "$(uname -s)" = Darwin ] && locale -a 2>/dev/null | grep -qx 'en_US.UTF-8'; then
     corp_mutant "M-LOC2: only _cp8b_pathhit's class reverted to *[A-Z]*, run under en_US.UTF-8 -> the behaviour leg REDs" \
       '/^_cp8b_pathhit() {/,/^}/ s@\*\[ABCDEFGHIJKLMNOPQRSTUVWXYZ]\*) : ;;@*[A-Z]*) : ;;@' FAIL dt_locale_route_ok 'ROUTE' 'FOLD route'
+    # M-LOC5 — the SAME mutated core, probed in /bin/dash (blind to the locale): the gate must say PASS. With
+    # M-LOC2 (FAIL under /bin/sh) the shell is the only variable, so the probe's shell choice is load-bearing.
+    # A missing /bin/dash FAILs the leg (the spawn fails), never SKIPs.
+    dt_locale_route_dash() { dt_locale_route_ok "$1" /bin/dash; }
+    corp_mutant "M-LOC5: the M-LOC2 core probed in /bin/dash (blind to the locale) -> the gate PASSes" \
+      '/^_cp8b_pathhit() {/,/^}/ s@\*\[ABCDEFGHIJKLMNOPQRSTUVWXYZ]\*) : ;;@*[A-Z]*) : ;;@' PASS dt_locale_route_dash
   else
     echo "N/A  corp-mutant : M-LOC2 needs Darwin with en_US.UTF-8 (host: $(uname -s))"
   fi
@@ -8232,7 +8663,9 @@ scripts/board.sh|migrate|--from conformance/fixtures/board-migrate/board.md --pl
 }
 # AA_MODE gate: the real-script lock runs git status twice and every declared kit script; the ungraded
 # pass skips it. selftest() drives fpra_lock itself (with the gate forced open) for its fixture leg.
-aa_cell_skip "Arm A" || { fpra_lock; aa_extra_ran; }
+if ! aa_cell_skip "Arm A"; then
+  fpra_lock; aa_extra_ran
+fi
 
 # === GUARD-READONLY-FP-RELIEF Arm B — shell TEST EXPRESSIONS (cures N1) ==========================
 # `test -f <cp>` / `[ -f <cp> ]` read a path's METADATA; neither can mutate the path it names.
@@ -11648,17 +12081,27 @@ selftest() {
   # Kills: a predicate that consults the glob outside `scoped`, or one that skips in run mode.
   AA_CELLS_GLOB='K-3b*'
   for _sl in "K-3b-x" "S6R-y" "rm" ""; do
-    if aa_cell_skip "$_sl"; then echo "nv: S1 run mode skipped the label [$_sl]"; _st=1; fi
+    if aa_cell_skip "$_sl"; then
+      echo "nv: S1 run mode skipped the label [$_sl]"; _st=1
+    fi
   done
   # S2 (scoped): a match runs, a non-match skips; oracle skips everything; an unknown mode RUNS (L2 polarity).
   # Kills: an inverted match, a match ignoring the glob, oracle no longer skipping, unknown mode skipping.
   AA_MODE=scoped
-  aa_cell_skip "K-3b-x" && { echo "nv: S2 scoped mode skipped a label the glob matches"; _st=1; }
-  aa_cell_skip "S6R-y" || { echo "nv: S2 scoped mode ran a label the glob does not match"; _st=1; }
+  if aa_cell_skip "K-3b-x"; then
+    echo "nv: S2 scoped mode skipped a label the glob matches"; _st=1
+  fi
+  if ! aa_cell_skip "S6R-y"; then
+    echo "nv: S2 scoped mode ran a label the glob does not match"; _st=1
+  fi
   AA_MODE=oracle
-  aa_cell_skip "K-3b-x" || { echo "nv: S2 oracle mode ran a cell"; _st=1; }
+  if ! aa_cell_skip "K-3b-x"; then
+    echo "nv: S2 oracle mode ran a cell"; _st=1
+  fi
   AA_MODE=bogus
-  aa_cell_skip "S6R-y" && { echo "nv: S2 an unknown mode skipped a cell (must degrade toward RUNNING)"; _st=1; }
+  if aa_cell_skip "S6R-y"; then
+    echo "nv: S2 an unknown mode skipped a cell (must degrade toward RUNNING)"; _st=1
+  fi
   AA_MODE=run; AA_CELLS_GLOB=''
   # S2b (C-A, structural): every labelled gate site passes the RIGHT positional to the ONE predicate, the
   # spawn primitives carry no scope check, and no per-site oracle test survived at a labelled site.
@@ -11666,7 +12109,7 @@ selftest() {
   # a scope check added to a spawn primitive (it would make gpab_mutant see "no flip"), in one-line or multi-line form.
   # _prim_body prints a function's definition: one line when its first line ends in `}`, else through the closing `}`.
   _prim_body() { awk -v n="$1" '$0 ~ "^ *" n "[(][)]" { print; if ($0 ~ /}[ ]*$/) exit; p = 1; next } p { print } p && /^ *}/ { exit }' "$0"; }
-  _first_skip() { _prim_body "$1" | sed -n '2,$p' | grep -m 1 aa_cell_skip | sed 's/^ *//' || :; }
+  _first_skip() { _prim_body "$1" | sed -n '2,$p' | grep -m 1 'a[a]_cell_skip' | sed 's/^ *//' || :; }
   for _fn in assert_deny assert_allow assert_deny_reason assert_reason_has assert_reason_lacks gpab_mutant gpab_mutant_ks; do
     [ "$(_first_skip "$_fn")" = 'aa_cell_skip "$1" && return 0' ] || { echo "nv: S2b $_fn does not skip on its label (\$1)"; _st=1; }
   done
@@ -11677,13 +12120,14 @@ selftest() {
   for _fn in denied denied_with_reason _reason denied_at gpab_ks_at; do
     _pb=$(_prim_body "$_fn"); _pbmax=0; [ "$_fn" = denied_at ] && _pbmax=1
     [ -n "$_pb" ] || { echo "nv: S2b the spawn primitive $_fn was not found (the extraction is vacuous)"; _st=1; }
-    [ "$(printf '%s\n' "$_pb" | grep -c -e aa_cell_skip -e AA_CELLS_GLOB -e scoped)" = 0 ] || { echo "nv: S2b the spawn primitive $_fn carries a scope check"; _st=1; }
+    [ "$(printf '%s\n' "$_pb" | grep -c -e 'a[a]_cell_skip' -e AA_CELLS_GLOB -e scoped)" = 0 ] || { echo "nv: S2b the spawn primitive $_fn carries a scope check"; _st=1; }
     [ "$(printf '%s\n' "$_pb" | grep -c AA_MODE)" -le "$_pbmax" ] || { echo "nv: S2b the spawn primitive $_fn reads AA_MODE beyond the denied_at oracle belt"; _st=1; }
   done
-  [ "$(grep -c '^  aa_cell_skip "[$]_c2l" || ' "$0")" = 3 ] || { echo "nv: S2b the three inline C2 lines are not all gated by the one predicate"; _st=1; }
-  [ "$(grep -c 'elif aa_cell_skip "K-N2-ct[l]' "$0")" = 1 ] || { echo "nv: S2b the K-N2-ctl site is not gated by the one predicate"; _st=1; }
-  [ "$(grep -c 'if aa_cell_skip "[I]4(I1)"; then :; else' "$0")" = 1 ] || { echo "nv: S2b the I4 block is not gated by the one predicate"; _st=1; }
-  [ "$(grep -cxF 'aa_cell_skip "Arm A" || { fpra_lock; aa_extra_ran; }' "$0")" = 1 ] || { echo "nv: S2b the fpra_lock site is not exactly the one-predicate gate calling fpra_lock and aa_extra_ran (the gate, fpra_lock or aa_extra_ran was changed or removed)"; _st=1; }
+  [ "$(grep -c '^    _c2r=[$](printf' "$0")" = 1 ] || { echo "nv: S2b the C2 spawn is not inside the one negated-if gate"; _st=1; }
+  [ "$(grep -c 'if ! a[a]_cell_skip "[$]_c2l"; then' "$0")" = 1 ] || { echo "nv: S2b the C2 spawn, count and reason case are not one block gated by the one predicate (one negated if)"; _st=1; }
+  [ "$(grep -c 'elif a[a]_cell_skip "K-N2-ct[l]' "$0")" = 1 ] || { echo "nv: S2b the K-N2-ctl site is not gated by the one predicate"; _st=1; }
+  [ "$(grep -c 'if a[a]_cell_skip "[I]4(I1)"; then :; else' "$0")" = 1 ] || { echo "nv: S2b the I4 block is not gated by the one predicate"; _st=1; }
+  awk 'p == 2 { if ($0 == "fi") ok++; p = 0; next } p == 1 { p = ($0 == "  fpra_lock; aa_extra_ran") ? 2 : 0; next } /^if ! a[a]_cell_skip "Arm A"; then$/ { n++; p = 1 } END { exit !(n == 1 && ok == 1) }' "$0" || { echo "nv: S2b the fpra_lock site is not exactly the one-predicate gate calling fpra_lock and aa_extra_ran (the gate, fpra_lock or aa_extra_ran was changed or removed)"; _st=1; }
   # F5: each gated label is a PREFIX of the text its site prints, so a builder can paste a FAIL line's text into --cells.
   [ "$(grep -c '"\(PASS\|FAIL\) reason  : [$]_c2l' "$0")" = 2 ] || { echo "nv: S2b the C2 lines do not print their label (\$_c2l) first"; _st=1; }
   [ "$(grep -c '"\(PASS\|FAIL\) [I]4(I1): ' "$0")" = 2 ] || { echo "nv: S2b the I4 lines do not begin with the I4(I1) label"; _st=1; }
@@ -11705,7 +12149,7 @@ selftest() {
   [ "$(printf '%s\n' "$_outside" | grep -c AA_SCOPED_EXTRA)" = 3 ] || { echo "nv: S2b AA_SCOPED_EXTRA is mentioned on other than 3 non-comment lines outside selftest (init, bump, scoped bottom): it must not reach the floor or AA_CELLS_RUN"; _st=1; }
   [ "$(grep -cxF '  if [ "$AA_MODE" = scoped ]; then AA_SCOPED_EXTRA=$((AA_SCOPED_EXTRA + 1)); fi' "$0")" = 1 ] || { echo "nv: S2b AA_SCOPED_EXTRA is not bumped by the one scoped-mode line in aa_extra_ran"; _st=1; }
   [ "$(grep -cxF 'AA_SCOPED_EXTRA=0' "$0")" = 1 ] || { echo "nv: S2b AA_SCOPED_EXTRA is not initialised by the one unconditional 0 assignment (an env value could leak in)"; _st=1; }
-  awk '/^ *if aa_cell_skip "I4.I1."; then :; else$/ { g = 1; next } g && /^ *fi$/ { g = 0; if (prev ~ /^ *aa_extra_ran$/) ok++; next } g { prev = $0 } END { exit ok != 1 }' "$0" || { echo "nv: S2b the I4 aa_extra_ran is not the last statement inside the I4 gate"; _st=1; }
+  awk '/^ *if a[a]_cell_skip "I4.I1."; then :; else$/ { g = 1; next } g && /^ *fi$/ { g = 0; if (prev ~ /^ *aa_extra_ran$/) ok++; next } g { prev = $0 } END { exit ok != 1 }' "$0" || { echo "nv: S2b the I4 aa_extra_ran is not the last statement inside the I4 gate"; _st=1; }
   [ "$(grep -c '\[ "[$]AA_MODE" = oracle \] && return 0' "$0")" = 1 ] || { echo "nv: S2b a per-site oracle test survived (only the denied_at belt may remain)"; _st=1; }
   [ "$(grep -c '\[ "[$]AA_MODE" = oracle \] ||' "$0")" = 0 ] || { echo "nv: S2b an inline per-site oracle test survived"; _st=1; }
 
@@ -12541,7 +12985,9 @@ LXBLK
     sed -n '/^assert_deny() {/,/^}/p' "$0" > "$_dd/real-order.sh"
     awk 'NR == 2 { a = $0; next } NR == 3 { print; print a; next } { print }' "$_dd/real-order.sh" > "$_dd/mut-order.sh"
     { sed -n '/^gsr_deny() /p' "$0"; sed -n '/^gsr_allow() /p' "$0"; } > "$_dd/real-gsr.sh"
-    sed 's/\[ "\$AA_DELTA" = 1 \] || { aa_cell_skip "\$1" && return 0; }; /aa_cell_skip "$1" \&\& return 0; /' "$_dd/real-gsr.sh" > "$_dd/mut-gsr.sh"
+    # (SWAS-667: the gate is spelled through $_gbs, or a[a]_cell_skip in a pattern, so no line of this file names it in command position)
+    _gbs=aa_cell_skip
+    sed 's/\[ "\$AA_DELTA" = 1 \] || { a[a]_cell_skip "\$1" && return 0; }; /'"$_gbs"' "$1" \&\& return 0; /' "$_dd/real-gsr.sh" > "$_dd/mut-gsr.sh"
     _dxmo1=$(_dxrec oracle "$_dd/rec.m1" /nonexistent-guard "$_dd/mut-order.sh") || :
     _dxmo2=$(_dxrec oracle "$_dd/rec.m2" /nonexistent-guard "$_dd/mut-gsr.sh") || :
     if cmp -s "$_dd/rec.live" "$_dd/rec.m1" || grep -qF 'SY1' "$_dd/rec.m1" 2>/dev/null; then echo "nv: delta-record-equivalence mutant survived: the recorder after the gate still collected the assert_deny cell"; _st=1
@@ -12583,38 +13029,146 @@ LXBLK
     # records (GTM-G21 alone is entered under --delta, by its || [ "$AA_DELTA" = 1 ] clause). It reads the file as text, so it costs no guard spawn.
     # Non-vacuity: it must have SEEN gated blocks (the floor below is the count measured at build, [M]). Three mutants on rewritten throwaway copies
     # of this file, each watched red by its OWN reason: a recorder planted in a gated block, a gate-first wrapper, and G21 with its clause deleted.
+    # SWAS-667: the scan also REJECTS BY DEFAULT (any gate in a shape it does not read is a RED). On the real file: RED 0, UNREAD 0, EXEMPT 2 (the
+    # definition and the scan body), BLOCKS at or above the floor 40. The BLOCKS value measured at build is not recorded here (the builder seat could not run
+    # the scan; the conductor census value goes in the PR body).
     aa_gblk_scan "$0" > "$_dd/gb.real"
     _gbn=$(awk '$1 == "BLOCKS" { print $2 }' "$_dd/gb.real"); _gbr=$(awk '$1 == "RED"' "$_dd/gb.real" | wc -l | tr -d ' ')
-    if [ "$_gbr" = 0 ] && [ "${_gbn:-0}" -ge 40 ]; then echo "OK: delta-record-sites — no recorder inside any of $_gbn gated blocks, no gate-first wrapper (GTM-G21 the one delta-entered block)"
-    else echo "nv: delta-record-sites — $_gbr violation(s) over ${_gbn:-0} gated blocks (floor 40) [$(awk '$1 == "RED"' "$_dd/gb.real" | head -n 3)]"; _st=1; fi
-    _gbk() {   # <label> <mutant file> <wanted reason> -> counts a kill only when the lock reds with THAT reason
+    _gbu=$(awk '$1 == "UNREAD" { print $2 }' "$_dd/gb.real"); _gbe=$(awk '$1 == "EXEMPT" { print $2 }' "$_dd/gb.real")
+    if [ "$_gbr" = 0 ] && [ "${_gbu:-x}" = 0 ] && [ "${_gbe:-x}" = 2 ] && [ "${_gbn:-0}" -ge 40 ]; then echo "OK: delta-record-sites — no recorder inside any of $_gbn gated blocks, no gate-first wrapper, UNREAD $_gbu, EXEMPT $_gbe (GTM-G21 the one delta-entered block)"
+    else echo "nv: delta-record-sites — $_gbr violation(s), UNREAD ${_gbu:-?}, EXEMPT ${_gbe:-?} (want 2) over ${_gbn:-0} gated blocks (floor 40)"
+      awk '$1 == "RED" { print "nv: delta-record-sites   " $0 }' "$_dd/gb.real"; _st=1; fi
+    _gbl="if $_gbs \"NOH-L1\"; then :; else"   # the NOH-L1 gate line the plants are anchored on, spelled through $_gbs
+    _gbw="recorder inside a block gated by $_gbs (gate"
+    _gbk() {   # <label> <mutant file> <wanted reason> [<offset>] -> counts a kill only when the lock reds with THAT reason; with an offset, ON THE PLANTED LINE
+      # (the RED line number is the first line the rewrite changed, plus the offset of the planted line within the plant)
       aa_gblk_scan "$2" > "$_dd/gb.out"
+      _gbwant=$3
+      if [ -n "${4:-}" ]; then _gbwant="RED $(awk -v off="$4" 'NR == FNR { a[FNR] = $0; next } a[FNR] != $0 { print FNR + off; exit }' "$0" "$2") $3"; fi
       if cmp -s "$0" "$2"; then echo "nv: delta-record-sites mutant $1 is unbound (the rewrite matched nothing)"; _st=1
-      elif grep -qF -e "$3" "$_dd/gb.out"; then echo "OK: delta-record-sites-mutant — $1 reds the lock ($3)"
-      else echo "nv: delta-record-sites mutant $1 survived: the lock did not red with [$3] [$(head -n 2 "$_dd/gb.out")]"; _st=1; fi
+      elif grep -qF -e "$_gbwant" "$_dd/gb.out"; then echo "OK: delta-record-sites-mutant — $1 reds the lock ($_gbwant)"
+      else echo "nv: delta-record-sites mutant $1 survived: the lock did not red with [$_gbwant] [$(head -n 2 "$_dd/gb.out")]"; _st=1; fi
     }
-    awk -v P='  assert_deny "planted" "$1"' '{ print } index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P }' "$0" > "$_dd/gb-m1.sh"
-    _gbk "a recorder planted in a gated block" "$_dd/gb-m1.sh" 'recorder inside a block gated by aa_cell_skip (gate NOH-L1'
-    sed 's/\[ "\$AA_DELTA" = 1 \] || { aa_cell_skip "\$1" && return 0; }; /aa_cell_skip "$1" \&\& return 0; /' "$0" > "$_dd/gb-m2.sh"
-    _gbk "a wrapper that gates before it records" "$_dd/gb-m2.sh" 'the gate is tested before the recorder on one line'
-    sed 's/\(if ! aa_cell_skip "GTM-G21"\) || \[ "\$AA_DELTA" = 1 \]/\1/' "$0" > "$_dd/gb-m3.sh"
-    _gbk "GTM-G21 without its delta clause" "$_dd/gb-m3.sh" 'recorder inside a block gated by aa_cell_skip (gate GTM-G21'
+    awk -v P='  assert_deny "planted" "$1"' -v K="$_gbl" '{ print } index($0, K) == 1 { print P }' "$0" > "$_dd/gb-m1.sh"
+    _gbk "a recorder planted in a gated block" "$_dd/gb-m1.sh" "$_gbw NOH-L1" 0
+    sed 's/\[ "\$AA_DELTA" = 1 \] || { a[a]_cell_skip "\$1" && return 0; }; /'"$_gbs"' "$1" \&\& return 0; /' "$0" > "$_dd/gb-m2.sh"
+    _gbk "a wrapper that gates before it records" "$_dd/gb-m2.sh" 'the gate is tested before the recorder on one line' 0
+    sed 's/\(if ! a[a]_cell_skip "GTM-G21"\) || \[ "\$AA_DELTA" = 1 \]/\1/' "$0" > "$_dd/gb-m3.sh"
+    _gbk "GTM-G21 without its delta clause" "$_dd/gb-m3.sh" "$_gbw GTM-G21"
     # the shapes the first read could not see (fix round 2): a recorder with a single-quoted label, a one-line if-led gate, a multi-line
     # `if [ .. ] && ! aa_cell_skip`, and an `elif aa_cell_skip` whose outer if is no gate. Each planted before the NOH-L1 gate line (column 0).
     _gbp() {   # <out file> <lines to plant, \n-separated>
-      awk -v P="$2" 'index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P } { print }' "$0" > "$1"
+      awk -v P="$2" -v K="$_gbl" 'index($0, K) == 1 { print P } { print }' "$0" > "$1"
     }
-    awk -v P="  assert_deny 'planted' '{}'" '{ print } index($0, "if aa_cell_skip \"NOH-L1\"; then :; else") == 1 { print P }' "$0" > "$_dd/gb-m4.sh"
-    _gbk "a single-quoted-label recorder in a gated block" "$_dd/gb-m4.sh" 'recorder inside a block gated by aa_cell_skip (gate NOH-L1'
+    _gba() {   # <out file> <lines to plant, \n-separated> -> planted AFTER the NOH-L1 gate line (inside its else body)
+      awk -v P="$2" -v K="$_gbl" '{ print } index($0, K) == 1 { print P }' "$0" > "$1"
+    }
+    _gba "$_dd/gb-m4.sh" "  assert_deny 'planted' '{}'"
+    _gbk "a single-quoted-label recorder in a gated block" "$_dd/gb-m4.sh" "$_gbw NOH-L1" 0
     # (the plants are spelled through two variables so that no line of THIS file holds a gate and a recorder together, which the lock would read)
-    _gbs=aa_cell_skip
     _gbr=assert_deny
     _gbp "$_dd/gb-m5.sh" "if ! $_gbs \"PLANT1\"; then $_gbr \"p\" \"\$1\"; fi"
-    _gbk "a one-line if-led gate before a recorder" "$_dd/gb-m5.sh" 'the gate is tested before the recorder on one line'
+    _gbk "a one-line if-led gate before a recorder" "$_dd/gb-m5.sh" 'the gate is tested before the recorder on one line' 0
     _gbp "$_dd/gb-m6.sh" "if [ \"\$AA_DELTA\" = 0 ] && ! $_gbs \"PLANT2\"; then\n  $_gbr \"p\" \"\$1\"\nfi"
-    _gbk "a multi-line if [ .. ] && ! gate" "$_dd/gb-m6.sh" 'recorder inside a block gated by aa_cell_skip (gate PLANT2'
-    _gbp "$_dd/gb-m7.sh" "if false; then :\nelif $_gbs \"PLANT3\"; then :\nelse\n  $_gbr \"p\" \"\$1\"\nfi"
-    _gbk "an elif gate whose outer if is no gate" "$_dd/gb-m7.sh" 'recorder inside a block gated by aa_cell_skip (gate PLANT3'
+    _gbk "a multi-line if [ .. ] && ! gate" "$_dd/gb-m6.sh" "$_gbw PLANT2" 1
+    _gbp "$_dd/gb-m7.sh" "if false; then :\nelif $_gbs \"PLANT3\"; then\n  :\nelse\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "an elif gate whose outer if is no gate" "$_dd/gb-m7.sh" "$_gbw PLANT3" 4
+    # SWAS-667: the scan rejects by default. gb-m8 to gb-m15 and gb-m19 to gb-m22 plant a gate in a shape the scan does not read; the wanted text is the
+    # fall-through's own, so each is watched red by it (without the fall-through the plant prints nothing). gb-m12, m16, m17 and m18 plant a shape the
+    # scan now READS as gated, with a recorder inside it.
+    # Each leg names the planted line it wants the RED on (the last argument: the offset of that line within the plant).
+    _gbu="an $_gbs in a shape this scan does not read"
+    _gbp "$_dd/gb-m8.sh" "if [ \"\$x\" = 1 ]; then :\nelif ! $_gbs \"PLANT4\"; then\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "a negated elif under a plain if (T1)" "$_dd/gb-m8.sh" "$_gbu" 1
+    _gbp "$_dd/gb-m9.sh" "if [ \"\$x\" = 1 ] && $_gbs \"PLANT5\"; then :; else\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "a positive gate after a test (T2)" "$_dd/gb-m9.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m10.sh" "if true && ! $_gbs \"PLANT6\"; then\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "an if whose lead is not ! or [ (T3)" "$_dd/gb-m10.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m11.sh" "for _p in 1; do\n  $_gbs \"PLANT7\" && continue\ndone"
+    _gbk "a gate with && continue (T4)" "$_dd/gb-m11.sh" "$_gbu" 1
+    _gbp "$_dd/gb-m12.sh" "plant8fn() {\n  $_gbs \"PLANT8\" && return\n  $_gbr \"p\" \"\$1\"\n}"
+    _gbk "a gate with && return and no status (T5)" "$_dd/gb-m12.sh" "$_gbw PLANT8" 2
+    _gbp "$_dd/gb-m13.sh" "! $_gbs \"PLANT9\" && {\n  $_gbr \"p\" \"\$1\"\n}"
+    _gbk "a negated gate with && { (T6)" "$_dd/gb-m13.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m14.sh" "$_gbs \"PLANT10\" || (\n  $_gbr \"p\" \"\$1\"\n)"
+    _gbk "a gate with || ( (T7)" "$_dd/gb-m14.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m15.sh" "$_gbs \"PLANT11\" ||\n  $_gbr \"p\" \"\$1\""
+    _gbk "a trailing || with the recorder on the next line (T8)" "$_dd/gb-m15.sh" "$_gbu" 0
+    _gba "$_dd/gb-m16.sh" "  $_gbr planted '{}'"
+    _gbk "a recorder with an unquoted first argument (T9a)" "$_dd/gb-m16.sh" "$_gbw NOH-L1" 0
+    _gba "$_dd/gb-m17.sh" "  $_gbr \\\\\n    planted '{}'"
+    _gbk "a recorder continued with a backslash (T9b)" "$_dd/gb-m17.sh" "$_gbw NOH-L1" 0
+    _gbp "$_dd/gb-m18.sh" "if $_gbs \"PLANT12\"; then\n  :\nelif $_gbs \"PLANT13\"; then\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "an elif after a positive if (T10)" "$_dd/gb-m18.sh" "$_gbw PLANT13" 3
+    _gbp "$_dd/gb-m19.sh" "$_gbs() {\n  return 1\n}"
+    _gbk "a second definition at column 0 (E1 exempts the first only)" "$_dd/gb-m19.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m20.sh" "$_gbs \"P14\" && $_gbs \"P15\" || {\n  :\n}"
+    _gbk "two gates on one line" "$_dd/gb-m20.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m21.sh" "case x in x) $_gbs \"P16\" && return ;; esac"
+    _gbk "a one-line case arm (command position)" "$_dd/gb-m21.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m22.sh" "aa_gblk_scan() {\n  $_gbs \"P17\"\n}"
+    _gbk "a second copy of the scan holding a gate (E2 exempts the first only)" "$_dd/gb-m22.sh" "$_gbu" 1
+    # the review round: a closer that holds a gate, a trailing-comment cut that hides one, an S2/S6 line with another tail, an S5 text after the wrong
+    # prefix, and a recorder on the same line as a positive elif
+    _gbp "$_dd/gb-m23.sh" "if $_gbs \"P18\"; then\n  :\nfi; $_gbs \"P19\""
+    _gbk "a fi closer that also holds a gate" "$_dd/gb-m23.sh" "$_gbu" 2
+    _gbp "$_dd/gb-m24.sh" "plant24fn() {\n  $_gbs \"P20\" && return\n}; $_gbs \"P21\""
+    _gbk "a } closer that also holds a gate" "$_dd/gb-m24.sh" "$_gbu" 2
+    _gbp "$_dd/gb-m25.sh" "echo \"a # b\"; $_gbs \"P22\""
+    _gbk "a gate behind a quoted hash that the comment cut hides" "$_dd/gb-m25.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m26.sh" "if $_gbs \"P23\"; then :\nfi"
+    _gbk "an if gate with a tail other than the whole-line forms (S2 anchored)" "$_dd/gb-m26.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m27.sh" "if $_gbs \"P24\"; then\n  :\nelif $_gbs \"P25\"; then :\nfi"
+    _gbk "an elif gate with a tail other than the whole-line form (S6 anchored)" "$_dd/gb-m27.sh" "$_gbu" 2
+    _gbp "$_dd/gb-m28.sh" "echo y; [ \"\$AA_DELTA\" = 1 ] || { $_gbs \"\$1\" && return 0; }; :"
+    _gbk "the wrapper text after something other than a gsr_deny/gsr_allow head (S5 anchored)" "$_dd/gb-m28.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m29.sh" "if false; then :\nelif $_gbs \"P26\"; then $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "a recorder on the same line as an elif gate outside a frame" "$_dd/gb-m29.sh" 'the gate is tested before the recorder on one line' 1
+    _gbp "$_dd/gb-m30.sh" "if $_gbs \"P27\"; then\n  :\nelif $_gbs \"P28\"; then $_gbr \"p\" \"\$1\"\nfi"
+    _gbk "a recorder on the same line as an elif gate inside a frame" "$_dd/gb-m30.sh" 'the gate is tested before the recorder on one line' 2
+    _gba "$_dd/gb-m31.sh" "  echo \"a # b\"; $_gbr \"x\" \"\$1\""
+    _gbk "a recorder behind a quoted hash that the comment cut hides, inside a gated block" "$_dd/gb-m31.sh" 'the gate is tested before the recorder on one line' 0
+    # S7 was deleted (fail closed, after the security read): a one-line gate-or-act is no read shape. A recorder in the tail still reds as
+    # gate-before-recorder; every other one-line gate-or-act, and every bypass shape S7 once accepted, now reds as unread (the _gbx legs below).
+    _gbp "$_dd/gb-m32.sh" "$_gbs \"P29\" || $_gbr \"p\" \"\$1\""
+    _gbk "a one-line gate-or-act with a recorder in the tail" "$_dd/gb-m32.sh" 'the gate is tested before the recorder on one line' 0
+    _gbp "$_dd/gb-m33.sh" "$_gbs \"P30\" || case x in\n  x) : ;;\nesac"
+    _gbk "a one-line gate-or-act whose tail opens a multi-line case" "$_dd/gb-m33.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m34.sh" "$_gbs \"P31\" || echo clean"
+    _gbk "a one-line gate || command (S7 deleted, fail closed)" "$_dd/gb-m34.sh" "$_gbu" 0
+    _gbp "$_dd/gb-m36.sh" "for _p in 1; do\n  $_gbs \"P33\" && break\ndone"
+    _gbk "a gate with && break (unread, like every one-line gate-or-act)" "$_dd/gb-m36.sh" "$_gbu" 1
+    _gbp "$_dd/gb-m35.sh" "$_gbs \"P32\" && { echo clean; }"
+    _gbk "a one-line gate && { cmd; } (S7 deleted, fail closed)" "$_dd/gb-m35.sh" "$_gbu" 0
+    _gbx() {   # <n> <label> <plant> -> plant before the NOH-L1 gate line; it must red unread on the first planted line
+      _gbp "$_dd/gb-$1.sh" "$3"; _gbk "$2" "$_dd/gb-$1.sh" "$_gbu" 0
+    }
+    _gbx m37 "a gate && : && return 0 (C1)" "$_gbs \"P34\" && : && return 0"
+    _gbx m38 "a gate && { return 0; } (C1)" "$_gbs \"P35\" && { return 0; }"
+    _gbx m39 "a gate &&  return 0 with two spaces (C1)" "$_gbs \"P36\" &&  return 0"
+    _gbx m40 "a gate && tab return 0 (C1)" "$_gbs \"P37\" && \treturn 0"
+    _gbx m41 "a gate && backslash return 0 (C1)" "$_gbs \"P38\" && \\\\return 0"
+    _gbx m42 "a gate && command exit (C1)" "$_gbs \"P39\" && command exit"
+    _gbx m43 "a gate && builtin return (C1)" "$_gbs \"P40\" && builtin return"
+    _gbx m44 "a gate && a quoted variable command (C1)" "$_gbs \"P41\" && \"\$X\""
+    _gbx m45 "a gate && eval return (C1)" "$_gbs \"P42\" && eval return"
+    _gbx m46 "a gate && echo with a quoted hash && return 0 (C1)" "$_gbs \"P43\" && echo \" # \" && return 0"
+    _gbx m47 "a gate || backslash-newline then a recorder (C2)" "$_gbs \"P44\" || \\\\\n  $_gbr \"p\" \"\$1\""
+    _gbx m48 "a gate && backslash-newline then a command (C2)" "$_gbs \"P45\" &&\\\\\n  :"
+    _gbx m49 "a gate || at the line end (C2)" "$_gbs \"P46\" ||\n  :"
+    _gbx m50 "a gate | at the line end (C2)" "$_gbs \"P47\" |\n  cat"
+    _gbx m51 "a gate || { : opening a group (C2)" "$_gbs \"P48\" || { :\n  $_gbr \"p\" \"\$1\"\n}"
+    _gbx m52 "a gate || ( : opening a subshell (C2)" "$_gbs \"P49\" || ( :\n  $_gbr \"p\" \"\$1\"\n)"
+    _gbx m53 "a gate || if c; then : (C2)" "$_gbs \"P50\" || if c; then :\n  $_gbr \"p\" \"\$1\"\nfi"
+    _gbx m54 "a gate || while :;do (C2)" "$_gbs \"P51\" || while :;do\n  $_gbr \"p\" \"\$1\"\ndone"
+    _gbx m55 "a gate || case x in x) (C2)" "$_gbs \"P52\" || case x in x)\n  $_gbr \"p\" \"\$1\" ;;\nesac"
+    _gbx m56 "a gate || return 0 (I3)" "$_gbs \"P53\" || return 0"
+    _gbx m57 "a gate || : && return 0 (I3)" "$_gbs \"P54\" || : && return 0"
+    _gbx m58 "a gate && return 0 || { is not an S3 block (S3 anchored)" "$_gbs \"P55\" && return 0 || {\n  :\n}"
+    _gbx m59 "an S1 negated if with another tail, || return 0 (S1 anchored)" "if ! $_gbs \"P56\" || return 0; then\n  :\nfi"
+    _gbx m60 "an S1 negated if with an && tail (S1 anchored)" "if ! $_gbs \"P57\" && true; then\n  :\nfi"
+    _gbx m61 "an S1 [ .. ] prefix hiding a | (S1 anchored)" "if [ \"\$x\" = 1 ] || return 0 || [ y ] && ! $_gbs \"P58\"; then\n  :\nfi"
+    _gbx m62 "an S1 [ .. ] prefix hiding a ; (S1 anchored)" "if [ \"\$x\" = 1 ]; return 0; [ y ] && ! $_gbs \"P59\"; then\n  :\nfi"
     rm -rf "$_dd"
   else
     # Infrastructure failure is NOT a pass: the legs did not prove themselves, so the selftest must
@@ -12811,14 +13365,18 @@ LXBLK
         [ "${_bs_nonest:-}" = 1 ] || aa_shard_nest
         AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step))
         for _bs_in in "n0 a" "n0 b"; do
-          if aa_cell_skip "$_bs_in"; then :; else AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step)); fi
+          if aa_cell_skip "$_bs_in"; then :; else
+            AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step))
+          fi
         done
         aa_shard_unnest
       fi
       # the last cell holds a TAB in its label: it must be listed and recorded as "x?y". It FOLLOWS n0 (reads state n0 left behind), so
       # it is selected by n0's index. _bs_nofollow=1 is the MUTANT: the shard runs drop the marker while --list-cells keeps it.
       [ "${_bs_nofollow:-}" = 1 ] && [ "$1" = shard ] || aa_shard_follow n0
-      if aa_cell_skip "$(printf 'x\ty')"; then :; else AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step)); fi
+      if aa_cell_skip "$(printf 'x\ty')"; then :; else
+        AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); AA_NOH_N=$((AA_NOH_N + _bs_step))
+      fi
       if [ "$1" = list ]; then :; else aa_shard_finish; fi
     )
     _bs_gen() {  # <M> <dir> [<failing label>] [<noh step>]: record <dir>/r<j> for j = 1..M, and the list file <dir>/list
@@ -12930,14 +13488,17 @@ LXBLK
       || { echo "nv: BS an ungated failure before the first gate did not give end rc=1: $(tail -n 1 "$_bsd/gup/r2")"; _st=1; }
     _bs_join T1 '11 22' dimsX 5 "$_bsd/gup/list" "$_bsd/gup/r1" "$_bsd/gup/r2" "$_bsd/gup/r3" "$_bsd/gup/r4"; _bs_refuse "an ungated failure before the first gate" "ended rc=1"
     # the selector itself: the default arm still RUNS a cell in an unknown mode, and run mode never reaches the shard state
-    AA_MODE=run; AA_SH_N=0; aa_cell_skip "c0" && { echo "nv: BS run mode skipped a cell"; _st=1; }
+    AA_MODE=run; AA_SH_N=0
+    if aa_cell_skip "c0"; then
+      echo "nv: BS run mode skipped a cell"; _st=1
+    fi
     [ "$AA_SH_N" = 0 ] || { echo "nv: BS run mode touched the shard counter"; _st=1; }
     rm -rf "$_bsd"
   fi
   # BS labels: a cell label (the first double-quoted argument of a cell helper) with an unescaped backtick or $( is RUN by the shell to build
   # the label, so it changes between runs and --list-cells disagrees with itself (the join refused PR #896 on two such labels). Static scan of
   # this file's own text; the mutant plants one and must red.
-  _bs_lab() { awk '/^[ \t]*(assert_[a-z_]+|gsr_[a-z_]+|gpab_[a-z_]+|aa_cell_skip)[ \t]+"/ { s = $0; sub(/^[^"]*"/, "", s); n = length(s)
+  _bs_lab() { awk '/^[ \t]*(assert_[a-z_]+|gsr_[a-z_]+|gpab_[a-z_]+|a[a]_cell_skip)[ \t]+"/ { s = $0; sub(/^[^"]*"/, "", s); n = length(s)
     for (i = 1; i <= n; i++) { c = substr(s, i, 1); if (c == "\\") { i++; continue } if (c == "\"") break
       if (c == "`" || (c == "$" && substr(s, i + 1, 1) == "(")) { print NR ": " $0; break } } }'; }
   [ -z "$(_bs_lab < "$0")" ] || { echo "nv: BS a cell label holds an unescaped backtick or dollar-paren: $(_bs_lab < "$0" | head -n 2)"; _st=1; }
@@ -13499,7 +14060,7 @@ gh-api-merge|both|{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT rep
 curl-merge-continuation|both|{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/me\\\nrge"}}
 FCEOF
 }
-aa_fc_one() {  # <arm> <PATH> <k> <label> <payload> — one capped trial, routed through aa_cell_skip
+aa_fc_one() {  # <arm> <PATH> <k> <label> <payload> — one capped trial, routed through the one skip predicate
   aa_cell_skip "fork-cap $1 k=$3 $4" && return 0
   aa_fc_over && return 0
   AA_FC_TRIALS=$((AA_FC_TRIALS + 1))
@@ -15134,6 +15695,400 @@ if [ "${GPAB_G:-}" != "" ]; then
   fi
   gx_mw "SWAS278A-MH4a: the outright deny of a multi-link object dropped -> H4a flips to ALLOW" \
     '/# H4-OBJECTS$/s/.*/        if false; then/' "$(gpab_write "$gx_cl/.git/objects/ab/o2")" allow
+  # === SWAS-875 G6: `sparkwright new <fresh temp dest> ...` in a dev clone (design docs/architecture/2026-11-13-dev-clone-g6-new-875-design.md rev 3a) ===
+  # Labels are all `SWAS875-`. The cells use this section's fixture (the root gx_R under /var/tmp, the clone gx_C, the non-repository home stand-in gx_home
+  # outside every temp root). Every fresh dest is a name that does not exist; the repositories, the symlink, the gitfile and the existing log the deny cells
+  # need are built here, inside GPAB_TMP only. IDENT has no mutant: kept as an exact mirror of G1-IDENT, with no measured catch (`-ef` follows links on both sides).
+  gx6_fl="--noninteractive --stack node --team solo --board md --harness claude --name demo"
+  gx6_nc="cd $gx_C && sh scripts/sparkwright new"   # the shape up to the dest
+  gx_a "SWAS875-A1 [root] G6: cd <clone> && new <fresh dest under temp>, the six flags" "$gx_R" "$gx6_nc $GPAB_TMP/g6a1 $gx6_fl"
+  gx_a "SWAS875-A2 [root] G6: the flags in another order, two harnesses, > <new temp log> 2>&1" "$gx_R" "$gx6_nc $GPAB_TMP/g6a2 --name demo --harness claude,codex --board md --team solo --stack node --noninteractive > $GPAB_TMP/g6a2.log 2>&1"
+  case "$GPAB_TMP" in
+    /private/tmp/*) gx6_a3="/tmp/${GPAB_TMP#/private/tmp/}/g6a3"; gx6_a3l="a /tmp spelling of a fresh dest (judged as /private/tmp where /tmp is a link)" ;;
+    *) gx6_a3="$GPAB_TMP/g6a3b"; gx6_a3l="a fresh dest under temp (same spelling as A1: GPAB_TMP is not under /private/tmp here)" ;;
+  esac
+  gx_a "SWAS875-A3 [root] G6: $gx6_a3l" "$gx_R" "$gx6_nc $gx6_a3 $gx6_fl"
+  gx_d "SWAS875-D1 [root] G6 dest relative" "$gx_R" "$gx6_nc g6d1 $gx6_fl"
+  gx_d "SWAS875-D2 [root] G6 dest under the protected root" "$gx_R" "$gx6_nc $gx_R/g6d2 $gx6_fl"
+  gx_d "SWAS875-D3 [root] G6 dest inside the clone" "$gx_R" "$gx6_nc $gx_C/g6d3 $gx6_fl"
+  gx_d "SWAS875-D4 [root] G6 dest outside every temp root (the home stand-in, a non-repository)" "$gx_R" "$gx6_nc $gx_home/g6d4 $gx6_fl"
+  mkdir -p "$GPAB_TMP/g6d5"
+  gx_d "SWAS875-D5 [root] G6 dest exists" "$gx_R" "$gx6_nc $GPAB_TMP/g6d5 $gx6_fl"
+  ln -s "$gx_rt" "$GPAB_TMP/g6lnk"
+  gx_d "SWAS875-D6 [root] G6 dest through a symlink in temp that points into the root" "$gx_R" "$gx6_nc $GPAB_TMP/g6lnk/g6d6 $gx6_fl"
+  gx_d "SWAS875-D7 [root] G6 --noninteractive missing" "$gx_R" "$gx6_nc $GPAB_TMP/g6d7 --stack node --team solo --board md --harness claude --name demo"
+  gx_d "SWAS875-D8 [root] G6 --board jira" "$gx_R" "$gx6_nc $GPAB_TMP/g6d8 --noninteractive --stack node --team solo --board jira --harness claude --name demo"
+  gx_d "SWAS875-D9 [root] G6 a repeated --stack" "$gx_R" "$gx6_nc $GPAB_TMP/g6d9 $gx6_fl --stack other"
+  gx_d "SWAS875-D10 [root] G6 --stack=x (the --flag=value form)" "$gx_R" "$gx6_nc $GPAB_TMP/g6d10 --noninteractive --stack=x --team solo --board md --harness claude --name demo"
+  gx_d "SWAS875-D11 [root] G6 an extra argument" "$gx_R" "$gx6_nc $GPAB_TMP/g6d11 $gx6_fl extra"
+  gx_d "SWAS875-D12 [root] G6 an unknown flag (--allow-nested)" "$gx_R" "$gx6_nc $GPAB_TMP/g6d12 $gx6_fl --allow-nested"
+  gx_d "SWAS875-D13 [root] G6 a quoted token" "$gx_R" "$gx6_nc $GPAB_TMP/g6d13 --noninteractive --stack node --team solo --board md --harness claude --name \"demo\""
+  gx_d "SWAS875-D14 [root] G6 the root's scripts/sparkwright by absolute path" "$gx_R" "cd $gx_C && sh $gx_R/scripts/sparkwright new $GPAB_TMP/g6d14 $gx6_fl"
+  gx_d "SWAS875-D15 [root] G6 env sh scripts/sparkwright new (no wrapper is peeled)" "$gx_R" "cd $gx_C && env sh scripts/sparkwright new $GPAB_TMP/g6d15 $gx6_fl"
+  mkdir -p "$GPAB_TMP/g6repo"; ( cd "$GPAB_TMP/g6repo" && git init -q ) >/dev/null 2>&1
+  gx_d "SWAS875-D16 [root] G6 dest inside another git work tree under temp" "$gx_R" "$gx6_nc $GPAB_TMP/g6repo/g6d16 $gx6_fl"
+  gx_d "SWAS875-D17 [root] G6 dest inside the clone's .git (rev-parse says rc 0, false)" "$gx_R" "$gx6_nc $gx_C/.git/g6d17 $gx6_fl"
+  mkdir -p "$GPAB_TMP/g6gf"; printf 'gitdir: /nonexistent/g6gf\n' > "$GPAB_TMP/g6gf/.git"
+  gx_d "SWAS875-D18 [root] G6 dest beside a .git file whose gitdir is missing (rc 128, not the discovery text)" "$gx_R" "$gx6_nc $GPAB_TMP/g6gf/g6d18 $gx6_fl"
+  mkdir -p "$GPAB_TMP/g6ext"; ( cd "$GPAB_TMP/g6ext" && git init -q ) >/dev/null 2>&1
+  printf '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tg6unknownkey = true\n' >> "$GPAB_TMP/g6ext/.git/config"
+  gx_d "SWAS875-D18b [root] G6 dest inside a repository with an unknown extensions key (rc 128, not the discovery text)" "$gx_R" "$gx6_nc $GPAB_TMP/g6ext/g6d18b $gx6_fl"
+  gx_d "SWAS875-D19p [root] G6 cd <clone> && mkdir <dest> && new <dest> (a second && segment creates the dest)" "$gx_R" "cd $gx_C && mkdir $GPAB_TMP/g6d19p && sh scripts/sparkwright new $GPAB_TMP/g6d19p $gx6_fl"
+  gx_d "SWAS875-D19 [root] G6 mkdir <dest>; cd <clone> && new <dest>" "$gx_R" "mkdir $GPAB_TMP/g6d19; cd $gx_C && sh scripts/sparkwright new $GPAB_TMP/g6d19 $gx6_fl"
+  gx_d "SWAS875-D20 [root] G6 followed by ; true" "$gx_R" "$gx6_nc $GPAB_TMP/g6d20 $gx6_fl; true"
+  gx_d "SWAS875-D20b [root] G6 followed by a background &" "$gx_R" "$gx6_nc $GPAB_TMP/g6d20b $gx6_fl &"
+  gx_d "SWAS875-D20c [root] G6 with a \$ in the cd segment" "$gx_R" "cd \$(printf %s $gx_C) && sh scripts/sparkwright new $GPAB_TMP/g6d20c $gx6_fl"
+  gx_c21="$GPAB_TMP/g6cl21"; gx_mkclone "$gx_c21"; gx_cfg "$gx_c21" core.hooksPath x
+  gx_d "SWAS875-D21 [root] G6 in a clone whose config sets core.hooksPath" "$gx_R" "cd $gx_c21 && sh scripts/sparkwright new $GPAB_TMP/g6d21 $gx6_fl"
+  gx_c22="$GPAB_TMP/g6cl22"; gx_mkclone "$gx_c22"; printf '#!/bin/sh\nexit 0\n' > "$gx_c22/.git/hooks/pre-push"; chmod +x "$gx_c22/.git/hooks/pre-push"
+  gx_d "SWAS875-D22 [root] G6 in a clone with an executable .git/hooks/pre-push" "$gx_R" "cd $gx_c22 && sh scripts/sparkwright new $GPAB_TMP/g6d22 $gx6_fl"
+  # D24: the dest climbs out of temp past a directory that does not exist; spelled from this fixture's own temp root (the climb is the depth of GPAB_TMP + 1)
+  gx6_up=''; gx6_q=$GPAB_TMP
+  while [ "$gx6_q" != / ] && [ "$gx6_q" != . ]; do gx6_up="$gx6_up../"; gx6_q=$(dirname "$gx6_q"); done
+  gx6_d24="$GPAB_TMP/g6nope/../${gx6_up}${gx_home#/}/g6d24"
+  gx_d "SWAS875-D24 [root] G6 dest climbs out of temp with .. past a directory that does not exist, to the home stand-in" "$gx_R" "$gx6_nc $gx6_d24 $gx6_fl"
+  printf 'x\n' > "$GPAB_TMP/g6log25.txt"
+  gx_d "SWAS875-D25 [root] G6 > an existing one-link file under temp" "$gx_R" "$gx6_nc $GPAB_TMP/g6d25 $gx6_fl > $GPAB_TMP/g6log25.txt 2>&1"
+  gx_d "SWAS875-D26 [root] G6 > a new log file inside another git work tree under temp (the log's ancestor is in a repository)" "$gx_R" "$gx6_nc $GPAB_TMP/g6d26 $gx6_fl > $GPAB_TMP/g6repo/new.log 2>&1"
+  ln -s "$gx_home/g6dl-nowhere" "$GPAB_TMP/g6dl"
+  gx_d "SWAS875-D27 [root] G6 dest under a dangling symlink in temp (its target is a non-existent path under the home stand-in)" "$gx_R" "$gx6_nc $GPAB_TMP/g6dl/x $gx6_fl"
+  gx6_l28="$GPAB_TMP/g6nope28/../${gx6_up}${gx_home#/}/g6log28"
+  gx_d "SWAS875-D28 [root] G6 > a log that climbs out of temp with .. past a directory that does not exist, to the home stand-in (the common redirect rule's .. test)" "$gx_R" "$gx6_nc $GPAB_TMP/g6d28 $gx6_fl > $gx6_l28 2>&1"
+  ln -s "$gx_home/g6dl-nowhere29" "$GPAB_TMP/g6dl29"
+  gx_d "SWAS875-D29 [root] G6 > a log under a dangling symlink in temp (its target is a non-existent path under the home stand-in)" "$gx_R" "$gx6_nc $GPAB_TMP/g6d29 $gx6_fl > $GPAB_TMP/g6dl29/log 2>&1"
+  # the <why> a miss names (design 2.4): dest, board, line (the bare form from the clone's own cwd)
+  gx6_w() {   # <label> <cwd> <command> <why>
+    aa_cell_skip "$1" && return 0
+    aa_shard_nest   # the hla_deny_has below is a gate inside this one
+    hla_deny_has "$GX_G" "$1" "$(gx_in "$2" "$3")" "declined this shape: $4"
+    aa_shard_unnest
+  }
+  gx6_w "SWAS875-W1 [root] G6 a dest in the root names why=dest" "$gx_R" "$gx6_nc $gx_R/g6w1 $gx6_fl" dest
+  gx6_w "SWAS875-W2 [root] G6 --board jira names why=board" "$gx_R" "$gx6_nc $GPAB_TMP/g6w2 --noninteractive --stack node --team solo --board jira --harness claude --name demo" board
+  gx6_w "SWAS875-W3 [clone] G6 the bare form from the clone's own cwd names why=line" "$gx_C" "sh scripts/sparkwright new $GPAB_TMP/g6w3 $gx6_fl" line
+  # --- MUTANTS: each flips its bound deny to ALLOW (gx_m asserts the flip and that the sed matched) ---
+  gx_m "SWAS875-ML: G6-LINE dropped -> D19p (a second && segment that creates the dest) flips to ALLOW" \
+    '/# G6-LINE$/s/.*/  :/' \
+    "$gx_R" "cd $gx_C && mkdir $GPAB_TMP/g6d19p && sh scripts/sparkwright new $GPAB_TMP/g6d19p $gx6_fl" allow
+  gx_m "SWAS875-MD: G6-DEST-DOTDOT dropped -> D24 flips to ALLOW" \
+    '/# G6-DOTDOT$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $gx6_d24 $gx6_fl" allow
+  gx_m "SWAS875-MG: the log-target-must-not-exist rule dropped -> D25 flips to ALLOW" \
+    '/# G6-LOGNEW$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d25 $gx6_fl > $GPAB_TMP/g6log25.txt 2>&1" allow
+  gx_m "SWAS875-MLT: the log-target-in-no-repository rule dropped -> D26 flips to ALLOW" \
+    '/# G6-LOGTREE$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d26 $gx6_fl > $GPAB_TMP/g6repo/new.log 2>&1" allow
+  gx_m "SWAS875-MNL: the no-symlink walk dropped -> D27 flips to ALLOW" \
+    '/# G6-NOLINK$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6dl/x $gx6_fl" allow
+  gx_m "SWAS875-MLD: the common redirect rule's .. test (G-REDIR-DOTDOT) admits -> D28 flips to ALLOW" \
+    's/^    \*\.\.\*) return 1 ;;   # G-REDIR-DOTDOT$/    *..*) : ;;   # G-REDIR-DOTDOT/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d28 $gx6_fl > $gx6_l28 2>&1" allow
+  gx_m "SWAS875-MLN: the log's no-symlink walk dropped -> D29 flips to ALLOW" \
+    '/# G6-LOGNOLINK$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d29 $gx6_fl > $GPAB_TMP/g6dl29/log 2>&1" allow
+  gx_m "SWAS875-MT: G6-DEST-TEMP dropped -> D4 flips to ALLOW" \
+    '/# G6-TEMP$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $gx_home/g6d4 $gx6_fl" allow
+  gx_m "SWAS875-MN: G6-DEST-NOTREE dropped -> D16 flips to ALLOW" \
+    '/# G6-NOTREE$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6repo/g6d16 $gx6_fl" allow
+  gx_m "SWAS875-MN0: NOTREE's rc-0 arm admits -> D17 flips to ALLOW" \
+    's/^    0) return 1 ;;   # G6-NOTREE-RC0$/    0) : ;;   # G6-NOTREE-RC0/' \
+    "$gx_R" "$gx6_nc $gx_C/.git/g6d17 $gx6_fl" allow
+  gx_m "SWAS875-MNE: NOTREE's other-error arm (the discovery-text test) admits -> D18 flips to ALLOW" \
+    '/# G6-NOTREE-TEXT$/s/.*/    128) : ;;   # G6-NOTREE-TEXT/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6gf/g6d18 $gx6_fl" allow
+  gx_m "SWAS875-MNE2: the same -> D18b (an unknown extensions key) flips to ALLOW" \
+    '/# G6-NOTREE-TEXT$/s/.*/    128) : ;;   # G6-NOTREE-TEXT/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6ext/g6d18b $gx6_fl" allow
+  gx_m "SWAS875-MW: G6-DEST-NEW dropped -> D5 flips to ALLOW" \
+    '/# G6-NEW$/s/.*/  :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d5 $gx6_fl" allow
+  gx_m "SWAS875-MI: the --noninteractive requirement dropped -> D7 flips to ALLOW" \
+    's/^    \*) return 1 ;;   # G6-NONINT$/    *) : ;;   # G6-NONINT/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d7 --stack node --team solo --board md --harness claude --name demo" allow
+  gx_m "SWAS875-MB: G6-BOARD admits any value -> D8 flips to ALLOW" \
+    '/# G6-BOARD$/s/.*/        :/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d8 --noninteractive --stack node --team solo --board jira --harness claude --name demo" allow
+  gx_m "SWAS875-MO: the once/arity check dropped -> D9 (a repeated --stack) flips to ALLOW" \
+    's/^      \*" \$_g6f "\*) return 1 ;;   # G6-ONCE$/      *" $_g6f "*) : ;;   # G6-ONCE/' \
+    "$gx_R" "$gx6_nc $GPAB_TMP/g6d9 $gx6_fl --stack other" allow
+  gx_m "SWAS875-MC: G6-CFG dropped -> D21 flips to ALLOW" \
+    '/# G6-CFG$/s/.*/  :/' \
+    "$gx_R" "cd $gx_c21 && sh scripts/sparkwright new $GPAB_TMP/g6d21 $gx6_fl" allow
+  gx_m "SWAS875-MH: G6-HOOKS dropped -> D22 flips to ALLOW" \
+    '/# G6-HOOKS$/s/.*/  :/' \
+    "$gx_R" "cd $gx_c22 && sh scripts/sparkwright new $GPAB_TMP/g6d22 $gx6_fl" allow
+  # === SWAS-883: the first-push admission (design docs/architecture/2026-11-14-guard-first-push-883-design.md, cells F1 and F4-F11, F13, F14, F17) ===
+  # Labels are all `SWAS883-`. The repositories P are kit-shaped fixtures under temp: a plain repository holding the root's hooks/pre-push (a byte copy, executable) as
+  # .git/hooks/pre-push, the guard core as .claude/hooks/guard-core.sh, and a remote origin at an https URL. The guard judged is GX_G, whose root gx_rt gets hooks/pre-push
+  # here (PROTECTED_ROOT is the root of the guard that runs, so the admission compares each P against gx_rt). The 883 cells need the guard's own environment clean of the
+  # fourteen override names the admission refuses; they are unset here and restored at the end (the env cells set one at a time with gx_envset). No network, no ls-remote.
+  # EVERY mutant below is COMPOUND with dropping the core byte-compare (CORECMP): gx_m mutates the gx_rt core, so every fixture core (a copy of the pristine one) differs
+  # from it, and the compare would decline each mutant's cell for a reason that is not the one under test. Only MC drops CORECMP alone.
+  # NOT BUILT here: the design-8 export cell (a fresh `sparkwright new` byte-identity check): it needs the exporter and its tree, which this battery does not build.
+  gx8_names='KIT_GUARD_CORE GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_EXEC_PATH GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS'
+  for gx8_v in $gx8_names; do
+    eval "gx8_prev_$gx8_v=\${$gx8_v-__unset__}"
+    unset "$gx8_v"
+  done
+  # $gx_rt is a fresh mktemp -d, but read back whether its hooks/ (and hooks/pre-push) existed before this block: if so they are saved here and restored at the end, never removed.
+  gx8_hk=no; gx8_hp=no
+  if [ -e "$gx_rt/hooks" ]; then gx8_hk=yes; fi
+  if [ -f "$gx_rt/hooks/pre-push" ]; then gx8_hp=yes; cp -p "$gx_rt/hooks/pre-push" "$gx_sc/gx8-hook.save"; fi
+  mkdir -p "$gx_rt/hooks"
+  if [ -f hooks/pre-push ]; then cp hooks/pre-push "$gx_rt/hooks/pre-push"; chmod +x "$gx_rt/hooks/pre-push"
+  else echo "FAIL SWAS883: hooks/pre-push is missing from the tree under test"; fail=1; fi
+  gx8_core="$gx_sc/gx8-core.sh"; cp "$GX_GC" "$gx8_core"
+  gx8_b="$GPAB_TMP/gx8-"
+  gx8_url=https://example.invalid/x.git
+  # The admission reads the GLOBAL git config, so the 883 cells run with HOME (and XDG_CONFIG_HOME) set to a fixture home whose .gitconfig the cell controls (empty by default); both restored at the end.
+  gx8_h="$GPAB_TMP/gx8-home"; mkdir -p "$gx8_h/xdg"
+  gx8_gc() { printf '' > "$gx8_h/.gitconfig"; [ -z "$1" ] || printf '[credential "https://github.com"]\n\thelper = %s\n' "$1" > "$gx8_h/.gitconfig"; }   # <helper value, or empty for an empty global config>
+  gx8_gc ''
+  gx_envset HOME "$gx8_h"
+  gx_envset XDG_CONFIG_HOME "$gx8_h/xdg"
+  gx8_mk() {   # <name> — a kit-shaped repository at ${gx8_b}<name>
+    gx8_q="${gx8_b}$1"
+    mkdir -p "$gx8_q/.claude/hooks"
+    ( cd "$gx8_q" && git init -q && git config remote.origin.url "$gx8_url" ) >/dev/null 2>&1
+    cp "$gx_rt/hooks/pre-push" "$gx8_q/.git/hooks/pre-push"; chmod +x "$gx8_q/.git/hooks/pre-push"
+    cp "$gx8_core" "$gx8_q/.claude/hooks/guard-core.sh"
+  }
+  gx8_w() {   # <label> <cwd> <command> <failed condition> — a refusal that carries the near-miss clause naming that condition
+    aa_cell_skip "$1" && return 0
+    aa_shard_nest   # the hla_deny_has below is a gate inside this one
+    hla_deny_has "$GX_G" "$1" "$(gx_in "$2" "$3")" "first-push admission: the $4 check failed"
+    aa_shard_unnest
+  }
+  gx8_cc='/# MUT-883-CORECMP$/s/.*/  :/'
+  # F1: the admitted shape, in its three spellings, with the tracked-hooks form and an scp-form push URL
+  gx8_mk f1; gx8_f1="${gx8_b}f1"
+  gx_a "SWAS883-F1 [root] first push: git -C <P> push -u origin main in a kit repository" "$gx_R" "git -C $gx8_f1 push -u origin main"
+  gx_a "SWAS883-F1b [root] first push without -u" "$gx_R" "git -C $gx8_f1 push origin main"
+  gx_a "SWAS883-F1c [root] first push with --set-upstream" "$gx_R" "git -C $gx8_f1 push --set-upstream origin main"
+  gx8_mk f1d; gx8_f1d="${gx8_b}f1d"; mkdir -p "$gx8_f1d/hooks"; cp "$gx_rt/hooks/pre-push" "$gx8_f1d/hooks/pre-push"; chmod +x "$gx8_f1d/hooks/pre-push"
+  gx_cfg "$gx8_f1d" core.hooksPath "$gx8_f1d/hooks"
+  gx_a "SWAS883-F1d [root] first push where core.hooksPath is P's own tracked hooks directory and the hook is P/hooks/pre-push" "$gx_R" "git -C $gx8_f1d push -u origin main"
+  gx8_mk f1f; gx8_f1f="${gx8_b}f1f"; gx_cfg "$gx8_f1f" remote.origin.pushurl git@example.invalid:x/y.git
+  gx_a "SWAS883-F1f [root] first push with an scp-form push URL" "$gx_R" "git -C $gx8_f1f push -u origin main"
+  # F11: no -C, the payload cwd is P
+  gx_a "SWAS883-F11 [P] no -C: git push -u origin main from P's own cwd" "$gx8_f1" "git push -u origin main"
+  # F4: grammar variants, every one declined (the clause names the grammar where the shape is one git push)
+  gx_d "SWAS883-F4a [root] --force" "$gx_R" "git -C $gx8_f1 push --force origin main"
+  gx_d "SWAS883-F4b [root] +main" "$gx_R" "git -C $gx8_f1 push origin +main"
+  gx_d "SWAS883-F4c [root] HEAD:main" "$gx_R" "git -C $gx8_f1 push -u origin HEAD:main"
+  gx_d "SWAS883-F4d [root] main:main" "$gx_R" "git -C $gx8_f1 push origin main:main"
+  gx_d "SWAS883-F4e [root] --all" "$gx_R" "git -C $gx8_f1 push --all origin main"
+  gx_d "SWAS883-F4f [root] --mirror" "$gx_R" "git -C $gx8_f1 push --mirror origin main"
+  gx_d "SWAS883-F4g [root] --no-verify" "$gx_R" "git -C $gx8_f1 push --no-verify origin main"
+  gx_d "SWAS883-F4h [root] master" "$gx_R" "git -C $gx8_f1 push -u origin master"
+  gx_d "SWAS883-F4i [root] a URL in place of the remote name" "$gx_R" "git -C $gx8_f1 push -u https://example.invalid/x.git main"
+  gx_d "SWAS883-F4j [root] a remote name with a leading -" "$gx_R" "git -C $gx8_f1 push -u -origin main"
+  gx_d "SWAS883-F4k [root] a remote name with a leading ." "$gx_R" "git -C $gx8_f1 push -u .origin main"
+  gx_d "SWAS883-F4l [root] a remote that is not configured" "$gx_R" "git -C $gx8_f1 push -u nosuch main"
+  gx_d "SWAS883-F4m [root] -c k=v before push" "$gx_R" "git -c k=v -C $gx8_f1 push -u origin main"
+  gx_d "SWAS883-F4n [root] an environment prefix" "$gx_R" "FOO=1 git -C $gx8_f1 push -u origin main"
+  gx_d "SWAS883-F4o [root] && true" "$gx_R" "git -C $gx8_f1 push -u origin main && true"
+  gx_d "SWAS883-F4p [root] -C relative" "$gx_R" "git -C gx8-f1 push -u origin main"
+  gx_d "SWAS883-F4q [root] -C holding a dollar" "$gx_R" "git -C /x/\$HOME push -u origin main"
+  gx_d "SWAS883-F4r [root] -C holding a backtick" "$gx_R" "git -C /x/\`id\` push -u origin main"
+  gx_d "SWAS883-F4s [root] -C ending in a .. component" "$gx_R" "git -C $gx8_f1/.. push -u origin main"
+  gx_d "SWAS883-F4t [root] -C holding a . component" "$gx_R" "git -C $gx8_f1/./ push -u origin main"
+  gx_d "SWAS883-F4u [root] a second option (-q) before the remote" "$gx_R" "git -C $gx8_f1 push -u -q origin main"
+  gx8_w "SWAS883-F4w [root] a third operand after main (the near miss names the grammar)" "$gx_R" "git -C $gx8_f1 push -u origin main extra" grammar
+  # F5, F6: P is bare, or P/.git is a gitfile (the git directory lives outside the .git/ the path rules protect)
+  gx8_q="${gx8_b}f5"; mkdir -p "$gx8_q/.claude/hooks"; ( cd "$gx8_q" && git init -q --bare . && git config remote.origin.url "$gx8_url" ) >/dev/null 2>&1
+  cp "$gx_rt/hooks/pre-push" "$gx8_q/hooks/pre-push"; chmod +x "$gx8_q/hooks/pre-push"; cp "$gx8_core" "$gx8_q/.claude/hooks/guard-core.sh"; gx8_f5=$gx8_q
+  gx8_q="${gx8_b}f6"; mkdir -p "$gx8_q/.claude/hooks" "$gx8_q/hooks"
+  ( cd "$gx8_q" && git init -q --separate-git-dir "${gx8_q}.gd" . && git config remote.origin.url "$gx8_url" && git config core.hooksPath "$gx8_q/hooks" ) >/dev/null 2>&1
+  cp "$gx_rt/hooks/pre-push" "$gx8_q/hooks/pre-push"; chmod +x "$gx8_q/hooks/pre-push"; cp "$gx8_core" "$gx8_q/.claude/hooks/guard-core.sh"; gx8_f6=$gx8_q
+  gx8_w "SWAS883-F5 [root] P is a bare repository" "$gx_R" "git -C $gx8_f5 push -u origin main" repository
+  gx8_w "SWAS883-F6 [root] P/.git is a gitfile" "$gx_R" "git -C $gx8_f6 push -u origin main" repository
+  gx8_mk f6b; gx8_f6b="${gx8_b}f6b"; mkdir -p "${gx8_b}f6b-wt"; gx_cfg "$gx8_f6b" core.worktree "${gx8_b}f6b-wt"
+  gx8_w "SWAS883-F6b [root] P/.git is a real directory but core.worktree points elsewhere (the top level is not P)" "$gx_R" "git -C $gx8_f6b push -u origin main" repository
+  # F7: the hook
+  gx8_mk f7a; gx8_f7a="${gx8_b}f7a"; rm -f "$gx8_f7a/.git/hooks/pre-push"
+  gx8_mk f7b; gx8_f7b="${gx8_b}f7b"; printf '#' >> "$gx8_f7b/.git/hooks/pre-push"
+  gx8_mk f7c; gx8_f7c="${gx8_b}f7c"; rm -f "$gx8_f7c/.git/hooks/pre-push"; ln -s "$gx_rt/hooks/pre-push" "$gx8_f7c/.git/hooks/pre-push"
+  gx8_mk f7d; gx8_f7d="${gx8_b}f7d"; chmod -x "$gx8_f7d/.git/hooks/pre-push"
+  gx8_w "SWAS883-F7a [root] no hook" "$gx_R" "git -C $gx8_f7a push -u origin main" hook
+  gx8_w "SWAS883-F7b [root] a hook with one changed byte" "$gx_R" "git -C $gx8_f7b push -u origin main" hook
+  gx8_w "SWAS883-F7c [root] a symlinked hook (its target is the kit's own)" "$gx_R" "git -C $gx8_f7c push -u origin main" hook
+  gx8_w "SWAS883-F7d [root] a non-executable hook" "$gx_R" "git -C $gx8_f7d push -u origin main" hook
+  gx8_w "SWAS883-F7e [P] the cwd form in a repository whose hook differs" "$gx8_f7b" "git push -u origin main" hook
+  # F8: the core, and the environment override names
+  gx8_mk f8; gx8_f8="${gx8_b}f8"; printf '#' >> "$gx8_f8/.claude/hooks/guard-core.sh"
+  gx8_w "SWAS883-F8 [root] a core that differs by one byte" "$gx_R" "git -C $gx8_f8 push -u origin main" core
+  gx_envset KIT_GUARD_CORE "$gx8_core"
+  gx8_w "SWAS883-F8b [root] KIT_GUARD_CORE set in the guard's environment" "$gx_R" "git -C $gx8_f1 push -u origin main" environment
+  gx_envrestore KIT_GUARD_CORE
+  gx_envset GIT_SSH ''
+  gx8_w "SWAS883-F8c [root] GIT_SSH set to an empty value (set, even empty, declines)" "$gx_R" "git -C $gx8_f1 push -u origin main" environment
+  gx_envrestore GIT_SSH
+  gx_envset GIT_ASKPASS x
+  gx8_w "SWAS883-F8d [root] GIT_ASKPASS set in the guard's environment" "$gx_R" "git -C $gx8_f1 push -u origin main" environment
+  gx_envrestore GIT_ASKPASS
+  gx_envset SSH_ASKPASS x
+  gx8_w "SWAS883-F8e [root] SSH_ASKPASS set in the guard's environment" "$gx_R" "git -C $gx8_f1 push -u origin main" environment
+  gx_envrestore SSH_ASKPASS
+  # F9: the effective config
+  gx8_mk f9a; gx8_f9a="${gx8_b}f9a"; mkdir -p "${gx8_b}f9a-hp"; cp "$gx_rt/hooks/pre-push" "${gx8_b}f9a-hp/pre-push"; chmod +x "${gx8_b}f9a-hp/pre-push"; gx_cfg "$gx8_f9a" core.hooksPath "${gx8_b}f9a-hp"
+  gx8_mk f9b; gx8_f9b="${gx8_b}f9b"; gx_cfg "$gx8_f9b" include.path "${gx8_b}f9b-none"
+  gx8_mk f9c; gx8_f9c="${gx8_b}f9c"; gx_cfg "$gx8_f9c" remote.origin.mirror true
+  gx8_mk f9d; gx8_f9d="${gx8_b}f9d"; gx_cfg "$gx8_f9d" core.sshCommand 'ssh -v'
+  gx8_mk f9e; gx8_f9e="${gx8_b}f9e"; gx_cfg "$gx8_f9e" credential.helper '!x'
+  gx8_mk f9f; gx8_f9f="${gx8_b}f9f"; gx_cfg "$gx8_f9f" remote.origin.receivepack x
+  gx8_w "SWAS883-F9a [root] core.hooksPath elsewhere (the hook is not at P's own hook path)" "$gx_R" "git -C $gx8_f9a push -u origin main" hook
+  gx8_w "SWAS883-F9b [root] include.path present" "$gx_R" "git -C $gx8_f9b push -u origin main" config
+  gx8_w "SWAS883-F9c [root] remote.origin.mirror true" "$gx_R" "git -C $gx8_f9c push -u origin main" config
+  gx8_w "SWAS883-F9d [root] core.sshCommand set" "$gx_R" "git -C $gx8_f9d push -u origin main" config
+  gx8_w "SWAS883-F9e [root] a ! credential helper in P's local config (local scope)" "$gx_R" "git -C $gx8_f9e push -u origin main" config
+  gx8_w "SWAS883-F9f [root] remote.origin.receivepack set" "$gx_R" "git -C $gx8_f9f push -u origin main" config
+  gx_envset GIT_DIR "$gx8_f1/.git"
+  gx8_w "SWAS883-F9g [root] GIT_DIR set in the guard's environment" "$gx_R" "git -C $gx8_f1 push -u origin main" environment
+  gx_envrestore GIT_DIR
+  gx8_mk f9h; gx8_f9h="${gx8_b}f9h"; gx_cfg "$gx8_f9h" core.askPass x
+  gx8_mk f9i; gx8_f9i="${gx8_b}f9i"; gx_cfg "$gx8_f9i" remote.origin.vcs x
+  gx8_w "SWAS883-F9h [root] core.askPass set in P's config" "$gx_R" "git -C $gx8_f9h push -u origin main" config
+  gx8_w "SWAS883-F9i [root] remote.origin.vcs set" "$gx_R" "git -C $gx8_f9i push -u origin main" config
+  # F19: submodules and signing (each unset or false; no .gitmodules of any type, no .git/modules)
+  gx8_mk f19a; gx8_f19a="${gx8_b}f19a"; gx_cfg "$gx8_f19a" push.recurseSubmodules on-demand
+  gx8_mk f19b; gx8_f19b="${gx8_b}f19b"; gx_cfg "$gx8_f19b" submodule.recurse true
+  gx8_mk f19c; gx8_f19c="${gx8_b}f19c"; gx_cfg "$gx8_f19c" push.gpgSign true
+  gx8_mk f19d; gx8_f19d="${gx8_b}f19d"; : > "$gx8_f19d/.gitmodules"
+  gx8_mk f19e; gx8_f19e="${gx8_b}f19e"; mkdir -p "$gx8_f19e/.git/modules"
+  gx8_w "SWAS883-F19a [root] push.recurseSubmodules on-demand" "$gx_R" "git -C $gx8_f19a push -u origin main" config
+  gx8_w "SWAS883-F19b [root] submodule.recurse true" "$gx_R" "git -C $gx8_f19b push -u origin main" config
+  gx8_w "SWAS883-F19c [root] push.gpgSign true" "$gx_R" "git -C $gx8_f19c push -u origin main" config
+  gx8_w "SWAS883-F19d [root] P/.gitmodules present (an empty file)" "$gx_R" "git -C $gx8_f19d push -u origin main" config
+  gx8_w "SWAS883-F19e [root] P/.git/modules present (a directory)" "$gx_R" "git -C $gx8_f19e push -u origin main" config
+  # F21: a malformed config makes every git read fail (rc 128); the admission declines at its first read, the repository check
+  gx8_mk f21; gx8_f21="${gx8_b}f21"; printf '[core\n\tbroken = \n' >> "$gx8_f21/.git/config"
+  gx8_w "SWAS883-F21 [root] a malformed P/.git/config declines (git fails on every read; the earlier repository read declines first)" "$gx_R" "git -C $gx8_f21 push -u origin main" repository
+  # F18: a ! credential helper is admitted only at global or system scope and only as exactly `!<abs path>/gh auth git-credential`; the global config is the fixture home's .gitconfig
+  gx8_mk f18a; gx8_f18a="${gx8_b}f18a"
+  gx8_gc '!/opt/homebrew/bin/gh auth git-credential'
+  gx_a "SWAS883-F18a [root] a global ! credential helper that is exactly the gh form is admitted" "$gx_R" "git -C $gx8_f18a push -u origin main"
+  gx8_mk f18b; gx8_f18b="${gx8_b}f18b"
+  gx8_gc '!/usr/local/bin/other-helper get'
+  gx8_w "SWAS883-F18b [root] a global ! credential helper that is not the gh form" "$gx_R" "git -C $gx8_f18b push -u origin main" config
+  gx8_mk f18c; gx8_f18c="${gx8_b}f18c"
+  gx8_gc '!/opt/homebrew/bin/gh auth git-credential --extra'
+  gx8_w "SWAS883-F18c [root] a global ! credential helper that is the gh form plus an extra argument" "$gx_R" "git -C $gx8_f18c push -u origin main" config
+  gx8_mk f18d; gx8_f18d="${gx8_b}f18d"; gx_cfg "$gx8_f18d" credential.https://github.com.helper '!/opt/homebrew/bin/gh auth git-credential'
+  gx8_gc ''
+  gx8_w "SWAS883-F18d [root] the gh-form ! credential helper in P's LOCAL config (local scope)" "$gx_R" "git -C $gx8_f18d push -u origin main" config
+  # F18e-j: a plain-word helper is admitted only at global or system scope and only as osxkeychain, store or manager (a non-empty LOCAL value declines at once)
+  gx8_mk f18e; gx8_f18e="${gx8_b}f18e"; gx_cfg "$gx8_f18e" credential.https://github.com.helper store
+  gx8_w "SWAS883-F18e [root] a LOCAL credential helper store (local scope, a non-empty value)" "$gx_R" "git -C $gx8_f18e push -u origin main" config
+  gx8_mk f18f; gx8_f18f="${gx8_b}f18f"
+  printf '[credential "https://github.com"]\n\thelper = "store; x"\n' > "$gx8_h/.gitconfig"   # quoted: an unquoted ; would start a comment
+  gx8_w "SWAS883-F18f [root] a global helper value store; x (not exactly one listed word)" "$gx_R" "git -C $gx8_f18f push -u origin main" config
+  gx8_gc ''
+  gx8_mk f18g; gx8_f18g="${gx8_b}f18g"
+  gx8_gc 'osxkeychain'
+  gx_a "SWAS883-F18g [root] a global credential helper osxkeychain is admitted" "$gx_R" "git -C $gx8_f18g push -u origin main"
+  gx8_gc ''
+  gx8_mk f18h; gx8_f18h="${gx8_b}f18h"
+  gx8_gc '/usr/local/bin/git-credential-x'
+  gx8_w "SWAS883-F18h [root] a global helper that is an absolute path" "$gx_R" "git -C $gx8_f18h push -u origin main" config
+  gx8_gc ''
+  gx8_mk f18i; gx8_f18i="${gx8_b}f18i"
+  gx8_gc 'foo'
+  gx8_w "SWAS883-F18i [root] a global helper word foo (not on the list)" "$gx_R" "git -C $gx8_f18i push -u origin main" config
+  gx8_gc ''
+  gx8_mk f18j; gx8_f18j="${gx8_b}f18j"
+  printf '[credential "https://github.com"]\n\thelper = "store\\nx"\n' > "$gx8_h/.gitconfig"   # git's \n escape in a quoted value: the value holds a newline
+  gx8_w "SWAS883-F18j [root] a global helper value that contains a newline (store, newline, x) declines (the word-list test or the newline check)" "$gx_R" "git -C $gx8_f18j push -u origin main" config
+  gx8_gc ''
+  # F18k, F18l: an alias named credential-<word> runs in place of a missing git-credential-<word> program, so the key declines at any scope (local, then the fixture home's global config)
+  gx8_mk f18k; gx8_f18k="${gx8_b}f18k"; gx_cfg "$gx8_f18k" alias.credential-zzz '!x'
+  gx8_w "SWAS883-F18k [root] alias.credential-zzz set in P's local config" "$gx_R" "git -C $gx8_f18k push -u origin main" config
+  gx8_mk f18l; gx8_f18l="${gx8_b}f18l"
+  printf '[alias]\n\tcredential-zzz = !x\n' > "$gx8_h/.gitconfig"
+  gx8_w "SWAS883-F18l [root] alias.credential-zzz set in the GLOBAL config" "$gx_R" "git -C $gx8_f18l push -u origin main" config
+  gx8_gc ''
+  # F10: every push URL must be https, ssh or scp-form
+  gx8_n=0
+  for gx8_u in 'ext::x' 'foo::x' 'file:///x' '/bare/path'; do
+    gx8_n=$((gx8_n + 1)); gx8_mk "f10$gx8_n"; gx_cfg "${gx8_b}f10$gx8_n" remote.origin.pushurl "$gx8_u"
+    gx8_w "SWAS883-F10-$gx8_n [root] the push URL is $gx8_u" "$gx_R" "git -C ${gx8_b}f10$gx8_n push -u origin main" URL
+  done
+  gx8_mk f10p; gx8_f10p="${gx8_b}f10p"; gx_cfg "$gx8_f10p" 'url.ext::.pushInsteadOf' 'https://example.invalid/'
+  gx8_w "SWAS883-F10p [root] an https URL that pushInsteadOf rewrites to ext::" "$gx_R" "git -C $gx8_f10p push -u origin main" URL
+  gx8_mk f10_5; gx_cfg "${gx8_b}f10_5" remote.origin.pushurl 'git@-x:o/r.git'
+  gx8_w "SWAS883-F10-5 [root] the push URL is an scp form with a host that leads with - (git@-x:o/r.git)" "$gx_R" "git -C ${gx8_b}f10_5 push -u origin main" URL
+  gx8_mk f10_6; gx_cfg "${gx8_b}f10_6" remote.origin.pushurl 'ssh://-oProxyCommand=x/y'
+  gx8_w "SWAS883-F10-6 [root] the push URL is ssh://-oProxyCommand=x/y" "$gx_R" "git -C ${gx8_b}f10_6 push -u origin main" URL
+  gx8_mk f10_7; gx_cfg "${gx8_b}f10_7" remote.origin.pushurl 'ssh://git@host.example:22/o/r.git'
+  gx_a "SWAS883-F10-7 [root] the push URL is ssh://git@host.example:22/o/r.git (the ssh:// positive)" "$gx_R" "git -C ${gx8_b}f10_7 push -u origin main"
+  # F13: a second pushurl after a valid one. F14: an includeIf (in P's own config; the fixture home's global config stays empty here)
+  gx8_mk f13; gx8_f13="${gx8_b}f13"; gx_cfg "$gx8_f13" remote.origin.pushurl https://example.invalid/y.git; gx_cfg "$gx8_f13" --add remote.origin.pushurl 'ext::x'
+  gx8_w "SWAS883-F13 [root] a second pushurl of ext::x after a valid https one" "$gx_R" "git -C $gx8_f13 push -u origin main" URL
+  gx8_mk f14; gx8_f14="${gx8_b}f14"; gx_cfg "$gx8_f14" 'includeIf.gitdir:/x/.path' "${gx8_b}f14-none"
+  gx8_w "SWAS883-F14 [root] an includeIf key in P's config" "$gx_R" "git -C $gx8_f14 push -u origin main" config
+  gx8_mk f14g; gx8_f14g="${gx8_b}f14g"
+  printf '[includeIf "gitdir:/x/"]\n\tpath = %s\n' "${gx8_b}f14g-none" > "$gx8_h/.gitconfig"
+  gx8_w "SWAS883-F14g [root] an includeIf key in the GLOBAL config" "$gx_R" "git -C $gx8_f14g push -u origin main" config
+  gx8_gc ''
+  # F17: the hook and core paths of a P outside the session project: the cp command form denies; the Write form is allowed today (below)
+  # Residual R1 (the Write form is ALLOWED today, documented): a concurrent sibling Write between the admission and the push can replace the hook, and the swapped hook lacks the inline main check.
+  assert_allow_at "$GX_G" "SWAS883-F17a [edit] a Write to P/.git/hooks/pre-push is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.git/hooks/pre-push")"
+  assert_allow_at "$GX_G" "SWAS883-F17b [edit] a Write to P/hooks/pre-push is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1d/hooks/pre-push")"
+  assert_allow_at "$GX_G" "SWAS883-F17c [edit] a Write to P/.claude/hooks/guard-core.sh is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.claude/hooks/guard-core.sh")"
+  assert_allow_at "$GX_G" "SWAS883-F17f [edit] a Write to P/.git/config is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.git/config")"
+  gx_d "SWAS883-F17d [root] cp over P/hooks/pre-push" "$gx_R" "cp $gx_S/t.txt $gx8_f1d/hooks/pre-push"
+  gx_d "SWAS883-F17e [root] cp over P/.claude/hooks/guard-core.sh" "$gx_R" "cp $gx_S/t.txt $gx8_f1/.claude/hooks/guard-core.sh"
+  # --- MUTANTS: each flips its bound deny to ALLOW (gx_m asserts the flip and that the sed matched); all but MC also drop CORECMP (see above) ---
+  gx_m "SWAS883-MH (COMPOUND with CORECMP): the hook byte-compare dropped -> F7b flips to ALLOW" \
+    "/# MUT-883-HOOKCMP\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f7b push -u origin main" allow
+  gx_m "SWAS883-MC: the core byte-compare dropped -> F8 flips to ALLOW" \
+    "$gx8_cc" "$gx_R" "git -C $gx8_f8 push -u origin main" allow
+  gx_m "SWAS883-MP1 (COMPOUND with CORECMP): the plain-repository tests (the .git directory, bare, top level) dropped -> F5 flips to ALLOW" \
+    "/# MUT-883-PLAIN\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f5 push -u origin main" allow
+  gx_m "SWAS883-MP2 (COMPOUND with CORECMP): the same -> F6 (a gitfile) flips to ALLOW" \
+    "/# MUT-883-PLAIN\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f6 push -u origin main" allow
+  gx_m "SWAS883-MU (COMPOUND with CORECMP): the fetch URL read instead of the push URL -> F10p (pushInsteadOf) flips to ALLOW" \
+    "s/get-url --push --all/get-url --all/;$gx8_cc" "$gx_R" "git -C $gx8_f10p push -u origin main" allow
+  gx_m "SWAS883-MR (COMPOUND with CORECMP): the refspec test dropped -> F4c (HEAD:main) flips to ALLOW" \
+    "/# MUT-883-REFSPEC\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f1 push -u origin HEAD:main" allow
+  gx_m "SWAS883-MI1 (COMPOUND with CORECMP): the include check dropped -> F9b (include.path) flips to ALLOW" \
+    "/# MUT-883-INCLUDE\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f9b push -u origin main" allow
+  gx_m "SWAS883-MI2 (COMPOUND with CORECMP): the same -> F14 (includeIf) flips to ALLOW" \
+    "/# MUT-883-INCLUDE\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f14 push -u origin main" allow
+  gx_m "SWAS883-MA (COMPOUND with CORECMP): only the first push URL read -> F13 (a second pushurl) flips to ALLOW" \
+    "/# MUT-883-ALLURLS\$/s/.*/    _fp_rest=/;$gx8_cc" "$gx_R" "git -C $gx8_f13 push -u origin main" allow
+  gx8_gc '!/usr/local/bin/other-helper get'
+  gx_m "SWAS883-MG (COMPOUND with CORECMP): the gh-form exactness dropped (any global ! helper admits) -> F18b flips to ALLOW" \
+    "/# MUT-883-GHFORM\$/s/.*/    :/;$gx8_cc" "$gx_R" "git -C $gx8_f18b push -u origin main" allow
+  gx8_gc 'foo'
+  gx_m "SWAS883-MW (COMPOUND with CORECMP): the helper word list admits any plain word -> F18i flips to ALLOW" \
+    '/# MUT-883-HELPERLIST$/s/.*/      *) _fp_wl=yes ;;/;'"$gx8_cc" "$gx_R" "git -C $gx8_f18i push -u origin main" allow
+  gx8_gc ''
+  gx_m "SWAS883-MS (COMPOUND with CORECMP): the local-scope helper decline dropped -> F18e flips to ALLOW" \
+    '/# MUT-883-HELPERSCOPE$/s/.*/      *) continue ;;/;'"$gx8_cc" "$gx_R" "git -C $gx8_f18e push -u origin main" allow
+  gx_m "SWAS883-MK (COMPOUND with CORECMP): the core.askPass check dropped -> F9h flips to ALLOW" \
+    "/# MUT-883-ASKPASS\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f9h push -u origin main" allow
+  gx_m "SWAS883-MAL (COMPOUND with CORECMP): the alias.credential-* check dropped -> F18k flips to ALLOW" \
+    "/# MUT-883-ALIAS\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f18k push -u origin main" allow
+  gx_m "SWAS883-MSM (COMPOUND with CORECMP): the .gitmodules check dropped -> F19d flips to ALLOW" \
+    "/# MUT-883-SUBMOD\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f19d push -u origin main" allow
+  printf '[includeIf "gitdir:/x/"]\n\tpath = %s\n' "${gx8_b}f14g-none" > "$gx8_h/.gitconfig"
+  gx_m "SWAS883-MI3 (COMPOUND with CORECMP): the include check dropped -> F14g (a GLOBAL includeIf) flips to ALLOW" \
+    "/# MUT-883-INCLUDE\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f14g push -u origin main" allow
+  gx8_gc ''
+  gx_envrestore HOME
+  gx_envrestore XDG_CONFIG_HOME
+  if [ "$gx8_hk" = no ]; then rm -rf "$gx_rt/hooks"
+  elif [ "$gx8_hp" = yes ]; then cp -p "$gx_sc/gx8-hook.save" "$gx_rt/hooks/pre-push"
+  else rm -f "$gx_rt/hooks/pre-push"; fi
+  for gx8_v in $gx8_names; do
+    gx8_x=''; eval "gx8_x=\$gx8_prev_$gx8_v"
+    if [ "$gx8_x" != __unset__ ]; then eval "$gx8_v=\$gx8_x; export $gx8_v"; fi
+  done
   # === SWAS-278a fix round (Architect R4; security M1, M2, L4; review I1, M1, M4) =============================================
   # R4: user.name and user.email are benign identity keys (they run no code and redirect nothing): allowed beside the plain keys, anything else still refused.
   gx_ids="$GPAB_TMP/gxcl-id"; gx_mkclone "$gx_ids"; gx_cfg "$gx_ids" user.name "A Dev"; gx_cfg "$gx_ids" user.email dev@example.com
@@ -15359,13 +16314,13 @@ if [ "${GPAB_G:-}" != "" ]; then
       fi
     done
   }
-  GX_DRIFT_OK='board-migrate.sh shell-parse-lint.sh'   # board-migrate.sh: reached only by the `migrate` verb, which G4 refuses (root-only). shell-parse-lint.sh: run only by tracker-jira.sh --selftest. No other exemption.
+  GX_DRIFT_OK='board-migrate.sh shell-parse-lint.sh promotion-verify.sh start.sh'   # board-migrate.sh: reached only by the `migrate` verb, which G4 refuses (root-only). shell-parse-lint.sh: run only by tracker-jira.sh --selftest. promotion-verify.sh and start.sh: run only by checkout-lease.sh --selftest (its CL12 cells run them in a fixture checkout), never by a G4 verb. No other exemption.
   aa_cell_skip "SWAS278A-X12f" || {
     gx_dr=$(gx_drift .claude/hooks/guard-core.sh)
     if [ -z "$gx_dr" ]; then echo "PASS deny : SWAS278A-X12f the G4 table names every sibling script its table files source or run"
     else echo "FAIL (drift): SWAS278A-X12f a table file uses a sibling script the table lacks: $(printf '%s' "$gx_dr" | tr '\n' ' ')"; fail=1; fi
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
-    sed 's/^_CP8B_G4_TABLE=.*$/_CP8B_G4_TABLE='"'"'scripts\/board.sh scripts\/board-claim.sh scripts\/tracker-conf.sh scripts\/tracker-cred.sh scripts\/tracker-read.sh scripts\/runaway-guard.sh conformance\/backlog-lib.sh .kit\/budget.conf'"'"'/' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.drift"
+    sed 's/^_CP8B_G4_TABLE=.*$/_CP8B_G4_TABLE='"'"'scripts\/board.sh scripts\/board-claim.sh scripts\/checkout-lease.sh scripts\/tracker-conf.sh scripts\/tracker-cred.sh scripts\/tracker-read.sh scripts\/runaway-guard.sh conformance\/backlog-lib.sh .kit\/budget.conf'"'"'/' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.drift"
     gx_dm=$(gx_drift "$GPAB_TMP/gc.drift")
     if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/gc.drift"; then echo "FAIL mutant : SWAS278A-MX12f — the mutation matched nothing"; fail=1
     elif [ "$gx_dm" = "tracker-jira.sh" ]; then echo "PASS mutant : SWAS278A-MX12f (the adapter's row dropped from the table: the drift leg reports exactly $gx_dm)"
@@ -15776,7 +16731,12 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . --no-pager diff --stat)"}}' deny
 fi
 
-if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_shard_nest; aa_fc_main; aa_shard_unnest; fi   # SWAS-374: the per-trial gates in aa_fc_one nest inside this one
+# SWAS-374: the per-trial gates in aa_fc_one nest inside this one
+if [ "$AA_DELTA" = 0 ]; then
+  if ! aa_cell_skip "fork-cap"; then
+    aa_shard_nest; aa_fc_main; aa_shard_unnest
+  fi
+fi
 
 # === SWAS-583 - the matcher lock (a static leg: it spawns no guard and is not a counted cell) =================
 # Every grep, egrep or fgrep in COMMAND POSITION in the guard core, the adapter and the CLI must sit inside the body of one of the
@@ -15974,7 +16934,10 @@ aa_gmq_scan() { printf '%s\n' "$2" | awk -v F="$1" "$AA_GMQ_AWK"; }
 #   _cp8b_seg_sed_script_ro guard_check_mcp   message-only sites (reason text and migration text, no verdict)
 #   kit-guard            the CLI's own selftest assertions and its shim installer: not deny logic
 AA_GMQ_ALLOW='guard-core.sh:_gmq:2 guard-core.sh:_gmqn:2 guard-core.sh:_gmo:2 guard-core.sh:_ssr_grep:1 guard-core.sh:_s6_hd_grep:1 guard-core.sh:_scp_copy_word:1 guard-core.sh:guard_check_skill:2 guard-core.sh:kit_dial_mode:1 guard-core.sh:_cp8b_seg_sed_script_ro:2 guard-core.sh:guard_check_mcp:2 kit-guard:-:20 kit-guard:klog_redact_cell:2 kit-guard:install_shims:1'
-AA_GMQ_SUBPIN='guard-core.sh=10 guard.sh=0 kit-guard=0'
+# SWAS-842: guard-core.sh 10 -> 11 for _lda842_admitted (a subshell body by design §2.B; no matcher in its body, so AA_GMQ_ALLOW is unchanged).
+# SWAS-875: guard-core.sh 11 -> 12 for _cp8b_g6_line (a subshell body by design §2.2 G6-LINE, so its set -f ends with it; no matcher in its body, so AA_GMQ_ALLOW is unchanged).
+# SWAS-883: guard-core.sh 12 -> 13 for _fp883_run (a subshell body by design §3; no matcher in its body, so AA_GMQ_ALLOW is unchanged).
+AA_GMQ_SUBPIN='guard-core.sh=13 guard.sh=0 kit-guard=0'
 # <core text> <adapter text> <cli text>; rc 0 = green. Diagnostics on stdout.
 aa_gmq_lock() {
   _gl_t=$( aa_gmq_scan guard-core.sh "$1" && aa_gmq_scan guard.sh "$2" && aa_gmq_scan kit-guard "$3" ) || { echo "  the tokenizer failed"; return 1; }
@@ -15986,7 +16949,10 @@ aa_gmq_tok_cell() {  # <label> <wanted count> <source>
 }
 _gq_go=1
 case "$AA_MODE" in
-  scoped|list|shard) if aa_cell_skip "GMQ-LOCK"; then _gq_go=0; fi ;;   # a shard takes it as one cheap cell, a scoped run only when it names it
+  scoped|list|shard)   # a shard takes it as one cheap cell, a scoped run only when it names it
+    if aa_cell_skip "GMQ-LOCK"; then
+      _gq_go=0
+    fi ;;
 esac
 if [ "$AA_DELTA" = 0 ] && [ "$_gq_go" = 1 ]; then
   _gq_nl='
@@ -16182,7 +17148,10 @@ aa_gm_mutant() {  # <name> <sed program>: a copy of the adapter and a mutated co
 }
 _gm_go=1
 case "$AA_MODE" in
-  oracle|scoped|list|shard) if aa_cell_skip "GM-CELLS"; then _gm_go=0; fi ;;   # the heavy leg (minutes): skipped under --selftest (oracle mode skips guard spawns), one cell in a shard, never in a scoped run that does not name it
+  oracle|scoped|list|shard)   # the heavy leg (minutes): skipped under --selftest (oracle mode skips guard spawns), one cell in a shard, never in a scoped run that does not name it
+    if aa_cell_skip "GM-CELLS"; then
+      _gm_go=0
+    fi ;;
 esac
 if [ "$AA_DELTA" = 0 ] && [ "$_gm_go" = 1 ]; then
   AA_GM_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/aa-gmcell.XXXXXX") || { echo "FAIL: GM-CELLS: mktemp failed, the cells cannot run"; exit 1; }
@@ -16292,6 +17261,17 @@ if [ "$AA_DELTA" = 0 ] && [ "$_gm_go" = 1 ]; then
   aa_gm_sweep "read-only awk" cmd 'awk NR==1 .claude/hooks/guard.sh'
   aa_gm_sweep "git output write" cmd 'git diff --output=/tmp/aa-gm-x'
   aa_gm_sweep "git exec argument" cmd 'git rebase --exec ls main'
+  aa_gm_sweep "local claims update-ref" cmd 'git update-ref refs/local-claims/R abc1234'
+  aa_gm_sweep "local claims refspec fetch" cmd 'git fetch origin refs/claims/R:refs/local-claims/R'
+  aa_gm_sweep "local claims bare push" cmd 'git push origin refs/local-claims/R'
+  aa_gm_sweep "local claims config refspec" cmd 'git config remote.o.fetch refs/local-claims/R'
+  # SWAS-192 slice A: the checkout lease arm (R38), one sweep per leg so every rule name of _cl192_denied has its fault text printed
+  aa_gm_sweep "checkout lease ref update-ref" cmd 'git update-ref refs/local-lease/checkout abc1234'
+  aa_gm_sweep "checkout lease refspec push" cmd 'git push origin abc1234:refs/leases/land'
+  aa_gm_sweep "checkout lease bare push" cmd 'git push origin refs/leases-log/land'
+  aa_gm_sweep "checkout lease config refspec" cmd 'git config remote.o.fetch refs/local-lease/checkout'
+  aa_gm_sweep "checkout lease key write" cmd 'git config --unset kit.checkoutLease'
+  aa_gm_sweep "checkout lease key remove-section" cmd 'git config --remove-section kit'
   # the reach: which converted matcher sites the sweeps faulted, against all of them
   for _gc_h in _gmq _gmqn _gmo; do
     awk -v h="$_gc_h" '/^[[:space:]]*#/ { next } { s = $0; while (match(s, "(^|[^A-Za-z0-9_])" h " [A-Za-z0-9-]+")) { t = substr(s, RSTART, RLENGTH); sub(/^.* /, "", t); print "grep-" t; s = substr(s, RSTART + RLENGTH) } }' .claude/hooks/guard-core.sh | sort -u > "$AA_GM_ROOT/sites-$_gc_h"
@@ -16483,7 +17463,20 @@ case "${1:-}" in --selftest) _aa_top=$fail; selftest; aa_selftest_exit "$_aa_top
 #     coupling and its two mutants spawn no guard and are not counted.
 #   + SWAS-689 (the refusal withholds a config key's subsection): 7 counted cells in the SWAS278A block (S2, S3, S4, S5, MS3, MS4, MS5), none
 #     behind a skip -> 3521 + 7 = 3528. Counted from the diff, not measured.
-AA_CELL_FLOOR=3528
+#   + SWAS-795 (the refs/local-claims/* arm): 13 counted cells, none behind a skip: 3 assert_deny fixtures (LCL795 update-ref, refspec,
+#     symbolic-ref) and 10 mutant legs (LCL795-M1, M2, M3a, M3b, M4 to M9) -> 3528 + 13 = 3541. Counted from the diff, not measured.
+#     Fix round: 3 more assert_deny fixtures (brace after a quoted pipe, brace after a backslash-newline, bare push split by a
+#     backslash-newline) and the M10 mutant leg -> 3541 + 4 = 3545.
+#     Owner-ruling round: 2 more assert_deny fixtures (quote-split verb with a brace, fetch to a brace destination) and the M11 and
+#     M12 mutant legs -> 3545 + 4 = 3549.
+#   + SWAS-842 (the leased-delete admission): 118 counted cells, none behind a skip: 8 end-to-end cells (F1, F2 x5 forms, F3 x2), 87 grammar cells
+#     (A1-A6 with the A5 variants, B1-B4, C1-C4, D1-D2, E1-E2, N1-N7 and N10 with N6a-N6c, P1-P4), 5 measurements (M1, M2, M3, X1, N10c) and 18 mutant
+#     legs (NS x3, PAIR x2, SENT, EQ x2, SHA, LIT x2, SPACE x2, OPT x2, POS, CALL x2) -> 3549 + 118 = 3667. MUT-842-EARLY runs only when X1 reads DENY, so it
+#     is not counted. Counted from the diff, not measured.
+#     Review and security follow-ups (same slice): 13 more counted cells, none behind a skip: 12 predicate cells (P5, P6a, P6b, ONE-a, ONE-b, RM1 to RM3,
+#     LIT-cr, LIT-hi, NS-first, NS-case) and the MUT-842-ONE leg -> 3667 + 13 = 3680. Counted from the diff, not measured.
+#     Security follow-up S842-F1: 1 more counted cell, none behind a skip: the predicate cell P-CAP (the token cap) -> 3680 + 1 = 3681.
+AA_CELL_FLOOR=3681
 # SWAS-374: the bottoms of --list-cells and --shard (the bare path and every other mode never reach these two lines).
 if [ "$AA_MODE" = list ]; then exit 0; fi
 if [ "$AA_MODE" = shard ]; then aa_shard_finish && exit 0; exit 1; fi

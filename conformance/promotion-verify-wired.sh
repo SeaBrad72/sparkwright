@@ -722,7 +722,8 @@ selftest() {
     _lgr=success; [ "$_lgk" != redrun ] || _lgr=failure
     printf '{"id":900,"path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"completed","conclusion":"%s","head_sha":"%s","head_branch":"feat","head_repository":{"full_name":"acme/kit"},"event":"pull_request"}\n' "$_lgr" "$1" > "$_lgd/evrun"
     [ "$_lgk" != norun ] || : > "$_lgd/evrun"
-    for _lj in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam conformance-docs docs-links 'non-vacuity (1)'; do
+    for _lj in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam h2-hermetic conformance-docs docs-links 'non-vacuity (1)'; do
+      if [ "$_lgk" = noh2 ] && [ "$_lj" = h2-hermetic ]; then continue; fi   # noh2: a post-SWAS-864 run without its h2-hermetic job (an adopter's CI never has one)
       printf '{"name":"%s","conclusion":"%s"}\n' "$_lj" "$_lgc"
     done > "$_lgd/evjobs"
     printf '{"name":"conformance","conclusion":"success"}\n' >> "$_lgd/evjobs"
@@ -880,6 +881,12 @@ selftest() {
   tr_lay "H1-TR-c: decider only -> UNVERIFIED kit-pipeline-half-present, no flag" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" "" "" "" 0
   tr_lay "H1-TR-d: an adopter's own gate job (no decider, no marker) -> the N/A line, no flag (SWAS-641)" 0 1 cheap - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "FLAG admin-merge"
   tr_lay "H1-TR-e: the marker only -> UNVERIFIED kit-pipeline-half-present, no flag (SWAS-641)" 0 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" "" "" "" 1
+  # SWAS-864: PG_NEEDED lists the kit-only join h2-hermetic, so the exact-head predicate must stay kit-only. An adopter layout reads its CI as N/A
+  # before any job list is read (pv_ci_evidence and trace both stop at the layout), so a run with no h2-hermetic job is never refused for it; the kit layout does refuse it.
+  tr_lay "H2-TR-a: an adopter layout whose CI run has no h2-hermetic job -> the N/A line, never needed-job-missing:h2-hermetic" 0 0 noh2 - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "needed-job-missing:h2-hermetic"
+  tr_lay "H2-TR-b: a kit layout whose CI run has no h2-hermetic job -> FLAG naming needed-job-missing:h2-hermetic" 1 1 noh2 - 0 "needed-job-missing:h2-hermetic" "N/A"
+  # H2m-TR-1 is killed by its positive N/A needle, as H1m-TR-1 is; its must-not on needed-job-missing:h2-hermetic is the stronger proof only when paired with H2-TR-b.
+  tr_lay "H2m-TR-1-mutant: the adopter branch runs the leg, so the missing h2-hermetic is held against an adopter" 0 0 noh2 - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "needed-job-missing:h2-hermetic" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
   tr_lay "H1m-TR-1-mutant: the adopter branch runs the leg" 0 0 cheap - 0 "exact-head CI evidence: N/A (not the kit's own CI pipeline)" "FLAG admin-merge" 's/^    adopter\/adopter) _pv_ev_layout=adopter ;;/    adopter\/adopter) _pv_ev_layout=kit ;;/'
   tr_lay "H1m-TR-2-mutant: the kit branch skips the leg" 1 1 cheap - 0 "FLAG admin-merge: $TA12" "N/A" 's/^    kit\/kit)         _pv_ev_layout=kit ;;/    kit\/kit)         _pv_ev_layout=adopter ;;/'
   tr_lay "H1m-TR-3-mutant: the half branch skips the leg" 1 0 cheap - 0 "evidence leg: UNVERIFIED (kit-pipeline-half-present" "FLAG admin-merge" 's/^    half\/\*|\*\/half)   _pv_ev_layout=refuse;/    half\/*|*\/half)   _pv_ev_layout=adopter;/'
@@ -1469,6 +1476,11 @@ Kit-Row: ROW-LANDWARN"
       git -C "$LOA" add .kit/tracker.conf
       git -C "$LOA" commit -q -m "add tracker conf"
       git -C "$LOA" push -q origin HEAD:refs/heads/main
+      # SWAS-323b: a serial land needs origin's main to be an ancestor of the approved head. The trailer-carrying commit is therefore
+      # re-made ON TOP of the conf commit (not pushed): it is still the approved sha (LOSHA) and still not origin's tip, and origin's main
+      # still carries the conf for the origin-pin fetch.
+      git -C "$LOA" commit -q --allow-empty -m "$(printf 'head\n\nKit-Row: AB-9')"
+      LOSHA="$(git -C "$LOA" rev-parse HEAD)"
     fi
   }
   # a9_setup_md <name> -> the same trailer-carrying commit, but NO CLAUDE.md at all (undeclared
@@ -1681,8 +1693,8 @@ EOF
   mkorigin ord
   rm -f "$LAND_MARK"
   lland "$LAND_STUB" "$LOSHA" ordinary "branch/land-ord"
-  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'actuate'; then
-    echo "PASS: land NEGATIVE(ord): --class ordinary is refused (-> actuate), no record, no merge"
+  if [ "$_ldc" != 0 ] && [ "$_ldc" != 3 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'actuate'; then
+    echo "PASS: land NEGATIVE(ord): --class ordinary is refused (-> actuate), no record, no merge, and the rc is not 3 (3 means merged with a tree mismatch)"
   else
     echo "FAIL: land NEGATIVE(ord): want rc!=0 + no merge + no note + 'actuate', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
   fi
@@ -2895,25 +2907,25 @@ EOF
   lpass "$_lc" "sync L8(b) (+): a 13-line note with 'go-by: owner-login [self-asserted]' at line 5 is accepted and published byte-identical" "anc=$_anc lines=$_l8n l5=$_l8g rc=$LRC out=$LOUT"
   for _l8lab in 'authenticated: github-review' 'committer' 'signed: gpg'; do
     _l8k=$((${_l8k:-0} + 1))
-    lfix "s8forge$_l8k"; lrec "$LF/B" "$BSHA" "branch/s8fb" --no-push --go-by "owner-login"
+    lfix "s8forge$_l8k"; lrec "$LF/B" "$BSHA" "branch/s8forge${_l8k}c" --no-push --go-by "owner-login"   # lfix's own scope: this re-record supersedes (SWAS-323)
     lmut "$LF/B" "$BSHA" "s/^go-by: .*/go-by: owner-login [$_l8lab]/"
     lvcase "sync L8(c) (−): a go-by carrying [$_l8lab] is refused naming go-by (the GO-giver is never authenticated), nothing moved" 'go-by'
   done
-  lfix s8blank; lrec "$LF/B" "$BSHA" "branch/s8bb" --no-push --go-by "owner-login"
+  lfix s8blank; lrec "$LF/B" "$BSHA" "branch/s8blankc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: owner-login/'
   lvcase "sync L8(c) (−): a go-by with no [self-asserted] label is refused naming go-by" 'go-by'
   # SAST-PARSE-MERGE-TOOL: one refuse cell per vet arm whose one-line `case` was split. Each pins its OWN message (a rewrite that
   # widens or drops a match turns it red); the cells pass on the code before the split too: they pin behaviour, not red-first.
-  lfix s8brk; lrec "$LF/B" "$BSHA" "branch/s8br" --no-push --go-by "owner-login"
+  lfix s8brk; lrec "$LF/B" "$BSHA" "branch/s8brkc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: owner[login [self-asserted]/'
   lvcase "sync SAST(−): a bracket inside the go-by name is refused with its own line" 'a bracket inside the name'
-  lfix s8nolab; lrec "$LF/B" "$BSHA" "branch/s8nl" --no-push --go-by "owner-login"
+  lfix s8nolab; lrec "$LF/B" "$BSHA" "branch/s8nolabc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^approved-by: .*/approved-by: nolabel/'
   lvcase "sync SAST(−): an approved-by with no [label] is refused with its own line" "not '<id>"
-  lfix s8idbr; lrec "$LF/B" "$BSHA" "branch/s8ib" --no-push --go-by "owner-login"
+  lfix s8idbr; lrec "$LF/B" "$BSHA" "branch/s8idbrc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^approved-by: .*/approved-by: a[b [self-asserted]/'
   lvcase "sync SAST(−): a bracket inside the approved-by id is refused with its own line" 'a bracket inside the id or the label'
-  lfix s8dash; lrec "$LF/B" "$BSHA" "branch/s8da" --no-push --go-by "owner-login"
+  lfix s8dash; lrec "$LF/B" "$BSHA" "branch/s8dashc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^approved-sha: .*/approved-sha: -abc/'
   lvcase "sync SAST(−): an approved-sha starting with '-' is refused with its own line" "starts with '-'"
   lfix s8nom; lsync "$LF/B" --dry-run --discard-local 1234567890123456789012345678901234567890
@@ -3533,6 +3545,257 @@ EOF
   lsync "$LF/B" --dry-run --discard-local 12345678
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q "ambiguous"; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync A1(a'') (−): a prefix shared by a local-only and an origin-only note path -> refused as ambiguous" "rc=$LRC out=$LOUT"
+
+  # =====================================================================================
+  # SWAS-323 slice A: a GO note is a LIST of records, keyed (scope, gate); a second GO on the same commit no longer erases the first.
+  # Each cell is a function over a fixture NAME that returns 0 when the property holds. _j323 runs it against the real gate (must hold)
+  # and, for a mutant, against a sed-edited COPY of the gate (must NOT hold: the cell has teeth). R1 R2 R3 L1 S1 T1 D1.
+  # =====================================================================================
+  _j323() {   # <label> <cell fn> <sed|-> <desc>
+    _jv0="$VERIFY"
+    if [ "$3" != - ] && [ "${J323_COPY:-0}" = 1 ]; then
+      # a LAND cell: the copy must carry the layout of the gate under test (the evidence leg reads it), so it is built by tr_copy, then sed-edited
+      _jx="$(fx_facts "$FX_OWN")"
+      tr_copy "$LROOT/m323-$1" "${_jx%% *}" "${_jx##* }" "$(printf '%s' "$_jx" | cut -d' ' -f2)"
+      cp "$LROOT/m323-$1/scripts/promotion-verify.sh" "$LROOT/m323-$1/orig.sh"
+      sed "$3" "$LROOT/m323-$1/orig.sh" > "$LROOT/m323-$1/scripts/promotion-verify.sh"
+      if cmp -s "$LROOT/m323-$1/orig.sh" "$LROOT/m323-$1/scripts/promotion-verify.sh"; then echo "FAIL: $1: the mutant changed nothing"; st=1; VERIFY="$_jv0"; return 0; fi
+      VERIFY="$LROOT/m323-$1/scripts/promotion-verify.sh"
+    elif [ "$3" != - ]; then
+      mkdir -p "$LROOT/m323-$1"; sed "$3" "$VERIFY" > "$LROOT/m323-$1/promotion-verify.sh"
+      if cmp -s "$VERIFY" "$LROOT/m323-$1/promotion-verify.sh"; then echo "FAIL: $1: the mutant changed nothing"; st=1; VERIFY="$_jv0"; return 0; fi
+      VERIFY="$LROOT/m323-$1/promotion-verify.sh"
+    fi
+    _op323=1
+    if "$2" "m323$1"; then _jr=0; else _jr=1; fi
+    VERIFY="$_jv0"
+    if [ "$3" = - ]; then lpass "$_jr" "$1: $4" "cell failed rc=$LRC out=$LOUT"
+    elif [ "$_op323" != 0 ]; then echo "FAIL: $1: $4 -- the mutant copy's OPERATION failed outright (so its red proves nothing): rc=$LRC out=$LOUT"; st=1
+    elif [ "$_jr" = 1 ]; then echo "PASS: $1: $4 (the mutant is killed)"
+    else echo "FAIL: $1: $4 -- the mutant SURVIVED"; st=1; fi
+  }
+  # _opok: the operation under test RAN to its own verdict (no crash, no missing file): the cell sets _op323=0 only then, so under a mutant
+  # only the property may differ.
+  _opok() { case "$LOUT" in *'syntax error'*|*'not found'*|*'No such file'*) return 1 ;; esac; return 0; }
+  _n323() { git -C "$LF/A" notes --ref="$LR" show "$ASHA" 2>/dev/null; }
+  _f_r1() {   # two scopes on one sha: both kept, in order, and both on origin
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r1a"; _x1="$LRC"; lrec "$LF/A" "$ASHA" "branch/r1b"; _x2="$LRC"
+    _nn="$(_n323)"; _ro="$(git --git-dir="$LF/remote.git" notes --ref="$LR" show "$ASHA" 2>/dev/null)"
+    if [ "$_x1" = 0 ] && [ "$_x2" = 0 ]; then _op323=0; fi   # both records WERE written: only the property may differ under a mutant
+    [ "$_x1" = 0 ] && [ "$_x2" = 0 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] \
+      && [ "$(printf '%s\n' "$_nn" | sed -n 's/^scope: //p' | tr '\n' ' ')" = 'branch/r1a branch/r1b ' ] && [ "$_ro" = "$_nn" ]
+  }
+  _f_r2() {   # a re-record of the same (scope, gate) supersedes only that key
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r2a"; lrec "$LF/A" "$ASHA" "branch/r2b"
+    lrec "$LF/A" "$ASHA" "branch/r2a" --basis docs/architecture/y-design.md
+    _nn="$(_n323)"
+    if [ "$LRC" = 0 ]; then _op323=0; fi
+    [ "$LRC" = 0 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^scope: branch/r2a$')" = 1 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] \
+      && printf '%s\n' "$_nn" | grep -q '^basis: docs/architecture/y-design.md$' && printf '%s\n' "$_nn" | grep -q '^scope: branch/r2b$'
+  }
+  _f_r5() {   # a --rung that reads 'promotion x' is only a field value: the note stays two records (one blank separator), not three pieces
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r5a" --rung 'promotion x'; _x1="$LRC"; lrec "$LF/A" "$ASHA" "branch/r5b"; _x2="$LRC"
+    _nn="$(_n323)"
+    if [ "$_x1" = 0 ] && [ "$_x2" = 0 ]; then _op323=0; fi
+    [ "$_x1" = 0 ] && [ "$_x2" = 0 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^$')" = 1 ] \
+      && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] && printf '%s\n' "$_nn" | grep -q '^rung: promotion x$'
+  }
+  _f_r11() {   # 64 records already on the sha: the 65th record refuses at the cap and the note still holds all 64
+    mkledger "$1"; _i11=0
+    while [ "$_i11" -lt 64 ]; do _i11=$((_i11 + 1)); lrec "$LF/A" "$ASHA" "branch/cap$_i11" --no-push; done
+    lrec "$LF/A" "$ASHA" "branch/cap65" --no-push
+    _nn="$(_n323)"
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 2 ]; } && _opok; then _op323=0; fi
+    [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'capped at 64 records' && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 64 ]
+  }
+  _f_r12() {   # a free-text value that ends in whitespace is refused, naming the field, and nothing is written
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r12" --token "GO "
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 2 ]; } && _opok; then _op323=0; fi
+    [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q -e '--token ends in whitespace' && [ -z "$(_n323)" ]
+  }
+  _lracer323() {   # clone B records branch/r3racer on ASHA the moment A's ledger ref moves, once: the window between A's sync-in and A's push
+    mkdir -p "$LF/hooks"
+    { printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\ngrep -q "refs/notes/%s" || exit 0\n' "$LR"
+      printf '[ -e "%s/.raced" ] && exit 0\n: > "%s/.raced"\n' "$LF" "$LF"
+      printf 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
+      printf '( cd "%s/B" && PROMOTION_NOTES_REF=%s sh "%s" record --approved-sha %s \\\n' "$LF" "$LR" "$VERIFY" "$ASHA"
+      printf '  --approved-by racer --gate design --rung Design --class control-plane \\\n'
+      printf '  --scope branch/r3racer --token "GO: racer" --basis docs/architecture/x-design.md ) >/dev/null 2>&1\nexit 0\n'
+    } > "$LF/hooks/reference-transaction"
+    chmod +x "$LF/hooks/reference-transaction"; git -C "$LF/A" config core.hooksPath "$LF/hooks"
+  }
+  _f_r3() {   # a record that loses the push race re-reads the note after its next sync-in: origin ends with all three records
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r3seed"; _lracer323; lrec "$LF/A" "$ASHA" "branch/r3a"
+    _ro="$(git --git-dir="$LF/remote.git" notes --ref="$LR" show "$ASHA" 2>/dev/null)"
+    if [ "$LRC" = 0 ]; then _op323=0; fi
+    [ "$LRC" = 0 ] && [ "$(printf '%s\n' "$_ro" | sed -n 's/^scope: //p' | LC_ALL=C sort | tr '\n' ' ')" = 'branch/r3a branch/r3racer branch/r3seed ' ]
+  }
+  _f_l1() {   # a merge GO recorded on a design commit leaves that commit's design record in place
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/l1"; lrec "$LF/A" "$ASHA" "PR #5" --gate release-candidate --rung "Release candidate"
+    _nn="$(_n323)"
+    if [ "$LRC" = 0 ]; then _op323=0; fi
+    [ "$LRC" = 0 ] && printf '%s\n' "$_nn" | grep -q '^gate: design$' && printf '%s\n' "$_nn" | grep -q '^scope: branch/l1$' \
+      && printf '%s\n' "$_nn" | grep -q '^gate: release-candidate$'
+  }
+  _f_s1a() {   # sync refuses a local-only note that holds two records
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/s1o"; lrec "$LF/B" "$BSHA" "branch/s1x" --no-push; lrec "$LF/B" "$BSHA" "branch/s1y" --no-push
+    lsync "$LF/B"; _lpre="$(lrev "$LF/B")"
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 2 ]; } && _opok; then _op323=0; fi   # sync ran to its own verdict (refused, or published under a mutant)
+    [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q "REFUSED $BSHA" && printf '%s' "$LOUT" | grep -q "sync --discard-local $BSHA" \
+      && printf '%s' "$LOUT" | grep -q 'holds more than one record' && ! printf '%s' "$LOUT" | grep -q "published $BSHA"
+  }
+  _f_s1b() {   # sync refuses a twin one side of which holds two records
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/s1t1"; lrec "$LF/A" "$ASHA" "branch/s1t2"; lrec "$LF/B" "$ASHA" "branch/s1t1" --no-push --token "different token"   # different bytes: the same note in the same second would be the SAME ledger commit, a fast-forward
+    lsync "$LF/B"
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 2 ]; } && _opok; then _op323=0; fi
+    [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q "REFUSED $ASHA" && printf '%s' "$LOUT" | grep -q "sync --discard-local $ASHA" \
+      && printf '%s' "$LOUT" | grep -q 'holds more than one record'
+  }
+  # T1 / D1 repo: base B0 (tree t0), X1 (tree t1, the approved commit), Y (reverts to t0), Z (reapplies t1).
+  _t323repo() {
+    T3="$LROOT/$1"; mkdir -p "$T3"
+    ( set -e; cd "$T3"; git init -q; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt; git add f.txt; git commit -qm b0; git rev-parse HEAD > .B0
+      printf 'b\n' >> f.txt; git add f.txt; git commit -qm x1; git rev-parse HEAD > .X1
+      git revert --no-edit HEAD >/dev/null 2>&1; git rev-parse HEAD > .Y
+      git cherry-pick "$(cat .X1)" >/dev/null 2>&1; git rev-parse HEAD > .Z )
+    T3X="$(cat "$T3/.X1")"; T3Z="$(cat "$T3/.Z")"
+    T3TREE="$(git -C "$T3" rev-parse "$T3X^{tree}")"
+  }
+  _t323rec() {   # <gate> <scope> -> a record with an approved-tree
+    printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $T3X" "approved-tree: $T3TREE" "approved-by: o [self-asserted]" \
+      "gate: $1" "rung: r" "change-class: ordinary" "kit-row: (none)" "scope: $2" "approval-token: \"GO\"" "basis: b" "recorded-at: t"
+  }
+  _f_t1() {   # two records on one commit: a revert-and-reapply in the window cannot claim the commit a second time
+    _t323repo "$1"; { _t323rec design branch/t1; printf '\n'; _t323rec release-candidate 'PR #1'; } > "$T3/.note"
+    git -C "$T3" notes --ref=promotions add -f -F "$T3/.note" "$T3X"
+    LOUT="$( cd "$T3" && $VSH "$VERIFY" trace --recent 4 --from "$T3Z" 2>&1 )" && LRC=0 || LRC=$?
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 1 ]; } && _opok; then _op323=0; fi   # trace walked the window to its own verdict
+    [ "$LRC" != 0 ] && printf '%s' "$LOUT" | grep -q 'shared-tree with'
+  }
+  _f_d1() {   # a note whose first line is not a header binds nothing in trace
+    _t323repo "$1"; { printf '%s\n' 'stray: not a header'; _t323rec release-candidate 'PR #1'; } > "$T3/.note"
+    git -C "$T3" notes --ref=promotions add -f -F "$T3/.note" "$T3X"
+    LOUT="$( cd "$T3" && $VSH "$VERIFY" trace --ref "$T3X" 2>&1 )" && LRC=0 || LRC=$?
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 1 ]; } && _opok; then _op323=0; fi
+    [ "$LRC" = 1 ] && printf '%s' "$LOUT" | grep -q 'RECORDLESS MERGE'
+  }
+  _j323 R1 _f_r1 - "record scope A then scope B on one sha: both records kept, in order, and published"
+  _j323 R1m _f_r1 's/^_pv_note_with() {$/_pv_note_with() { printf "%s\\n" "$nbody"; return 0/' "restoring the replace loses the first record"
+  _j323 R2 _f_r2 - "a re-record of the same (scope, gate) supersedes that key once and leaves the other untouched"
+  _j323 R2m _f_r2 's/\[ "\$(_pv_rec_field "\$_nw_rec" scope)" = "\$scope" \]/false/' "never dropping the same key leaves two copies"
+  _j323 R3 _f_r3 - "a record that loses the push race keeps the racer's record (origin ends with all three)"
+  _j323 R3m _f_r3 's/^    if git notes \(.*\) list "\$asha"\(.*\)$/    if [ "\$attempt" = 1 ] \&\& git notes \1 list "\$asha"\2/' "reading the note on the first attempt only erases the racer's record"
+  _j323 R11 _f_r11 - "the 65th record on a sha refuses at the 64-record cap and the note keeps all 64"
+  _j323 R11m _f_r11 's/if \[ \$((_nw_kept + 1)) -gt 64 \]; then/if false; then/' "dropping the refusal writes a 65th record (a defective note)"
+  _j323 R12 _f_r12 - "a --token ending in whitespace is refused naming the field, and nothing is written"
+  _j323 R12m _f_r12 's/^  for _p in "token=\$token" "basis=\$basis".*"gate=\$gate"; do$/  for _p in; do/' "dropping the refusal records a value the ledger will strip"
+  _j323 R5 _f_r5 - "a --rung of 'promotion x' stays a field value: two records, one separator"
+  _j323 R5m _f_r5 '/function hdr/ s/(record|land)/[A-Za-z0-9_-]+/' "the generic header rule splits the record at the rung line"
+  _j323 L1 _f_l1 - "a merge GO on a design commit leaves its design record in place"
+  _j323 L1m _f_l1 's/^_pv_note_with() {$/_pv_note_with() { printf "%s\\n" "$nbody"; return 0/' "restoring the replace erases the design record"
+  _j323 S1a _f_s1a - "sync refuses a local-only note that holds two records, naming --discard-local"
+  _j323 S1am _f_s1a 's/if _pv_sync_multi "\$_lo_body"; then _pv_sync_refuse_multi "\$1" "the local-only note"; return 0; fi/:/' "dropping the refusal publishes it"
+  _j323 S1b _f_s1b - "sync refuses a twin one side of which holds two records"
+  _j323 S1bm _f_s1b 's/if _pv_sync_multi "\$2" || _pv_sync_multi "\$3"; then/if false; then/' "dropping the refusal lets the first records decide"
+  _j323 T1 _f_t1 - "a revert-and-reapply cannot claim an already-claimed commit a second time"
+  _j323 T1m _f_t1 's/awk -v t="\$_tt" .\$1 == t {print \$2 " " \$3; exit}./awk -v t="$_tt" -v c=" $_tr_claimed " '"'"'$1 == t \&\& index(c, " " $2 "#" $3 " ") == 0 {print $2 " " $3; exit}'"'"'/;s/^    _tr_claimed="\$_tr_claimed \$_ta"$/    _tr_claimed="$_tr_claimed $_ta#$_tk"/' "a claim per (object, record) lets a revert-and-reapply take the second record"
+  _j323 D1 _f_d1 - "a note with no header binds nothing in trace"
+  _j323 D1m _f_d1 '/NR == 1/ s/bad = 1/bad = 0/; /if (hdr(/ s/bad = 1/bad = 0/' "without the first-line rule the stray-first note is traced"
+
+  # =====================================================================================
+  # SWAS-323 slice B: `land` writes a LAND record beside the GO record (one transaction, one push) and `trace` binds it. L2 L3 L5a L5b, the serial
+  # precondition (SP) and the cap with the land record counted (CAP). The land cells' mutants are built over a layout-carrying COPY of the gate
+  # (J323_COPY=1); the only mutant NOT built in-cell is the design's "write the land record in a second push" (it needs a structural change).
+  # =====================================================================================
+  J323_COPY=1
+  _l323_land() {   # <name> -> one serial land on a fresh origin; _l_sq is a trunk squash commit carrying the approved tree
+    mkorigin "$1"; rm -f "$LAND_MARK"
+    lland "$LAND_STUB" "$LOSHA" control-plane "branch/$1"
+    _l_sq="$(git -C "$LOA" commit-tree "${LOSHA}^{tree}" -p "$LOSHA" -m squash 2>/dev/null)" || _l_sq=""
+  }
+  _l323_trace() {   # <commit> -> LRC, LOUT of `trace --ref`
+    if LOUT="$( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" trace --ref "$1" 2>&1 )"; then LRC=0; else LRC=$?; fi
+  }
+  _l323_extra() {   # a trunk commit whose tree matches neither the approved tree nor any land record: the extra hunk
+    ( cd "$LOA" && printf 'x\n' >> f.txt && git commit -qam extra ) >/dev/null 2>&1
+    _l_x="$(git -C "$LOA" rev-parse HEAD)"
+  }
+  _f_l2() {   # the land record rides in the GO's own push, and trace binds the trunk squash through it
+    _l323_land "$1"; _l323_trace "$_l_sq"
+    if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && [ "$LRC" = 0 ]; then _op323=0; fi
+    _on="$(git --git-dir="$LO/remote.git" notes --ref="$LR2" show "$LOSHA" 2>/dev/null)"
+    [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && [ "$(printf '%s\n' "$_on" | grep -c '^land: promotion LAND')" = 1 ] \
+      && [ "$(printf '%s\n' "$_on" | grep -c '^record: promotion')" = 1 ] \
+      && [ "$(git --git-dir="$LO/remote.git" rev-list --count "refs/notes/$LR2")" = 1 ] \
+      && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'land: serial-.* (bound)'
+  }
+  _f_l3() {   # an extra hunk (a tree equal to neither landed-tree nor approved-tree) reds as recordless; the squash still binds
+    _l323_land "$1"; _l323_extra
+    _l323_trace "$_l_sq"; _l3a="$LRC"
+    _l323_trace "$_l_x"; _l3b="$LRC"
+    if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && { [ "$_l3b" = 0 ] || [ "$_l3b" = 1 ]; }; then _op323=0; fi
+    [ "$_l3a" = 0 ] && [ "$_l3b" = 1 ] && printf '%s' "$LOUT" | grep -q 'RECORDLESS MERGE'
+  }
+  _f_l5a() {   # a re-record of the GO leaves the land record's go-record-sha256 dangling: the land record binds nothing
+    _l323_land "$1"; _l323_trace "$_l_sq"; _l5pre="$LOUT"; _l5r0="$LRC"
+    ( cd "$LOA" && PATH="$(lgh "$LOSHA" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" record --no-push \
+        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" --class control-plane \
+        --scope "PR #77" --go-by "the owner" --token "a different token" ) >/dev/null 2>&1 && _l5rc=0 || _l5rc=$?
+    _l323_trace "$_l_sq"
+    if [ "$_ldc" = 0 ] && [ "$_l5rc" = 0 ] && [ "$LRC" = 0 ]; then _op323=0; fi
+    [ "$_l5r0" = 0 ] && printf '%s' "$_l5pre" | grep -q '(bound)' && ! printf '%s' "$LOUT" | grep -q '(bound)'
+  }
+  _f_l5b() {   # a land record whose landed-tree differs from its GO's approved-tree binds nothing: that tree reds as recordless
+    _l323_land "$1"; _l323_extra
+    _l5t="$(git -C "$LOA" rev-parse "${_l_x}^{tree}")"
+    git -C "$LOA" notes --ref="$LR2" show "$LOSHA" | sed "s/^landed-tree: .*/landed-tree: $_l5t/" > "$LO/l5b.note"
+    git -C "$LOA" notes --ref="$LR2" add -f -F "$LO/l5b.note" "$LOSHA" >/dev/null 2>&1
+    _l323_trace "$_l_x"
+    if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && { [ "$LRC" = 0 ] || [ "$LRC" = 1 ]; }; then _op323=0; fi
+    [ "$LRC" = 1 ] && printf '%s' "$LOUT" | grep -q 'RECORDLESS MERGE'
+  }
+  _f_sp() {   # the serial precondition: origin's main is not an ancestor of the approved head, so nothing is recorded or merged
+    mkorigin "$1"; rm -f "$LAND_MARK"
+    ( cd "$LOA" && git checkout -q -b feat && printf 'f\n' > feat.txt && git add feat.txt && git commit -qm feat-head \
+        && git checkout -q "$LOTRUNK" && printf 'n\n' > newer.txt && git add newer.txt && git commit -qm newer \
+        && git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+    _spx="$(git -C "$LOA" rev-parse feat)"
+    lland "$LAND_STUB" "$_spx" control-plane "branch/$1"
+    case "$_ld_out" in *'syntax error'*|*'not found'*) ;; *) if [ "$_ldc" = 0 ] || [ "$_ldc" = 1 ]; then _op323=0; fi ;; esac
+    LOUT="$_ld_out"; LRC="$_ldc"
+    [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$_spx" \
+      && printf '%s' "$_ld_out" | grep -q 'serial land needs an up-to-date head; the train computes prefixes'
+  }
+  _f_cap() {   # 63 records already on the sha: GO + land would make 65, so land refuses at the cap and merges nothing
+    mkorigin "$1"; rm -f "$LAND_MARK"; _i63=0
+    while [ "$_i63" -lt 63 ]; do
+      _i63=$((_i63 + 1))
+      ( cd "$LOA" && PATH="$(lgh "$LOSHA" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" record --no-push \
+          --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" --class control-plane \
+          --scope "branch/cap$_i63" --token "GO" ) >/dev/null 2>&1 || true
+    done
+    lland "$LAND_STUB" "$LOSHA" control-plane "branch/$1"
+    LOUT="$_ld_out"; LRC="$_ldc"
+    case "$_ld_out" in *'syntax error'*|*'not found'*) ;; *) if [ "$_ldc" = 0 ] || [ "$_ldc" = 1 ] || [ "$_ldc" = 2 ]; then _op323=0; fi ;; esac
+    [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'capped at 64 records'
+  }
+  _j323 L2 _f_l2 - "land writes the land record in the GO's own push (one ledger commit) and trace binds the squash through it"
+  _j323 L2m _f_l2 's/"landed-tree: \$atree" \\/"landed-tree: 0000000000000000000000000000000000000000" \\/' "a land record with a landed-tree that is not the approved tree is not bound by trace (the head is the base tip here, so base's tree is not a wrong tree)"
+  _j323 L3 _f_l3 - "an extra hunk reds as recordless in trace while the real squash binds"
+  _j323 L3m _f_l3 "s/'\$1 == t {print/'{print/" "matching a trunk commit without its tree binds the extra hunk"
+  # L3m2, the design's ancestry mutant: a trunk commit is bound to any note whose approved commit is its ancestor. The extra commit in L3 is made on
+  # the clone's branch, whose head is the approved commit, so it DOES descend from it and the mutant binds it (the tree test is what stops it).
+  _j323 L3m2 _f_l3 's#^    _tak=.*$#    _tak=""; for _ao in $(printf %s "$_tr_map" | cut -d" " -f2); do if git merge-base --is-ancestor "$_ao" "$_tc" >/dev/null 2>\&1; then _tak="$_ao 1"; break; fi; done#' "binding a trunk commit by ancestry of the approved commit binds the extra hunk"
+  _j323 L5a _f_l5a - "a re-recorded GO leaves the land record's hash dangling: it stops binding"
+  _j323 L5am _f_l5a 's/if \[ "\$_lg_s" = "\$_lg_h" \] &&/if true \&\&/' "accepting a land record without the hash check binds a dangling one"
+  _j323 L5b _f_l5b - "a land record whose landed-tree differs from its GO's approved-tree binds nothing"
+  _j323 L5bm _f_l5b 's/ && \[ "\$(_pv_rec_field "\$_lg_r" approved-tree)" = "\$_lg_t" \]; then printf/; then printf/' "dropping the tree equality binds the lane-asserted tree"
+  _j323 SP _f_sp - "land refuses a head that origin's main is not an ancestor of, before anything is recorded"
+  _j323 SPm _f_sp 's/if \[ -z "\$_land_base" \] || \[ "\$_land_brc" -ne 0 \]; then/if false; then/' "dropping the refusal lands a stale head"
+  _j323 CAP _f_cap - "the land record counts toward the 64-record cap: 63 records + GO + land refuses"
+  _j323 CAPm _f_cap 's/^  if \[ -n "\${lbody:-}" \]; then _nw_kept=\$((_nw_kept + 1)); fi$/  :/' "not counting the land record writes a 65th record"
+  J323_COPY=0
 
   # FXS: the skip count is load-bearing. A skip call raises it by exactly one, and the note carries the number (0 prints as "0 SKIPPED").
   _fxs0="$FX_SKIPS"; fx_skip "FXS-probe" >/dev/null; _fxs1="$FX_SKIPS"; FX_SKIPS="$_fxs0"

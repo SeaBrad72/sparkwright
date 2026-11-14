@@ -7,6 +7,9 @@
 #   sh scripts/board.sh claim   <ROW-ID> [--branch <name>]
 #   sh scripts/board.sh release <ROW-ID> [--stale]
 #   sh scripts/board.sh move    <ROW-ID> <state>
+#   (claim and release also take --lease-token <sha>: the checkout lease's token, forwarded to board-claim.sh, which checks it in a
+#    checkout that opted in with `kit.checkoutLease`; see scripts/checkout-lease.sh)
+#   sh scripts/board.sh publish   (md: hand claims recorded before origin existed to origin; run it after the first push)
 #   sh scripts/board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>]
 #                               [--parent <KEY>] [--description <text>] [--metric <text>] [--label <name>]... [--field <token>=<value>]...
 #   sh scripts/board.sh comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]
@@ -111,9 +114,10 @@ BD_LIB_SH="$(dirname "$here")/conformance/backlog-lib.sh"
 
 bd_usage() {
   echo "usage:" >&2
-  echo "  board.sh claim   <ROW-ID> [--branch <name>]" >&2
-  echo "  board.sh release <ROW-ID> [--stale]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
+  echo "  board.sh claim   <ROW-ID> [--branch <name>] [--lease-token <sha>]" >&2
+  echo "  board.sh release <ROW-ID> [--stale] [--lease-token <sha>]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
   echo "  board.sh move    <ROW-ID> <state>" >&2
+  echo "  board.sh publish   (md: hand claims recorded before origin existed to origin; run it after the first push)" >&2
   echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>] [--metric <text>]" >&2
   echo "                   (--title-file <path> / --metric-file <path> replace --title / --metric: one line of the title grammar; the metric as a description file)" >&2
   echo "                   [--label <name>]...   (repeatable, at most 10; each [A-Za-z0-9_.:-]{1,64}; appended to the card's labels)" >&2
@@ -221,10 +225,11 @@ bd_tracker_ctx() {
 
 # ── claim ──────────────────────────────────────────────────────────────────────────────────────
 do_claim() {
-  _row=""; _branch=""
+  _row=""; _branch=""; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --branch) [ $# -ge 2 ] || { echo "board claim: --branch needs a value" >&2; return 2; }; _branch=$2; shift 2 ;;
+      --lease-token) [ $# -ge 2 ] || { echo "board claim: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       -*)       echo "board claim: unknown option '$1'" >&2; bd_usage; return 2 ;;
       *)        [ -z "$_row" ] || { echo "board claim: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
     esac
@@ -235,9 +240,11 @@ do_claim() {
   _be=$(bd_backend)
   case "$_be" in
     md|'')
-      if [ -n "$_branch" ]; then sh "$BD_CLAIM_SH" claim "$_row" --branch "$_branch"
-      else                       sh "$BD_CLAIM_SH" claim "$_row"
-      fi
+      # the checkout lease's token (SWAS-192 slice A) is forwarded to board-claim.sh, which checks it; absent, the call is byte-identical to before
+      set -- claim "$_row"
+      [ -z "$_branch" ] || set -- "$@" --branch "$_branch"
+      [ -z "$_ltok" ] || set -- "$@" --lease-token "$_ltok"
+      sh "$BD_CLAIM_SH" "$@"
       return $? ;;
     jira)
       bd_tracker_ctx || return 1
@@ -265,9 +272,10 @@ do_claim() {
       # passed for the WRONG reason (set -e's abort, not this forwarding). `cmd || return $?`
       # short-circuits: `$?` inside is cmd's OWN exit status (nothing runs between), and being
       # part of a `||` list this is exempt from -e, so the rc genuinely flows through THIS line.
-      if [ -n "$_branch" ]; then sh "$BD_CLAIM_SH" claim-ref "$_row" --branch "$_branch" --then "$_then" || return $?
-      else                       sh "$BD_CLAIM_SH" claim-ref "$_row" --then "$_then" || return $?
-      fi
+      set -- claim-ref "$_row"
+      [ -z "$_branch" ] || set -- "$@" --branch "$_branch"
+      [ -z "$_ltok" ] || set -- "$@" --lease-token "$_ltok"
+      sh "$BD_CLAIM_SH" "$@" --then "$_then" || return $?
       _post=$(sh "$BD_JIRA_SH" get-issue "$_btbase" "$_btflavour" "$_btproject" "$_row" 2>&1) || {
         echo "board claim: the ref+tracker write succeeded but the post-read could not run — cannot prove the claim." >&2
         return 1
@@ -284,10 +292,11 @@ do_claim() {
 
 # ── release ────────────────────────────────────────────────────────────────────────────────────
 do_release() {
-  _row=""; _stale=0
+  _row=""; _stale=0; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --stale) _stale=1; shift ;;
+      --lease-token) [ $# -ge 2 ] || { echo "board release: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       -*)      echo "board release: unknown option '$1'" >&2; bd_usage; return 2 ;;
       *)       [ -z "$_row" ] || { echo "board release: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
     esac
@@ -298,9 +307,10 @@ do_release() {
   _be=$(bd_backend)
   case "$_be" in
     md|'')
-      if [ "$_stale" = 1 ]; then sh "$BD_CLAIM_SH" release "$_row" --stale
-      else                       sh "$BD_CLAIM_SH" release "$_row"
-      fi
+      set -- release "$_row"
+      [ "$_stale" != 1 ] || set -- "$@" --stale
+      [ -z "$_ltok" ] || set -- "$@" --lease-token "$_ltok"
+      sh "$BD_CLAIM_SH" "$@"
       return $? ;;
     jira)
       bd_tracker_ctx || return 1
@@ -314,10 +324,25 @@ do_release() {
       _then="sh '$(bd_sq "$BD_JIRA_SH")' transition '$(bd_sq "$_btbase")' '$(bd_sq "$_btflavour")' '$(bd_sq "$_btproject")' '$(bd_sq "$_row")' '$(bd_sq "$_target")'"
       # LOW-B: see the identical note in do_claim above — `cmd || return $?`, never a bare
       # `cmd; _rc=$?` that `set -e` would have already made unreachable on the failure path.
-      sh "$BD_CLAIM_SH" release-ref "$_row" --then "$_then" || return $?
+      set -- release-ref "$_row"
+      [ -z "$_ltok" ] || set -- "$@" --lease-token "$_ltok"
+      sh "$BD_CLAIM_SH" "$@" --then "$_then" || return $?
       bd_release_proof "released (tracker transition to '$_target' + ref deleted)"
       return $? ;;
     *) echo "board release: undeclared or unsupported backend '$_be' — no write adapter for it." >&2; return 2 ;;
+  esac
+}
+
+# ── publish ────────────────────────────────────────────────────────────────────────────────────
+# `publish` (md only) hands the claims recorded before origin existed (SWAS-783) to origin, through board-claim.sh's
+# own handover: board-claim.sh publish. A tracker backend has no local mode (its claim writes the tracker too), so it
+# refuses. Both claim and release run the same handover first, so this verb only exists for the step after the first push.
+do_publish() {
+  if [ $# -gt 0 ]; then echo "board publish: takes no arguments" >&2; bd_usage; return 2; fi
+  _be=$(bd_backend)
+  case "$_be" in
+    md|'') sh "$BD_CLAIM_SH" publish; return $? ;;
+    *)     echo "board publish: local claims are an md-board feature; this project's backend is '$_be', whose claim needs origin." >&2; return 2 ;;
   esac
 }
 
@@ -349,10 +374,12 @@ bd_release_jira_stale() {
   case "$_crc" in
     0)
       _then="sh '$(bd_sq "$BD_JIRA_SH")' transition '$(bd_sq "$_btbase")' '$(bd_sq "$_btflavour")' '$(bd_sq "$_btproject")' '$(bd_sq "$_row")' '$(bd_sq "$_target")'"
+      set -- release-ref "$_row" --stale
+      [ -z "${_ltok:-}" ] || set -- "$@" --lease-token "$_ltok"
       if [ "$_already" = 1 ]; then
-        sh "$BD_CLAIM_SH" release-ref "$_row" --stale || return $?
+        sh "$BD_CLAIM_SH" "$@" || return $?
       else
-        sh "$BD_CLAIM_SH" release-ref "$_row" --stale --then "$_then" || return $?
+        sh "$BD_CLAIM_SH" "$@" --then "$_then" || return $?
       fi
       bd_release_proof "closed (tracker transition to '$_target' + ref deleted)"
       return $? ;;
@@ -2890,6 +2917,19 @@ second line"; bd_cm_cur="$bd_cmdir"
      && printf '%s' "$bd_out" | grep -qF 'read BACKLOG.md'; then
     bd_pass "leg rank/md: on an md backend rank and list each refuse rc 2 (the order is the Order line) with no adapter call"
   else bd_fail_ "leg rank/md: rc=$bd_rc1/$bd_rc2 log=[$(cat "$bd_rkl")] o1=[$bd_o1] o2=[$bd_out]"; fi
+  # leg publish (SWAS-783): on md `publish` delegates wholesale to board-claim.sh publish (here a stub, so the rc and the
+  # argv it was handed are visible); on a tracker backend it refuses rc 2 without calling it; arguments are refused rc 2.
+  printf '#!/bin/sh\necho "STUB-PUBLISH $*"\nexit 7\n' > "$bd_base/pub-stub.sh"
+  bd_pub_save=$BD_CLAIM_SH; BD_CLAIM_SH="$bd_base/pub-stub.sh"
+  bd_out=$(cd "$bd_base/md-clone" && do_publish 2>&1); bd_rc1=$?; bd_o1=$bd_out
+  bd_out=$(cd "$bd_jclone" && do_publish 2>&1); bd_rc2=$?; bd_o2=$bd_out
+  bd_out=$(cd "$bd_base/md-clone" && do_publish extra 2>&1); bd_rc3=$?; bd_o3=$bd_out
+  BD_CLAIM_SH=$bd_pub_save
+  if [ "$bd_rc1" -eq 7 ] && [ "$bd_o1" = 'STUB-PUBLISH publish' ] \
+     && [ "$bd_rc2" -eq 2 ] && printf '%s' "$bd_o2" | grep -qF 'local claims are an md-board feature' && ! printf '%s' "$bd_o2" | grep -qF 'STUB-PUBLISH' \
+     && [ "$bd_rc3" -eq 2 ] && ! printf '%s' "$bd_o3" | grep -qF 'STUB-PUBLISH'; then
+    bd_pass "leg publish: on md it delegates to board-claim.sh publish (its rc is passed through); on a tracker backend it refuses rc 2 without delegating; an argument is refused rc 2"
+  else bd_fail_ "leg publish: rc=$bd_rc1/$bd_rc2/$bd_rc3 o1=[$bd_o1] o2=[$bd_o2] o3=[$bd_o3]"; fi
   # ── list legs (SWAS-659): the adapter is always asked for the whole board (the ceiling, no limit); --limit only slices what came back ──
   bd_ls() { # <args…>: one list, in-process, adapter log reset; bd_ls_src = the stub's lines, bd_ls_rc = the stub's failure rc
     : > "$bd_rkl"
@@ -3385,6 +3425,7 @@ case "${1:-}" in
   --selftest) shift; if selftest; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   claim)      shift; if do_claim "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   release)    shift; if do_release "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  publish)    shift; if do_publish "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   move)       shift; if do_move "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   create)     shift; if do_create "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   comment)    shift; if do_comment "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;

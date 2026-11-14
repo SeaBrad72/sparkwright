@@ -26,6 +26,12 @@
 #                     x 2 faces = minutes — incompatible with per-PR latency and with `git push`).
 #   <path>...         explicit targets (any file path; face (b) needs it inside a git repo).
 #   --selftest        this lane's own fixture battery (hermetic by construction).
+#   --touched --face a|b --output-file F
+#                     SWAS-864, CI only: the --touched set under ONE face, with a v1 record written to F (atomically). One face alone
+#                     is never a pass: it prints PARTIAL, and only --join over both faces gives a verdict. Exactly this argument order;
+#                     anything else that names --face, --output-file or --join is rc 2.
+#   --join <rec> <rec>  grades the two face records: rc 0 only for exactly one record per face, both on this checkout's HEAD tree and
+#                     the same base, with the same targets and selectors, every target PASS or EXCLUDED (or both N/A). Else rc 1 and the cause.
 #
 # ROSTER semantics = conformance/ci-selftest-coverage.sh's exactly: scan conformance/*.sh
 # scripts/*.sh hooks/pre-push; capability = `--selftest` survives comment-strip.
@@ -56,9 +62,14 @@
 # Usage: sh conformance/selftest-hermetic.sh [--touched | --all | <path>... | --selftest]
 # Exit: 0 = every targeted selftest passed both faces (or N/A) · 1 = a face failed / lane misuse
 #       (underivable base, unreasoned exclusion, uncommitted target) · 2 = bad usage. POSIX sh.
+#       --face: rc 0 = that face only (PARTIAL); --join gives the verdict.
 set -eu
 
 TAB=$(printf '\t')
+NL='
+'
+_faces='a b'   # the faces run_faces runs; only the --face arm narrows it
+_rf_fin=0      # run_faces sets 1 once every wanted face ran without a FAIL (so a non-zero return then is UNVERIFIED)
 BASE="${HERMETIC_BASE:-origin/main}"
 EXCL_FILE="conformance/hermetic-exclusions.txt"
 
@@ -79,7 +90,8 @@ _fin() { _done=1; exit "$1"; }
 roster() {
   for _f in conformance/*.sh scripts/*.sh hooks/pre-push; do
     [ -f "$_f" ] || continue
-    sed 's/#.*//' "$_f" | grep -q -- '--selftest' || continue
+    # SWAS-864: no pipe, so no EPIPE when the first match ends the read (a grep -q at the end of a pipe made sed print Broken pipe)
+    [ -n "$(sed -n 's/#.*//; /--selftest/{p;q;}' "$_f")" ] || continue   # BPROS
     printf '%s\n' "$_f"
   done | sort -u
 }
@@ -454,7 +466,7 @@ hf_face_b() {
 # HONEST CEILINGS (SWAS-592): a descendant that leaves the face's process group (setsid, setpgrp, a nested lane that makes its own group) is neither reaped nor reported.
 # The face (a) fingerprint reads HEAD, the branch, the staged entries and the porcelain status; it does not see refs other than HEAD, .git/config, or ignored files.
 run_faces() {
-  _tgt=$1
+  _tgt=$1; _rf_fin=0
   _top=$(_repo_of "$_tgt") || { echo "FAIL: $_tgt is not inside a git repo (face (b) needs one)"; return 1; }
   # pwd -P: git rev-parse --show-toplevel answers the PHYSICAL path, so the target's dir must be
   # canonicalized the same way or the prefix-strip fails on a symlinked tmpdir (macOS /var -> /private/var).
@@ -464,7 +476,8 @@ run_faces() {
   _sel=--selftest; _tag=''
   if core_face_listed "$_top" "$_rel"; then
     # SWAS-460: on a kit tree a listed target runs its mutant-free core only; a core arm that is absent reds, never passes vacuously
-    if ! sed 's/#.*//' "$_top/$_rel" | grep -q -E -e '(^|\|)[[:space:]]*--selftest-core[[:space:]]*[|)]'; then
+    _cs_pat='s/#.*//; /(^|\|)[[:space:]]*--selftest-core[[:space:]]*[|)]/{p;q;}'
+    if [ -z "$(sed -n -E "$_cs_pat" "$_top/$_rel")" ]; then
       echo "FAIL: $_rel is core-only (the core-face list) but has no --selftest-core arm — refusing to pass vacuously"
       return 1
     fi
@@ -473,8 +486,9 @@ run_faces() {
   fi
 
   _rv=0; hf_mode
-  hf_face_a || return 1
-  hf_face_b || return 1
+  case " $_faces " in *" a "*) hf_face_a || return 1 ;; esac   # FACEA
+  case " $_faces " in *" b "*) hf_face_b || return 1 ;; esac   # FACEB
+  _rf_fin=1
   return "$_rv"
 }
 
@@ -512,6 +526,168 @@ run_lane() {
   fi
   echo "selftest-hermetic: OK ($_ran target(s) passed both faces, $_core of them --selftest-core only (CORE-ONLY above))"
   echo "  note: the per-PR --touched binding is kit-CI-only; adopter trees carry only this lane's --selftest via verify.sh --require — wire --touched into your own pipeline for per-PR coverage (design §10-A1)"
+  return 0
+}
+
+# usage_text — the usage, with the E1 sentence: one face alone is never a pass.
+usage_text() {
+  echo "usage: selftest-hermetic.sh [--touched | --all | <path>... | --selftest]"
+  echo "       selftest-hermetic.sh --touched --face <a|b> --output-file <F>   |   --join <record> <record>"
+  echo "  one face alone is never a pass: it prints PARTIAL, and only --join over both faces gives a verdict"   # E1SENT
+}
+
+# new_flag_in <arg>... — rc 0 when an argument is one of the three face-mode flags (they are refused, rc 2, outside their exact grammar).
+new_flag_in() {
+  for _nf in "$@"; do
+    case $_nf in --face|--output-file|--join) return 0 ;; esac
+  done
+  return 1
+}
+
+# face_grammar <argv...> — rc 0 only for exactly: --touched --face <a|b> --output-file <F> (sets _fl_face and _fl_out).
+face_grammar() {
+  [ "$#" = 5 ] || return 1
+  [ "$1" = --touched ] && [ "$2" = --face ] && [ "$4" = --output-file ] || return 1
+  case $3 in a|b) : ;; *) return 1 ;; esac
+  [ -n "$5" ] || return 1
+  _fl_face=$3; _fl_out=$5
+}
+
+# fl_target <path> — one target under the face in $_faces: print its lines and append its verdict line to the record.
+# EXCLUDED and not-found targets carry sel=- (nothing was run, so no selector applies).
+fl_target() {
+  if [ ! -f "$1" ]; then
+    echo "FAIL: target not found: $1"; _fl_bad=1
+    printf 'target=%s sel=- verdict=FAIL\n' "$1" >> "$_fl_rec"; return 0
+  fi
+  if excluded "$1"; then
+    printf 'target=%s sel=- verdict=EXCLUDED\n' "$1" >> "$_fl_rec"; return 0
+  fi
+  echo "TARGET: $1 (face $_fl_face only)"
+  _sel=--selftest; _fv=PASS
+  if run_faces "$1"; then :
+  elif [ "$_rf_fin" = 1 ]; then _fv=UNVERIFIED; _fl_bad=1
+  else _fv=FAIL; _fl_bad=1; fi
+  printf 'target=%s sel=%s verdict=%s\n' "$1" "$_sel" "$_fv" >> "$_fl_rec"
+}
+
+# fl_commit — the record, atomically: a mktemp file beside F (an unpredictable name, so a planted link cannot be followed), then mv.
+# F must not be a directory or a symlink (refused, rc 1, no record), and after the mv F must be a regular file. A failure removes the temp file.
+fl_commit() {
+  _fc_dir=$(dirname "$_fl_out")
+  [ ! -d "$_fl_out" ] || { echo "FAIL: the record cannot be written: $_fl_out (it is a directory)"; return 1; }   # FM11
+  [ ! -L "$_fl_out" ] || { echo "FAIL: the record cannot be written: $_fl_out (it is a symlink)"; return 1; }   # FM12
+  _fc_tmp=$(mktemp "$_fc_dir/.h2rec.XXXXXX" 2>/dev/null) || { echo "FAIL: the record cannot be written: $_fl_out (no temp file can be made beside it)"; return 1; }
+  if cp "$_fl_rec" "$_fc_tmp" 2>/dev/null && mv "$_fc_tmp" "$_fl_out" 2>/dev/null && [ -f "$_fl_out" ] && [ ! -L "$_fl_out" ]; then return 0; fi
+  rm -f "$_fc_tmp"
+  [ ! -d "$_fl_out" ] || rm -f "$_fl_out/${_fc_tmp##*/}" 2>/dev/null   # F turned into a directory after the check: the mv put the temp inside it
+  echo "FAIL: the record cannot be written: $_fl_out (no partial file is left behind)"
+  return 1
+}
+
+# face_lane [path...] — run the face in $_faces over each path and write the record. rc 0 only when every path is PASS or EXCLUDED (or the set is N/A) and the record is written.
+# The last line says PARTIAL: one face alone is never a lane verdict, and this path never prints "selftest-hermetic: OK".
+face_lane() {
+  _fl_tree=$(git rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null) || _fl_tree=''
+  _fl_rec="$WORK/face.rec"; _fl_bad=0; _core=0
+  printf 'v1 face=%s tree=%s base=%s targets=%s\n' "$_fl_face" "$_fl_tree" "$_fbase" "$#" > "$_fl_rec"
+  if [ "$#" = 0 ]; then
+    printf 'verdict=N/A\n' >> "$_fl_rec"
+    echo "selftest-hermetic: N/A - no touched selftest-capable script (changed-set and roster do not meet vs $BASE)"
+  fi
+  for _ft in "$@"; do fl_target "$_ft"; done
+  if [ "$_fl_bad" != 0 ]; then echo "selftest-hermetic: FAIL - a targeted --selftest is not hermetic on face ($_fl_face) (face + output above)."; fi
+  fl_commit || _fl_bad=1
+  echo "selftest-hermetic: PARTIAL - face ($_fl_face) only; not a lane verdict (graded by --join)"   # FMPART
+  return "$_fl_bad"
+}
+
+# face_touched — the --touched --face arm after its grammar passed: no record on an underivable base or an unreasoned exclusion (rc 1; the join then reds on the missing record).
+face_touched() {
+  case $_fl_out in /*) : ;; *) _fl_out="$PWD/$_fl_out" ;; esac
+  cd "$(git rev-parse --show-toplevel)" 2>/dev/null || { echo "selftest-hermetic: not a git repo" >&2; exit 2; }
+  validate_exclusions || exit 1
+  _set=$(touched_set) || exit 1   # FM10
+  _fbase=$(git merge-base HEAD "$BASE" 2>/dev/null) || { echo "FAIL: no merge-base between HEAD and '$BASE' - no record is written"; exit 1; }   # FM10b
+  _faces=$_fl_face
+  # shellcheck disable=SC2086
+  face_lane $_set
+}
+
+# join_records <rec>... — rc 0 only when there are exactly two records, one per face, each a well-formed v1 record on this checkout's HEAD tree
+# with the same base, the same targets and selectors, every target PASS or EXCLUDED (or both N/A). Else rc 1 and the first cause. Each check is one
+# tagged line (# JNn) so the selftest can delete it and watch its cause go unnamed.
+_jn_bad() { echo "selftest-hermetic: join FAIL - $1"; return 1; }
+jn_exist() {
+  for _jq in "$@"; do
+    [ -f "$_jq" ] || { _jn_bad "no such record: $_jq (an unexpanded glob means zero records)"; return 1; }
+  done
+  return 0
+}
+# jn_head — _jh is the first line of a record: set _jf _jt _jb _jc from it, or name why it is not a v1 header.
+jn_head() {
+  case ${_jh%% *} in
+    v1) : ;;
+    v[0-9]*) _jn_bad "unknown record version '${_jh%% *}' (this join reads v1)"; return 1 ;;   # JN14
+  esac
+  case $_jh in
+    "v1 face="[ab]" tree="?*" base="?*" targets="[0-9]*) : ;;
+    *) _jn_bad "malformed header: $_jh"; return 1 ;;   # JN13
+  esac
+  _jf=${_jh#v1 face=}; _jf=${_jf%% *}
+  _jt=${_jh#* tree=}; _jt=${_jt%% *}
+  _jb=${_jh#* base=}; _jb=${_jb%% *}
+  _jc=${_jh#* targets=}
+}
+# jn_line <line> — one body line of a record: N/A, or target=<path> sel=<sel> verdict=<v> (PASS or EXCLUDED; FAIL, UNVERIFIED and anything else red).
+jn_line() {
+  case $1 in
+    "verdict=N/A") _jna=1; return 0 ;;
+    "target="*" sel="*" verdict="*) : ;;
+    *) _jn_bad "malformed line: $1"; return 1 ;;   # JN19
+  esac
+  _jv=${1##* verdict=}; _jkey=${1% verdict=*}; _jpth=${_jkey#target=}; _jpth=${_jpth% sel=*}
+  case $_jv in
+    PASS|EXCLUDED) : ;;
+    FAIL) _jn_bad "a target FAILED on face ($_jf): $_jpth"; return 1 ;;   # JN10
+    UNVERIFIED) _jn_bad "a target UNVERIFIED on face ($_jf): $_jpth"; return 1 ;;   # JN11
+    *) _jn_bad "unknown verdict '$_jv' (only PASS or EXCLUDED pass): $1"; return 1 ;;   # JN15
+  esac
+  _jsel=${_jkey##* sel=}
+  case "$_jsel:$_jv" in --selftest:PASS|--selftest-core:PASS|-:EXCLUDED) : ;; *) _jn_bad "bad selector '$_jsel' for verdict $_jv: $1"; return 1 ;; esac   # JN18
+  case "$NL$_jp" in *"$NL$_jpth$NL"*) _jn_bad "target listed twice on face ($_jf): $_jpth"; return 1 ;; esac   # JN8
+  _jp="$_jp$_jpth$NL"; _jl="$_jl$_jkey$NL"; _jk=$((_jk + 1))
+}
+# jn_load <file> — read one record into _jf _jt _jb _jp (target paths) _jl (path and selector lines) _jna (N/A) or name why it is no record.
+jn_load() {
+  _jf=''; _jt=''; _jb=''; _jc=''; _jp=''; _jl=''; _jna=0; _jk=0; _jh=''; _ji=0
+  IFS= read -r _jh < "$1" || :
+  jn_head || return 1
+  while IFS= read -r _jr || [ -n "$_jr" ]; do
+    _ji=$((_ji + 1))
+    [ "$_ji" -gt 1 ] || continue
+    jn_line "$_jr" || return 1
+  done < "$1"
+  [ "$_jc" = "$_jk" ] || { _jn_bad "count mismatch: the header says targets=$_jc but the body has $_jk target line(s) ($1)"; return 1; }   # JN16
+  case "$_jna:$_jk" in 1:0) : ;; 0:0) _jn_bad "inconsistent record: neither a target nor verdict=N/A ($1)"; return 1 ;; 0:*) : ;; *) _jn_bad "inconsistent record: verdict=N/A beside target lines ($1)"; return 1 ;; esac   # JN17
+  return 0
+}
+join_records() {
+  _jtree=$(git rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null) || { _jn_bad "cannot read this checkout's HEAD tree (not a git repo?)"; return 1; }
+  jn_exist "$@" || return 1   # JN2
+  [ "$#" -ge 2 ] || { _jn_bad "fewer than two records (got $#): a face is missing"; return 1; }   # JN1
+  [ "$#" -le 2 ] || { _jn_bad "more than two records (got $#)"; return 1; }   # JN3
+  jn_load "$1" || return 1
+  _jf1=$_jf; _jt1=$_jt; _jb1=$_jb; _jp1=$_jp; _jl1=$_jl; _jna1=$_jna
+  jn_load "${2-}" || return 1
+  _jf2=$_jf; _jt2=$_jt; _jb2=$_jb; _jp2=$_jp; _jl2=$_jl; _jna2=$_jna
+  case "$_jf1$_jf2" in ab|ba) : ;; *) _jn_bad "the two records are not one record per face (got $_jf1 and $_jf2)"; return 1 ;; esac   # JN4
+  [ "$_jt1" = "$_jtree" ] && [ "$_jt2" = "$_jtree" ] || { _jn_bad "a record tree is not the HEAD tree of this checkout ($_jt1, $_jt2 vs $_jtree)"; return 1; }   # JN5
+  [ "$_jb1" = "$_jb2" ] || { _jn_bad "the two records have different bases ($_jb1, $_jb2)"; return 1; }   # JN6
+  [ "$_jna1" = "$_jna2" ] || { _jn_bad "one record is N/A and the other is not"; return 1; }   # JN12
+  [ "$_jp1" = "$_jp2" ] || { _jn_bad "the two records have different target lists"; return 1; }   # JN7
+  [ "$_jl1" = "$_jl2" ] || { _jn_bad "the two records have different selectors for the same targets"; return 1; }   # JN9
+  echo "selftest-hermetic: join OK - faces a and b graded the same tree and targets, every target PASS or EXCLUDED (or both N/A)"
   return 0
 }
 
@@ -1044,6 +1220,216 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     st_lacks "FL4mm with the moved-tree report dropped from the scan-failed branch it is not printed, so FL4m has teeth" "$out" 'UNVERIFIED (live tree changed during face (a): HEAD)'
   fi
 
+  # BP1 (SWAS-864, design section 5) — roster() over a large file whose first line names --selftest, with SIGPIPE ignored (as on the CI runner), prints nothing on stderr: the sed|grep -q pipe is gone. BP1m restores the pipe in a copy: GNU sed then prints Broken pipe.
+  mkdir -p "$st/bp/conformance"
+  { printf 'case "${1:-}" in --selftest) : ;; esac\n'; awk 'BEGIN { for (i = 0; i < 20000; i++) print "filler line " i " padding padding padding padding" }'; } > "$st/bp/conformance/big.sh"
+  rc=0; ( cd "$st/bp" && trap '' PIPE && roster ) > "$WORK/bp.out" 2> "$WORK/bp.err" || rc=$?
+  st_expect "BP1 roster over a large file with SIGPIPE ignored: rc 0" 0 "$rc"
+  st_has "BP1 the file whose first line names --selftest is listed" "$(cat "$WORK/bp.out")" 'conformance/big.sh'
+  if [ ! -s "$WORK/bp.err" ]; then echo "PASS: selftest — BP1 roster wrote nothing to stderr (no Broken pipe)"
+  else echo "FAIL: selftest — BP1 roster wrote to stderr: $(cat "$WORK/bp.err")"; sfail=1; fi
+  if st_cmut bp1m '/# BPROS$/s,^.*$,    sed "s/#.*//" "$_f" | grep -q -- "--selftest" || continue,'; then
+    _bp_fn=$(sed -n '/^roster() {/,/^}/p' "$WORK/cm.bp1m.sh")
+    _bp_v=$(sed --version 2>&1) || _bp_v=''
+    if _has "$_bp_v" 'GNU sed'; then
+      ( cd "$st/bp" && trap '' PIPE && eval "$_bp_fn" && roster ) > /dev/null 2> "$WORK/bp.errm" || :
+      st_has "BP1m with the pipe restored GNU sed prints Broken pipe, so BP1 has teeth" "$(cat "$WORK/bp.errm")" 'Broken pipe'
+    else echo "SKIP: selftest — BP1m the sed here is not GNU sed: the Broken pipe message is GNU's, so the pipe-restored half was NOT exercised"; fi
+  fi
+
+  # FM-u1..FM-u7 and E1 (SWAS-864, design section 3 face mode + errata E1) — the exact grammar is --touched --face a|b --output-file F; every other use of the three new flags is rc 2 with the usage text, and the usage text says plainly that one face alone is never a pass
+  st_repo "$st/jn"; st_commit "$st/jn"
+  st_fmu FM-u1 --face a --touched --output-file "$WORK/u.rec"
+  st_fmu FM-u2 --touched --face c --output-file "$WORK/u.rec"
+  st_fmu FM-u3 --touched --face a
+  st_fmu FM-u4 --output-file "$WORK/u.rec" --touched --face a
+  st_fmu FM-u5 --all --face a
+  st_fmu FM-u6 conformance/x.sh --face a
+  st_fmu FM-u7 --touched --face a --output-file "$WORK/u.rec" extra
+  if [ ! -e "$WORK/u.rec" ]; then echo "PASS: selftest — FM-u no refused call left a record"; else echo "FAIL: selftest — FM-u a refused call left a record"; sfail=1; fi
+  _fm_sent='one face alone is never a pass: it prints PARTIAL, and only --join over both faces gives a verdict'
+  _su_o=$( cd "$st/jn" && sh "$_self" 2>&1 ) || :
+  st_has "E1 the usage text carries the one-face-alone sentence" "$_su_o" "$_fm_sent"
+  if st_cmut e1m '/# E1SENT$/d'; then
+    _su_o=$( cd "$st/jn" && sh "$WORK/cm.e1m.sh" 2>&1 ) || :
+    st_lacks "E1m with the sentence dropped the usage text no longer carries it, so E1 has teeth" "$_su_o" "$_fm_sent"
+  fi
+
+  # FM1-FM2, FM8, FM9 (design section 3 face mode, AC3, AC4) — one face over a one-target fixture: rc 0, the record binds face, tree, base and the target, only that face runs, and the last line says PARTIAL (never a verdict, never OK)
+  st_fmrepo "$st/fma" ok
+  _fm_t=$(git -C "$st/fma" rev-parse 'HEAD^{tree}'); _fm_b=$(git -C "$st/fma" rev-parse refs/remotes/origin/main)
+  for _fm_x in a b; do
+    case $_fm_x in a) _fm_n=1; _fm_o=b ;; *) _fm_n=2; _fm_o=a ;; esac
+    rc=0; out=$( cd "$st/fma" && sh "$_self" --touched --face "$_fm_x" --output-file "$WORK/fm.$_fm_x.rec" 2>&1 ) || rc=$?
+    st_expect "FM$_fm_n face ($_fm_x) over a one-target fixture: rc 0" 0 "$rc"
+    st_expect "FM$_fm_n the record header binds face, tree, base and one target" "v1 face=$_fm_x tree=$_fm_t base=$_fm_b targets=1" "$(sed -n 1p "$WORK/fm.$_fm_x.rec")"
+    st_expect "FM$_fm_n the target line is PASS with its selector" 'target=conformance/hermetic-check.sh sel=--selftest verdict=PASS' "$(sed -n 2p "$WORK/fm.$_fm_x.rec")"
+    st_has "FM$_fm_n face ($_fm_x) ran and passed" "$out" "PASS: face ($_fm_x)"
+    st_has "FM$_fm_n the face line ends (<n> s) battery: <state>" "$out" ' s) battery: '
+    st_lacks "FM$_fm_n the other face ($_fm_o) did not run" "$out" "face ($_fm_o)"
+    st_expect "FM$_fm_n the last line is PARTIAL, not a verdict" "selftest-hermetic: PARTIAL - face ($_fm_x) only; not a lane verdict (graded by --join)" "${out##*"$NL"}"
+    st_lacks "FM8 face ($_fm_x) never prints selftest-hermetic: OK" "$out" 'selftest-hermetic: OK'
+  done
+  if st_cmut fm9m '/# FACEB$/s/\*" b "\*)/*)/'; then
+    out=$( cd "$st/fma" && sh "$WORK/cm.fm9m.sh" --touched --face a --output-file "$WORK/fm.9m.rec" 2>&1 ) || :
+    st_has "FM9m with the face filter dropped face a also runs face (b), so FM1's other-face check has teeth" "$out" 'PASS: face (b)'
+  fi
+  # FM3, FM4 — a FAIL target and an UNVERIFIED target give rc 1 and their verdict in the record (the FL4 grep stub makes face (a)'s FAIL-line scan unable to run)
+  st_fmrepo "$st/fmf" fail
+  rc=0; out=$( cd "$st/fmf" && sh "$_self" --touched --face a --output-file "$WORK/fm.f.rec" 2>&1 ) || rc=$?
+  st_expect "FM3 a FAIL fixture: rc 1" 1 "$rc"
+  st_expect "FM3 the record says verdict=FAIL" 'target=conformance/fail1-check.sh sel=--selftest verdict=FAIL' "$(sed -n 2p "$WORK/fm.f.rec")"
+  st_lacks "FM8 a FAIL face run never prints selftest-hermetic: OK" "$out" 'selftest-hermetic: OK'
+  rc=0; out=$( cd "$st/fma" && PATH="$WORK/fl/bin:$PATH" sh "$_self" --touched --face a --output-file "$WORK/fm.u.rec" 2>&1 ) || rc=$?
+  st_expect "FM4 an UNVERIFIED fixture: rc 1" 1 "$rc"
+  st_expect "FM4 the record says verdict=UNVERIFIED" 'target=conformance/hermetic-check.sh sel=--selftest verdict=UNVERIFIED' "$(sed -n 2p "$WORK/fm.u.rec")"
+  # FM5 — an excluded target is EXCLUDED in the record, rc 0
+  st_fmrepo "$st/fmx" ok
+  printf 'hermetic-check.sh\tfixture: excluded to prove the disposition\n' > "$st/fmx/conformance/hermetic-exclusions.txt"
+  rc=0; out=$( cd "$st/fmx" && sh "$_self" --touched --face a --output-file "$WORK/fm.x.rec" 2>&1 ) || rc=$?
+  st_expect "FM5 an excluded target: rc 0" 0 "$rc"
+  st_expect "FM5 the record says verdict=EXCLUDED" 'target=conformance/hermetic-check.sh sel=- verdict=EXCLUDED' "$(sed -n 2p "$WORK/fm.x.rec")"
+  # FM6 — push-shaped: the base ref is HEAD, so the touched set is empty and the SCRIPT writes the N/A record (the YAML never forges one)
+  st_repo "$st/fmp"; st_commit "$st/fmp"
+  ( cd "$st/fmp" && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+  _fm_pt=$(git -C "$st/fmp" rev-parse 'HEAD^{tree}'); _fm_pb=$(git -C "$st/fmp" rev-parse HEAD)
+  rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$_self" --touched --face a --output-file "$WORK/fm.p.rec" 2>&1 ) || rc=$?
+  st_expect "FM6 push-shaped (base ref = HEAD): rc 0" 0 "$rc"
+  st_expect "FM6 the script wrote the N/A record" "v1 face=a tree=$_fm_pt base=$_fm_pb targets=0${NL}verdict=N/A" "$(cat "$WORK/fm.p.rec")"
+  # FM7 — a record that cannot be written is rc 1 and leaves no F and no F.tmp.* (the empty set keeps this cheap: no face runs)
+  rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$_self" --touched --face a --output-file "$WORK/nodir/x.rec" 2>&1 ) || rc=$?
+  st_expect "FM7 a record in a directory that does not exist: rc 1" 1 "$rc"
+  st_has "FM7 the failure names the record" "$out" 'the record cannot be written'
+  mkdir -p "$WORK/ro"; chmod 555 "$WORK/ro"
+  if ( : > "$WORK/ro/probe" ) 2>/dev/null; then rm -f "$WORK/ro/probe"; echo "SKIP: selftest — FM7b this user can write into a read-only directory (root?), so the read-only half was NOT exercised"
+  else
+    rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$_self" --touched --face a --output-file "$WORK/ro/x.rec" 2>&1 ) || rc=$?
+    st_expect "FM7b a record in a read-only directory: rc 1" 1 "$rc"
+    st_expect "FM7b no F and no F.tmp.* is left behind" "" "$(ls -A "$WORK/ro")"
+  fi
+  chmod 755 "$WORK/ro"
+  # FM11, FM12 (security read, L2) — F that is an existing directory or a symlink is refused (rc 1, FAIL line); the mutants drop the guard: a record lands inside the directory, a symlink F is replaced and rc 0
+  mkdir -p "$WORK/dirf"
+  rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$_self" --touched --face a --output-file "$WORK/dirf" 2>&1 ) || rc=$?
+  st_expect "FM11 F is an existing directory: rc 1" 1 "$rc"
+  st_has "FM11 the failure says it is a directory" "$out" 'it is a directory'
+  st_expect "FM11 nothing was written inside the directory" "" "$(ls -A "$WORK/dirf")"
+  if st_cmut fm11m '/# FM11$/d'; then
+    rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$WORK/cm.fm11m.sh" --touched --face a --output-file "$WORK/dirf" 2>&1 ) || rc=$?
+    st_expect "FM11m with the directory guard dropped the post-mv check still reds (rc 1)" 1 "$rc"
+    st_lacks "FM11m with the directory guard dropped the run no longer says it is a directory (it falls through to the post-mv failure), so FM11 has teeth" "$out" 'it is a directory'
+    st_has "FM11m the mutant reached the post-mv failure" "$out" 'no partial file is left behind'
+    st_expect "FM11m the post-mv cleanup left nothing inside the directory" "" "$(ls -A "$WORK/dirf")"
+  fi
+  printf 'keep\n' > "$WORK/victim"; ln -s "$WORK/victim" "$WORK/lnk.rec"
+  rc=0; out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$_self" --touched --face a --output-file "$WORK/lnk.rec" 2>&1 ) || rc=$?
+  st_expect "FM12 F is a symlink: rc 1" 1 "$rc"
+  st_has "FM12 the failure says it is a symlink" "$out" 'it is a symlink'
+  st_expect "FM12 the link target is untouched" "keep" "$(cat "$WORK/victim")"
+  if [ -L "$WORK/lnk.rec" ]; then echo "PASS: selftest — FM12 the symlink is still a symlink"; else echo "FAIL: selftest — FM12 the symlink was replaced"; sfail=1; fi
+  if st_cmut fm12m '/# FM12$/d'; then
+    rc=0; ( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$WORK/cm.fm12m.sh" --touched --face a --output-file "$WORK/lnk.rec" ) >/dev/null 2>&1 || rc=$?
+    st_expect "FM12m with the symlink guard dropped a symlink F is accepted (rc 0), so FM12 has teeth" 0 "$rc"
+  fi
+  # FM8m — a face path that printed OK would red FM8's checks
+  if st_cmut fm8m '/# FMPART$/s/selftest-hermetic: PARTIAL/selftest-hermetic: OK/'; then
+    out=$( cd "$st/fmp" && HERMETIC_BASE=refs/remotes/origin/main sh "$WORK/cm.fm8m.sh" --touched --face a --output-file "$WORK/fm.8m.rec" 2>&1 ) || :
+    st_has "FM8m with the PARTIAL line turned into OK the face path prints it, so FM8 has teeth" "$out" 'selftest-hermetic: OK'
+  fi
+  # FM10 (conductor ruling Q4) — no base: rc 1 and NO record (never an N/A record that binds nothing); FM10m drops the guard and a record appears
+  st_repo "$st/fmn"; st_script "$st/fmn/conformance/hermetic-check.sh" inline; st_commit "$st/fmn"
+  rc=0; out=$( cd "$st/fmn" && sh "$_self" --touched --face a --output-file "$WORK/fm.n.rec" 2>&1 ) || rc=$?
+  st_expect "FM10 an underivable base: rc 1" 1 "$rc"
+  if [ ! -e "$WORK/fm.n.rec" ]; then echo "PASS: selftest — FM10 no record was written for an underivable base"; else echo "FAIL: selftest — FM10 a record was written for an underivable base"; sfail=1; fi
+  # FM10c — the merge-base guard (FM10b) is a second line of defence: with ONLY the touched_set guard dropped it still reds with no record; FM10m drops both
+  if st_cmut fm10c '/# FM10$/s/|| exit 1/|| :/'; then
+    rc=0; out=$( cd "$st/fmn" && sh "$WORK/cm.fm10c.sh" --touched --face a --output-file "$WORK/fm.nc.rec" 2>&1 ) || rc=$?
+    st_expect "FM10c a failed merge-base in face mode (touched_set guard dropped): rc 1" 1 "$rc"
+    st_has "FM10c the merge-base guard names itself" "$out" 'no merge-base between HEAD and'
+    if [ ! -e "$WORK/fm.nc.rec" ]; then echo "PASS: selftest — FM10c no record was written when the merge-base failed"; else echo "FAIL: selftest — FM10c a record was written when the merge-base failed"; sfail=1; fi
+  fi
+  if st_cmut fm10m '/# FM10$/s/|| exit 1/|| :/;/# FM10b$/s/exit 1; }/:; }/'; then
+    rc=0; ( cd "$st/fmn" && sh "$WORK/cm.fm10m.sh" --touched --face a --output-file "$WORK/fm.nm.rec" ) >/dev/null 2>&1 || rc=$?
+    if [ -e "$WORK/fm.nm.rec" ]; then echo "PASS: selftest — FM10m with the base guard dropped a record is written for an underivable base, so FM10 has teeth"
+    else echo "FAIL: selftest — FM10m the guard-dropped copy still wrote no record (rc $rc)"; sfail=1; fi
+  fi
+  st_fmrepo "$st/fmr" ok
+  printf 'anything.sh\n' > "$st/fmr/conformance/hermetic-exclusions.txt"
+  rc=0; ( cd "$st/fmr" && sh "$_self" --touched --face a --output-file "$WORK/fm.r.rec" ) >/dev/null 2>&1 || rc=$?
+  st_expect "FM10e a reasonless exclusion: rc 1" 1 "$rc"
+  if [ ! -e "$WORK/fm.r.rec" ]; then echo "PASS: selftest — FM10e no record was written for a reasonless exclusion"; else echo "FAIL: selftest — FM10e a record was written for a reasonless exclusion"; sfail=1; fi
+
+  # JN0-JN14 (design section 3 join, AC2) — the join is green for two agreeing records and reds, naming the cause, for each way a face can be missing or disagree; each cell has a mutant (the tagged check deleted) that no longer names the cause
+  mkdir -p "$WORK/jn"
+  _jn_t=$(git -C "$st/jn" rev-parse 'HEAD^{tree}')
+  _jn_p1='target=conformance/a.sh sel=--selftest verdict=PASS'
+  _jn_p2='target=conformance/b.sh sel=- verdict=EXCLUDED'
+  st_jrec "$WORK/jn/a.rec" a "$_jn_t" base1 2 "$_jn_p1" "$_jn_p2"
+  st_jrec "$WORK/jn/b.rec" b "$_jn_t" base1 2 "$_jn_p1" "$_jn_p2"
+  rc=0; out=$( cd "$st/jn" && sh "$_self" --join "$WORK/jn/a.rec" "$WORK/jn/b.rec" 2>&1 ) || rc=$?
+  st_expect "JN0 two agreeing PASS/EXCLUDED records: rc 0" 0 "$rc"
+  st_has "JN0 the join says OK" "$out" 'join OK'
+  st_jrec "$WORK/jn/na.rec" a "$_jn_t" base1 0 'verdict=N/A'
+  st_jrec "$WORK/jn/nb.rec" b "$_jn_t" base1 0 'verdict=N/A'
+  rc=0; out=$( cd "$st/jn" && sh "$_self" --join "$WORK/jn/nb.rec" "$WORK/jn/na.rec" 2>&1 ) || rc=$?
+  st_expect "JN0 two N/A records (either order): rc 0" 0 "$rc"
+  rc=0; out=$( cd "$st/fma" && sh "$_self" --join "$WORK/fm.a.rec" "$WORK/fm.b.rec" 2>&1 ) || rc=$?
+  st_expect "JN0 the two records FM1 and FM2 really wrote join green (writer and reader agree)" 0 "$rc"
+  st_jn JN1 JN1 'fewer than two records' "$WORK/jn/a.rec"
+  st_jn JN2 JN2 'no such record' "$WORK/nosuch/*.rec"
+  st_jn JN3 JN3 'more than two records' "$WORK/jn/a.rec" "$WORK/jn/b.rec" "$WORK/jn/b.rec"
+  st_jrec "$WORK/jn/aa.rec" a "$_jn_t" base1 2 "$_jn_p1" "$_jn_p2"
+  st_jn JN4 JN4 'not one record per face' "$WORK/jn/a.rec" "$WORK/jn/aa.rec"
+  st_jrec "$WORK/jn/t1.rec" a badtree base1 2 "$_jn_p1" "$_jn_p2"
+  st_jrec "$WORK/jn/t2.rec" b badtree base1 2 "$_jn_p1" "$_jn_p2"
+  st_jn JN5 JN5 'is not the HEAD tree' "$WORK/jn/t1.rec" "$WORK/jn/t2.rec"
+  st_jrec "$WORK/jn/bb.rec" b "$_jn_t" base2 2 "$_jn_p1" "$_jn_p2"
+  st_jn JN6 JN6 'different bases' "$WORK/jn/a.rec" "$WORK/jn/bb.rec"
+  st_jrec "$WORK/jn/b1.rec" b "$_jn_t" base1 1 "$_jn_p1"
+  st_jn JN7 JN7 'different target lists' "$WORK/jn/a.rec" "$WORK/jn/b1.rec"
+  st_jrec "$WORK/jn/d1.rec" a "$_jn_t" base1 2 "$_jn_p1" "$_jn_p1"
+  st_jrec "$WORK/jn/d2.rec" b "$_jn_t" base1 2 "$_jn_p1" "$_jn_p1"
+  st_jn JN8 JN8 'listed twice' "$WORK/jn/d1.rec" "$WORK/jn/d2.rec"
+  st_jrec "$WORK/jn/s1.rec" a "$_jn_t" base1 1 "$_jn_p1"
+  st_jrec "$WORK/jn/s2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=--selftest-core verdict=PASS'
+  st_jn JN9 JN9 'different selectors' "$WORK/jn/s1.rec" "$WORK/jn/s2.rec"
+  st_jrec "$WORK/jn/f2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=--selftest verdict=FAIL'
+  st_jn JN10 JN10 'target FAILED' "$WORK/jn/s1.rec" "$WORK/jn/f2.rec"
+  st_jrec "$WORK/jn/u2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=--selftest verdict=UNVERIFIED'
+  st_jn JN11 JN11 'target UNVERIFIED' "$WORK/jn/s1.rec" "$WORK/jn/u2.rec"
+  st_jn JN12 JN12 'one record is N/A and the other is not' "$WORK/jn/na.rec" "$WORK/jn/b.rec"
+  printf 'v1 face=a tree=%s\n' "$_jn_t" > "$WORK/jn/m1.rec"
+  st_jn JN13 JN13 'malformed header' "$WORK/jn/m1.rec" "$WORK/jn/b.rec"
+  st_jrec "$WORK/jn/g1.rec" a "$_jn_t" base1 1 'garbage'
+  st_jrec "$WORK/jn/g2.rec" b "$_jn_t" base1 1 'garbage'
+  st_jn JN19 JN19 'malformed line' "$WORK/jn/g1.rec" "$WORK/jn/g2.rec"
+  st_jrec "$WORK/jn/n1.rec" a "$_jn_t" base1 1 'verdict=N/A' "$_jn_p1"
+  st_jrec "$WORK/jn/n2.rec" b "$_jn_t" base1 1 'verdict=N/A' "$_jn_p1"
+  st_jn JN17 JN17 'inconsistent record: verdict=N/A beside target lines' "$WORK/jn/n1.rec" "$WORK/jn/n2.rec"
+  # JN17b — a header-only record (targets=0, no target and no verdict=N/A) is no record; the mutant neutralises that arm's action (the tagged line stays, so the other two arms are kept)
+  st_jrec "$WORK/jn/h1.rec" a "$_jn_t" base1 0
+  st_jrec "$WORK/jn/h2.rec" b "$_jn_t" base1 0
+  rc=0; out=$( cd "$st/jn" && sh "$_self" --join "$WORK/jn/h1.rec" "$WORK/jn/h2.rec" 2>&1 ) || rc=$?
+  st_expect "JN17b two header-only records: the join reds" 1 "$rc"
+  st_has "JN17b the join names its cause" "$out" 'inconsistent record: neither a target nor verdict=N/A'
+  if st_cmut jn17bm '/# JN17$/s/0:0) _jn_bad "[^"]*"; return 1 ;;/0:0) : ;;/'; then
+    out=$( cd "$st/jn" && sh "$WORK/cm.jn17bm.sh" --join "$WORK/jn/h1.rec" "$WORK/jn/h2.rec" 2>&1 ) || :
+    st_has "JN17bm the mutant still reached a join verdict" "$out" 'selftest-hermetic: join'
+    st_lacks "JN17bm with the 0:0 arm neutralised the join no longer names the cause, so JN17b has teeth" "$out" 'inconsistent record: neither a target nor verdict=N/A'
+  fi
+  st_jrec "$WORK/jn/v2.rec" a "$_jn_t" base1 2 "$_jn_p1" "$_jn_p2"
+  sed 's/^v1 /v2 /' "$WORK/jn/v2.rec" > "$WORK/jn/v2b.rec"
+  st_jn JN14 JN14 'unknown record version' "$WORK/jn/v2b.rec" "$WORK/jn/b.rec"
+  st_jrec "$WORK/jn/k1.rec" a "$_jn_t" base1 1 'target=conformance/a.sh sel=--selftest verdict=SKIP'
+  st_jrec "$WORK/jn/k2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=--selftest verdict=SKIP'
+  st_jn JN15 JN15 "unknown verdict 'SKIP'" "$WORK/jn/k1.rec" "$WORK/jn/k2.rec"
+  st_jrec "$WORK/jn/c1.rec" a "$_jn_t" base1 3 "$_jn_p1" "$_jn_p2"
+  st_jrec "$WORK/jn/c2.rec" b "$_jn_t" base1 3 "$_jn_p1" "$_jn_p2"
+  st_jn JN16 JN16 'count mismatch: the header says targets=3 but the body has 2' "$WORK/jn/c1.rec" "$WORK/jn/c2.rec"
+  st_jrec "$WORK/jn/x1.rec" a "$_jn_t" base1 1 'target=conformance/a.sh sel=- verdict=PASS'
+  st_jrec "$WORK/jn/x2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=- verdict=PASS'
+  st_jn JN18 JN18 "bad selector '-' for verdict PASS" "$WORK/jn/x1.rec" "$WORK/jn/x2.rec"
+
   # C3-C5, C10 and C7 (SWAS-600; errata E3) - the crash cells run as one group into a file, the file is printed, and the same file is rescanned: a crash cell's own PASS output must hold no crash line
   _cq=$WORK/crash.cells
   crash_cells_h > "$_cq" 2>&1 || :
@@ -1237,6 +1623,36 @@ st_cmut() { # <name> <sed-expr> — SWAS-600: a throwaway copy of $_self with on
   if cmp -s "$_self" "$WORK/cm.$1.sh"; then echo "FAIL: selftest — $1 the mutant copy changed nothing (its tag is gone)"; sfail=1; return 1; fi
   sed -n -e '/^crash_sig_of() {/,/^}/p' -e '/^crash_line_in() {/,/^}/p' -e '/^hf_crashed() {/,/^}/p' "$WORK/cm.$1.sh" > "$WORK/cm.$1.fn"
 }
+st_fmu() { # <id> <argv...> — a face-mode or join grammar the script refuses: rc 2 with the usage text
+  _su_id=$1; shift
+  _su_rc=0; _su_o=$( cd "$st/jn" && sh "$_self" "$@" 2>&1 ) || _su_rc=$?
+  st_expect "$_su_id a bad grammar is rc 2" 2 "$_su_rc"
+  st_has "$_su_id the usage text is printed" "$_su_o" 'usage: selftest-hermetic.sh'
+}
+st_fmrepo() { # <dir> <kind: ok|fail> — a repo whose base ref (refs/remotes/origin/main) is its first commit and whose ONE touched roster script comes in the second
+  st_repo "$1"; st_commit "$1"
+  ( cd "$1" && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+  case $2 in
+    ok)   st_script "$1/conformance/hermetic-check.sh" inline ;;
+    fail) st_fix "$1/conformance/fail1-check.sh" fail1 ;;
+  esac
+  st_commit "$1"
+}
+st_jrec() { # <file> <face> <tree> <base> <n> [line...] — write a v1 face record
+  _sj_f=$1; _sj_h="v1 face=$2 tree=$3 base=$4 targets=$5"; shift 5
+  { printf '%s\n' "$_sj_h"; if [ "$#" -gt 0 ]; then printf '%s\n' "$@"; fi; } > "$_sj_f"
+}
+st_jn() { # <id> <tag> <cause> <record>... — the join reds (rc 1) and names the cause; the same run with the tagged check deleted (a throwaway copy, the st_cmut idiom) no longer names it
+  _sj_id=$1; _sj_tag=$2; _sj_cause=$3; shift 3
+  rc=0; out=$( cd "$st/jn" && sh "$_self" --join "$@" 2>&1 ) || rc=$?
+  st_expect "$_sj_id the join reds" 1 "$rc"
+  st_has "$_sj_id the join names its cause" "$out" "$_sj_cause"
+  if st_cmut "${_sj_id}m" "/# $_sj_tag\$/d"; then
+    out=$( cd "$st/jn" && sh "$WORK/cm.${_sj_id}m.sh" --join "$@" 2>&1 ) || :
+    st_has "${_sj_id}m the mutant still reached a join verdict (it did not crash)" "$out" 'selftest-hermetic: join'
+    st_lacks "${_sj_id}m with the tagged check deleted the join no longer names the cause, so $_sj_id has teeth" "$out" "$_sj_cause"
+  fi
+}
 st_cscan() { # <fn-file> <data-file> — that copy's crash_line_in over the data file, in a subshell; prints its rc
   # shellcheck disable=SC1090  # sources a mutant copy's extracted crash functions (the path is built at run time)
   ( . "$1"; _sc_r=0; crash_line_in "$2" || _sc_r=$?; echo "$_sc_r" )
@@ -1335,6 +1751,11 @@ case "${1:-}" in
   --selftest)
     selftest; _fin $? ;;
   --touched)
+    if [ "${2:-}" = --face ]; then
+      face_grammar "$@" || { usage_text >&2; exit 2; }
+      face_touched; _fin $?
+    fi
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi
     cd "$(git rev-parse --show-toplevel)" 2>/dev/null || { echo "selftest-hermetic: not a git repo" >&2; exit 2; }
     # Reviewer 3 (2026-08-07): validate BEFORE the empty-target N/A exit — an exclusions-only PR
     # (touched∩roster empty) must not slip a reasonless entry past the lane it widens.
@@ -1346,7 +1767,12 @@ case "${1:-}" in
     fi
     # shellcheck disable=SC2086
     run_lane $_set; _fin $? ;;
+  --join)
+    shift
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi
+    join_records "$@"; _fin $? ;;
   --all)
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi
     cd "$(git rev-parse --show-toplevel)" 2>/dev/null || { echo "selftest-hermetic: not a git repo" >&2; exit 2; }
     validate_exclusions || exit 1
     _set=$(roster)
@@ -1354,7 +1780,8 @@ case "${1:-}" in
     # shellcheck disable=SC2086
     run_lane $_set; _fin $? ;;
   "")
-    echo "usage: selftest-hermetic.sh [--touched | --all | <path>... | --selftest]" >&2; exit 2 ;;
+    usage_text >&2; exit 2 ;;
   *)
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi
     run_lane "$@"; _fin $? ;;
 esac

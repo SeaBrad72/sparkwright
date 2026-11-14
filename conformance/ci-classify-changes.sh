@@ -111,7 +111,9 @@ classify() {
 # a drift between the two is caught by the boarded AGGREGATOR-NEEDS-LOCK, not by a parse of ci.yml
 # from a script that must stay pure. `conformance-docs` is NOT in it — the aggregator IS, and the
 # aggregator needs conformance-docs, so R1 subsumes it without breaking on pre-slice runs.
-PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam conformance'
+# SWAS-864: h2-hermetic (the join over the h2-face legs, which graded the H2 lane inside conformance-core before) joins the list, last before the aggregator, so the order of the first-failing reason for the older
+# shards is unchanged. PG_NEEDED also feeds head_evidence for the merge verbs (promotion-verify land, actuate, trace), so a CI run from before SWAS-864 reads needed-job-missing:h2-hermetic and the push runs the full suite (fail-closed). It is not in PG_HEAVY: a pre-SWAS-864 docs-only run has no such job, and the induction path asks only that the heavy shards skipped.
+PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam h2-hermetic conformance'
 PG_HEAVY='conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone'
 
 _pg_no()  { echo "push_graded=false reason=$1"; }
@@ -415,11 +417,11 @@ selftest_pg() {
   # the three canonical job listings
   J_ALL='changes=success conformance-core=success conformance-selftests=success cf-doctor=success
     cf-export=success cf-export-claims=success cf-verify-enforced=success
-    cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success conformance-docs=success docs-links=success
+    cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=success non-vacuity~(2)=success'
   J_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped
     cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped
-    cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped conformance-docs=success docs-links=success
+    cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=skipped non-vacuity~(2)=skipped'
 
   # shellcheck disable=SC2086   # the J_* listings are deliberately word-split into name=conclusion args
@@ -485,6 +487,13 @@ selftest_pg() {
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
   _reset; _j=$(printf '%s' "$J_DOCS" | sed 's/conformance-core=skipped/conformance-core=success/; s/conformance-selftests=skipped/conformance-selftests=success/; s/conformance-docs=success //'); _mkjobs "$p/jobs" $_j
   _case legacy-mixed-docs-run               "push_graded=false reason=needed-job-not-success:cf-doctor"
+  # SWAS-864: the new join earns the skip only by success, and a pre-SWAS-864 run (no such job) reads missing, so the push runs the full suite
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/h2-hermetic=success/h2-hermetic=failure/'); _mkjobs "$p/jobs" $_j
+  _case h2-hermetic-red-refuses             "push_graded=false reason=needed-job-not-success:h2-hermetic"
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/h2-hermetic=success //'); _mkjobs "$p/jobs" $_j
+  _case h2-hermetic-missing-refuses         "push_graded=false reason=needed-job-missing:h2-hermetic"
 
   # --- (+/-) 233a: matrix legs, named reasons, and the run selected by workflow FILE (D3) ---
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
@@ -571,9 +580,9 @@ selftest_he() {
     for _hp in "$@"; do _ho="$_ho${_ho:+,}{\"name\":\"$(printf '%s' "${_hp%%=*}" | tr '~' ' ')\",\"conclusion\":\"${_hp#*=}\"}"; done
     printf '{"jobs":[%s]}\n' "$_ho" > "$_hd"
   }
-  HJ_LIGHT='changes=success conformance-core=success conformance-selftests=success cf-doctor=success cf-export=success cf-export-claims=success cf-verify-enforced=success cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=success'
-  HJ_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=skipped'
-  HJ_CHEAP='changes=skipped conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped conformance-docs=skipped docs-links=skipped conformance=success non-vacuity~(1)=skipped'
+  HJ_LIGHT='changes=success conformance-core=success conformance-selftests=success cf-doctor=success cf-export=success cf-export-claims=success cf-verify-enforced=success cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=success'
+  HJ_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=skipped'
+  HJ_CHEAP='changes=skipped conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=skipped docs-links=skipped conformance=success non-vacuity~(1)=skipped'
   _hcase() { # _hcase <name> <runs-json-body> <jobs-listing> <expected-line> [head] [branch] [repo]
     printf '{"workflow_runs":[%s]}\n' "$2" > "$h/runs"
     # shellcheck disable=SC2086   # the HJ_* listings are deliberately word-split into name=conclusion args

@@ -8,7 +8,7 @@ the cost now is cheaper than paying it in production.
 the moment its trigger appears, whether or not you read this. The rationale here is synthesized
 from the authoritative standards — each block's *Read more* points back to the canonical text.
 
-Query any entry from the CLI: `sparkwright explain <topic>` (or `sparkwright explain --list`).
+Query any entry from the CLI: `sh scripts/sparkwright explain <topic>` (or `sh scripts/sparkwright explain --list`).
 
 ---
 
@@ -132,7 +132,7 @@ Read more: DEVELOPMENT-PROCESS.md §12
 ---
 
 *Beyond the gates, a few core **process terms** you'll meet in `START-HERE.md` — also queryable via
-`sparkwright explain <topic>`:*
+`sh scripts/sparkwright explain <topic>`:*
 
 ## autonomy-tier
 Applies IF: always — every change is classified by risk × reversibility before an agent acts (CLAUDE.md, Agent governance)

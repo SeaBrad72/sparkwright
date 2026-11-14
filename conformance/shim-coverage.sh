@@ -130,9 +130,9 @@ fi
 # proven here against a REAL bare remote in a throwaway tree, never this repository's refs:
 #   (a) the script's own push passes through the shim'd git;
 #   (b) the same sentinel typed into the COMMAND TEXT is still denied.
-# ⚠️ AND THE RELEASE PUSH IS MEASURED AND DISCLOSED EITHER WAY: it carries `--force-with-lease`,
-# which the guard's unrelated force-push rule may refuse under shims. Whatever the verdict is, this
-# case prints it, so nobody has to guess whether the release path works in a shimmed runtime.
+# ⚠️ AND THE RELEASE PUSH IS ASSERTED (SWAS-842): it carries `--force-with-lease`, which the guard's
+# force-push rule refused under shims until it learned to admit this one compare-and-swap delete.
+# The case asserts the release succeeds, so a regression in the admission reds here.
 # shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command so a user's CDPATH
 # cannot redirect it; the empty assignment is intentional (same idiom and justification as the `pv`
 # resolution in case 4 above).
@@ -181,24 +181,139 @@ SHIM_BOARD_EOF
     echo "FAIL: the sentinel typed in the COMMAND TEXT was honoured — an agent can type past the arm"; exit 1
   fi
   echo "PASS: the same sentinel in the command TEXT is denied (env-only, exactly like the ledger's)"
-  # the disclosure half: the release push's --force-with-lease under shims, measured not assumed.
+  # THE RELEASE PUSH (SWAS-842, F4): the compare-and-swap delete (`--force-with-lease=<ref>:<sha> :<ref>`) is admitted under install-shims in
+  # its one grammar-exact form, by the claims sentinel. This used to be a printed measurement (the force-push rule refused it, 2026-09-16, and
+  # the verb wrote a compensating `-FAILED` log entry); it is an assertion now. Three things must hold: the verb's rc is 0, the claim ref is gone
+  # on the bare remote, and the LAST `refs/claims-log/ROW-SHIM` entry is not a `-FAILED` one. Under the Claude hook the release always worked
+  # (the guard grades `sh scripts/board-claim.sh ...`, not its child git); this is the shimmed runtime's half.
+  # The release resolves its remote to a URL for the log push and the throwaway-dir reads (`git remote get-url` expands `insteadOf`), and a plain-path
+  # remote (and a `.git`-suffixed one) trips the guard's path rule under the shims before the delete is ever reached (SWAS-841). So the release is given
+  # the origin shape real use has: an https-shaped URL named by BOARD_CLAIM_REMOTE, mapped to the bare directory by a global `insteadOf` in a config file
+  # that only this call reads. The claim above used the plain `origin` name, which the guard sees as a name.
+  relurl="https://example.invalid/owner-login/repo-a.git"
+  printf '[url "%s"]\n\tinsteadOf = %s\n' "$cremote" "$relurl" > "$work/claim-gitcfg"
   set +e
-  relout=$( cd "$cwork" && PATH="$shim_dir:$PATH" \
+  relout=$( cd "$cwork" && PATH="$shim_dir:$PATH" GIT_CONFIG_GLOBAL="$work/claim-gitcfg" BOARD_CLAIM_REMOTE="$relurl" \
               KIT_CLAIM_FORCE_RELEASE='shim coverage measurement' sh "$bc" release ROW-SHIM --stale 2>&1 ); relrc=$?
   set -e
-  if [ "$relrc" = 0 ]; then
-    echo "MEASURED: the release push (--force-with-lease) PASSES under install-shims"
+  relgone=1; git --git-dir="$cremote" rev-parse --verify -q refs/claims/ROW-SHIM >/dev/null 2>&1 && relgone=0
+  rellast=$(git --git-dir="$cremote" cat-file blob refs/claims-log/ROW-SHIM:LOG 2>/dev/null || true)
+  relfailed=0; printf '%s\n' "$rellast" | grep -q '^proof: .*-FAILED$' && relfailed=1
+  if [ "$relrc" = 0 ] && [ "$relgone" = 1 ] && [ "$relfailed" = 0 ]; then
+    echo "PASS: the release push (--force-with-lease) is admitted under install-shims: rc 0, the claim ref is gone, the last log entry is not -FAILED (SWAS-842)"
   else
-    # MEASURED 2026-09-16: the refusal is the PRE-EXISTING force/mirror-push rule ("force/mirror
-    # push rewrites or deletes published history - human-gated"), NOT the new claim-ref arm — the
-    # sentinel is honoured, and the lease flag is what trips. Disclosed, not fixed here: under the
-    # Claude hook the release works (the guard grades `sh scripts/board-claim.sh …`, not its child
-    # git), and under shims the delete stays a human act, which is the direction this kit errs in.
-    echo "MEASURED: the release push (--force-with-lease) is REFUSED under install-shims (rc=$relrc), by the FORCE-PUSH rule rather than the claim arm — disclosed, not fixed here: the claim ref's delete stays a human act in a shimmed runtime. [$(printf '%s' "$relout" | tr '\n' ' ' | cut -c1-120)]"
+    echo "FAIL: the release push is not admitted under install-shims (rc=$relrc, claim ref gone=$relgone, last log entry -FAILED=$relfailed) [$(printf '%s' "$relout" | tr '\n' ' ' | cut -c1-160)]"; exit 1
   fi
 else
   echo "N/A: scripts/board-claim.sh not present next to kit-guard — claim front-door shim case skipped"
 fi
 
-echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion + front-door + claim front door under shims all proven"
+# 6) THE LAND LEASE UNDER SHIMS (SWAS-842, F5, F6). Same class as case 5: checkout-lease.sh's land lease is a ref on origin that the verb creates with a
+# plain push and returns with the compare-and-swap delete (`push -q --force-with-lease=refs/leases/land:<sha> <url> :refs/leases/land`), and under
+# install-shims every child `git` is graded, so the delete met the force-push rule and the lease stayed held after every land (measured in SWAS-839).
+# The sentinel is KIT_LEASE_FRONT_DOOR=1 from the guard's process environment. This case acquires, releases and acquires again through the shims on a
+# bare origin in a throwaway tree, with the origin shape real use has (an https-shaped URL mapped to the bare directory by `url.<dir>.insteadOf`, because a
+# plain-path origin trips the guard's path rule under the shims). The CI holder form is used (`--run`, `--expect-base`): it is the form that needs no
+# opted-in checkout. F6, the regression anchor: the same three steps with no shim on PATH (the hook adapter's runtime) are rc 0 too.
+# shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command (same idiom and justification as case 4's `pv`).
+cl="$(CDPATH= cd -- "$(dirname -- "$KG")" && pwd)/checkout-lease.sh"
+if [ -f "$cl" ]; then
+  lremote="$work/lease-origin"; lwork="$work/leasework"; lurl="https://example.invalid/owner-login/repo-a.git"
+  git init -q --bare "$lremote"; git -C "$lremote" symbolic-ref HEAD refs/heads/main
+  git init -q "$lwork" >/dev/null 2>&1
+  (
+    cd "$lwork" && git symbolic-ref HEAD refs/heads/main && git config user.email fixture@example.invalid && git config user.name Fixture \
+      && git config commit.gpgsign false && printf 'x\n' > f.txt && git add f.txt && git commit -qm c1 \
+      && git config "url.$lremote.insteadOf" "$lurl" && git remote add origin "$lurl" && git push -q origin main
+  ) >/dev/null 2>&1
+  lbase=$(git --git-dir="$lremote" rev-parse --verify -q refs/heads/main || true)
+  # lease_leg <label> <PATH prefix or empty>: acquire, release, acquire again; every step rc 0, the ref gone after the release, present after the second acquire
+  lease_leg() {
+    _lp=$2; _lsh=''
+    [ -z "$_lp" ] || _lsh="$_lp:"
+    set +e
+    _lo=$( cd "$lwork" && PATH="$_lsh$PATH" sh "$cl" acquire --lease land --holder lane-a --purpose land --run 1/1 --expect-base "$lbase" 2>&1 ); _lr1=$?
+    _lt=$(printf '%s\n' "$_lo" | sed -n 's/^lease-token: //p' | head -1)
+    _lo2=$( cd "$lwork" && PATH="$_lsh$PATH" sh "$cl" release --lease land --lease-token "$_lt" 2>&1 ); _lr2=$?
+    _lgone=1; git --git-dir="$lremote" rev-parse --verify -q refs/leases/land >/dev/null 2>&1 && _lgone=0
+    _lfailed=0; git --git-dir="$lremote" cat-file blob refs/leases-log/land:LOG 2>/dev/null | grep -q '^proof: release-FAILED$' && _lfailed=1
+    _lo3=$( cd "$lwork" && PATH="$_lsh$PATH" sh "$cl" acquire --lease land --holder lane-a --purpose land --run 1/1 --expect-base "$lbase" 2>&1 ); _lr3=$?
+    set -e
+    if [ "$_lr1" = 0 ] && [ -n "$_lt" ] && [ "$_lr2" = 0 ] && [ "$_lgone" = 1 ] && [ "$_lfailed" = 0 ] && [ "$_lr3" = 0 ]; then
+      echo "PASS: $1: the land lease is acquired, released (rc 0, the ref gone, no -FAILED entry) and acquired again, so the next land is not blocked"
+    else
+      echo "FAIL: $1: the land lease cycle broke (acquire rc=$_lr1, release rc=$_lr2, ref gone=$_lgone, -FAILED entry=$_lfailed, second acquire rc=$_lr3) [$(printf '%s %s %s' "$_lo" "$_lo2" "$_lo3" | tr '\n' ' ' | cut -c1-240)]"; exit 1
+    fi
+    git --git-dir="$lremote" update-ref -d refs/leases/land >/dev/null 2>&1 || true
+    git --git-dir="$lremote" update-ref -d refs/leases-log/land >/dev/null 2>&1 || true
+  }
+  lease_leg "under install-shims (F5)" "$shim_dir"
+  lease_leg "with no shim on PATH, the hook adapter's runtime (F6)" ""
+  # N8, N9 (SWAS-842), measured through the real shims with the lease sentinel in the environment. The lease is held, so any push or delete that git
+  # actually performs shows as a change in the refs. N8b: an EMPTY argv element joins into a double space; the guard must refuse it (the shim says "blocked") and the
+  # real git must never run. N8a: an element that HOLDS a space reads to the guard as two tokens; the verdict is recorded and git must reject the call.
+  # N9: the admitted form against a remote with `remote.<name>.mirror=true`, and one with `remote.<name>.push` set: git refuses, or deletes only the named ref.
+  set +e
+  n8o=$( cd "$lwork" && PATH="$shim_dir:$PATH" sh "$cl" acquire --lease land --holder lane-a --purpose land --run 1/1 --expect-base "$lbase" 2>&1 )
+  n8t=$(printf '%s\n' "$n8o" | sed -n 's/^lease-token: //p' | head -1)
+  n8before=$(git --git-dir="$lremote" for-each-ref --format='%(refname) %(objectname)')
+  n8a="--force-with-lease=refs/leases/land:$n8t"
+  n8x1=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git -C "" push -q "$n8a" "$lurl" :refs/leases/land 2>&1 ); n8r1=$?
+  n8x2=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git push -q "$n8a" "$lurl" "" :refs/leases/land 2>&1 ); n8r2=$?
+  n8x3=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git push -q "" "$n8a" "$lurl" :refs/leases/land 2>&1 ); n8r3=$?
+  n8x4=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git push -q "$n8a" "$lurl :refs/leases/land" 2>&1 ); n8r4=$?
+  n8after=$(git --git-dir="$lremote" for-each-ref --format='%(refname) %(objectname)')
+  set -e
+  n8ok=1
+  for n8p in "$n8r1:$n8x1" "$n8r2:$n8x2" "$n8r3:$n8x3"; do
+    case "$n8p" in 0:*) n8ok=0 ;; esac
+    case "$n8p" in *"blocked single-invocation"*) : ;; *) n8ok=0 ;; esac
+  done
+  if [ "$n8ok" = 1 ] && [ "$n8before" = "$n8after" ] && [ -n "$n8t" ]; then
+    echo "PASS: N8b an empty argv element (three placements) is refused by the guard through the shims, and the real git never ran; origin's refs are unchanged"
+  else
+    echo "FAIL: N8b an empty argv element was not refused, or origin changed (rc $n8r1/$n8r2/$n8r3) [$n8x1 $n8x2 $n8x3]"; exit 1
+  fi
+  case "$n8x4" in *"blocked single-invocation"*) n8v=REFUSED-BY-GUARD ;; *) n8v=ADMITTED-BY-GUARD ;; esac
+  if [ "$n8r4" != 0 ] && [ "$n8before" = "$n8after" ]; then
+    echo "PASS: N8a an element holding a space ($n8v): git rejected the call (rc $n8r4) and origin's refs are unchanged"
+  else
+    echo "FAIL: N8a an element holding a space was performed by git (rc $n8r4) or origin changed"; exit 1
+  fi
+  # N8c (the second placement): the LEASE option joined to the remote in one argv element, which the guard reads as two tokens. git must reject the call (the
+  # joined element is no option and no remote it can use), and the lease ref must still be on the bare remote. The guard's verdict and git's rc are recorded.
+  set +e
+  n8x5=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git push -q "$n8a $lurl" :refs/leases/land 2>&1 ); n8r5=$?
+  set -e
+  n8after5=$(git --git-dir="$lremote" for-each-ref --format='%(refname) %(objectname)')
+  case "$n8x5" in *"blocked single-invocation"*) n8v5=REFUSED-BY-GUARD ;; *) n8v5=ADMITTED-BY-GUARD ;; esac
+  n8held=0; git --git-dir="$lremote" rev-parse --verify -q refs/leases/land >/dev/null 2>&1 && n8held=1
+  if [ "$n8held" = 1 ] && [ "$n8before" = "$n8after5" ]; then
+    echo "PASS: N8c the lease option joined to the remote ($n8v5): the lease ref is NOT deleted on the bare remote (git rc $n8r5), origin's refs are unchanged"
+  else
+    echo "FAIL: N8c the lease option joined to the remote deleted the lease ref or changed origin (git rc $n8r5, ref held=$n8held) [$n8x5]"; exit 1
+  fi
+  # N9: a mirror remote and a push-configured remote, each beside the explicit refspec
+  git -C "$lwork" remote add mirrorr "$lurl"; git -C "$lwork" config remote.mirrorr.mirror true
+  git -C "$lwork" remote add pushr "$lurl"; git -C "$lwork" config remote.pushr.push 'refs/heads/main:refs/heads/main'
+  for n9r in mirrorr pushr; do
+    set +e
+    n9o=$( cd "$lwork" && PATH="$shim_dir:$PATH" KIT_LEASE_FRONT_DOOR=1 git push -q "$n8a" "$n9r" :refs/leases/land 2>&1 ); n9rc=$?
+    set -e
+    n9others=$(git --git-dir="$lremote" for-each-ref --format='%(refname) %(objectname)' | grep -v 'refs/leases/land' || true)
+    n9want=$(printf '%s\n' "$n8before" | grep -v 'refs/leases/land' || true)
+    if [ "$n9others" = "$n9want" ]; then
+      echo "PASS: N9 remote $n9r: git refused (rc $n9rc) or deleted only the named ref; no other ref on origin changed"
+    else
+      echo "FAIL: N9 remote $n9r changed another ref on origin (rc $n9rc) [$n9o]"; exit 1
+    fi
+    git --git-dir="$lremote" rev-parse --verify -q refs/leases/land >/dev/null 2>&1 || { git --git-dir="$lremote" update-ref refs/leases/land "$n8t" >/dev/null 2>&1 || true; }
+  done
+  git --git-dir="$lremote" update-ref -d refs/leases/land >/dev/null 2>&1 || true
+  git --git-dir="$lremote" update-ref -d refs/leases-log/land >/dev/null 2>&1 || true
+else
+  echo "N/A: scripts/checkout-lease.sh not present next to kit-guard — land lease shim case skipped"
+fi
+
+echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion + front-door + claim front door + land lease under shims all proven"
 exit 0

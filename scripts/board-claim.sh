@@ -25,7 +25,20 @@
 #   sh scripts/board-claim.sh status
 #   sh scripts/board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>]
 #   sh scripts/board-claim.sh release-ref <ROW-ID> [--stale] [--then <shell-command>]
+#   sh scripts/board-claim.sh publish
 #   sh scripts/board-claim.sh --selftest
+#
+# A NEW PROJECT WITH NO REMOTE YET (SWAS-783; design docs/architecture/2026-11-08-local-first-claim-783-design.md).
+# `bc_remote_state` answers none | unreachable | reachable. Only `none` — `git ls-remote` gives no answer, `git
+# remote` lists nothing AND BOARD_CLAIM_REMOTE is strictly unset (an empty one is "set") — lets the md `claim`
+# record the claim in this repository, as `refs/local-claims/<ROW-ID>`: the same CLAIM blob, written with a
+# create-only `git update-ref` (the zero object id as the old value) that IS the compare-and-swap. It is never
+# `refs/claims/*`, so a fetch refspec cannot plant one. Once origin exists, `claim`, `release` and `publish` RE-MINT each
+# valid local claim as a fresh single-entry orphan commit (fixed fields only), push that through the front door (no `+`)
+# and delete the local ref; a row that collides with origin warns and blocks only its own row, and a claim is published
+# only while the md board shows its row In Progress on the same branch. HONEST CEILING: a claim that is still local is
+# invisible to every other clone, to `backlog-presence --claims` and to a stale-release proof until it is published, and
+# `refs/local-claims/*` is not guarded: a raw write there by the same user is indistinguishable from this script's own.
 #
 # claim-ref / release-ref (TBG-SEAM-CONSUMERS-DERIVED T4, §6a S-5) — BACKEND-AGNOSTIC ref-only
 # primitives: the git ref IS the lock on every backend, so unlike `claim`/`release` they never read
@@ -123,7 +136,9 @@
 #   * `refs/claims-log/*` IS APPEND-ONLY, AND ITS **LAST** ENTRY IS THE TRUTH. The record is pushed
 #     BEFORE the delete (a release that leaves no trace is what it exists to prevent), so a delete
 #     that then FAILS would leave an entry asserting a release that never happened — measured real,
-#     not theoretical: the delete is refused under `kit-guard install-shims` by the force-push rule.
+#     not theoretical: the delete used to be refused under `kit-guard install-shims` by the force-push
+#     rule. That refusal is cured (SWAS-842: the rule admits this one compare-and-swap form under the
+#     claims sentinel), but the compensation stays for a delete refused for any other reason.
 #     A failed delete therefore appends a COMPENSATING `<proof>-FAILED` entry with
 #     `released-sha: (not deleted)`. Read the last entry for a row, never the first.
 #   * `refs/claims-log/*` IS A TRACE, NOT TAMPER-EVIDENCE. It is one more unprotected ref namespace:
@@ -206,7 +221,14 @@ bc_drop_scratch() {
 # The remote is resolved to a URL/path ONCE, because a throwaway `git init` dir has no `origin`
 # remote to name — a named remote must become the URL it points at; a value that is already a
 # path/URL (the selftest's `BOARD_CLAIM_REMOTE`) is used as-is.
-bc_remote_url() { git remote get-url "$BC_REMOTE" 2>/dev/null || printf '%s' "$BC_REMOTE"; }
+# SWAS-783: BC_URL_OVERRIDE points a read at the URL `git ls-remote --get-url` resolved (the handover). It is a
+# plain script variable assigned here, so nothing in the environment can set it, and it is only ever set inside a
+# command substitution, never for a later read. (A LOCAL claim is read in place, with no fetch: bc_read_local.)
+BC_URL_OVERRIDE=""
+bc_remote_url() {
+  if [ -n "$BC_URL_OVERRIDE" ]; then printf '%s' "$BC_URL_OVERRIDE"; return 0; fi
+  git remote get-url "$BC_REMOTE" 2>/dev/null || printf '%s' "$BC_REMOTE"
+}
 
 # All throwaway dirs live under ONE root, removed by the EXIT trap so an interrupted read leaks
 # nothing (the disk-safety lesson again).
@@ -252,12 +274,13 @@ trap 'bc_cleanup' EXIT INT TERM
 
 bc_usage() {
   echo "usage:" >&2
-  echo "  board-claim.sh claim   <ROW-ID> [--branch <name>] [--links <text>] [--dry-run] [--board-already-moved]" >&2
-  echo "  board-claim.sh release <ROW-ID> [--stale]" >&2
+  echo "  board-claim.sh claim   <ROW-ID> [--branch <name>] [--links <text>] [--dry-run] [--board-already-moved] [--lease-token <sha>]" >&2
+  echo "  board-claim.sh release <ROW-ID> [--stale] [--lease-token <sha>]" >&2
   echo "  board-claim.sh check   [<ROW-ID> | --all]" >&2
   echo "  board-claim.sh status" >&2
-  echo "  board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>]" >&2
-  echo "  board-claim.sh release-ref <ROW-ID> [--stale] [--then <shell-command>]" >&2
+  echo "  board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>] [--lease-token <sha>]" >&2
+  echo "  board-claim.sh release-ref <ROW-ID> [--stale] [--then <shell-command>] [--lease-token <sha>]" >&2
+  echo "  board-claim.sh publish" >&2
   echo "  board-claim.sh --selftest" >&2
 }
 
@@ -435,6 +458,502 @@ bc_unreachable() { # <ref>
   echo "board-claim: cannot reach $BC_REMOTE — 'git ls-remote $BC_REMOTE $1' did not answer." >&2
   echo "             A claim decision taken against a remote this process cannot read is exactly the" >&2
   echo "             race this mechanism exists to end, so proceeding blind is REFUSED (rc 2)." >&2
+}
+
+# ── THE REMOTE'S STATE — "no remote configured" and "unreachable" are DIFFERENT ANSWERS (SWAS-783) ───
+# bc_remote_state -> none | unreachable | reachable on stdout; rc 2 (sentence on stderr) when a git environment
+# variable redirects the repository and the state would otherwise be `none`.
+#   * It tries the remote FIRST (`git ls-remote`), so an `url.<x>.insteadOf origin` rule or an `./origin` directory
+#     is `reachable` even with no `git remote` entry.
+#   * `none` needs all three: no answer from that `ls-remote`, an empty `git remote`, AND BOARD_CLAIM_REMOTE
+#     strictly unset (`${X+x}`; an EMPTY one is "set" — `:-origin` would fold it into the default and local mode
+#     must not). So the selftest's missing-path seam is never `none`.
+#   * GIT_DIR / GIT_COMMON_DIR exported to an empty repository must not reach local mode in a project that has a
+#     remote, so only where the state would be `none` do they refuse. GIT_CONFIG* is not covered: it cannot hide
+#     the repository's own remote config.
+#   * The namespace is `refs/local-claims`, NOT `refs/kit/*`: the guard denies raw writes under `refs/kit/*` (R22, the
+#     kit-base trust chain), and a claim is a data blob that kit-update never reads.
+BC_LOCAL_NS="refs/local-claims"
+bc_remote_state() {
+  git rev-parse --git-dir >/dev/null 2>&1 || { printf 'unreachable\n'; return 0; }
+  if git ls-remote "$BC_REMOTE" 'refs/claims/*' >/dev/null 2>&1; then printf 'reachable\n'; return 0; fi   # MUT-LC10
+  [ -z "$(git remote 2>/dev/null)" ] || { printf 'unreachable\n'; return 0; }
+  [ -z "${BOARD_CLAIM_REMOTE+x}" ] || { printf 'unreachable\n'; return 0; }   # MUT-LC9
+  if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_COMMON_DIR:-}" ]; then
+    echo "board-claim: a git environment variable redirects this repository; unset it before claiming" >&2
+    return 2
+  fi
+  printf 'none\n'   # MUT-LC1
+}
+
+# bc_read_at <url> <ref> — bc_read_claim against another URL (the handover reads origin through the URL that
+# `git ls-remote --get-url` resolved). It sets a variable, so call it ONLY inside a command substitution.
+bc_read_at() { BC_URL_OVERRIDE=$1; bc_read_claim "$2"; }
+
+# A local claim is a plain ref, never a symbolic one. An entry with a symref is refused and never read, published or
+# deleted: a write that followed it would land on the branch it points at. The sentence names the way out.
+bc_local_symref() { # <ref> -> rc 0 when the ref is a symbolic ref
+  [ -n "$(git for-each-ref --format='%(symref)' "$1" 2>/dev/null)" ]
+}
+bc_local_symref_refuse() { # <ref>
+  _lsr=$(printf '%s' "$1" | tr -d '[:cntrl:]')
+  echo "board-claim: $_lsr is a symbolic ref, and a local claim never is; it is refused, and never read, published or deleted." >&2
+  echo "             If it is yours to remove, in a plain terminal: git update-ref --no-deref -d $_lsr" >&2
+}
+# bc_local_exists <ref> -> rc 0 when that exact ref is listed (a symbolic ref included).
+bc_local_exists() { [ "$(git for-each-ref --format='%(refname)' "$1" 2>/dev/null)" = "$1" ]; }
+
+# bc_read_local <ref> -> print the CLAIM blob of a local claim, read in place with `git cat-file` (no fetch, so no
+# URL is formed). The same bounds as bc_read_claim: the blob is SIZED before it is read, a blob with no `claimant:`
+# field is MALFORMED, and a `branch:` that is not a valid branch name is refused. A symbolic ref is refused first.
+bc_read_local() {
+  if bc_local_symref "$1"; then bc_local_symref_refuse "$1"; return 1; fi
+  _rl_size=$(git cat-file -s "$1:CLAIM" 2>/dev/null) || return 1
+  case "$_rl_size" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$_rl_size" -gt "$BC_CLAIM_MAX_BYTES" ]; then
+    echo "board-claim: the CLAIM blob at $1 is $_rl_size bytes, past the $BC_CLAIM_MAX_BYTES-byte bound. Refusing to read a holder out of it." >&2
+    return 1
+  fi
+  _rl_txt=$(git cat-file blob "$1:CLAIM" 2>/dev/null) || return 1
+  case "$_rl_txt" in
+    *"claimant: "*) ;;
+    *)
+      echo "board-claim: the CLAIM blob at $1 is MALFORMED — no 'claimant:' field in its first $BC_CLAIM_MAX_BYTES bytes. Refusing to read a holder out of it." >&2
+      return 1 ;;
+  esac
+  _rl_br=$(printf '%s\n' "$_rl_txt" | grep '^branch: ' | head -1 | cut -d' ' -f2- | tr -d '[:cntrl:]')
+  if [ -n "$_rl_br" ] && ! bc_branch_ok "$_rl_br"; then
+    echo "board-claim: the CLAIM blob at $1 is MALFORMED — its 'branch:' field is not a valid branch name. Refusing to read a holder out of it." >&2
+    return 1
+  fi
+  printf '%s\n' "$_rl_txt"
+}
+
+# bc_local_create <ref> <commit> -> rc 0 when the ref was created. The old value is the ZERO object id, so git
+# refuses when the ref exists: that IS the compare-and-swap. The zero id is as long as a real id in this repository
+# (40 on SHA-1, 64 on SHA-256). `--no-deref` keeps a symbolic ref from redirecting the write to the branch it names.
+bc_local_create() {
+  _lz=$(printf '%0*d' "${#2}" 0)   # MUT-LC2
+  KIT_CLAIM_FRONT_DOOR=1 git update-ref --no-deref "$1" "$2" "$_lz" >/dev/null 2>&1   # MUT-LC19
+}
+
+# bc_local_rows -> one row id per line, for every ref in the local namespace.
+bc_local_rows() {
+  git for-each-ref --format='%(refname)' "$BC_LOCAL_NS/" 2>/dev/null \
+    | awk -v p="$BC_LOCAL_NS/" 'index($0, p) == 1 { print substr($0, length(p) + 1) }'
+}
+
+# bc_wip_gate <verb> <others> <what> [<label>] -> rc 0 under the ceiling (or no guard) · 2 at it, sentence on stderr.
+# <others> is the number of OTHER claims in progress, exactly what `runaway-guard.sh wip --count` takes.
+bc_wip_gate() {
+  [ -f "$BC_GUARD" ] || return 0
+  if _wgout=$(sh "$BC_GUARD" wip --count "$2" 2>&1); then return 0; fi
+  echo "$1: ${4:-REFUSED} — this machine is at its work-in-progress ceiling." >&2
+  printf '%s\n' "$_wgout" | sed 's/^/       /' >&2
+  echo "       WIP is counted from $3, against MAX_WIP in .kit/budget.conf." >&2
+  echo "       Finish or release a slice (\`board-claim.sh release\`), or raise MAX_WIP — which is a ratified act, like every other ceiling in that file." >&2
+  return 2
+}
+
+# ── THE LOCAL CLAIM — md backend, remote state `none` only (SWAS-783) ────────────────────────────────
+# The same orphan CLAIM commit as the remote claim, in its own namespace. The create-only `update-ref` (old value
+# the zero object id: refuse if the ref exists) IS the compare-and-swap — written FIRST, the holder read only when
+# it refuses, the push-then-read shape of the remote path, so there is no probe-then-write race. Reads of the
+# holder go through bc_read_local (git cat-file, in place), so the size and branch bounds apply.
+# These two functions read do_claim's variables (_row _branch _name _email _me _when _session _dry _moved).
+bc_claim_local() {
+  _lref="$BC_LOCAL_NS/$_row"
+  _lwn=$(git for-each-ref --format='%(refname)' "$BC_LOCAL_NS/" 2>/dev/null \
+           | awk -v me="$_lref" '$1 != "" && $1 != me { n++ } END { print n + 0 }')
+  bc_wip_gate claim "$_lwn" "the local claims (\`$BC_LOCAL_NS/*\`, excluding \`$_row\`)" || return 2
+  if [ "$_dry" = 1 ]; then
+    if git rev-parse -q --verify "$_lref" >/dev/null 2>&1; then bc_local_holder; return $?; fi
+    echo "claim: DRY RUN — would record a local claim on $_lref as '$_name <$_email>' from branch '$_branch' at $_when; board untouched."
+    return 0
+  fi
+  _blob=$(printf 'row: %s\nclaimant: %s <%s>\nbranch: %s\nclaimed-at: %s\nsession: %s (declared)\n' \
+            "$_row" "$_name" "$_email" "$_branch" "$_when" "$_session" | git hash-object -w --stdin)
+  _tree=$(printf '100644 blob %s\tCLAIM\n' "$_blob" | git mktree)
+  _commit=$(printf 'claim %s\n' "$_row" | git commit-tree "$_tree")
+  if bc_local_create "$_lref" "$_commit"; then
+    echo "board-claim: this repository has no git remote yet; the claim on $_row is recorded in this repository and is published to origin by the next claim, release or 'board.sh publish' once origin exists."
+    echo "claim: OK — \`$_row\` claimed LOCALLY as $_lref ($_commit)"
+    echo "       claimant '$_name <$_email>' · branch '$_branch' · at $_when"
+    bc_board_move recorded
+    return $?
+  fi
+  bc_local_holder
+  return $?
+}
+
+# bc_local_holder — the local ref would not take the create-only write (or a dry run found it held): read the
+# holder and apply the remote path's rules. The same session short-circuits; the same claimant and branch
+# resumes with a CHILD commit under a compare-and-swap on the sha that was read; anyone else is rc 3.
+bc_local_holder() {
+  if bc_local_symref "$_lref"; then bc_local_symref_refuse "$_lref"; return 2; fi
+  _held=$(git rev-parse -q --verify "$_lref" 2>/dev/null || true)
+  _txt=""
+  if [ -n "$_held" ]; then _txt=$(bc_read_local "$_lref" || true); fi
+  if [ -z "$_txt" ]; then
+    echo "claim: could not write the local claim $_lref, and no existing claim could be read from it. Nothing was moved." >&2
+    return 2
+  fi
+  if [ "$(bc_field "$_txt" claimant)" = "$_me" ] && [ "$(bc_field "$_txt" branch)" = "$_branch" ]; then
+    _wassess=$(bc_claim_session "$_txt")
+    if [ "$_wassess" = "$_session" ]; then
+      echo "claim: held by you since $(bc_field "$_txt" claimed-at) — \`$_row\` on branch '$_branch' (a local claim, $_held)."
+      echo "       Nothing written, board NOT edited. This is the resume path, not a new claim."
+      return 0
+    fi
+    if [ "$_dry" = 1 ]; then
+      echo "claim: DRY RUN — would extend the local claim on $_lref with a child commit for session '$_session' (was '$_wassess'); nothing written."
+      return 0
+    fi
+    _rblob=$(printf 'row: %s\nclaimant: %s <%s>\nbranch: %s\nclaimed-at: %s\nsession: %s (declared)\nresumed-at: %s\n' \
+               "$_row" "$_name" "$_email" "$_branch" "$(bc_field "$_txt" claimed-at)" "$_session" "$_when" | git hash-object -w --stdin)
+    _rtree=$(printf '100644 blob %s\tCLAIM\n' "$_rblob" | git mktree)
+    _rcommit=$(printf 'claim %s resumed by session %s\n' "$_row" "$_session" | git commit-tree "$_rtree" -p "$_held")
+    if KIT_CLAIM_FRONT_DOOR=1 git update-ref --no-deref "$_lref" "$_rcommit" "$_held" >/dev/null 2>&1; then   # MUT-LC24
+      echo "board-claim: this repository has no git remote yet; the claim on $_row is recorded in this repository and is published to origin by the next claim, release or 'board.sh publish' once origin exists."
+      echo "claim: OK — \`$_row\` RESUMED locally; session '$_wassess' -> '$_session' ($_rcommit)."
+      echo "       The local claim now carries both sessions as a chain; the board is NOT edited."
+      return 0
+    fi
+    echo "claim: REFUSED — the local resume write on $_lref did not hold (the claim moved since it was read)." >&2
+    echo "       The existing claim is left untouched. Re-run: this verb re-reads the claim and will extend whatever is there now." >&2
+    return 2
+  fi
+  echo "claim: $(bc_holder_line "$_txt")" >&2
+  echo "       Row \`$_row\` is ALREADY CLAIMED (a local claim in this repository). Release it (\`board-claim.sh release $_row\`) or take another row." >&2
+  return 3
+}
+
+# ── THE HANDOVER — local claims go to origin once it exists (SWAS-783) ───────────────────────────────
+# bc_publish_local runs first in `claim`, `release` and `publish` when the remote is `reachable` and the local
+# namespace is not empty. It counts WIP over origin PLUS the local claims before it pushes anything: over the
+# ceiling, `claim` and `publish` push nothing (rc 2); `release` prints the sentence as a warning and publishes
+# nothing but goes on, because a release only lowers WIP and must never be blocked by it. Each claim is
+# validated field by field (row = ref name, claimant = me, branch well-formed, claimed-at / resumed-at in the
+# timestamp format the local write produces, session in its read grammar, blob within the size bound), must have
+# its row In Progress on the md board naming the same branch, and is then RE-MINTED: a fresh single-entry orphan
+# commit built from those fixed fields alone, so nothing else in the local object (an extra tree entry, a parent,
+# a stray blob line) ever reaches origin. Only that commit is pushed, through the front door with NO `+`;
+# accepted -> the local ref is deleted under a lease; rejected -> origin's claim is read: the same row, claimant
+# and branch means already published (the local ref goes); anything else is a collision, a per-row warning that
+# keeps the local ref and refuses only that row. Every read here resolves the remote through
+# `git ls-remote --get-url`, so an insteadOf rule in this repository's config applies to a read made from a
+# throwaway directory too.
+BC_PUB_COLLIDED=""; BC_PUB_BAD=0; BC_PUB_DONE=0; BC_PUB_STOPPED=0
+bc_pub_collided() { case " $BC_PUB_COLLIDED " in *" $1 "*) return 0 ;; esac; return 1; }
+
+# bc_same_claim <claim-text> <claim-text> -> rc 0 when both name the same row, claimant and branch.
+bc_same_claim() {
+  [ "$(bc_field "$1" row)" = "$(bc_field "$2" row)" ] \
+    && [ "$(bc_field "$1" claimant)" = "$(bc_field "$2" claimant)" ] \
+    && [ "$(bc_field "$1" branch)" = "$(bc_field "$2" branch)" ]
+}
+
+# bc_ts_ok <value> -> rc 0 when it is exactly the timestamp format the local write produces (%Y-%m-%dT%H:%M:%SZ).
+bc_ts_ok() {
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+  esac
+  return 1
+}
+
+# bc_session_ok <value> -> rc 0 when it is a session id in the read grammar, [A-Za-z0-9._-]{1,64}.
+bc_session_ok() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
+# bc_board_names <row> <branch> -> rc 0 when the md board shows <row> under In Progress with a Links cell that names
+# <branch> in the canonical form the claim writes (branch `<name>`). The same by-column read as --board-already-moved.
+bc_board_names() {
+  [ -f "$BC_BOARD" ] || return 1
+  _bn_line=$(bc_row_line "$BC_BOARD" "In Progress" "$1")
+  [ -n "$_bn_line" ] || return 1
+  _bn_bounds=$(bc_section_bounds "$BC_BOARD" "In Progress")
+  _bn_hdr=$(awk -v n="${_bn_bounds% *}" 'NR==n' "$BC_BOARD")
+  _bn_col=$(bc_col_index "$_bn_hdr" "Links")
+  [ -n "$_bn_col" ] || return 1
+  _bn_links=$(bc_cell "$(awk -v n="$_bn_line" 'NR==n' "$BC_BOARD")" "$_bn_col")
+  case "$_bn_links" in
+    *'branch `'"$2"'`'*) return 0 ;;
+  esac
+  return 1
+}
+
+# bc_remint <row> <claimant> <branch> <claimed-at> <session> <resumed-at or empty> -> echoes a fresh orphan claim
+# commit built from these fixed fields alone, with the same hash-object, mktree and commit-tree as the local write.
+bc_remint() {
+  if [ -n "$6" ]; then
+    _rm_blob=$(printf 'row: %s\nclaimant: %s\nbranch: %s\nclaimed-at: %s\nsession: %s (declared)\nresumed-at: %s\n' \
+                 "$1" "$2" "$3" "$4" "$5" "$6" | git hash-object -w --stdin) || return 1
+  else
+    _rm_blob=$(printf 'row: %s\nclaimant: %s\nbranch: %s\nclaimed-at: %s\nsession: %s (declared)\n' \
+                 "$1" "$2" "$3" "$4" "$5" | git hash-object -w --stdin) || return 1
+  fi
+  _rm_tree=$(printf '100644 blob %s\tCLAIM\n' "$_rm_blob" | git mktree) || return 1
+  printf 'claim %s\n' "$1" | git commit-tree "$_rm_tree"
+}
+
+# bc_pub_drop — delete the local ref under a lease on the sha that was published.
+bc_pub_drop() {
+  KIT_CLAIM_FRONT_DOOR=1 git update-ref --no-deref -d "$_pr_ref" "$_pr_sha" >/dev/null 2>&1 || echo "publish: warning: the local ref $_pr_ref could not be deleted; the next publish will find the claim on origin and delete it." >&2   # MUT-LC26
+}
+
+# bc_ts_future <timestamp> -> rc 0 when it is later than now (a validated, fixed-width UTC stamp compares as text).
+bc_ts_future() {
+  _tf_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  [ "$1" != "$_tf_now" ] && [ "$(printf '%s\n%s\n' "$1" "$_tf_now" | LC_ALL=C sort | tail -n 1)" = "$1" ]
+}
+
+# bc_pub_validate <row> <my-identity> — reads the local claim at _pr_ref and sets _pr_txt _pr_branch _pr_sess _pr_cat
+# _pr_rat, plus _pr_bad: empty when every field passes its own grammar, else the name of the first that does not.
+# The published timestamps and session come from the LOCAL record: they are checked for shape and for not being in the
+# future, not proved.
+bc_pub_validate() {
+  _pr_txt=$(bc_read_local "$_pr_ref" || true)
+  _pr_branch=$(bc_field "$_pr_txt" branch)
+  _pr_sess=$(bc_field "$_pr_txt" session); _pr_sess=${_pr_sess%% *}
+  _pr_cat=$(bc_field "$_pr_txt" claimed-at)
+  _pr_rat=$(bc_field "$_pr_txt" resumed-at)
+  _pr_bad=""
+  if [ -z "$_pr_txt" ]; then _pr_bad=blob; fi
+  if [ -z "$_pr_bad" ] && [ "$(bc_field "$_pr_txt" row)" != "$1" ]; then _pr_bad=row; fi   # MUT-LC8
+  if [ -z "$_pr_bad" ] && [ "$(bc_field "$_pr_txt" claimant)" != "$2" ]; then _pr_bad=claimant; fi
+  if [ -z "$_pr_bad" ] && ! bc_branch_ok "$_pr_branch"; then _pr_bad=branch; fi
+  if [ -z "$_pr_bad" ] && ! bc_ts_ok "$_pr_cat"; then _pr_bad=claimed-at; fi
+  if [ -z "$_pr_bad" ] && bc_ts_future "$_pr_cat"; then _pr_bad=claimed-at; fi   # MUT-LC21
+  if [ -z "$_pr_bad" ] && ! bc_session_ok "$_pr_sess"; then _pr_bad=session; fi
+  if [ -z "$_pr_bad" ] && [ -n "$_pr_rat" ] && ! bc_ts_ok "$_pr_rat"; then _pr_bad=resumed-at; fi
+  if [ -z "$_pr_bad" ] && [ -n "$_pr_rat" ] && bc_ts_future "$_pr_rat"; then _pr_bad=resumed-at; fi
+  return 0
+}
+
+# bc_have_identity -> rc 0 when user.name and user.email are both set (the published claimant comes from them).
+bc_have_identity() {
+  [ -n "$(git config user.name 2>/dev/null || true)" ] && [ -n "$(git config user.email 2>/dev/null || true)" ]
+}
+
+# bc_publish_row <row> <origin-url> <my-identity> -> rc 0 handled · 9 origin stopped answering
+bc_publish_row() {
+  _pr_row=$1; _pr_ref="$BC_LOCAL_NS/$1"
+  if ! bc_row_ok "$_pr_row"; then
+    echo "publish: not published: '$(printf '%s' "$_pr_row" | tr -d '[:cntrl:]' | cut -c1-80)' fails validation (row id)" >&2
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  if bc_local_symref "$_pr_ref"; then
+    bc_local_symref_refuse "$_pr_ref"
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  _pr_sha=$(git rev-parse -q --verify "$_pr_ref" 2>/dev/null) || return 0
+  bc_pub_validate "$_pr_row" "$3"
+  if [ -n "$_pr_bad" ]; then
+    echo "publish: not published: $_pr_row fails validation ($_pr_bad); it is left for the holder to release" >&2
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  if ! bc_board_names "$_pr_row" "$_pr_branch"; then   # MUT-LC18
+    echo "publish: not published: $_pr_row has no matching In Progress row" >&2
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  if _pr_new=$(bc_remint "$_pr_row" "$3" "$_pr_branch" "$_pr_cat" "$_pr_sess" "$_pr_rat"); then :; else
+    echo "publish: not published: $_pr_row could not be re-minted from its validated fields" >&2
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  if KIT_CLAIM_FRONT_DOOR=1 git push "$BC_REMOTE" "$_pr_new:refs/claims/$_pr_row" >/dev/null 2>&1; then   # MUT-LC17
+    bc_pub_drop
+    echo "publish: \`$_pr_row\` published to $BC_REMOTE as refs/claims/$_pr_row ($_pr_new); the local claim is gone."
+    BC_PUB_DONE=$((BC_PUB_DONE + 1)); return 0
+  fi
+  if bc_probe "refs/claims/$_pr_row" >/dev/null; then
+    _pr_otxt=$(bc_read_at "$2" "refs/claims/$_pr_row" || true)
+    _pr_pub=0
+    if [ -n "$_pr_otxt" ] && bc_same_claim "$_pr_otxt" "$_pr_txt"; then _pr_pub=1; fi   # MUT-LC7
+    if [ "$_pr_pub" = 1 ]; then
+      bc_pub_drop
+      echo "publish: \`$_pr_row\` was already on $BC_REMOTE as the same claim; the local claim is gone."
+      BC_PUB_DONE=$((BC_PUB_DONE + 1)); return 0
+    fi
+    _pr_holder=$(bc_field "$_pr_otxt" claimant)
+    if [ -n "$_pr_holder" ]; then :; else _pr_holder="an unreadable claim"; fi
+    echo "publish: warning: local claim on $_pr_row collides with $_pr_holder on origin; release it with 'board.sh release $_pr_row'" >&2
+    BC_PUB_COLLIDED="$BC_PUB_COLLIDED $_pr_row"; BC_PUB_BAD=$((BC_PUB_BAD + 1))
+    return 0   # MUT-LC6
+  else
+    _pr_prc=$?
+  fi
+  if [ "$_pr_prc" = 2 ]; then
+    echo "publish: not published: \`$_pr_row\` — the push to $BC_REMOTE was refused and origin holds no claim on it" >&2
+    BC_PUB_BAD=$((BC_PUB_BAD + 1)); return 0
+  fi
+  return 9
+}
+
+bc_publish_local() { # <claim|release|publish> [<own row>] -> rc 0 handled · 2 over the ceiling (claim, publish)
+  _pbverb=$1; _pbown=${2:-}
+  BC_PUB_COLLIDED=""; BC_PUB_BAD=0; BC_PUB_DONE=0; BC_PUB_STOPPED=0
+  _pbrows=$(bc_local_rows)
+  [ -n "$_pbrows" ] || return 0
+  if ! bc_have_identity; then   # MUT-LC22
+    echo "$_pbverb: no git identity (user.name / user.email) — the claim's committer IS the claimant." >&2
+    if [ "$_pbverb" = release ]; then
+      echo "release: the local claims were not published; the release goes on." >&2
+      return 0
+    fi
+    return 2
+  fi
+  if _pbrefs=$(git ls-remote "$BC_REMOTE" 'refs/claims/*' 2>/dev/null); then :; else
+    BC_PUB_STOPPED=1
+    echo "$_pbverb: origin stopped answering before the local claims were published; nothing was pushed." >&2
+    return 0
+  fi
+  _pbtot=$( { printf '%s\n' "$_pbrefs" | awk '$2 != "" { sub(/^refs\/claims\//, "", $2); print $2 }'; printf '%s\n' "$_pbrows"; } \
+              | awk 'NF == 1 && !seen[$1]++ { n++ } END { print n + 0 }')
+  _pbwhat="origin (\`refs/claims/*\`) plus the local claims"
+  if [ "$_pbtot" -gt 0 ]; then
+    if [ "$_pbverb" = release ]; then   # MUT-LC16
+      bc_wip_gate release $((_pbtot - 1)) "$_pbwhat" warning || {
+        echo "release: the local claims were not published (the total is over the ceiling); the release goes on, because a release only lowers WIP." >&2
+        return 0; }
+    else
+      bc_wip_gate "$_pbverb" $((_pbtot - 1)) "$_pbwhat" || return 2
+    fi
+  fi
+  _pburl=$(git ls-remote --get-url "$BC_REMOTE" 2>/dev/null || printf '%s' "$BC_REMOTE")
+  _pbme="$(git config user.name 2>/dev/null || true) <$(git config user.email 2>/dev/null || true)>"
+  for _pbr in $_pbrows; do
+    # a release of a still-local row deletes it locally (bc_release_local); it is never published first
+    if [ "$_pbverb" = release ] && [ "$_pbr" = "$_pbown" ]; then continue; fi   # MUT-LC20
+    if bc_publish_row "$_pbr" "$_pburl" "$_pbme"; then :; else
+      BC_PUB_STOPPED=1
+      echo "$_pbverb: origin stopped answering; no further local claim was pushed." >&2
+      break
+    fi
+  done
+  return 0
+}
+
+# do_publish — the handover on its own. rc 0 every claim handled (or none to publish) · 1 a claim collided,
+# failed validation or was refused · 2 usage / no origin yet / unreachable / over the ceiling / origin stopped.
+do_publish() {
+  if [ $# -gt 0 ]; then echo "publish: takes no arguments" >&2; bc_usage; return 2; fi
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  _pn=$(bc_local_rows | awk 'END { print NR }')
+  if [ "$_bcst" = none ]; then
+    if [ "$_pn" = 0 ]; then echo "publish: no local claims to publish (and no git remote yet)."; return 0; fi
+    echo "publish: this repository has no git remote yet; $_pn local claim(s) stay local until origin exists. Create the remote and push main once (START-HERE.md, The first push), then run publish again." >&2
+    return 2
+  fi
+  if [ "$_bcst" = unreachable ]; then bc_unreachable 'refs/claims/*'; return 2; fi
+  if [ "$_pn" = 0 ]; then echo "publish: no local claims to publish."; return 0; fi
+  if ! bc_have_identity; then
+    echo "publish: no git identity (user.name / user.email) — the claim's committer IS the claimant." >&2
+    return 2
+  fi
+  bc_publish_local publish || return $?
+  if [ "$BC_PUB_STOPPED" = 1 ]; then return 2; fi
+  if [ "$BC_PUB_BAD" != 0 ]; then
+    echo "publish: $BC_PUB_DONE published, $BC_PUB_BAD not (see above)." >&2
+    return 1
+  fi
+  echo "publish: $BC_PUB_DONE local claim(s) handled."
+  return 0
+}
+
+# bc_release_local — release <ROW> where the holder's ref is in the local namespace (reads _row and _stale).
+# A plain release deletes the local ref under a lease and writes no claims-log entry, as a plain release writes
+# none today. It also clears a colliding local claim, so a collision can always be resolved.
+bc_release_local() {
+  _lref="$BC_LOCAL_NS/$_row"
+  if bc_local_symref "$_lref"; then bc_local_symref_refuse "$_lref"; return 1; fi
+  if [ "$_stale" = 1 ]; then
+    echo "board-claim: a stale release needs origin to prove the claim is stale; release it as the holder, or publish first" >&2
+    return 1
+  fi
+  _lsha=$(git rev-parse -q --verify "$_lref" 2>/dev/null || true)
+  _txt=$(bc_read_local "$_lref" || true)
+  _name=$(git config user.name 2>/dev/null || true)
+  _email=$(git config user.email 2>/dev/null || true)
+  _me="$_name <$_email>"
+  if [ -z "$_txt" ]; then
+    echo "release: $_lref exists but its CLAIM is unreadable or malformed, so it cannot be shown to be yours ('$_me')." >&2
+    echo "         It is a ref in your own repository: remove it, in a plain terminal, with \`git update-ref --no-deref -d $_lref\` if it is yours to remove." >&2
+    return 1
+  fi
+  echo "release: $(bc_holder_line "$_txt") (a local claim)"
+  if [ "$(bc_field "$_txt" claimant)" != "$_me" ]; then
+    echo "release: REFUSED — \`$_row\` is held by '$(bc_field "$_txt" claimant)', not by you ('$_me')." >&2
+    return 1
+  fi
+  if KIT_CLAIM_FRONT_DOOR=1 git update-ref --no-deref -d "$_lref" "$_lsha" >/dev/null 2>&1; then   # MUT-LC27
+    echo "release: OK — $_lref deleted (was $_lsha)"
+    return 0
+  fi
+  echo "release: FAILED — could not delete $_lref (it moved since it was read)." >&2
+  return 1
+}
+
+# bc_check_local_one <row> — `check <ROW>` with no remote. rc 0 ONLY when this branch holds a local claim on the
+# row; anything else is rc 2, never 1: without origin nothing can prove a claim absent, and `backlog-presence
+# --claims` reads rc 1 as "no claim".
+bc_check_local_one() {
+  _lref="$BC_LOCAL_NS/$1"
+  if git rev-parse -q --verify "$_lref" >/dev/null 2>&1; then
+    _txt=$(bc_read_local "$_lref" || true)
+    _curbr=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(detached)')
+    if [ -n "$_txt" ] && [ "$(bc_field "$_txt" branch)" = "$_curbr" ]; then
+      echo "check: $(bc_holder_line "$_txt") (a local claim; no git remote yet; local claims only)"
+      printf 'claim-holder: %s\n' "$(bc_field "$_txt" claimant)"
+      printf 'claim-branch: %s\n' "$(bc_field "$_txt" branch)"
+      printf 'claim-at: %s\n'     "$(bc_field "$_txt" claimed-at)"
+      printf 'claim-session: %s\n' "$(bc_claim_session "$_txt")"
+      return 0
+    fi
+  fi
+  echo "check: no local claim on \`$1\` held by this branch — no git remote yet; local claims only, so nothing can prove a claim absent (rc 2)." >&2
+  return 2
+}
+# bc_check_local_all — `check --all` with no remote: the local claims. rc 0 some · 1 none.
+bc_check_local_all() {
+  _cla=$(bc_local_rows)
+  if [ -z "$_cla" ]; then echo "check: no local claims (no git remote yet; local claims only)"; return 1; fi
+  _cln=0
+  for _clr in $_cla; do
+    _cln=$((_cln + 1))
+    _clt=$(bc_read_local "$BC_LOCAL_NS/$_clr" 2>/dev/null || true)
+    if [ -n "$_clt" ]; then
+      printf 'check: %s/%s — %s\n' "$BC_LOCAL_NS" "$_clr" "$(bc_holder_line "$_clt")"
+    else
+      printf 'check: %s/%s — (claim present; CLAIM unreadable)\n' "$BC_LOCAL_NS" "$_clr"
+    fi
+  done
+  echo "check: $_cln local claim(s); no git remote yet; local claims only"
+  return 0
+}
+# bc_status_local — `status` with no remote: each local claim, labelled as not yet visible to anyone else.
+bc_status_local() {
+  _sla=$(bc_local_rows)
+  if [ -z "$_sla" ]; then echo "status: no local claims (no git remote yet; local claims only)"; return 1; fi
+  _sln=0
+  for _slr in $_sla; do
+    _sln=$((_sln + 1))
+    _slt=$(bc_read_local "$BC_LOCAL_NS/$_slr" 2>/dev/null || true)
+    echo ""
+    echo "claim: \`$_slr\` ($BC_LOCAL_NS/$_slr)"
+    if [ -z "$_slt" ]; then echo "  holder:        (CLAIM unreadable or malformed — refused at read)"; continue; fi
+    echo "  holder:        $(bc_field "$_slt" claimant)"
+    echo "  branch:        $(bc_field "$_slt" branch)"
+    echo "  claimed-at:    $(bc_field "$_slt" claimed-at)"
+    echo "  session:       $(bc_claim_session "$_slt") (declared, never authenticated)"
+    echo "  reading:       LOCAL (not on origin; invisible to every other clone until it is published)"
+  done
+  echo ""
+  echo "status: $_sln local claim(s); no git remote yet; local claims only"
+  return 0
 }
 
 # bc_read_claim <ref> -> print the CLAIM blob. The ref is fetched into an ISOLATED THROWAWAY git dir
@@ -677,11 +1196,34 @@ bc_new_row() {
     }'
 }
 
+# ── THE CHECKOUT LEASE (SWAS-192 slice A; scripts/checkout-lease.sh) ─────────────────────────────
+# In a checkout that opted in (`kit.checkoutLease`), claim, release, claim-ref and release-ref each need the
+# holder's `--lease-token`. A checkout that never opted in runs exactly as before. The check runs after the
+# verb's own usage and grammar checks and before its first read of state or write. The key fails closed: with
+# a lease ref present and the key gone, the gate refuses (rc 5). It is a DRIFT CONTROL between cooperating
+# clients, not a boundary: the token is a ref's sha, so a same-user process can read and replay it.
+# bc_lease_gate <verb> <token> -> rc 0 proceed · rc 5 refused (the sentence is printed by the lease verb)
+bc_lease_gate() {
+  _lsh=$(dirname -- "$BC_SELF")/checkout-lease.sh
+  if [ ! -f "$_lsh" ]; then
+    _lkey=$(git config --local --get kit.checkoutLease 2>/dev/null || true)
+    [ -n "$_lkey" ] || return 0
+    echo "$1: REFUSED — kit.checkoutLease is set but scripts/checkout-lease.sh is missing; restore it, or a human removes the key." >&2
+    return 5
+  fi
+  if [ -n "$2" ]; then
+    sh "$_lsh" gate --verb "$1" --lease-token "$2" || return $?
+  else
+    sh "$_lsh" gate --verb "$1" || return $?
+  fi
+}
+
 # ── claim ───────────────────────────────────────────────────────────────────────────────────────
 do_claim() {
-  _row=""; _branch=""; _links=""; _dry=0; _moved=0
+  _row=""; _branch=""; _links=""; _dry=0; _moved=0; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --lease-token)         [ $# -ge 2 ] || { echo "claim: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       --branch)              [ $# -ge 2 ] || { echo "claim: --branch needs a value" >&2; return 2; }; _branch=$2; shift 2 ;;
       --links)               [ $# -ge 2 ] || { echo "claim: --links needs a value" >&2; return 2; }; _links=$2; shift 2 ;;
       --dry-run)             _dry=1; shift ;;
@@ -700,6 +1242,8 @@ do_claim() {
   # to the same grammar as everything else (parentheses are refused), so a detached HEAD must name
   # its branch explicitly rather than have an unusable value written into the CLAIM.
   bc_require_branch "$_branch" "claim --branch" || return 2
+
+  bc_lease_gate claim "$_ltok" || return $?
 
   # THE DECLARED SESSION — minted here, offline, before the board read and before any network, for
   # the same reason the two grammars above run here: a hygiene refusal that has already pushed a ref
@@ -774,6 +1318,21 @@ do_claim() {
   fi
   _me="$_name <$_email>"
   _when=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # ── THE REMOTE'S STATE (SWAS-783) — the first remote touch. `none` (no remote at all) records the claim in
+  # THIS repository (bc_claim_local); `reachable` first hands any local claims to origin, and only the colliding
+  # row itself is refused for a collision; `unreachable` falls through to the refusal points below, which print
+  # "cannot reach" — now only when a remote could exist.
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = none ]; then bc_claim_local; return $?; fi
+  if [ "$_bcst" = reachable ]; then
+    bc_publish_local claim "$_row" || return $?   # MUT-LC5
+    if bc_pub_collided "$_row"; then
+      echo "claim: REFUSED — the local claim on \`$_row\` collides with an existing claim on $BC_REMOTE (see above)." >&2
+      echo "       Release the local one with \`board.sh release $_row\`, or take another row." >&2
+      return 3
+    fi
+  fi
 
   # ── WIP — COUNTED FROM THE ORIGIN CLAIM REFS, NEVER FROM THE LOCAL BOARD (B4-CROSS-SESSION-BUDGET)
   # A parallel session's In Progress row lives on ITS branch and is invisible on the local board (the
@@ -914,7 +1473,13 @@ do_claim() {
   fi
   echo "claim: OK — \`$_row\` claimed on $BC_REMOTE as $_ref ($_commit)"
   echo "       claimant '$_name <$_email>' · branch '$_branch' · at $_when"
+  bc_board_move
+  return $?
+}
 
+# bc_board_move — the board half of a claim (remote or local): the row moves Ready -> In Progress, uncommitted.
+# It reads do_claim's variables (_row _branch _links _name _moved) and runs only after the claim is recorded.
+bc_board_move() {
   if [ "$_moved" = 1 ]; then
     echo "claim: board NOT edited — --board-already-moved: \`$_row\` already sits In Progress naming '$_branch'."
     return 0
@@ -927,7 +1492,7 @@ do_claim() {
   _bounds=$(bc_section_bounds "$BC_BOARD" "In Progress")
   _iphdr=${_bounds% *}; _iplast=${_bounds#* }
   if [ "$_iphdr" = 0 ]; then
-    echo "claim: the claim ref is PUSHED, but $BC_BOARD has no In Progress table to move the row into." >&2
+    echo "claim: the claim ref is ${1:-PUSHED}, but $BC_BOARD has no In Progress table to move the row into." >&2
     echo "       Move the row by hand, or release the claim (\`board-claim.sh release $_row\`)." >&2
     return 2
   fi
@@ -1124,16 +1689,30 @@ bc_log_release() { # <row> <proof> <reason> <released-sha> -> rc 0 logged · 1 c
 
 # ── release ─────────────────────────────────────────────────────────────────────────────────────
 do_release() {
-  _row=""; _stale=0
+  _row=""; _stale=0; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --stale) _stale=1; shift ;;
+      --lease-token) [ $# -ge 2 ] || { echo "release: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       -*)      echo "release: unknown option '$1'" >&2; bc_usage; return 2 ;;
       *)       [ -z "$_row" ] || { echo "release: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
     esac
   done
   bc_require_row "$_row" || return 2
   _ref="refs/claims/$_row"
+
+  bc_lease_gate release "$_ltok" || return $?
+
+  # THE REMOTE'S STATE (SWAS-783). With origin reachable, local claims are handed over first (over the ceiling
+  # that is a warning here, never a refusal: a release only lowers WIP). A claim held in the local namespace is
+  # released there — which also clears a colliding one. With no remote and no local claim there is nothing to release.
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = reachable ]; then bc_publish_local release "$_row" || return $?; fi
+  if bc_local_exists "$BC_LOCAL_NS/$_row"; then bc_release_local; return $?; fi
+  if [ "$_bcst" = none ]; then
+    echo "release: no claim on \`$_row\` (this repository has no git remote yet; local claims only) — nothing to release." >&2
+    return 1
+  fi
 
   if _sha=$(bc_probe "$_ref"); then
     :
@@ -1246,8 +1825,9 @@ do_release() {
   # The log is written BEFORE the delete on purpose — a release that leaves no trace is what the
   # record exists to prevent — but that ordering means a delete which then FAILS leaves
   # `refs/claims-log/<ROW>` asserting a release that never happened. MEASURED REAL, not theoretical:
-  # `shim-coverage.sh` case 5 shows the delete being refused under `install-shims` (the force-push
-  # rule), so the first build produced exactly that false record on a real run. The log is
+  # the delete was refused under `install-shims` by the force-push rule, so the first build produced
+  # exactly that false record on a real run. SWAS-842 cured that refusal (`shim-coverage.sh` case 5
+  # now asserts the release succeeds); a delete refused for any other reason still lands here. The log is
   # append-only by design, so the cure is a COMPENSATING ENTRY rather than an edit: `<proof>-FAILED`
   # with `released-sha: (not deleted)`. A reader who sees only the first entry is wrong; a reader
   # who reads the last one is right, which is the property `status` and `resume` rely on.
@@ -1276,6 +1856,8 @@ do_check() {
     esac
   done
   if [ "$_all" = 1 ]; then
+    if _bcst=$(bc_remote_state); then :; else return 2; fi
+    if [ "$_bcst" = none ]; then bc_check_local_all; return $?; fi
     if _out=$(git ls-remote "$BC_REMOTE" 'refs/claims/*' 2>/dev/null); then :; else
       bc_unreachable 'refs/claims/*'; return 2
     fi
@@ -1304,6 +1886,8 @@ do_check() {
   [ -n "$_row" ] || { echo "check: a row id or --all is required" >&2; bc_usage; return 2; }
   bc_require_row "$_row" || return 2
   _ref="refs/claims/$_row"
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = none ]; then bc_check_local_one "$_row"; return $?; fi
   # Same `else`-branch rc capture as bc_probe — see the R-1 note there.
   if _sha=$(bc_probe "$_ref"); then
     _txt=$(bc_read_claim "$_ref" || true)
@@ -1386,6 +1970,8 @@ do_status() {
       *)  echo "status: takes no arguments (it renders every claim on $BC_REMOTE)" >&2; return 2 ;;
     esac
   done
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = none ]; then bc_status_local; return $?; fi
   if _stout=$(git ls-remote "$BC_REMOTE" 'refs/claims/*' 2>/dev/null); then :; else
     bc_unreachable 'refs/claims/*'; return 2
   fi
@@ -1458,9 +2044,10 @@ do_status() {
 # which a human/agent still uses directly on `md`); `claim-ref`'s contract is "the ref is the lock,
 # full stop" and re-claiming is `release-ref` then `claim-ref` again.
 do_claim_ref() {
-  _row=""; _branch=""; _then=""
+  _row=""; _branch=""; _then=""; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --lease-token) [ $# -ge 2 ] || { echo "claim-ref: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       --branch) [ $# -ge 2 ] || { echo "claim-ref: --branch needs a value" >&2; return 2; }; _branch=$2; shift 2 ;;
       --then)   [ $# -ge 2 ] || { echo "claim-ref: --then needs a value" >&2; return 2; }; _then=$2; shift 2 ;;
       -*)       echo "claim-ref: unknown option '$1'" >&2; bc_usage; return 2 ;;
@@ -1473,6 +2060,8 @@ do_claim_ref() {
   [ -n "$_branch" ] || _branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "(detached)")
   bc_require_branch "$_branch" "claim-ref --branch" || return 2
 
+  bc_lease_gate claim-ref "$_ltok" || return $?
+
   if _session=$(bc_session_id --mint); then :; else return 2; fi
 
   _name=$(git config user.name  2>/dev/null || true)
@@ -1482,6 +2071,18 @@ do_claim_ref() {
     return 2
   fi
   _when=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # THE REMOTE'S STATE (SWAS-783). A tracker-backed claim (`--then`) writes the tracker too, so it gets no local
+  # mode; run directly on md, claim-ref works on origin only. Both are rc 2 with their own sentence.
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = none ]; then
+    if [ -n "$_then" ]; then
+      echo "board-claim: this repository has no git remote yet; a tracker-backed claim needs origin. Create the empty repository and push main once (START-HERE.md, The first push), then run start again." >&2
+    else
+      echo "board-claim: this repository has no git remote yet; claim-ref works on origin only" >&2
+    fi
+    return 2
+  fi
 
   # THE FORGE PROBE (same else-branch rc capture as bc_probe's own R-1 note — see that function).
   if _held=$(bc_probe "$_ref"); then
@@ -1552,10 +2153,11 @@ do_claim_ref() {
 # backend-agnosticism; leaning on a board read here would smuggle an md assumption back into the one
 # primitive that is supposed to have none.
 do_release_ref() {
-  _row=""; _stale=0; _then=""
+  _row=""; _stale=0; _then=""; _ltok=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --stale) _stale=1; shift ;;
+      --lease-token) [ $# -ge 2 ] || { echo "release-ref: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
       --then)  [ $# -ge 2 ] || { echo "release-ref: --then needs a value" >&2; return 2; }; _then=$2; shift 2 ;;
       -*)      echo "release-ref: unknown option '$1'" >&2; bc_usage; return 2 ;;
       *)       [ -z "$_row" ] || { echo "release-ref: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
@@ -1563,6 +2165,14 @@ do_release_ref() {
   done
   bc_require_row "$_row" || return 2
   _ref="refs/claims/$_row"
+
+  bc_lease_gate release-ref "$_ltok" || return $?
+
+  if _bcst=$(bc_remote_state); then :; else return 2; fi
+  if [ "$_bcst" = none ]; then
+    echo "board-claim: this repository has no git remote yet; release-ref works on origin only" >&2
+    return 2
+  fi
 
   if _sha=$(bc_probe "$_ref"); then
     :
@@ -2911,6 +3521,895 @@ RACE_EOF
   bc_run "$bc_base/R" release-ref ROW-CR7
   bc_expect_rc 0 "leg z3/cleanup: R releases ROW-CR7"
 
+  # ---- legs LC1-LC22 (SWAS-783): a repository with NO remote can claim, and hands its claims to origin later ----
+  # Every cell asserts an rc AND a sentence or a ref state, on a fixture that is `git init`, one commit holding the
+  # board, and no remote at all (bc_mklocal). Each named mutant is a temp COPY of this script with one marked line
+  # changed (bc_mutant); a copy equal to the original is a FAIL, so a mutant that did not apply cannot pass quietly.
+  bc_wip1="$bc_base/lc-wip1.conf"; bc_wip9="$bc_base/lc-wip9.conf"
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\nMAX_WIP=1\n' > "$bc_wip1"
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\nMAX_WIP=9\n' > "$bc_wip9"
+  bc_idl='Session L <l@example.com>'
+
+  # LC1 — a claim with no remote is recorded in this repository, not refused as unreachable.
+  bc_mklocal L1 "Session L" l@example.com
+  bc_run "$bc_base/L1" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC1/claim: a claim in a repository with NO remote -> rc 0"
+  bc_has "leg LC1/claim: the sentence says the claim is recorded in this repository" "the claim on ROW-1 is recorded in this repository"
+  bc_has "leg LC1/claim: …and names the act that hands it to origin" "board.sh publish"
+  bc_hasnt "leg LC1/claim: it is NOT the unreachable sentence (there is no remote to reach)" "cannot reach"
+  bc_lc_blob=$(git -C "$bc_base/L1" show refs/local-claims/ROW-1:CLAIM 2>/dev/null || echo '')
+  case "$bc_lc_blob" in
+    *"row: ROW-1"*"claimant: $bc_idl"*"branch: feat/l"*) bc_pass "leg LC1/ref: refs/local-claims/ROW-1 holds the CLAIM blob fields" ;;
+    *) bc_fail "leg LC1/ref: the local claim ref does not hold the blob fields; got [$bc_lc_blob]" ;;
+  esac
+  if [ -z "$(git -C "$bc_base/L1" for-each-ref refs/claims 2>/dev/null)" ]; then
+    bc_pass "leg LC1/no-claims-ref: no refs/claims/* exists (the local record has its own namespace)"
+  else
+    bc_fail "leg LC1/no-claims-ref: a refs/claims/* ref was written in a repository with no remote"
+  fi
+  if bc_lc_ip "$bc_base/L1" ROW-1; then
+    bc_pass "leg LC1/row-moved: ROW-1 now sits under ## In Progress"
+  else
+    bc_fail "leg LC1/row-moved: ROW-1 is not under ## In Progress after a local claim"
+  fi
+  # (The mutant's sed must keep the quote balanced: the first build replaced `printf 'none` by `printf unreachable`, which
+  # left `\n'` as a stray quote, so the mutant was a SYNTAX-BROKEN script, not "none read as unreachable"; it ran rc 0 and the
+  # leg logged KILLED for the wrong reason. The positive marker below is the cure: rc 2 AND the unreachable sentence.)
+  if bc_mutant LC1 LC1 's/none\\n/unreachable\\n/'; then
+    bc_mklocal L1m "Session L" l@example.com
+    bc_run_mut "$bc_base/L1m" claim ROW-1 --branch feat/l
+    case "$bc_out" in
+      *"recorded in this repository"*) bc_fail "leg LC1/mutant: none-read-as-unreachable SURVIVED (the claim was still recorded locally)" ;;
+      *"cannot reach"*) if [ "$bc_rc" -eq 2 ]; then bc_pass "leg LC1/mutant: none-read-as-unreachable is KILLED (rc 2 and the unreachable sentence, no local record)"; else bc_fail "leg LC1/mutant: none-read-as-unreachable gave the unreachable sentence but rc $bc_rc, not 2"; fi ;;
+      *) bc_fail "leg LC1/mutant: none-read-as-unreachable died some other way (rc $bc_rc, no 'cannot reach'); out=[$bc_out]" ;;
+    esac
+  fi
+
+  # LC2 — a second claim on the same row from another branch, in a LINKED WORKTREE (the refs are shared), is rc 3.
+  bc_lc_wt_setup() { # <name> — a local claim of ROW-1 on feat/l, and a linked worktree on branch feat/other
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    git -C "$bc_base/$1" worktree add -q -b feat/other "$bc_base/$1wt" >/dev/null 2>&1
+  }
+  bc_lc_wt_setup L2
+  bc_lc2_before=$(git -C "$bc_base/L2" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+  bc_run "$bc_base/L2wt" claim ROW-1 --branch feat/other
+  bc_expect_rc 3 "leg LC2/second-claim: another branch, from a linked worktree -> rc 3 (ALREADY CLAIMED)"
+  bc_has "leg LC2/second-claim: the refusal names the holder" "$bc_idl"
+  bc_has "leg LC2/second-claim: …and the holder's branch" "on feat/l"
+  if [ "$(git -C "$bc_base/L2" rev-parse refs/local-claims/ROW-1 2>/dev/null)" = "$bc_lc2_before" ]; then
+    bc_pass "leg LC2/ref-unchanged: the local claim ref is byte-identical after the refusal"
+  else
+    bc_fail "leg LC2/ref-unchanged: the refused claim moved the local ref"
+  fi
+  if bc_mutant LC2 LC2 's|_lz=.*|_lz=$(git rev-parse --verify "$1")|'; then
+    bc_lc_wt_setup L2m
+    bc_lc2m_before=$(git -C "$bc_base/L2m" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+    bc_run_mut "$bc_base/L2mwt" claim ROW-1 --branch feat/other
+    bc_lc2m_after=$(git -C "$bc_base/L2m" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+    if [ "$bc_rc" -eq 0 ] && [ "$bc_lc2m_after" != "$bc_lc2m_before" ] && [ "$bc_lc2m_after" != none ]; then
+      bc_pass "leg LC2/mutant: create-only-dropped is KILLED (rc 0 and the write clobbered the holder: ref moved)"
+    else
+      bc_fail "leg LC2/mutant: create-only-dropped SURVIVED or the mutant run crashed (rc $bc_rc, ref before=$bc_lc2m_before after=$bc_lc2m_after)"
+    fi
+  fi
+
+  # LC3 — the same claimant and branch resumes (a child commit); the same session short-circuits.
+  bc_mklocal L3 "Session L" l@example.com
+  bc_run "$bc_base/L3" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC3/setup: a local claim"
+  bc_lc3_sha1=$(git -C "$bc_base/L3" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+  bc_lc3_sid1=$(cat "$bc_base/L3/.kit-run/session.id" 2>/dev/null || echo none)
+  bc_fixture_board4 "$bc_base/L3/BACKLOG.md"
+  bc_run "$bc_base/L3" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC3/same-session: the same session claiming again -> rc 0"
+  bc_has "leg LC3/same-session: the verdict is the resume sentence" "held by you since"
+  if [ "$(git -C "$bc_base/L3" rev-parse refs/local-claims/ROW-1 2>/dev/null)" = "$bc_lc3_sha1" ]; then
+    bc_pass "leg LC3/same-session: nothing was written (the ref is byte-identical)"
+  else
+    bc_fail "leg LC3/same-session: the same session moved the local ref"
+  fi
+  printf 's-20261108-cafebabe\n' > "$bc_base/L3/.kit-run/session.id"
+  bc_fixture_board4 "$bc_base/L3/BACKLOG.md"
+  bc_run "$bc_base/L3" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC3/resume: a new session on the same claimant and branch -> rc 0"
+  bc_has "leg LC3/resume: the verdict says RESUMED" "RESUMED"
+  bc_has "leg LC3/resume: …and names the session that held it before" "$bc_lc3_sid1"
+  bc_lc3_sha2=$(git -C "$bc_base/L3" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+  if [ "$bc_lc3_sha2" != "$bc_lc3_sha1" ] && [ "$(git -C "$bc_base/L3" rev-parse "$bc_lc3_sha2^" 2>/dev/null)" = "$bc_lc3_sha1" ]; then
+    bc_pass "leg LC3/resume: the local ref moved to a CHILD of the claim that was read"
+  else
+    bc_fail "leg LC3/resume: the new local claim is not a child of the observed claim"
+  fi
+
+  # LC4 — the WIP count counts the local claims.
+  bc_mklocal L4 "Session L" l@example.com
+  bc_run "$bc_base/L4" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC4/setup: one local claim"
+  bc_run_wipcfg "$bc_base/L4" "$bc_wip1" claim ROW-2 --branch feat/l
+  bc_expect_rc 2 "leg LC4/over-wip: one local claim at MAX_WIP=1 -> a second claim is refused, rc 2"
+  bc_has "leg LC4/over-wip: the refusal carries the guard's own verdict" "wip(1/1)"
+  bc_has "leg LC4/over-wip: …and names the work-in-progress ceiling" "work-in-progress ceiling"
+  if git -C "$bc_base/L4" rev-parse --verify -q refs/local-claims/ROW-2 >/dev/null; then
+    bc_fail "leg LC4/over-wip: the refused claim wrote a local ref anyway"
+  else
+    bc_pass "leg LC4/over-wip: nothing was written for the refused claim"
+  fi
+  bc_run_wipcfg "$bc_base/L4" "$bc_wip9" claim ROW-2 --branch feat/l
+  bc_expect_rc 0 "leg LC4/under-wip: the same claim under MAX_WIP=9 -> rc 0 (the refusal is not unconditional)"
+
+  # LC5 — the handover: once origin exists the next claim publishes the local claim first.
+  bc_mklocal L5 "Session L" l@example.com
+  bc_run "$bc_base/L5" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC5/setup: a local claim of ROW-1"
+  bc_lc5_blob=$(git -C "$bc_base/L5" show refs/local-claims/ROW-1:CLAIM 2>/dev/null || echo none)
+  bc_lc5_origin="$bc_base/lc5-origin.git"
+  git init -q --bare "$bc_lc5_origin"
+  git -C "$bc_base/L5" remote add origin "$bc_lc5_origin"
+  bc_run "$bc_base/L5" claim ROW-2 --branch feat/l
+  bc_expect_rc 0 "leg LC5/handover: the next claim, with origin now present -> rc 0"
+  if [ "$(git --git-dir="$bc_lc5_origin" show refs/claims/ROW-1:CLAIM 2>/dev/null || echo missing)" = "$bc_lc5_blob" ]; then
+    bc_pass "leg LC5/published: origin holds refs/claims/ROW-1 with the same CLAIM fields the local claim had"
+  else
+    bc_fail "leg LC5/published: origin does not hold the local claim's fields at refs/claims/ROW-1"
+  fi
+  if git -C "$bc_base/L5" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC5/local-gone: the local ref survived a successful publish"
+  else
+    bc_pass "leg LC5/local-gone: the local ref is deleted once origin holds the claim"
+  fi
+  if git --git-dir="$bc_lc5_origin" rev-parse --verify -q refs/claims/ROW-2 >/dev/null; then
+    bc_pass "leg LC5/own-claim: ROW-2 is claimed on origin by the same run"
+  else
+    bc_fail "leg LC5/own-claim: ROW-2 is not on origin"
+  fi
+  if bc_mutant LC5 LC5 's/^\( *\).*/\1:/'; then
+    bc_mklocal L5m "Session L" l@example.com
+    bc_run "$bc_base/L5m" claim ROW-1 --branch feat/l
+    bc_lc5m_origin="$bc_base/lc5m-origin.git"
+    git init -q --bare "$bc_lc5m_origin"
+    git -C "$bc_base/L5m" remote add origin "$bc_lc5m_origin"
+    bc_run_mut "$bc_base/L5m" claim ROW-2 --branch feat/l
+    if git --git-dir="$bc_lc5m_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+      bc_fail "leg LC5/mutant: publish-call-dropped SURVIVED (origin still received ROW-1)"
+    elif [ "$bc_rc" -eq 0 ] && git --git-dir="$bc_lc5m_origin" rev-parse --verify -q refs/claims/ROW-2 >/dev/null; then
+      bc_pass "leg LC5/mutant: publish-call-dropped is KILLED (the run still claimed ROW-2 on origin; origin never received ROW-1)"
+    else
+      bc_fail "leg LC5/mutant: the mutant run did not complete its own claim (rc $bc_rc, no ROW-2 on origin), so ROW-1's absence proves nothing"
+    fi
+  fi
+
+  # LC6 — a partial publish: one collision warns and is kept, the other row is published, no other row is blocked.
+  bc_lc6_setup() { # <name> — two local claims, then an origin that already holds ROW-1 for someone else
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_run "$bc_base/$1" claim ROW-2 --branch feat/l
+    bc_lc6_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc6_origin"
+    git --git-dir="$bc_lc6_origin" config user.name Other
+    git --git-dir="$bc_lc6_origin" config user.email o@example.com
+    bc_origin_claim "$bc_lc6_origin" ROW-1 'Other Person <o@example.com>' feat/o
+    git -C "$bc_base/$1" remote add origin "$bc_lc6_origin"
+  }
+  bc_lc6_setup L6
+  bc_lc6_blob2=$(git -C "$bc_base/L6" show refs/local-claims/ROW-2:CLAIM 2>/dev/null || echo none)
+  bc_run_wipcfg "$bc_base/L6" "$bc_wip9" claim ROW-3 --branch feat/l
+  bc_expect_rc 0 "leg LC6/other-row: a claim of ROW-3 proceeds although ROW-1 collides -> rc 0"
+  bc_has "leg LC6/warning: the collision is a warning that names the row" "local claim on ROW-1 collides with"
+  bc_has "leg LC6/warning: …and the remedy" "board.sh release ROW-1"
+  if [ "$(git --git-dir="$bc_lc6_origin" show refs/claims/ROW-2:CLAIM 2>/dev/null || echo missing)" = "$bc_lc6_blob2" ]; then
+    bc_pass "leg LC6/published: ROW-2 reached origin with its local CLAIM fields"
+  else
+    bc_fail "leg LC6/published: ROW-2 was not published past the ROW-1 collision"
+  fi
+  if git -C "$bc_base/L6" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_pass "leg LC6/kept: the colliding local claim is KEPT"
+  else
+    bc_fail "leg LC6/kept: the colliding local claim was deleted"
+  fi
+  case "$(git --git-dir="$bc_lc6_origin" show refs/claims/ROW-1:CLAIM 2>/dev/null || echo '')" in
+    *"Other Person"*) bc_pass "leg LC6/origin-untouched: origin's ROW-1 is still the other claimant's" ;;
+    *) bc_fail "leg LC6/origin-untouched: origin's ROW-1 changed" ;;
+  esac
+  if git --git-dir="$bc_lc6_origin" rev-parse --verify -q refs/claims/ROW-3 >/dev/null; then
+    bc_pass "leg LC6/own-claim: ROW-3 is claimed on origin"
+  else
+    bc_fail "leg LC6/own-claim: ROW-3 is not on origin"
+  fi
+  bc_run_wipcfg "$bc_base/L6" "$bc_wip9" claim ROW-1 --branch feat/l --board-already-moved
+  bc_expect_rc 3 "leg LC6/colliding-row: a claim of the colliding row itself -> rc 3"
+  bc_has "leg LC6/colliding-row: the refusal says it collides" "collides with"
+  bc_run_wipcfg "$bc_base/L6" "$bc_wip9" release ROW-1
+  bc_expect_rc 0 "leg LC6/release: releasing the colliding row -> rc 0"
+  if git -C "$bc_base/L6" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC6/release: the colliding local ref survived the release"
+  else
+    bc_pass "leg LC6/release: the local ref is deleted, so a collision can always be cleared"
+  fi
+  case "$(git --git-dir="$bc_lc6_origin" show refs/claims/ROW-1:CLAIM 2>/dev/null || echo '')" in
+    *"Other Person"*) bc_pass "leg LC6/release: the release left the other claimant's origin claim alone" ;;
+    *) bc_fail "leg LC6/release: origin's ROW-1 changed on a local release" ;;
+  esac
+  if bc_mutant LC6 LC6 's/return 0/return 9/'; then
+    bc_lc6_setup L6m
+    bc_run_wipcfg_mut "$bc_base/L6m" "$bc_wip9" claim ROW-3 --branch feat/l
+    if git --git-dir="$bc_lc6_origin" rev-parse --verify -q refs/claims/ROW-2 >/dev/null; then
+      bc_fail "leg LC6/mutant: collision-made-fatal SURVIVED (ROW-2 was still published)"
+    else
+      case "$bc_out" in
+        *"no further local claim was pushed"*) bc_pass "leg LC6/mutant: collision-made-fatal is KILLED (the collision stopped the handover: no further local claim was pushed, ROW-2 absent)" ;;
+        *) bc_fail "leg LC6/mutant: ROW-2 is absent but the handover did not report stopping, so the mutant run may have crashed (rc $bc_rc); out=[$bc_out]" ;;
+      esac
+    fi
+  fi
+
+  # LC7 — origin already holds the same claim (row, claimant, branch): published already, no collision.
+  bc_lc7_setup() { # <name> — a local ROW-1 claim and an origin that already holds ROW-1 by the same claimant on the same branch
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_lc7_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc7_origin"
+    git --git-dir="$bc_lc7_origin" config user.name Other
+    git --git-dir="$bc_lc7_origin" config user.email o@example.com
+    bc_origin_claim "$bc_lc7_origin" ROW-1 "$bc_idl" feat/l
+    git -C "$bc_base/$1" remote add origin "$bc_lc7_origin"
+  }
+  bc_lc7_setup L7
+  bc_run "$bc_base/L7" claim ROW-2 --branch feat/l
+  bc_expect_rc 0 "leg LC7/already-published: the next claim, with origin already holding the same claim -> rc 0"
+  bc_hasnt "leg LC7/already-published: it is NOT reported as a collision" "collides with"
+  if git -C "$bc_base/L7" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC7/already-published: the local ref survived although origin already holds it"
+  else
+    bc_pass "leg LC7/already-published: the local ref is deleted (origin is the only record)"
+  fi
+  if bc_mutant LC7 LC7 's/_pr_pub=1/_pr_pub=0/'; then
+    bc_lc7_setup L7m
+    bc_run_mut "$bc_base/L7m" claim ROW-2 --branch feat/l
+    case "$bc_out" in
+      *"collides with"*) bc_pass "leg LC7/mutant: field-equality-dropped is KILLED (the same claim is read as a collision)" ;;
+      *) bc_fail "leg LC7/mutant: field-equality-dropped SURVIVED (no collision was reported)" ;;
+    esac
+  fi
+
+  # LC8 — a hand-written local ref whose row field differs from its name is not published.
+  bc_lc8_setup() { # <name> — the board shows X In Progress on feat/l, so only the validation can hold the claim back
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_fixture_board_ip "$bc_base/$1/BACKLOG.md" X feat/l
+    bc_lc8_blob=$(printf 'row: Y\nclaimant: %s\nbranch: feat/l\nclaimed-at: 2026-11-08T00:00:00Z\nsession: s-20261108-aaaabbbb (declared)\n' "$bc_idl" | git -C "$bc_base/$1" hash-object -w --stdin)
+    bc_lc8_tree=$(printf '100644 blob %s\tCLAIM\n' "$bc_lc8_blob" | git -C "$bc_base/$1" mktree)
+    bc_lc8_commit=$(printf 'planted\n' | git -C "$bc_base/$1" commit-tree "$bc_lc8_tree")
+    git -C "$bc_base/$1" update-ref refs/local-claims/X "$bc_lc8_commit"
+    bc_lc8_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc8_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc8_origin"
+  }
+  bc_lc8_setup L8
+  bc_run "$bc_base/L8" publish
+  bc_expect_rc 1 "leg LC8/validation: a local ref whose row field is not its name -> publish rc 1"
+  bc_has "leg LC8/validation: the sentence names the field" "fails validation (row)"
+  if git --git-dir="$bc_lc8_origin" rev-parse --verify -q refs/claims/X >/dev/null; then
+    bc_fail "leg LC8/not-pushed: the invalid claim reached origin"
+  else
+    bc_pass "leg LC8/not-pushed: the invalid claim was not pushed"
+  fi
+  if git -C "$bc_base/L8" rev-parse --verify -q refs/local-claims/X >/dev/null; then
+    bc_pass "leg LC8/kept: the invalid local ref is left for the holder"
+  else
+    bc_fail "leg LC8/kept: the invalid local ref was deleted"
+  fi
+  if bc_mutant LC8 LC8 's/if \[ .*\]; then/if false; then/'; then
+    bc_lc8_setup L8m
+    bc_run_mut "$bc_base/L8m" publish
+    if git --git-dir="$bc_lc8_origin" rev-parse --verify -q refs/claims/X >/dev/null; then
+      bc_pass "leg LC8/mutant: validation-dropped is KILLED (the invalid claim reached origin)"
+    else
+      bc_fail "leg LC8/mutant: validation-dropped SURVIVED (the invalid claim was still held back)"
+    fi
+  fi
+
+  # LC9 — BOARD_CLAIM_REMOTE stays a selftest-only seam: a set value (even an empty one) is never "no remote".
+  bc_mklocal L9 "Session L" l@example.com
+  bc_run_badremote "$bc_base/L9" claim ROW-1 --branch feat/l
+  bc_expect_rc 2 "leg LC9/seam: a missing BOARD_CLAIM_REMOTE path in a no-remote repository -> rc 2"
+  bc_has "leg LC9/seam: it is the unreachable sentence" "cannot reach"
+  if git -C "$bc_base/L9" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC9/seam: a local claim was written through the seam"
+  else
+    bc_pass "leg LC9/seam: no local ref was written"
+  fi
+  if bc_lc_ip "$bc_base/L9" ROW-1; then
+    bc_fail "leg LC9/seam: the row moved although the claim was refused"
+  else
+    bc_pass "leg LC9/seam: the row did not move"
+  fi
+  if bc_out=$( cd "$bc_base/L9" && BOARD_CLAIM_REMOTE='' sh "$BC_SELF" claim ROW-1 --branch feat/l 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  bc_expect_rc 2 "leg LC9/empty-seam: an EMPTY BOARD_CLAIM_REMOTE is a set value, not an absent one -> rc 2"
+  bc_has "leg LC9/empty-seam: it is the unreachable sentence" "cannot reach"
+  if bc_mutant LC9 LC9 's/^\( *\).*/\1:/'; then
+    bc_mklocal L9m "Session L" l@example.com
+    bc_run_badremote_mut "$bc_base/L9m" claim ROW-1 --branch feat/l
+    if [ "$bc_rc" -eq 2 ]; then
+      bc_fail "leg LC9/mutant: remote-condition-dropped SURVIVED (still rc 2)"
+    else
+      bc_pass "leg LC9/mutant: remote-condition-dropped is KILLED (rc $bc_rc: the seam fell into local mode)"
+    fi
+  fi
+
+  # LC10 — an insteadOf rule with no `git remote` entry is a reachable remote, not "no remote".
+  bc_lc10_setup() { # <name>
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_lc10_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc10_origin"
+    git -C "$bc_base/$1" config "url.$bc_lc10_origin.insteadOf" origin
+  }
+  bc_lc10_setup L10
+  bc_run "$bc_base/L10" claim ROW-1 --branch feat/l
+  bc_expect_rc 0 "leg LC10/insteadOf: a claim through an insteadOf rule, with no git remote -> rc 0"
+  if git --git-dir="$bc_lc10_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null \
+     && ! git -C "$bc_base/L10" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_pass "leg LC10/insteadOf: the claim went to the bare repository, not to a local ref"
+  else
+    bc_fail "leg LC10/insteadOf: the claim did not land on the reachable remote"
+  fi
+  if bc_mutant LC10 LC10 's/^\( *\).*/\1:/'; then
+    bc_lc10_setup L10m
+    bc_run_mut "$bc_base/L10m" claim ROW-1 --branch feat/l
+    if git --git-dir="$bc_lc10_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+      bc_fail "leg LC10/mutant: ls-remote-first-dropped SURVIVED (the claim still reached the bare repository)"
+    elif [ "$bc_rc" -eq 0 ] && git -C "$bc_base/L10m" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+      bc_pass "leg LC10/mutant: ls-remote-first-dropped is KILLED (rc 0 and the claim fell into local mode: refs/local-claims/ROW-1)"
+    else
+      bc_fail "leg LC10/mutant: nothing reached the bare repository but no local claim was recorded either, so the mutant run may have crashed (rc $bc_rc)"
+    fi
+  fi
+
+  # LC11 — a git environment variable that redirects the repository never reaches local mode.
+  bc_mklocal L11 "Session L" l@example.com
+  if bc_out=$( cd "$bc_base/L11" && GIT_DIR="$bc_base/L11/.git" sh "$BC_SELF" claim ROW-1 --branch feat/l 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  bc_expect_rc 2 "leg LC11/redirect: GIT_DIR set, with no remote -> rc 2"
+  bc_has "leg LC11/redirect: the refusal names the cause" "a git environment variable redirects this repository"
+  if git -C "$bc_base/L11" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC11/redirect: a local ref was written under a redirect"
+  else
+    bc_pass "leg LC11/redirect: no local ref was written"
+  fi
+  if bc_out=$( cd "$bc_base/L11" && GIT_COMMON_DIR="$bc_base/L11/.git" sh "$BC_SELF" claim ROW-1 --branch feat/l 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  bc_expect_rc 2 "leg LC11/common-dir: GIT_COMMON_DIR set, with no remote -> rc 2"
+  bc_has "leg LC11/common-dir: the refusal names the cause" "a git environment variable redirects this repository"
+  if git -C "$bc_base/L11" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC11/common-dir: a local ref was written under a redirect"
+  else
+    bc_pass "leg LC11/common-dir: no local ref was written"
+  fi
+
+  # LC12 — every other verb says "no git remote yet" and keeps check's return codes.
+  bc_mklocal L12 "Session L" l@example.com
+  bc_run "$bc_base/L12" claim ROW-1
+  bc_expect_rc 0 "leg LC12/setup: a local claim on the current branch"
+  git -C "$bc_base/L12" worktree add -q -b feat/other "$bc_base/L12wt" >/dev/null 2>&1
+  bc_run "$bc_base/L12" check ROW-1
+  bc_expect_rc 0 "leg LC12/check-held: check on this branch's local claim -> rc 0"
+  bc_has "leg LC12/check-held: the machine-readable branch line is present" "claim-branch: "
+  bc_has "leg LC12/check-held: it says the claim is local" "local claims only"
+  bc_run "$bc_base/L12" check ROW-2
+  bc_expect_rc 2 "leg LC12/check-none: check with no local claim -> rc 2, NEVER 1"
+  bc_has "leg LC12/check-none: the no-remote sentence" "no git remote yet; local claims only"
+  bc_run "$bc_base/L12wt" check ROW-1
+  bc_expect_rc 2 "leg LC12/check-other-branch: another branch's local claim -> rc 2"
+  bc_run "$bc_base/L12" check --all
+  bc_expect_rc 0 "leg LC12/check-all: check --all lists the local claim -> rc 0"
+  bc_has "leg LC12/check-all: it names the row" "ROW-1"
+  bc_run "$bc_base/L12" status
+  bc_expect_rc 0 "leg LC12/status: status lists the local claim -> rc 0"
+  bc_has "leg LC12/status: it names the row" "ROW-1"
+  bc_has "leg LC12/status: it says local claims only" "local claims only"
+  bc_run "$bc_base/L12" release-ref ROW-1
+  bc_expect_rc 2 "leg LC12/release-ref: release-ref with no remote -> rc 2"
+  bc_has "leg LC12/release-ref: its own sentence" "release-ref works on origin only"
+  bc_run "$bc_base/L12" claim-ref ROW-9
+  bc_expect_rc 2 "leg LC12/claim-ref: claim-ref run directly, with no remote -> rc 2"
+  bc_has "leg LC12/claim-ref: its own sentence" "claim-ref works on origin only"
+  if git -C "$bc_base/L12" rev-parse --verify -q refs/local-claims/ROW-9 >/dev/null; then
+    bc_fail "leg LC12/claim-ref: claim-ref wrote a local ref"
+  else
+    bc_pass "leg LC12/claim-ref: claim-ref wrote nothing"
+  fi
+
+  # LC13 — a tracker-backed claim (claim-ref --then) needs origin, and its tracker step never runs.
+  bc_mklocal L13 "Session L" l@example.com
+  bc_run "$bc_base/L13" claim-ref ROW-1 --then "touch $bc_base/lc13.marker"
+  bc_expect_rc 2 "leg LC13/tracker: claim-ref --then with no remote -> rc 2"
+  bc_has "leg LC13/tracker: the sentence says a tracker-backed claim needs origin" "a tracker-backed claim needs origin"
+  bc_has "leg LC13/tracker: …and names the first push" "The first push"
+  if [ -e "$bc_base/lc13.marker" ] || git -C "$bc_base/L13" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC13/tracker: the tracker step ran, or a local ref was written"
+  else
+    bc_pass "leg LC13/tracker: no tracker step ran and no ref was written"
+  fi
+
+  # LC14 — the publish verb.
+  bc_mklocal L14 "Session L" l@example.com
+  bc_run "$bc_base/L14" publish
+  bc_expect_rc 0 "leg LC14/none: publish with no remote and no local claim -> rc 0"
+  bc_has "leg LC14/none: it says there is nothing to publish" "no local claims to publish"
+  bc_run "$bc_base/L14" claim ROW-1 --branch feat/l
+  bc_run "$bc_base/L14" publish
+  bc_expect_rc 2 "leg LC14/no-origin: publish with a local claim but no remote yet -> rc 2"
+  bc_has "leg LC14/no-origin: it says the claim stays local" "stay local until origin exists"
+  bc_lc14_blob=$(git -C "$bc_base/L14" show refs/local-claims/ROW-1:CLAIM 2>/dev/null || echo none)
+  bc_lc14_origin="$bc_base/lc14-origin.git"
+  git init -q --bare "$bc_lc14_origin"
+  git -C "$bc_base/L14" remote add origin "$bc_lc14_origin"
+  bc_run "$bc_base/L14" publish
+  bc_expect_rc 0 "leg LC14/publish: publish with a local claim and a reachable origin -> rc 0"
+  bc_has "leg LC14/publish: one line for the row" "ROW-1"
+  if [ "$(git --git-dir="$bc_lc14_origin" show refs/claims/ROW-1:CLAIM 2>/dev/null || echo missing)" = "$bc_lc14_blob" ] \
+     && ! git -C "$bc_base/L14" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_pass "leg LC14/publish: origin holds the claim's fields and the local ref is gone"
+  else
+    bc_fail "leg LC14/publish: the claim was not handed over"
+  fi
+  bc_run "$bc_base/L14" publish
+  bc_expect_rc 0 "leg LC14/again: publish again, nothing left -> rc 0"
+  bc_has "leg LC14/again: it says there is nothing to publish" "no local claims to publish"
+  bc_run "$bc_base/L14" publish extra
+  bc_expect_rc 2 "leg LC14/args: publish takes no arguments -> rc 2"
+
+  # LC15 — every local write and read is admitted under `kit-guard install-shims`: the create-only write, the resume
+  # (an update with the real old value), the leased delete, the `cat-file` read at refs/local-claims/*, and the
+  # publish push to a bare origin whose directory has NO `.git` suffix (the guard denies a `.git` URL segment).
+  bc_run_shim() { # <clone-dir> <args…> — the verb with the shims first on PATH
+    _bd=$1; shift
+    if bc_out=$( cd "$_bd" && PATH="$bc_base/lcshims:$PATH" sh "$BC_SELF" "$@" 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  }
+  bc_kg=$(dirname -- "$BC_SELF")/kit-guard
+  if [ -f "$bc_kg" ] && mkdir -p "$bc_base/lcshims" && sh "$bc_kg" install-shims --dir "$bc_base/lcshims" >/dev/null 2>&1; then
+    bc_mklocal L15 "Session L" l@example.com
+    bc_run_shim "$bc_base/L15" claim ROW-1 --branch feat/l
+    bc_expect_rc 0 "leg LC15/create: the create-only local write under install-shims -> rc 0 (the claim succeeds)"
+    if git -C "$bc_base/L15" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+      bc_pass "leg LC15/create: refs/local-claims/ROW-1 exists (the create-only write was admitted)"
+    else
+      bc_fail "leg LC15/create: the local ref is missing under shims"
+    fi
+    bc_lc15_sha1=$(git -C "$bc_base/L15" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+    printf 's-20261108-feedface\n' > "$bc_base/L15/.kit-run/session.id"
+    bc_run_shim "$bc_base/L15" claim ROW-1 --branch feat/l --board-already-moved
+    bc_expect_rc 0 "leg LC15/resume: a new session on the same claim (cat-file read, then update-ref old new) -> rc 0"
+    bc_has "leg LC15/resume: the verdict says RESUMED" "RESUMED"
+    if [ "$(git -C "$bc_base/L15" rev-parse "refs/local-claims/ROW-1^" 2>/dev/null)" = "$bc_lc15_sha1" ]; then
+      bc_pass "leg LC15/resume: the resume write was admitted (the ref is a child of the first claim)"
+    else
+      bc_fail "leg LC15/resume: the resume write did not land under shims"
+    fi
+    bc_run_shim "$bc_base/L15" claim ROW-2 --branch feat/l
+    bc_expect_rc 0 "leg LC15/second: a second local claim under install-shims -> rc 0"
+    bc_run_shim "$bc_base/L15" release ROW-2
+    bc_expect_rc 0 "leg LC15/release: the leased delete under install-shims -> rc 0"
+    if git -C "$bc_base/L15" rev-parse --verify -q refs/local-claims/ROW-2 >/dev/null; then
+      bc_fail "leg LC15/release: the leased delete was not admitted (refs/local-claims/ROW-2 survived)"
+    else
+      bc_pass "leg LC15/release: refs/local-claims/ROW-2 is gone (the leased delete was admitted)"
+    fi
+    bc_lc15_origin="$bc_base/lc15-origin"
+    git init -q --bare "$bc_lc15_origin"
+    git -C "$bc_base/L15" remote add origin "$bc_lc15_origin"
+    bc_run_shim "$bc_base/L15" publish
+    bc_expect_rc 0 "leg LC15/publish: the publish push and the leased delete, to an origin with no .git suffix -> rc 0"
+    if git --git-dir="$bc_lc15_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null \
+       && ! git -C "$bc_base/L15" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+      bc_pass "leg LC15/publish: origin holds the claim and the local ref is gone (push and delete were admitted)"
+    else
+      bc_fail "leg LC15/publish: the handover did not complete under shims"
+    fi
+  else
+    bc_fail "leg LC15/shims: kit-guard install-shims is unavailable here, so the cell measured nothing"
+  fi
+
+  # LC23 (SWAS-795) — under `install-shims` the guard refuses a RAW write to refs/local-claims/* (with the escape-card sentence)
+  # while board-claim's own claim, resume, release and publish succeed, because each of its four write sites carries the sentinel
+  # inline. Four mutants each drop the prefix at one site (MUT-LC19 create, MUT-LC24 resume, MUT-LC26 publish's leased delete,
+  # MUT-LC27 release); each must leave that write refused under the shims. The delete in publish only WARNS on failure, so its
+  # mutant is graded on the local ref SURVIVING the publish, never on the rc.
+  bc_run_shim_mut() { # <clone-dir> <args…> — the mutant copy of this script, shims first on PATH
+    _bd=$1; shift
+    if bc_out=$( cd "$_bd" && PATH="$bc_base/lcshims:$PATH" sh "$bc_mut_script" "$@" 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  }
+  if [ -d "$bc_base/lcshims" ]; then
+    bc_mklocal L23 "Session L" l@example.com
+    bc_run_shim "$bc_base/L23" claim ROW-1 --branch feat/l
+    bc_expect_rc 0 "leg LC23/claim: board-claim's own claim in the same fixture succeeds under shims"
+    bc_lc23_head=$(git -C "$bc_base/L23" rev-parse HEAD 2>/dev/null || echo none)
+    if bc_lc23_out=$( cd "$bc_base/L23" && KIT_GUARD_LOG=0 PATH="$bc_base/lcshims:$PATH" git update-ref refs/local-claims/X "$bc_lc23_head" 2>&1 ); then
+      bc_fail "leg LC23/raw: a raw update-ref of refs/local-claims/X was admitted under shims"
+    else
+      case "$bc_lc23_out" in
+        *"escape card R37 local-claims"*) bc_pass "leg LC23/raw: a raw update-ref is refused under shims, with the escape-card sentence" ;;
+        *) bc_fail "leg LC23/raw: refused, but not by the local-claims sentence; out=[$bc_lc23_out]" ;;
+      esac
+    fi
+    if git -C "$bc_base/L23" rev-parse --verify -q refs/local-claims/X >/dev/null; then
+      bc_fail "leg LC23/raw-ref: the refused write left refs/local-claims/X behind"
+    else
+      bc_pass "leg LC23/raw-ref: nothing was written"
+    fi
+    bc_lc23_origin="$bc_base/lc23-origin"
+    git init -q --bare "$bc_lc23_origin"
+    git -C "$bc_base/L23" remote add origin "$bc_lc23_origin"
+    bc_run_shim "$bc_base/L23" publish
+    bc_expect_rc 0 "leg LC23/publish: board-claim's own publish succeeds under shims"
+    if git --git-dir="$bc_lc23_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null \
+       && ! git -C "$bc_base/L23" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+      bc_pass "leg LC23/publish-ref: origin holds the claim and the local ref is GONE (the leased delete was admitted)"
+    else
+      bc_fail "leg LC23/publish-ref: the handover did not complete, or the local ref survived the publish"
+    fi
+    if bc_mutant LC25 LC19 's/KIT_CLAIM_FRONT_DOOR=1 //'; then
+      bc_mklocal L25 "Session L" l@example.com
+      bc_run_shim_mut "$bc_base/L25" claim ROW-1 --branch feat/l
+      if git -C "$bc_base/L25" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+        bc_fail "leg LC23/mutant: create-without-sentinel SURVIVED (the create-only write was admitted)"
+      else
+        bc_pass "leg LC23/mutant: create-without-sentinel is KILLED (the write was refused under shims)"
+      fi
+    fi
+    if bc_mutant LC24 LC24 's/KIT_CLAIM_FRONT_DOOR=1 //'; then
+      bc_mklocal L24 "Session L" l@example.com
+      bc_run_shim "$bc_base/L24" claim ROW-1 --branch feat/l
+      bc_lc24_sha=$(git -C "$bc_base/L24" rev-parse refs/local-claims/ROW-1 2>/dev/null || echo none)
+      printf 's-20261108-feedface\n' > "$bc_base/L24/.kit-run/session.id"
+      bc_run_shim_mut "$bc_base/L24" claim ROW-1 --branch feat/l --board-already-moved
+      if [ "$(git -C "$bc_base/L24" rev-parse refs/local-claims/ROW-1 2>/dev/null)" = "$bc_lc24_sha" ]; then
+        bc_pass "leg LC23/mutant: resume-without-sentinel is KILLED (the resume write was refused; the ref did not move)"
+      else
+        bc_fail "leg LC23/mutant: resume-without-sentinel SURVIVED (the ref moved under shims)"
+      fi
+    fi
+    if bc_mutant LC26 LC26 's/KIT_CLAIM_FRONT_DOOR=1 //'; then
+      bc_mklocal L26 "Session L" l@example.com
+      bc_run_shim "$bc_base/L26" claim ROW-1 --branch feat/l
+      bc_lc26_origin="$bc_base/lc26-origin"
+      git init -q --bare "$bc_lc26_origin"
+      git -C "$bc_base/L26" remote add origin "$bc_lc26_origin"
+      bc_run_shim_mut "$bc_base/L26" publish
+      if git -C "$bc_base/L26" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+        bc_pass "leg LC23/mutant: publish-delete-without-sentinel is KILLED (the local ref survived the publish)"
+      else
+        bc_fail "leg LC23/mutant: publish-delete-without-sentinel SURVIVED (the local ref is gone)"
+      fi
+    fi
+    if bc_mutant LC27 LC27 's/KIT_CLAIM_FRONT_DOOR=1 //'; then
+      bc_mklocal L27 "Session L" l@example.com
+      bc_run_shim "$bc_base/L27" claim ROW-1 --branch feat/l
+      bc_run_shim_mut "$bc_base/L27" release ROW-1
+      if git -C "$bc_base/L27" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+        bc_pass "leg LC23/mutant: release-without-sentinel is KILLED (the local ref survived the release)"
+      else
+        bc_fail "leg LC23/mutant: release-without-sentinel SURVIVED (the leased delete was admitted)"
+      fi
+    fi
+  else
+    bc_fail "leg LC23/shims: the shim directory is unavailable here, so the cells measured nothing"
+  fi
+
+  # LC16 — a failed write is rc 2 (never 3); over the ceiling nothing is pushed; a release is never blocked by it.
+  bc_mklocal L16 "Session L" l@example.com
+  bc_lc16_gd=$(git -C "$bc_base/L16" rev-parse --absolute-git-dir)
+  mkdir -p "$bc_lc16_gd/refs/local-claims"
+  : > "$bc_lc16_gd/refs/local-claims/ROW-1.lock"
+  bc_run "$bc_base/L16" claim ROW-1 --branch feat/l
+  bc_expect_rc 2 "leg LC16/lock: a planted .lock makes the create-only write fail -> rc 2"
+  bc_has "leg LC16/lock: the sentence says it could not write" "could not write the local claim"
+  bc_hasnt "leg LC16/lock: it is never reported as ALREADY CLAIMED" "ALREADY CLAIMED"
+  rm -f "$bc_lc16_gd/refs/local-claims/ROW-1.lock"
+  bc_lc16_setup() { # <name> — a local ROW-1 claim and an origin that already holds a foreign claim (total 2)
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_lc16_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc16_origin"
+    git --git-dir="$bc_lc16_origin" config user.name Other
+    git --git-dir="$bc_lc16_origin" config user.email o@example.com
+    bc_origin_claim "$bc_lc16_origin" ROW-F 'Other Person <o@example.com>' feat/o
+    git -C "$bc_base/$1" remote add origin "$bc_lc16_origin"
+  }
+  bc_lc16_setup L16b
+  bc_run_wipcfg "$bc_base/L16b" "$bc_wip1" publish
+  bc_expect_rc 2 "leg LC16/ceiling: publish with origin plus local over the ceiling -> rc 2"
+  bc_has "leg LC16/ceiling: the existing ceiling sentence" "work-in-progress ceiling"
+  if git --git-dir="$bc_lc16_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC16/ceiling: something was pushed over the ceiling"
+  else
+    bc_pass "leg LC16/ceiling: nothing was pushed"
+  fi
+  bc_run_wipcfg "$bc_base/L16b" "$bc_wip1" release ROW-1
+  bc_expect_rc 0 "leg LC16/release: releasing the local claim in the same state -> rc 0 (a release is never blocked)"
+  bc_has "leg LC16/release: the ceiling is printed as a warning" "work-in-progress ceiling"
+  if git -C "$bc_base/L16b" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC16/release: the local ref survived the release"
+  else
+    bc_pass "leg LC16/release: the local ref is gone"
+  fi
+  if bc_mutant LC16 LC16 's/= release/= nonesuch/'; then
+    bc_lc16_setup L16m
+    bc_run_wipcfg_mut "$bc_base/L16m" "$bc_wip1" release ROW-1
+    if [ "$bc_rc" -eq 0 ]; then
+      bc_fail "leg LC16/mutant: release-warning-made-fatal SURVIVED (the release still succeeded)"
+    else
+      case "$bc_out" in
+        *"release: REFUSED"*"work-in-progress ceiling"*) bc_pass "leg LC16/mutant: release-warning-made-fatal is KILLED (rc $bc_rc: the ceiling REFUSED the release)" ;;
+        *) bc_fail "leg LC16/mutant: the release failed (rc $bc_rc) but not by the ceiling refusal, so the mutant run may have crashed; out=[$bc_out]" ;;
+      esac
+    fi
+  fi
+
+  # LC17 — publish RE-MINTS. A planted local ref whose commit has a valid CLAIM plus an extra tree entry, a parent and
+  # an extra blob line reaches origin only as a single-entry orphan holding the fixed fields; the planted sha never
+  # reaches origin. (The board shows the row In Progress, so only the re-mint stands between the payload and origin.)
+  bc_lc17_setup() { # <name>
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_fixture_board_ip "$bc_base/$1/BACKLOG.md" ROW9 feat/l
+    bc_lc17_extra=$(printf 'an extra file\n' | git -C "$bc_base/$1" hash-object -w --stdin)
+    bc_lc17_blob=$(printf 'row: ROW9\nclaimant: %s\nbranch: feat/l\nclaimed-at: 2026-11-08T00:00:00Z\nsession: s-20261108-aaaabbbb (declared)\nevil: planted-extra-line\n' "$bc_idl" | git -C "$bc_base/$1" hash-object -w --stdin)
+    bc_lc17_tree=$(printf '100644 blob %s\tCLAIM\n100644 blob %s\tEXTRA\n' "$bc_lc17_blob" "$bc_lc17_extra" | git -C "$bc_base/$1" mktree)
+    bc_lc17_planted=$(printf 'planted\n' | git -C "$bc_base/$1" commit-tree "$bc_lc17_tree" -p "$(git -C "$bc_base/$1" rev-parse HEAD)")
+    git -C "$bc_base/$1" update-ref refs/local-claims/ROW9 "$bc_lc17_planted"
+    bc_lc17_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc17_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc17_origin"
+  }
+  bc_lc17_setup L17
+  bc_run "$bc_base/L17" publish
+  bc_expect_rc 0 "leg LC17/payload: publish of a planted ref with a valid CLAIM -> rc 0"
+  bc_has "leg LC17/payload: it was published" "published to origin as refs/claims/ROW9"
+  bc_lc17_n=$(git --git-dir="$bc_lc17_origin" rev-list --count refs/claims/ROW9 2>/dev/null || echo none)
+  bc_lc17_files=$(git --git-dir="$bc_lc17_origin" ls-tree --name-only refs/claims/ROW9 2>/dev/null || echo none)
+  if [ "$bc_lc17_n" = 1 ] && [ "$bc_lc17_files" = CLAIM ]; then
+    bc_pass "leg LC17/orphan: origin's refs/claims/ROW9 is a single-entry orphan (one commit, one file, CLAIM)"
+  else
+    bc_fail "leg LC17/orphan: origin's claim is not a single-entry orphan (commits=$bc_lc17_n, files=[$bc_lc17_files])"
+  fi
+  case "$(git --git-dir="$bc_lc17_origin" show refs/claims/ROW9:CLAIM 2>/dev/null || echo none)" in
+    *evil*|none) bc_fail "leg LC17/fields: the planted blob line reached origin, or the CLAIM is missing" ;;
+    *"row: ROW9"*"claimant: $bc_idl"*"branch: feat/l"*) bc_pass "leg LC17/fields: origin's CLAIM holds the fixed fields and not the planted line" ;;
+    *) bc_fail "leg LC17/fields: origin's CLAIM does not hold the fixed fields" ;;
+  esac
+  if git --git-dir="$bc_lc17_origin" cat-file -e "$bc_lc17_planted" 2>/dev/null; then
+    bc_fail "leg LC17/planted-sha: the planted commit is on origin"
+  else
+    bc_pass "leg LC17/planted-sha: the planted commit never reached origin"
+  fi
+  if bc_mutant LC17 LC17 's/_pr_new:/_pr_sha:/'; then
+    bc_lc17_setup L17m
+    bc_run_mut "$bc_base/L17m" publish
+    if git --git-dir="$bc_lc17_origin" cat-file -e "$bc_lc17_planted" 2>/dev/null; then
+      bc_pass "leg LC17/mutant: push-the-local-sha is KILLED (the planted commit reached origin)"
+    else
+      bc_fail "leg LC17/mutant: push-the-local-sha SURVIVED (the planted commit still stayed off origin)"
+    fi
+  fi
+
+  # LC18 — a valid local claim is published only while the md board shows its row In Progress on the same branch.
+  bc_lc18_setup() { # <name> — a local ROW-1 claim, then a board that no longer shows it In Progress, and a bare origin
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_fixture_board4 "$bc_base/$1/BACKLOG.md"
+    bc_lc18_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc18_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc18_origin"
+  }
+  bc_lc18_setup L18
+  bc_run "$bc_base/L18" publish
+  bc_expect_rc 1 "leg LC18/no-row: a valid local claim whose row is not In Progress -> publish rc 1"
+  bc_has "leg LC18/no-row: the sentence" "not published: ROW-1 has no matching In Progress row"
+  if git --git-dir="$bc_lc18_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC18/no-row: the claim reached origin without a matching board row"
+  else
+    bc_pass "leg LC18/no-row: nothing was pushed"
+  fi
+  if git -C "$bc_base/L18" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_pass "leg LC18/no-row: the local ref is left for release"
+  else
+    bc_fail "leg LC18/no-row: the local ref was deleted"
+  fi
+  bc_fixture_board_ip "$bc_base/L18/BACKLOG.md" ROW-1 feat/other
+  bc_run "$bc_base/L18" publish
+  bc_expect_rc 1 "leg LC18/other-branch: the row In Progress on a DIFFERENT branch -> publish rc 1"
+  bc_has "leg LC18/other-branch: the same sentence" "not published: ROW-1 has no matching In Progress row"
+  bc_fixture_board_ip "$bc_base/L18/BACKLOG.md" ROW-1 feat/l
+  bc_run "$bc_base/L18" publish
+  bc_expect_rc 0 "leg LC18/matching: the row In Progress on the claim's branch -> publish rc 0 (the check is not unconditional)"
+  if bc_mutant LC18 LC18 's/if ! .*; then/if false; then/'; then
+    bc_lc18_setup L18m
+    bc_run_mut "$bc_base/L18m" publish
+    if git --git-dir="$bc_lc18_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+      bc_pass "leg LC18/mutant: row-check-dropped is KILLED (the claim reached origin with no board row)"
+    else
+      bc_fail "leg LC18/mutant: row-check-dropped SURVIVED (the claim was still held back)"
+    fi
+  fi
+
+  # LC19 — a symbolic ref in the local namespace is refused, and never followed onto the branch it names. ROW-2 is a
+  # symref to an existing branch: release and publish must refuse it and leave the branch alone. ROW-1 is a symref to a
+  # branch that does not exist yet: a create-only write that followed it would CREATE that branch.
+  bc_lc19_setup() { # <name>
+    bc_mklocal "$1" "Session L" l@example.com
+    git -C "$bc_base/$1" branch keep >/dev/null 2>&1
+    git -C "$bc_base/$1" symbolic-ref refs/local-claims/ROW-2 refs/heads/keep
+    git -C "$bc_base/$1" symbolic-ref refs/local-claims/ROW-1 refs/heads/ghost
+  }
+  bc_lc19_setup L19
+  bc_lc19_keep=$(git -C "$bc_base/L19" rev-parse refs/heads/keep 2>/dev/null || echo none)
+  bc_run "$bc_base/L19" claim ROW-1 --branch feat/l
+  if git -C "$bc_base/L19" rev-parse --verify -q refs/heads/ghost >/dev/null; then
+    bc_fail "leg LC19/create: the create-only write followed the symbolic ref and created refs/heads/ghost"
+  else
+    bc_pass "leg LC19/create: the create-only write did not follow the symbolic ref (no refs/heads/ghost)"
+  fi
+  bc_run "$bc_base/L19" release ROW-2
+  bc_expect_rc 1 "leg LC19/release: release of a symbolic-ref entry -> rc 1 (refused)"
+  bc_has "leg LC19/release: the sentence names the symbolic ref" "is a symbolic ref"
+  bc_has "leg LC19/release: …and the manual way out" "git update-ref --no-deref -d refs/local-claims/ROW-2"
+  if [ "$(git -C "$bc_base/L19" rev-parse refs/heads/keep 2>/dev/null)" = "$bc_lc19_keep" ] \
+     && [ "$(git -C "$bc_base/L19" symbolic-ref -q refs/local-claims/ROW-2 2>/dev/null)" = refs/heads/keep ]; then
+    bc_pass "leg LC19/release: the branch survives and the symbolic ref is left alone"
+  else
+    bc_fail "leg LC19/release: the release deleted the branch or the symbolic ref"
+  fi
+  bc_lc19_origin="$bc_base/lc19-origin.git"
+  git init -q --bare "$bc_lc19_origin"
+  git -C "$bc_base/L19" remote add origin "$bc_lc19_origin"
+  bc_run_wipcfg "$bc_base/L19" "$bc_wip9" publish
+  bc_expect_rc 1 "leg LC19/publish: publish with a symbolic-ref entry -> rc 1"
+  bc_has "leg LC19/publish: the sentence names the symbolic ref" "is a symbolic ref"
+  if [ "$(git -C "$bc_base/L19" rev-parse refs/heads/keep 2>/dev/null)" = "$bc_lc19_keep" ] \
+     && ! git --git-dir="$bc_lc19_origin" rev-parse --verify -q refs/claims/ROW-2 >/dev/null \
+     && ! git -C "$bc_base/L19" rev-parse --verify -q refs/heads/ghost >/dev/null; then
+    bc_pass "leg LC19/publish: the branch survives, nothing was published for the symbolic ref, no ghost branch"
+  else
+    bc_fail "leg LC19/publish: the branch moved, the symbolic ref was published, or a ghost branch appeared"
+  fi
+  if bc_mutant LC19 LC19 's/--no-deref //'; then
+    bc_lc19_setup L19m
+    bc_run_mut "$bc_base/L19m" claim ROW-1 --branch feat/l
+    if git -C "$bc_base/L19m" rev-parse --verify -q refs/heads/ghost >/dev/null; then
+      bc_pass "leg LC19/mutant: no-deref-dropped is KILLED (the write followed the symbolic ref and created refs/heads/ghost)"
+    else
+      bc_fail "leg LC19/mutant: no-deref-dropped SURVIVED (no branch was created through the symbolic ref)"
+    fi
+  fi
+
+  # LC20 — release of a still-local row, with origin reachable, deletes it locally and never publishes it first.
+  bc_lc20_setup() { # <name> — a local ROW-1 claim and a reachable bare origin
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_lc20_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc20_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc20_origin"
+  }
+  bc_lc20_setup L20
+  bc_run "$bc_base/L20" release ROW-1
+  bc_expect_rc 0 "leg LC20/release: release of a still-local row with origin reachable -> rc 0"
+  if git --git-dir="$bc_lc20_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC20/not-published: the released row was published to origin first"
+  else
+    bc_pass "leg LC20/not-published: origin holds no refs/claims/ROW-1 after the release"
+  fi
+  if git -C "$bc_base/L20" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC20/local-gone: the local ref survived the release"
+  else
+    bc_pass "leg LC20/local-gone: the local ref is deleted"
+  fi
+  if bc_mutant LC20 LC20 's/continue;/:;/'; then
+    bc_lc20_setup L20m
+    bc_run_mut "$bc_base/L20m" release ROW-1
+    case "$bc_out" in
+      *"published to origin as refs/claims/ROW-1"*) bc_lc20_pubd=1 ;;
+      *) bc_lc20_pubd=0 ;;
+    esac
+    if [ "$bc_rc" -eq 0 ] && [ "$bc_lc20_pubd" = 1 ]; then
+      bc_pass "leg LC20/mutant: own-row-skip-dropped is KILLED (rc 0 and the released row was published to origin first, then released there)"
+    else
+      bc_fail "leg LC20/mutant: own-row-skip-dropped SURVIVED or the mutant run crashed (rc $bc_rc)"
+    fi
+  fi
+
+  # LC21 — publish refuses a claimed-at or resumed-at later than now (they come from the local record).
+  bc_lc21_setup() { # <name> <claimed-at> <extra blob line or empty> — a planted ROW9 whose board row is In Progress
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_fixture_board_ip "$bc_base/$1/BACKLOG.md" ROW9 feat/l
+    bc_lc21_blob=$(printf 'row: ROW9\nclaimant: %s\nbranch: feat/l\nclaimed-at: %s\nsession: s-20261108-aaaabbbb (declared)\n%s\n' "$bc_idl" "$2" "$3" | git -C "$bc_base/$1" hash-object -w --stdin)
+    bc_lc21_tree=$(printf '100644 blob %s\tCLAIM\n' "$bc_lc21_blob" | git -C "$bc_base/$1" mktree)
+    bc_lc21_commit=$(printf 'planted\n' | git -C "$bc_base/$1" commit-tree "$bc_lc21_tree")
+    git -C "$bc_base/$1" update-ref refs/local-claims/ROW9 "$bc_lc21_commit"
+    bc_lc21_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc21_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc21_origin"
+  }
+  bc_lc21_setup L21a 2999-01-01T00:00:00Z ''
+  bc_run "$bc_base/L21a" publish
+  bc_expect_rc 1 "leg LC21/claimed-at: a claimed-at in the future -> publish rc 1"
+  bc_has "leg LC21/claimed-at: the sentence names the field" "ROW9 fails validation (claimed-at)"
+  if git --git-dir="$bc_lc21_origin" rev-parse --verify -q refs/claims/ROW9 >/dev/null; then
+    bc_fail "leg LC21/claimed-at: the future-dated claim reached origin"
+  else
+    bc_pass "leg LC21/claimed-at: nothing was pushed"
+  fi
+  bc_lc21_setup L21b 2026-01-01T00:00:00Z 'resumed-at: 2999-01-01T00:00:00Z'
+  bc_run "$bc_base/L21b" publish
+  bc_expect_rc 1 "leg LC21/resumed-at: a resumed-at in the future -> publish rc 1"
+  bc_has "leg LC21/resumed-at: the sentence names the field" "ROW9 fails validation (resumed-at)"
+  bc_lc21_setup L21c 2026-01-01T00:00:00Z 'resumed-at: 2026-01-02T00:00:00Z'
+  bc_run "$bc_base/L21c" publish
+  bc_expect_rc 0 "leg LC21/past: past timestamps, resumed-at included, publish rc 0 (the check is not unconditional)"
+  if bc_mutant LC21 LC21 's/\[ -z "$_pr_bad" \] && bc_ts_future/false \&\& bc_ts_future/'; then
+    bc_lc21_setup L21m 2999-01-01T00:00:00Z ''
+    bc_run_mut "$bc_base/L21m" publish
+    if [ "$bc_rc" -eq 0 ] && git --git-dir="$bc_lc21_origin" rev-parse --verify -q refs/claims/ROW9 >/dev/null; then
+      bc_pass "leg LC21/mutant: future-check-dropped is KILLED (rc 0 and the future-dated claim reached origin)"
+    else
+      bc_fail "leg LC21/mutant: future-check-dropped SURVIVED or the mutant run crashed (rc $bc_rc)"
+    fi
+  fi
+
+  # LC22 — publish needs a git identity: the published claimant comes from user.name and user.email.
+  bc_mklocal L22 "Session L" l@example.com
+  bc_run "$bc_base/L22" claim ROW-1 --branch feat/l
+  bc_lc22_origin="$bc_base/lc22-origin.git"
+  git init -q --bare "$bc_lc22_origin"
+  git -C "$bc_base/L22" remote add origin "$bc_lc22_origin"
+  git -C "$bc_base/L22" config --unset user.email
+  bc_run "$bc_base/L22" publish
+  bc_expect_rc 2 "leg LC22/identity: publish with no user.email -> rc 2"
+  bc_has "leg LC22/identity: the claim's no-identity sentence" "no git identity (user.name / user.email)"
+  if git --git-dir="$bc_lc22_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
+    bc_fail "leg LC22/identity: something was pushed without an identity"
+  else
+    bc_pass "leg LC22/identity: nothing was pushed"
+  fi
+  if git -C "$bc_base/L22" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null; then
+    bc_pass "leg LC22/identity: the local claim is kept"
+  else
+    bc_fail "leg LC22/identity: the local claim was deleted"
+  fi
+  # The release side: with no identity the handover warns and publishes nothing, then the local release itself refuses
+  # (rc 1): the claim names 'Session L <l@example.com>', and with no email the releaser reads as 'Session L <>'.
+  bc_lc22_setup() { # <name> — local ROW-1 and ROW-2, a reachable origin, then no user.email
+    bc_mklocal "$1" "Session L" l@example.com
+    bc_run "$bc_base/$1" claim ROW-1 --branch feat/l
+    bc_run "$bc_base/$1" claim ROW-2 --branch feat/l
+    bc_lc22r_origin="$bc_base/$1-origin.git"
+    git init -q --bare "$bc_lc22r_origin"
+    git -C "$bc_base/$1" remote add origin "$bc_lc22r_origin"
+    git -C "$bc_base/$1" config --unset user.email
+  }
+  bc_lc22_setup L22r
+  bc_run "$bc_base/L22r" release ROW-1
+  bc_expect_rc 1 "leg LC22/release: release with no user.email -> rc 1 (the handover warns and publishes nothing, then the local release is REFUSED)"
+  bc_has "leg LC22/release: the no-identity warning" "release: no git identity (user.name / user.email)"
+  bc_has "leg LC22/release: …and that the release goes on without publishing" "the local claims were not published; the release goes on"
+  bc_has "leg LC22/release: the outcome is the holder refusal" "release: REFUSED"
+  if git --git-dir="$bc_lc22r_origin" rev-parse --verify -q refs/claims/ROW-1 >/dev/null \
+     || git --git-dir="$bc_lc22r_origin" rev-parse --verify -q refs/claims/ROW-2 >/dev/null; then
+    bc_fail "leg LC22/release: something reached origin's refs/claims/* without an identity"
+  else
+    bc_pass "leg LC22/release: nothing reached origin's refs/claims/ROW-1 or ROW-2"
+  fi
+  if git -C "$bc_base/L22r" rev-parse --verify -q refs/local-claims/ROW-1 >/dev/null \
+     && git -C "$bc_base/L22r" rev-parse --verify -q refs/local-claims/ROW-2 >/dev/null; then
+    bc_pass "leg LC22/release: both local claims are kept (rc 1, outcome: refused, nothing published or deleted)"
+  else
+    bc_fail "leg LC22/release: a local claim was deleted"
+  fi
+  if bc_mutant LC22 LC22 's/if ! bc_have_identity/if false/'; then
+    bc_lc22_setup L22m
+    bc_run_mut "$bc_base/L22m" release ROW-1
+    case "$bc_out" in
+      *"ROW-2 fails validation (claimant)"*) bc_pass "leg LC22/mutant: identity-check-dropped is KILLED (the handover went on with no identity and tried to publish ROW-2; the claimant check alone held it back)" ;;
+      *) bc_fail "leg LC22/mutant: identity-check-dropped SURVIVED or the mutant run crashed (rc $bc_rc); out=[$bc_out]" ;;
+    esac
+  fi
+
   if [ "$bc_st_fail" -ne 0 ]; then
     echo "board-claim --selftest: FAIL" >&2
     return 1
@@ -3099,6 +4598,127 @@ bc_hasnt() { # <label> <needle> — graded on what a refusal does NOT say as muc
   esac
 }
 
+# ── SWAS-783 fixtures: a repository with NO remote, and the mutants that grade its cells ────────────
+# bc_fixture_board4 <path> — the fixture board with four Ready rows, so one run can claim several.
+bc_fixture_board4() {
+  cat > "$1" <<'BOARD4_EOF'
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| `ROW-1` — the first claimable row | because | it is claimed | S | low | feature | agent | — | a claim serializes |
+| `ROW-2` — a second claimable row | because | it is claimed | S | low | feature | agent | — | a claim serializes |
+| `ROW-3` — a third claimable row | because | it is claimed | S | low | feature | agent | — | a claim serializes |
+| `ROW-4` — a fourth claimable row | because | it is claimed | S | low | feature | agent | — | a claim serializes |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| `ROW-DONE` — already shipped | 2026-09-03 | L1 retro. Disposition: none — fixture. |
+BOARD4_EOF
+}
+
+# bc_mklocal <name> <user.name> <user.email> — `git init`, a first commit holding the board, NO remote. An
+# unborn HEAD is refused by the verb (it needs a branch name), so the first commit is part of the fixture.
+bc_mklocal() {
+  mkdir -p "$bc_base/$1"
+  (
+    cd "$bc_base/$1"
+    git init -q .
+    git config user.name "$2"
+    git config user.email "$3"
+    git config commit.gpgsign false
+    bc_fixture_board4 "$bc_base/$1/BACKLOG.md"
+    git add BACKLOG.md
+    git commit -q -m 'fixture board'
+  ) >/dev/null 2>&1
+}
+
+# bc_fixture_board_ip <path> <row> <branch> — the fixture board with <row> already In Progress, its Links cell naming
+# <branch> in the canonical form the claim writes. For the cells that plant a local ref by hand: publish needs the row.
+bc_fixture_board_ip() {
+  cat > "$1" <<BOARDIP_EOF
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| \`$2\` — planted by hand | Session L | 2026-11-08 | branch \`$3\` · N/A — claimed; design link follows |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| \`ROW-DONE\` — already shipped | 2026-09-03 | L1 retro. Disposition: none — fixture. |
+BOARDIP_EOF
+}
+
+# bc_lc_ip <repo> <row> — rc 0 when the row sits under ## In Progress on that repository's board.
+bc_lc_ip() {
+  awk -v r="\`$2\`" '/^## In Progress/{s=1;next} s&&/^## /{exit} s&&index($0,r){f=1} END{exit !f}' "$1/BACKLOG.md"
+}
+
+# bc_origin_claim <bare-dir> <row> <claimant-line> <branch> [<parent-sha>] — a claim ref built straight in a bare
+# repository, as a claim by someone else (or, with a parent, a child of an existing claim commit).
+bc_origin_claim() {
+  _oc_blob=$(printf 'row: %s\nclaimant: %s\nbranch: %s\nclaimed-at: 2026-11-01T00:00:00Z\nsession: s-20261101-aaaabbbb (declared)\n' \
+               "$2" "$3" "$4" | git --git-dir="$1" hash-object -w --stdin)
+  _oc_tree=$(printf '100644 blob %s\tCLAIM\n' "$_oc_blob" | git --git-dir="$1" mktree)
+  if [ -n "${5:-}" ]; then
+    _oc_commit=$(printf 'child claim\n' | git --git-dir="$1" commit-tree "$_oc_tree" -p "$5")
+  else
+    _oc_commit=$(printf 'claim\n' | git --git-dir="$1" commit-tree "$_oc_tree")
+  fi
+  git --git-dir="$1" update-ref "refs/claims/$2" "$_oc_commit"
+}
+
+# bc_mutant <cell> <marker> <sed-command> — a temp COPY of this script in which the line(s) ending `# MUT-<marker>`
+# take <sed-command>; it sets bc_mut_script. The copy sits beside a copy of the runaway guard and its config, so
+# the WIP ceiling reads as it does for the real script. rc 1, with a FAIL, when the copy equals the original.
+bc_mutant() {
+  bc_mut_dir="$bc_base/mut-$1"
+  mkdir -p "$bc_mut_dir/scripts" "$bc_mut_dir/.kit"
+  sed "/# MUT-$2\$/$3" "$BC_SELF" > "$bc_mut_dir/scripts/board-claim.sh"
+  cp "$(dirname -- "$BC_GUARD")/runaway-guard.sh" "$bc_mut_dir/scripts/" 2>/dev/null || true
+  cp "$(dirname -- "$BC_GUARD")/../.kit/budget.conf" "$bc_mut_dir/.kit/" 2>/dev/null || true
+  if cmp -s "$BC_SELF" "$bc_mut_dir/scripts/board-claim.sh"; then
+    bc_fail "leg $1/mutant: the mutant did not apply (no line ends with # MUT-$2, or the sed matched nothing)"
+    return 1
+  fi
+  bc_mut_script="$bc_mut_dir/scripts/board-claim.sh"
+  return 0
+}
+# bc_run_mut <dir> <args…> — bc_run, against the mutant copy.
+bc_run_mut() {
+  _bd=$1; shift
+  if bc_out=$( cd "$_bd" && sh "$bc_mut_script" "$@" 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+}
+# bc_run_wipcfg_mut <dir> <conf> <args…> — bc_run_wipcfg, against the mutant copy.
+bc_run_wipcfg_mut() {
+  _bd=$1; _bcfg=$2; shift 2
+  if bc_out=$( cd "$_bd" && KIT_RUNAWAY_SANDBOX="$bc_base" RUNAWAY_BUDGET_CONFIG="$_bcfg" \
+                 sh "$bc_mut_script" "$@" 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+}
+# bc_run_badremote_mut <dir> <args…> — bc_run_badremote, against the mutant copy.
+bc_run_badremote_mut() {
+  _bd=$1; shift
+  if bc_out=$( cd "$_bd" && BOARD_CLAIM_REMOTE="$bc_base/no-such-remote.git" sh "$bc_mut_script" "$@" 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+}
+
 BC_SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 # The WIP ceiling is the runaway guard's to enforce (it owns .kit/budget.conf). Resolved from THIS
 # script's own directory, never $PWD. A tree without the guard simply has no WIP ceiling — `claim`
@@ -3114,6 +4734,7 @@ case "$bc_cmd" in
   status)      if do_status      "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   claim-ref)   if do_claim_ref   "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   release-ref) if do_release_ref "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  publish)     if do_publish     "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   --selftest)  if selftest;            then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   -h|--help) bc_usage; bc_rc_main=2 ;;
   *)         bc_usage; bc_rc_main=2 ;;

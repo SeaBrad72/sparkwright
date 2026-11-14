@@ -227,11 +227,19 @@ jobs:
           path: tfplan          # the Terraform plan (the IaC artifact)
           if-no-files-found: error
 
+      # Attestation needs a public repository or GitHub Enterprise Cloud: say so when the provenance job below skips.
+      - name: Build provenance skipped (notice)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gate-build.outputs.has_build == 'true' && github.event.repository.private != false && vars.KIT_ATTEST_PRIVATE != 'true'
+        run: |
+          echo "::notice::Build provenance skipped: attestations on a private repository need GitHub Enterprise Cloud; set KIT_ATTEST_PRIVATE once you have it"
+
+  # Attestations run on a public repository, or on a private one that declares GitHub Enterprise Cloud with the
+  # KIT_ATTEST_PRIVATE variable (repository or organization level) set to true.
   provenance:
     needs: ci
     # needs.ci.outputs.has_build mirrors the Upload-build-artifact guard above — no IaC config,
     # no artifact was uploaded, so this job would fail downloading a nonexistent 'build-artifact'.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || vars.KIT_ATTEST_PRIVATE == 'true')
     runs-on: ubuntu-24.04
     permissions:
       contents: read

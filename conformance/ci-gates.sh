@@ -1379,30 +1379,28 @@ S7BODY
   return 0
 }
 
-# check_h2_defer_step <workflow-file> (SWAS-376 Slice 0, H2D): the fixture-hermeticity lane step in `conformance-core` lets both faces of every touched
-# selftest defer the bare guard battery to `guard-battery` (the CI-BARE-BATTERY-ONCE contract). It must (C2) clone the workspace to
-# $RUNNER_TEMP/gb-ref and pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS INLINE to the one `selftest-hermetic.sh --touched` call, as an exact
-# four-line continued command, with no other line of the job naming either variable (a job-level or step-level env, or a write to $GITHUB_ENV, would
-# disqualify later steps from the local pre-push census and leak the defer past the lane); and (C4) carry a step-level `timeout-minutes: 180`.
-check_h2_defer_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, unbounded, not deferring, or the variables leak
-  # The H2 step's whole run body, byte for byte (the BR17 method): the guard branch, the fetch, the merge-base branch, the clone and the four-line call, nothing else.
+# check_h2_defer_step <workflow-file> (SWAS-376 Slice 0, H2D; SWAS-864 moved it from conformance-core to the `h2-face` matrix job): the fixture-hermeticity lane
+# step in `h2-face` lets one face of every touched selftest defer the bare guard battery to `guard-battery` (the CI-BARE-BATTERY-ONCE contract). It must (C2) clone
+# the workspace to $RUNNER_TEMP/gb-ref and pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS INLINE to the one `selftest-hermetic.sh --touched --face` call, as
+# an exact four-line continued command, with no other line of the job naming either variable (a job-level or step-level env, or a write to $GITHUB_ENV, would
+# disqualify later steps from the local pre-push census and leak the defer past the lane); and (C4) carry a step-level `timeout-minutes: 180`. No other job may carry
+# the lane step (conformance-core must not run it again), and the aggregate's GB_CONSUMERS names the join `h2-hermetic`, whose success the faces' deferral is bound to.
+# check_h2_legs (below) pins the rest of the two jobs: the matrix, the lane condition, the upload and the join.
+check_h2_defer_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, unbounded, not deferring, not alone, or the variables leak
+  # The H2 step's whole run body, byte for byte (the BR17 method): the base ref check, the merge-base branch, the clone and the four-line call, nothing else.
+  # Built with printf, not a heredoc (a heredoc inside a function is a parse trap for the adopter SAST).
   _h2_exp=$(mktemp)
-  cat > "$_h2_exp" <<'H2BODY'
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ] || [ -z "${GITHUB_BASE_REF:-}" ]; then
-            echo "N/A by design: not a pull_request (event=$GITHUB_EVENT_NAME) — the touched lane is per-PR; pushes to main re-run nothing it has not already graded"
-            exit 0
-          fi
-          git fetch -q --no-tags origin "+refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
-          if ! git merge-base HEAD "refs/remotes/origin/$GITHUB_BASE_REF" >/dev/null 2>&1; then
-            echo "FAIL: merge-base between HEAD and origin/$GITHUB_BASE_REF is underivable on a full-history checkout — refusing to silent-pass (investigate the history)"
-            exit 1
-          fi
-          git clone -q "$GITHUB_WORKSPACE" "$RUNNER_TEMP/gb-ref"
-          HERMETIC_BASE="refs/remotes/origin/$GITHUB_BASE_REF" \
-            KIT_GUARD_BATTERY_REF="$RUNNER_TEMP/gb-ref" \
-            KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \
-            sh conformance/selftest-hermetic.sh --touched
-H2BODY
+  printf '%s\n' \
+    '          git rev-parse --verify "refs/remotes/origin/${GITHUB_BASE_REF:-main}"' \
+    '          if ! git merge-base HEAD "refs/remotes/origin/${GITHUB_BASE_REF:-main}" >/dev/null 2>&1; then' \
+    '            echo "FAIL: merge-base between HEAD and origin/${GITHUB_BASE_REF:-main} is underivable on a full-history checkout - refusing to silent-pass (investigate the history)"' \
+    '            exit 1' \
+    '          fi' \
+    '          git clone -q "$GITHUB_WORKSPACE" "$RUNNER_TEMP/gb-ref"' \
+    '          HERMETIC_BASE="refs/remotes/origin/${GITHUB_BASE_REF:-main}" \' \
+    '            KIT_GUARD_BATTERY_REF="$RUNNER_TEMP/gb-ref" \' \
+    '            KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \' \
+    '            sh conformance/selftest-hermetic.sh --touched --face "${{ matrix.face }}" --output-file "$RUNNER_TEMP/h2-face-${{ matrix.face }}.rec"' > "$_h2_exp"
   _h2_all=$(awk '
     NR == FNR { want[++nwant] = $0; next }
     # the run body is compared line by line BEFORE the comment and blank skips below: a comment or a blank line inside it would join the
@@ -1418,9 +1416,13 @@ H2BODY
     /^env:[ \t]*$/ { wenv = 1; next }
     wenv && /^[A-Za-z]/ { wenv = 0 }
     wenv && /^  (PATH|BASH_ENV):/ { wenvbad++ }
-    /^ +GB_CONSUMERS: / { gbn++; if (index($0, "needs.conformance-core.result")) gbok++ }
-    /^  conformance-core:[ \t]*$/ { inj = 1; next }
+    /^ +GB_CONSUMERS: / { gbn++; if (index($0, "needs.h2-hermetic.result")) gbok++ }
+    /^  conformance-core:[ \t]*$/ { incc = 1; inj = 0; next }   # a new job header ends the h2-face scope even when conformance-core follows it
+    incc && /^  [a-z]/ { incc = 0 }
+    incc && /KIT_GUARD_BATTERY/ { ccvar++ }
+    /^  h2-face:[ \t]*$/ { inj = 1; next }
     inj && /^  [a-z]/ { inj = 0 }
+    !inj && index($0, "      - name: Fixture-hermeticity lane") == 1 { outer++ }
     !inj { next }
     /^    (continue-on-error|defaults|env):/ { jobkey++ }
     /^      - / { inh = 0; if (index($0, "      - name: Fixture-hermeticity lane") == 1) { inh = 1; steps++; st = 0 } }
@@ -1434,16 +1436,16 @@ H2BODY
     inh && /KIT_GUARD_BATTERY/ { kitin++ }
     !inh && /KIT_GUARD_BATTERY/ { kitout++ }
     inh {
-      if ($0 ~ /^ +HERMETIC_BASE="refs\/remotes\/origin\/\$GITHUB_BASE_REF" \\$/) st = 1
+      if ($0 ~ /^ +HERMETIC_BASE="refs\/remotes\/origin\/[$][{]GITHUB_BASE_REF:-main[}]" \\$/) st = 1
       else if (st == 1 && $0 ~ /^ +KIT_GUARD_BATTERY_REF="\$RUNNER_TEMP\/gb-ref" \\$/) st = 2
       else if (st == 2 && $0 ~ /^ +KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \\$/) st = 3
-      else if (st == 3 && $0 ~ /^ +sh conformance\/selftest-hermetic\.sh --touched[ \t]*$/) { callok++; callnr = NR; st = 0 }
+      else if (st == 3 && $0 ~ /^ +sh conformance\/selftest-hermetic\.sh --touched --face "[$][{][{] matrix\.face [}][}]" --output-file "[$]RUNNER_TEMP\/h2-face-[$][{][{] matrix\.face [}][}]\.rec"[ \t]*$/) { callok++; callnr = NR; st = 0 }
       else st = 0
     }
     END {
       bbad = (nruns != 1 || bi != nwant || bdiag != "") ? 1 : 0
       if (bbad && bdiag == "") bdiag = "the body holds " bi + 0 " line(s) under " nruns + 0 " literal run block(s), want " nwant
-      print steps + 0, tmo + 0, tmoother + 0, clone + 0, lanecalls + 0, h2env + 0, kitin + 0, kitout + 0, callok + 0, (clone == 1 && callok == 1 && clonenr < callnr) ? 1 : 0, keymask + 0, jobkey + 0, bbad, wenvbad + 0, gbn + 0, gbok + 0
+      print steps + 0, tmo + 0, tmoother + 0, clone + 0, lanecalls + 0, h2env + 0, kitin + 0, kitout + 0, callok + 0, (clone == 1 && callok == 1 && clonenr < callnr) ? 1 : 0, keymask + 0, jobkey + 0, bbad, wenvbad + 0, gbn + 0, gbok + 0, outer + 0, ccvar + 0
       print bdiag
     }' "$_h2_exp" "$1")
   rm -f "$_h2_exp"
@@ -1451,9 +1453,12 @@ H2BODY
   _h2_c=$(printf '%s\n' "$_h2_all" | sed -n 1p)
   set -- "$1" $_h2_c
   # $2 H2 steps $3 timeout-minutes: 180 $4 other timeout $5 clone lines $6 lane call mentions $7 GITHUB_ENV in the step $8 variable lines in the step
-  # $9 variable lines elsewhere in conformance-core ${10} exact pinned calls ${11} clone-before-call
+  # $9 variable lines elsewhere in h2-face ${10} exact pinned calls ${11} clone-before-call ${19} KIT_GUARD_BATTERY lines in conformance-core (must be 0)
   if [ "$2" != 1 ]; then
-    echo "FAIL: $1 conformance-core must carry exactly one 'Fixture-hermeticity lane' step (the H2 lane); found $2" >&2; return 1
+    echo "FAIL: $1 the h2-face job must carry exactly one 'Fixture-hermeticity lane' step (the H2 lane, one face per matrix leg); found $2" >&2; return 1
+  fi
+  if [ "${18}" != 0 ]; then
+    echo "FAIL: $1 a job other than h2-face carries a 'Fixture-hermeticity lane' step: the lane runs in h2-face only, so conformance-core does not pay it again (SWAS-864); found ${18}" >&2; return 1
   fi
   if [ "$3" != 1 ] || [ "$4" != 0 ]; then
     echo "FAIL: $1 the H2 step must carry timeout-minutes: 180 as a step key (a hung lane is bounded at 180 min, not the 360-min job default); found 180=$3, other=$4" >&2; return 1
@@ -1465,28 +1470,97 @@ H2BODY
     echo "FAIL: $1 the H2 step must not write to GITHUB_ENV: the defer variables reach the lane call only, never later steps (the local pre-push census reads a KIT_* leak as a disqualifier)" >&2; return 1
   fi
   if [ "${10}" != 1 ] || [ "$6" != 1 ] || [ "$8" != 2 ] || [ "${11}" != 1 ]; then
-    echo "FAIL: $1 the H2 step must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline to the one lane call, after the clone: the exact four-line command HERMETIC_BASE=... \\ KIT_GUARD_BATTERY_REF=\"\$RUNNER_TEMP/gb-ref\" \\ KIT_GUARD_BATTERY_VARIANTS=\"case0-tmp0-git1-uid00 case0-tmp1-git1-uid00\" \\ sh conformance/selftest-hermetic.sh --touched, unmasked (pinned calls=${10}, lane mentions=$6, variable lines=$8, clone before call=${11})" >&2; return 1
+    echo "FAIL: $1 the H2 step must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline to the one lane call, after the clone: the exact four-line command HERMETIC_BASE=... \\ KIT_GUARD_BATTERY_REF=\"\$RUNNER_TEMP/gb-ref\" \\ KIT_GUARD_BATTERY_VARIANTS=\"case0-tmp0-git1-uid00 case0-tmp1-git1-uid00\" \\ sh conformance/selftest-hermetic.sh --touched --face \"\${{ matrix.face }}\" --output-file \"\$RUNNER_TEMP/h2-face-\${{ matrix.face }}.rec\", unmasked (pinned calls=${10}, lane mentions=$6, variable lines=$8, clone before call=${11})" >&2; return 1
   fi
   if [ "$9" != 0 ]; then
-    echo "FAIL: $1 no other line of conformance-core may name KIT_GUARD_BATTERY (a job or step env:, or a write to \$GITHUB_ENV, would leak the defer past the H2 call); found $9" >&2; return 1
+    echo "FAIL: $1 no other line of the h2-face job may name KIT_GUARD_BATTERY (a job or step env:, or a write to \$GITHUB_ENV, would leak the defer past the H2 call); found $9" >&2; return 1
+  fi
+  if [ "${19}" != 0 ]; then
+    echo "FAIL: $1 conformance-core may not name KIT_GUARD_BATTERY on any line (the old lock's coverage, kept: the defer variables live in the h2-face call only, and a job or step env: here would leak them to its later steps); found ${19}" >&2; return 1
   fi
   # fix round (reviewer m1, F1): nothing may mask the lane's verdict, as the BR lock refuses for its steps
   if [ "${12}" != 0 ]; then
     echo "FAIL: $1 the H2 step must not carry a step-level key that masks or changes the lane (continue-on-error, if, shell, working-directory, env); found ${12}" >&2; return 1
   fi
   if [ "${13}" != 0 ]; then
-    echo "FAIL: $1 conformance-core must not set a job-level continue-on-error, defaults or env key (it would mask or change every step, the H2 lane included; an env: can re-point PATH so the pinned sh and git resolve to a planted binary); found ${13}" >&2; return 1
+    echo "FAIL: $1 h2-face must not set a job-level continue-on-error, defaults or env key (it would mask or change every step, the H2 lane included; an env: can re-point PATH so the pinned sh and git resolve to a planted binary); found ${13}" >&2; return 1
   fi
   if [ "${15}" != 0 ]; then
     echo "FAIL: $1 the workflow-level env: must not name PATH or BASH_ENV (it re-points every job's shell and binaries, the H2 lane included), and no workflow-level env: key is allowed at all (SWAS-554 S3); found ${15}" >&2; return 1
   fi
   if [ "${14}" != 0 ]; then
-    echo "FAIL: $1 the H2 run body must be exactly the pinned sequence (the N/A-on-push guard branch with its exit 0, the base fetch, the merge-base branch with its exit 1, the gb-ref clone and the four-line inline call), with no other line in the block: any extra line (an exit, an exec, a flipped condition, a trailing true) can green or skip the lane; first deviation: $_h2_bd" >&2; return 1
+    echo "FAIL: $1 the H2 run body must be exactly the pinned sequence (the base ref read, the merge-base branch with its exit 1, the gb-ref clone and the four-line inline call), with no other line in the block: any extra line (an exit, an exec, a flipped condition, a trailing true) can green or skip the lane; first deviation: $_h2_bd" >&2; return 1
   fi
   if [ "${16}" != 1 ] || [ "${17}" != 1 ]; then
-    echo "FAIL: $1 the aggregate's GB_CONSUMERS must name needs.conformance-core.result once, so the H2 deferral is bound to guard-battery's result (GB_CONSUMERS lines=${16}, naming conformance-core=${17})" >&2; return 1
+    echo "FAIL: $1 the aggregate's GB_CONSUMERS must name needs.h2-hermetic.result once, so the H2 deferral is bound to guard-battery's result (GB_CONSUMERS lines=${16}, naming h2-hermetic=${17})" >&2; return 1
   fi
   return 0
+}
+
+# check_h2_legs <workflow-file> (SWAS-864): the H2 lane runs its two faces as the `h2-face` matrix (face: [a, b]) and a record join, `h2-hermetic`, grades both
+# records. A face alone is never a lane verdict, so the pieces that make the pair complete are pinned here: the matrix list is exactly [a, b]; the leg's lane `if:` is
+# the conformance-core lane with the leg marker; its checkout is full-history with no token and no fetch; its steps are exactly the checkout, the pinned shellcheck
+# installer and --check, the lane step (check_h2_defer_step pins its body) and the upload; the join's `if:` is the lane clause behind `!cancelled()` and
+# `needs.changes.result == 'success'`; its LEG_RESULTS job env reads needs.h2-face.result and its first step reds unless that is `success`; its steps are exactly the result
+# check, a token-free checkout, the pinned download and the --join call over the downloaded records; the aggregator needs h2-hermetic right after conformance-core and
+# reads its result at the same place in RESULTS, and does not list the leg. HONEST CEILING: line-based like the rest of this file; the records are bound to the tree
+# by --join itself (selftest-hermetic.sh), not here.
+_h2l_fail() { echo "FAIL: h2-legs — $*" >&2; _h2l_rc=1; }
+_h2l_cnt() { printf '%s\n' "$1" | grep -Fxc -- "$2" || :; }   # <text> <whole line> -> how many lines equal it
+_h2l_steps() {  # <job code lines> -> one record per step: its code lines joined with ~
+  printf '%s\n' "$1" | awk '/^    steps:[ \t]*$/ { st = 1; next } !st { next } /^      - / { if (k != "") print k; k = $0; next } { k = k "~" $0 } END { if (k != "") print k }'
+}
+check_h2_legs() {  # <workflow-file> -> 0 ok; 1 each break named on stderr
+  _h2l_rc=0
+  [ -f "$1" ] || { echo "FAIL: h2-legs — $1 is not a file" >&2; return 1; }
+  _h2l_fb=$(_sj_blk "$1" h2-face)
+  _h2l_fc=$(printf '%s\n' "$_h2l_fb" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' | _sj_code | _sj_nk)
+  _h2l_jb=$(_sj_blk "$1" h2-hermetic)
+  _h2l_jc=$(printf '%s\n' "$_h2l_jb" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' | _sj_code | _sj_nk)
+  if [ -z "$_h2l_fc" ]; then _h2l_fail "there is no h2-face job in $1"; return 1; fi
+  if [ -z "$_h2l_jc" ]; then _h2l_fail "there is no h2-hermetic job in $1"; return 1; fi
+  # the leg: single lines, each exactly once
+  for _h2l_l in '    runs-on: ubuntu-24.04' '    needs: changes' "    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.push_graded != 'true'" '    strategy:' '      fail-fast: false'; do
+    [ "$(_h2l_cnt "$_h2l_fc" "$_h2l_l")" = 1 ] || _h2l_fail "the h2-face job must carry exactly one line [$_h2l_l]: the lane condition, the hosted floor and fail-fast false are pinned"
+  done
+  printf '%s\n' "$_h2l_fb" | grep -E '^    if:' | grep -qF -- "$_sj_marker" || _h2l_fail "the h2-face job's if: lacks the marker '$_sj_marker' on the same line (the aggregator lock needs it: the leg is not a required check)"
+  _h2l_mx=$(printf '%s\n' "$_h2l_fc" | awk '/^      matrix:[ \t]*$/ { m = 1; next } m && /^        / { print; next } m { exit }')
+  [ "$_h2l_mx" = '        face: [a, b]' ] || _h2l_fail "the h2-face matrix must be exactly 'face: [a, b]' and nothing else (a dropped face grades half the lane; found [$(printf '%s' "$_h2l_mx" | tr '\n' '|')])"
+  printf '%s\n' "$_h2l_fc" | grep -Eq 'git[[:space:]]+fetch' && _h2l_fail "the h2-face job runs a git fetch: the full-history checkout already carries the base ref, and a fetch would need the checkout token (SWAS-864 Q5)"
+  _h2l_st=$(_h2l_steps "$_h2l_fc")
+  _h2l_n=$(printf '%s\n' "$_h2l_st" | grep -c . || :)
+  if [ "$_h2l_n" != 5 ]; then _h2l_fail "the h2-face job must run exactly 5 steps (checkout, shellcheck install, shellcheck --check, the lane, the upload); found $_h2l_n"; fi
+  _h2l_r1=$(printf '%s\n' "$_h2l_st" | sed -n 1p)
+  [ "$_h2l_r1" = '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1~        with:~          fetch-depth: 0~          persist-credentials: false' ] || _h2l_fail "the h2-face checkout must be the pinned actions/checkout with fetch-depth: 0 and persist-credentials: false and nothing else (full history carries the base ref; no token is readable while PR code runs)"
+  _h2l_r2=$(printf '%s\n' "$_h2l_st" | sed -n 2p); _h2l_r2=${_h2l_r2#*"~"}
+  _h2l_r3=$(printf '%s\n' "$_h2l_st" | sed -n 3p); _h2l_r3=${_h2l_r3#*"~"}
+  [ "$_h2l_r2" = '        run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"' ] && [ "$_h2l_r3" = '        run: sh scripts/install-shellcheck.sh --check' ] || _h2l_fail "the h2-face job's second and third steps must be the pinned shellcheck installer and its --check, before the lane step (the lane can nest a full verify aggregate that lints the tree)"
+  _h2l_r5=$(printf '%s\n' "$_h2l_st" | sed -n 5p); _h2l_r5=${_h2l_r5#*"~"}
+  [ "$_h2l_r5" = '        if: always()~        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02~        with:~          name: h2-face-${{ matrix.face }}~          path: ${{ runner.temp }}/h2-face-${{ matrix.face }}.rec~          if-no-files-found: error~          retention-days: 1~          overwrite: true' ] || _h2l_fail "the h2-face upload must be the last step and exactly: if: always(), the pinned upload-artifact, name and path h2-face-<face>, if-no-files-found: error, retention-days: 1, overwrite: true (a missing record must red the leg; a re-run must not 409)"
+  # the join
+  _h2l_nd=$(printf '%s\n' "$_h2l_jc" | awk '/^    needs:[ \t]*$/ { n = 1; next } n && /^      - / { v = $0; sub(/^      - /, "", v); sub(/[ \t]+$/, "", v); print v; next } n { exit }' | tr '\n' ' ')
+  [ "$_h2l_nd" = 'changes h2-face ' ] || _h2l_fail "the h2-hermetic join's needs: must be a block list of exactly changes and h2-face (found [${_h2l_nd% }])"
+  [ "$(_h2l_cnt "$_h2l_jc" "    if: \${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.push_graded != 'true' }}")" = 1 ] || _h2l_fail "the h2-hermetic join's if: must be exactly the lane clause behind !cancelled() and needs.changes.result == 'success' (a failed leg must red the join by name, a draft's skipped changes must skip it)"
+  [ "$(_h2l_cnt "$_h2l_jc" '    runs-on: ubuntu-24.04')" = 1 ] || _h2l_fail "the h2-hermetic join must run on the literal ubuntu-24.04"
+  _h2l_ev=$(printf '%s\n' "$_h2l_jc" | awk '/^    env:[ \t]*$/ { e = 1; next } e && /^      / { print; next } e { exit }')
+  [ "$_h2l_ev" = '      LEG_RESULTS: ${{ needs.h2-face.result }}' ] || _h2l_fail "the h2-hermetic job env must be exactly LEG_RESULTS: \${{ needs.h2-face.result }} (a job-level env, so no step of the join derives into the local pre-push lane)"
+  printf '%s\n' "$_h2l_jc" | grep -Eq '^    (continue-on-error|defaults|permissions|strategy)[[:space:]]*:' && _h2l_fail "the h2-hermetic join must not set a job-level continue-on-error, defaults, permissions or strategy key (a job-level continue-on-error reports success whatever failed; defaults can change the shell of every step; the join holds the default read scope and is not a matrix)"
+  _h2l_js=$(_h2l_steps "$_h2l_jc")
+  _h2l_jn=$(printf '%s\n' "$_h2l_js" | grep -c . || :)
+  if [ "$_h2l_jn" != 4 ]; then _h2l_fail "the h2-hermetic join must run exactly 4 steps (the result check, the checkout, the download, the --join call); found $_h2l_jn"; fi
+  [ "$(printf '%s\n' "$_h2l_js" | sed -n 1p)" = '      - name: Both face legs reported success (a matrix result is one word)~        run: |~          [ "$LEG_RESULTS" = success ] || { echo "FAIL: the h2-face legs reported $LEG_RESULTS, not success"; exit 1; }' ] || _h2l_fail "the h2-hermetic join's FIRST step must red unless LEG_RESULTS reads success: [ \"\$LEG_RESULTS\" = success ] || { echo ...; exit 1; }"
+  [ "$(printf '%s\n' "$_h2l_js" | sed -n 2p)" = '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1~        with:~          persist-credentials: false' ] || _h2l_fail "the h2-hermetic join's second step must be the pinned token-free checkout"
+  [ "$(printf '%s\n' "$_h2l_js" | sed -n 3p)" = '      - name: Download the face records~        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093~        with:~          pattern: h2-face-*~          merge-multiple: true~          path: ${{ runner.temp }}/h2' ] || _h2l_fail "the h2-hermetic join's third step must be the pinned download of pattern h2-face-* with merge-multiple: true into \${{ runner.temp }}/h2"
+  [ "$(printf '%s\n' "$_h2l_js" | sed -n 4p)" = '      - name: Join - both faces ran every touched target on this tree and every target passed (the lane verdict)~        run: sh conformance/selftest-hermetic.sh --join "$RUNNER_TEMP"/h2/*.rec' ] || _h2l_fail "the h2-hermetic join's last step must run exactly: sh conformance/selftest-hermetic.sh --join \"\$RUNNER_TEMP\"/h2/*.rec (the join of both face records)"
+  # the aggregator: the join is listed right after conformance-core and read in RESULTS at the same place; the leg is not listed
+  _h2l_nl=$(grep -E '^ *needs: \[.*\]$' "$1" | head -n 1 || :)
+  _h2l_tk=$(printf '%s\n' "$_h2l_nl" | sed 's/^ *needs: \[//; s/\]$//' | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$(printf '%s\n' "$_h2l_tk" | awk 'p == "conformance-core" && $0 == "h2-hermetic" { ok = 1 } { p = $0 } END { print ok + 0 }')" = 1 ] || _h2l_fail "the conformance aggregator's needs: must list h2-hermetic right after conformance-core (the H2 lane's verdict is the join's)"
+  printf '%s\n' "$_h2l_tk" | grep -qx 'h2-face' && _h2l_fail "the conformance aggregator's needs: lists the leg h2-face: a leg is not a verdict, only the join h2-hermetic is listed"
+  _h2l_rs=$(sed -n 's/^          RESULTS: //p' "$1" | head -n 1)
+  _has "$_h2l_rs" '${{ needs.conformance-core.result }} ${{ needs.h2-hermetic.result }}' || _h2l_fail "the aggregator's RESULTS must read needs.h2-hermetic.result right after needs.conformance-core.result (the same place as its needs: entry)"
+  [ "$_h2l_rc" != 0 ] || echo "OK: h2-legs — face matrix [a, b] with the lane condition and its marker, a token-free full-history checkout, the pinned upload; the join reads the legs' result first, downloads both records and runs --join; the aggregator lists the join"
+  return "$_h2l_rc"
 }
 
 # check_core_face_graders <root> (SWAS-460, CG): each CORE_FACE_TARGETS entry needs a diff-gated CI job named for it that runs its full --selftest; fail-closed, kit trees only.
@@ -1611,7 +1685,8 @@ own_tree_run() {  # [<root>]  (default .)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_guard_delta_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-301: the guard delta step (GD)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_redteam_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-359: the boundary red-team job (BR)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_boundary_macos_leg "$_ot_root/.github/workflows/ci.yml" "$_ot_root/.github/workflows/$KIT_MACOS_WORKFLOW" || _ot_rc=1  # SWAS-552: the on-demand macOS boundary workflow (BR0m, BR53-BR132)
-    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_defer_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-376: the H2 step's battery defer (H2D)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_defer_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-376: the H2 step's battery defer (H2D), in the h2-face leg since SWAS-864
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_legs "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-864: the h2-face matrix and the h2-hermetic join (H2F)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_core_face_graders "$_ot_root" || _ot_rc=1  # SWAS-460: every core-only hermetic target has a diff-gated full grader (CG)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-docs || _ot_rc=1  # SWAS-409: the docs shard (C30, C31) is graded live in every docs leg
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-selftests || _ot_rc=1  # SWAS-409: the selftests shard (C31, C32)
@@ -1810,7 +1885,9 @@ check_shellcheck_pin_tree() {  # <root> -> 0 ok; 1 a linting job without its pin
 # 32 -> 28 (SWAS-626): four steps leave (operate-loop-wired, adopter-preflight-wired, golden-path-wired, golden-path-filter-parity); none was a classification decision, they were wiring locks.
 # 28 -> 27 on 2026-11-02 (SWAS-619): the Tier-advice-wired regression-lock step leaves with its script. THE LOOK THE PIN FORCES: a step went, none was added, so no
 # step-level `if:` needs a look; conformance-core's job-level lane condition is unchanged.
-_AGG_CC_STEP_PIN=27
+# 27 -> 26 (SWAS-864): the Fixture-hermeticity lane step leaves for the h2-face matrix job (one face per leg, joined by h2-hermetic). THE LOOK THE PIN FORCES: a step went, none was
+# added here, so no step-level `if:` needs a look; conformance-core's job-level lane condition is unchanged. The two new jobs carry their own lane conditions, pinned by check_h2_legs.
+_AGG_CC_STEP_PIN=26
 _agg_marker='not a required check -> a job-level skip is safe'
 
 # _agg_job_step_count <yml> <job> -> the count of top-level (6-space `- `) step entries under
@@ -2511,7 +2588,7 @@ check_backlog_presence_base_board() {  # <workflow-file> -> 0 ok, 1 --base-board
 # decoy tag + a single-job rerun would otherwise derive narrow). One declared list per workflow; the TT4z
 # scan below ties each list to the YAML, so a new tag-bearing job cannot arrive without the step.
 TT_CI_JOBS="ceremony-binding loop-state review-lane backlog-presence threat-obligation uat-obligation a11y-obligation"
-TT_CI_EXCLUDED="conformance-core secret-scan conformance-docs-1 conformance-docs-2"  # fetch-depth: 0 only; each reads full refs / shas, not a short name. SWAS-409: the docs job is now two legs (both depth 0, the same reason the job had) and a join that checks out at the default depth (it reads ci.yml only), so the join leaves the list. Security seat: this edit WIDENS the tripwire's exclusion by one name and narrows it by none that still holds tags.
+TT_CI_EXCLUDED="conformance-core secret-scan conformance-docs-1 conformance-docs-2 h2-face"  # fetch-depth: 0 only; each reads full refs / shas, not a short name. SWAS-409: the docs job is now two legs (both depth 0, the same reason the job had) and a join that checks out at the default depth (it reads ci.yml only), so the join leaves the list. Security seat: this edit WIDENS the tripwire's exclusion by one name and narrows it by none that still holds tags. SWAS-864: h2-face (fetch-depth: 0, no fetch, HERMETIC_BASE a full ref) joins as a fifth depth-0 job that reads full refs only.
 TT_AG_JOBS="ceremony-binding review-lane loop-state"
 TT_AG_EXCLUDED=""
 # Revision 3: the remote read (TRUNK_TAG_REMOTE: "1") lives ONLY in the job that already held the checkout
@@ -2528,11 +2605,12 @@ ci review-lane persisted
 ci loop-state persisted,false
 ag ceremony-binding persisted
 ag review-lane persisted
-ag loop-state false,false"
+ag loop-state false,false
+tt trunk-trace persisted"
 
 # ══ SWAS-280 — THE RUNNER-SWITCH LOCK (RS, R1-R7). KIT TREES ONLY (called from the kit block of own_tree_run; the twin-marker test). ══
-# The repository variable KIT_CI_RUNNER (a human act) points the MOVABLE jobs of ci.yml at RunsOn runners on same-repository pull requests; unset, every
-# job keeps ubuntu-24.04. Design: docs/architecture/2026-10-28-runner-switch-280-design.md (§2.1 the one expression, §2.2 the lists, §6 the rules).
+# The repository variable KIT_CI_RUNNER (a human act) points the MOVABLE jobs of ci.yml at RunsOn runners on same-repository pull requests and scheduled runs; unset, every
+# job keeps ubuntu-24.04. Design: docs/architecture/2026-10-28-runner-switch-280-design.md (§2.1 the one expression, §2.2 the lists, §6 the rules); the schedule branch: its errata E7 and docs/architecture/2026-11-13-runner-switch-schedule-882-design.md.
 #   R1  every job's job-level runs-on is the literal KIT_HOSTED_RUNNER or exactly KIT_RUNNER_EXPR; a job carrying the expression is on KIT_RUNNER_MOVABLE
 #   R2  every actions/checkout step of a MOVABLE job carries persist-credentials: false
 #   R3  every job on KIT_RUNNER_HOSTED_FLOOR (the security and governance gates, the joins, the token holders) has the literal runs-on
@@ -2547,9 +2625,9 @@ ag loop-state false,false"
 #       one runs-on per job, and persist-credentials: false counts only under the checkout step's own with:.
 # WHAT IT PROVES: the workflow TEXT. It cannot read the variable's value, and it cannot prove what GitHub resolves (the build PR's run, with the variable
 # unset, and the first run with it set, do). Comments are stripped before a structural read (the file's idiom), so a `#` inside a quoted value hides the rest.
-KIT_RUNNER_EXPR="\${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.KIT_CI_RUNNER && format('runs-on={0}-{1}/{2}', github.run_id, strategy.job-index, vars.KIT_CI_RUNNER) || 'ubuntu-24.04' }}"
-KIT_RUNNER_MOVABLE="conformance-docs-1 conformance-selftests-1 conformance-selftests-2 conformance-selftests-3 conformance-selftests-4 cf-verify-enforced-shard cf-goc-rows cf-goc-battery cf-export-claims cf-claims guard-battery-shard guard-delta non-vacuity artifact-gate-gitlab artifact-gate-brownfield"
-KIT_RUNNER_HOSTED_FLOOR="secret-scan sast sbom artifact-gate boundary-redteam gate changes conformance conformance-core conformance-docs conformance-docs-2 conformance-selftests cf-doctor cf-export cf-verify-enforced cf-green-on-clone guard-battery ci-time-report bootstrap repo-ownership docs-links $TT_CI_JOBS"
+KIT_RUNNER_EXPR="\${{ (github.event_name == 'schedule' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && vars.KIT_CI_RUNNER && format('runs-on={0}-{1}/{2}', github.run_id, strategy.job-index, vars.KIT_CI_RUNNER) || 'ubuntu-24.04' }}"
+KIT_RUNNER_MOVABLE="conformance-docs-1 conformance-selftests-1 conformance-selftests-2 conformance-selftests-3 conformance-selftests-4 cf-verify-enforced-shard cf-goc-rows cf-goc-battery cf-export-claims cf-claims guard-battery-shard guard-delta non-vacuity artifact-gate-gitlab-shard artifact-gate-brownfield-shard"
+KIT_RUNNER_HOSTED_FLOOR="secret-scan sast sbom artifact-gate artifact-gate-shard artifact-gate-gitlab artifact-gate-brownfield boundary-redteam gate changes conformance conformance-core conformance-docs conformance-docs-2 conformance-selftests cf-doctor cf-export cf-verify-enforced cf-green-on-clone guard-battery ci-time-report bootstrap repo-ownership docs-links h2-face h2-hermetic nightly-report $TT_CI_JOBS"   # SWAS-864: the two H2 jobs run on the literal hosted runner (the measured basis, the owner's ruling); SWAS-869: nightly-report holds a token, so it stays hosted
 # SWAS-552: the on-demand macOS reading of the boundary cells lives in its own workflow file (not ci.yml), whose one job runs on the LITERAL KIT_MACOS_RUNNER and nothing else (never
 # the expression, never another label): a variable flip must not move it to a Linux box. R5 allows that one literal for that one file (KIT_MACOS_WORKFLOW) and for no other file.
 KIT_MACOS_RUNNER=macos-15
@@ -2621,6 +2699,7 @@ check_runner_switch() {  # <ci.yml> -> 0 ok; 1 any of R1-R4 or R7 broken (every 
       if (index(v, "${{") == 0) return "a hand-written label"
       if (index(v, "github.event_name == " sq "pull_request" sq) == 0) w = w " event guard"
       if (index(v, "github.event.pull_request.head.repo.full_name == github.repository") == 0) w = w " fork clause"
+      if (index(v, "github.event_name == " sq "schedule" sq) == 0) w = w " schedule branch"
       if (index(v, "&& vars.KIT_CI_RUNNER &&") == 0) w = w " variable guard"
       if (index(v, "|| " sq hosted sq " }}") == 0) w = w " " hosted " fallback"
       return (w == "" ? "an edited expression" : "missing:" w)
@@ -3046,7 +3125,7 @@ check_sbom_parity() {  # <workflow> -> 0 when the sbom job's three copied blocks
 #       (if: needs.gate.outputs.mode != 'cheap', never a script output), and that step's RESULTS is written out in the workflow, one needs.<job>.result per light job (derived from the needs: list)
 #   L11 the decider's CHEAP_JOBS equals CS_JOBS (skipped when the decider path is `-`)
 #   L12 the gate step binds BASE_REF from github.base_ref and writes mode=full reason=non-main-base for any other base
-#   L13 any job reached through needs: whose if: holds a status function (always, cancelled, failure) also carries needs.changes.result == 'success' (the aggregator and ci-time-report are exempt)
+#   L13 any job reached through needs: whose if: holds a status function (always, cancelled, failure) also carries needs.changes.result == 'success' (the aggregator, ci-time-report and nightly-report are exempt, by exact name)
 #   L14 the decider sources no file (no `.` or `source` line): the base copy must be self-contained
 #   L15 the decider's REQUIRED_NA_JOBS equals the REQUIRED-CHECKS.md contexts that are ci.yml jobs reached through needs: (they skip in cheap mode and the aggregator prints each as N/A)
 # CEILING, stated once: a pull_request run uses the HEAD's ci.yml, so a PR that edits ci.yml can bypass any gate in it, this lock included. That edit is a control-plane diff, caught
@@ -3128,7 +3207,7 @@ check_gate_shape() {  # <workflow> [<decider>|-] -> 0 ok; 1 with a FAIL line per
     case "$_gsh_if" in *"!cancelled() && needs.changes.result == 'success' &&"*) : ;; *) _gsh_fail "the $_gsh_j join's if: lacks needs.changes.result == 'success' behind !cancelled() (a draft's skipped changes must skip the join, not red it on skipped legs)" ;; esac  # GTM4
   done
   for _gsh_j in $_gsh_reached; do  # GTM5
-    if [ "$_gsh_j" = conformance ] || [ "$_gsh_j" = ci-time-report ]; then continue; fi  # GTM5
+    if [ "$_gsh_j" = conformance ] || [ "$_gsh_j" = ci-time-report ] || [ "$_gsh_j" = nightly-report ]; then continue; fi  # GTM5
     _gsh_if=$(printf '%s\n' "$_gsh_facts" | awk -v jb="$_gsh_j" '$1 == "I" && $2 == jb' || :)  # GTM5
     case "$_gsh_if" in *"always()"*|*"cancelled()"*|*"failure()"*) _gsh_sf=1 ;; *) _gsh_sf=0 ;; esac  # GTM5
     if [ "$_gsh_sf" = 1 ] && ! printf '%s\n' "$_gsh_if" | grep -qF "needs.changes.result == 'success'"; then  # GTM5
@@ -3173,8 +3252,94 @@ check_gate_shape() {  # <workflow> [<decider>|-] -> 0 ok; 1 with a FAIL line per
       { [ -n "$_gsh_rwant" ] && [ "$_gsh_rn" = "$_gsh_rwant" ]; } || _gsh_fail "the decider's REQUIRED_NA_JOBS ('$_gsh_rn') differs from the required contexts that skip in cheap mode ('$_gsh_rwant'): each must print an N/A line (S3-SEC-3)"  # GTM10
     fi
   fi
+  check_scheduled_anchor "$1"
   [ "$_gsh_rc" != 0 ] || echo "OK: gate-shape — four-type pull_request trigger; a gate job on the hosted floor that waits on nothing, reads the base parent's decider and the live state; changes behind it; every light job reaches it; both joins skip with changes; the aggregator grades through ci-gate-state.sh"
   return "$_gsh_rc"
+}
+
+# ══ SWAS-869 (SA) — THE SCHEDULED-ANCHOR LOCK (called by check_gate_shape, so --gate-shape and the kit block of --own-tree run it) ══
+# ci.yml also runs on a weekly `schedule`; the `nightly-report` job reads that run's results and opens one issue when it is red. What this lock holds (the workflow TEXT, line-based):
+#   SA1 `on:` holds exactly the keys pull_request, push and schedule (no workflow_dispatch: the GO'd errata C2 bars it; no other trigger), and the schedule exactly one weekly cron (minute 1-59, hour 0-23, any day of the month, any month, one weekday)
+#   SA2 nightly-report exists once and its permissions are one block key holding exactly one line, `issues: write` (every deeper line is read, trailing comments stripped: a quoted or commented extra scope reds)
+#   SA3 it uses no action (no `uses:`) and runs no repo script (no scripts/, conformance/, hooks/, .claude/ path, no sh, bash, source or . of a relative path)
+#   SA4 its job-level if: is exactly `always() && github.event_name == 'schedule'`
+#   SA5 its needs: lists every other job id except ci-time-report (which waits on it)
+#   SA6 its PR_SCOPED_JOBS literal equals the jobs whose job-level if: is exactly the pull_request clause (derived from the file)
+#   SA7 no workflow expression in a run body; toJSON(needs) once, in the env; the jq line pinned byte for byte; the only gh verbs are issue list, issue create and issue comment
+#   SA8 the changes job enters its push-graded lane on a push to main only, and writes docs_only=false before it: on a schedule the lane never runs, so every skip test sees false and the full set runs
+# HONEST CEILING: line-based awk at the indents the kit's workflows use, not a YAML parser; the run text is pinned only where named above, so another command in the run body is caught only by SA3 and SA7.
+_SA_JQ='          jq -r --arg scoped "$PR_SCOPED_JOBS" '\''to_entries[] | .key as $k | .value.result as $r | select($r != "success" and ($r != "skipped" or ($scoped | split(" ") | any(. == $k) | not))) | "- " + (if ($k | test("^[a-z0-9-]+$")) then $k else "off-shape-job-name" end) + ": " + (if ($r == "failure" or $r == "cancelled") then $r elif $r == "skipped" then "skipped-unexpected" else "unexpected" end)'\'' "$RUNNER_TEMP/needs.json" > "$RUNNER_TEMP/red.txt"'
+_SA_PUSH_LANE='            if [ "$EVENT" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then'
+_SA_DOCS_FALSE='            echo "docs_only=false" >> "$GITHUB_OUTPUT"'
+_sa_job() {  # <workflow> <job> -> the job's lines after its header, full-line comments and blank lines dropped
+  awk -v job="$2" 'BEGIN { hdr = "^  " job ":[ \t]*(#.*)?$" }
+    $0 ~ hdr { on = 1; next }
+    on && /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { on = 0 }
+    on && !/^[ \t]*(#.*)?$/ { print }' "$1"
+}
+check_scheduled_anchor() {  # <workflow> -> a FAIL line per break (through _gsh_fail); the caller reads _gsh_rc
+  _sa_wf=$1
+  _sa_on=$(sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' "$_sa_wf" | awk '/^on:[ \t]*$/ { on = 1; next } on && /^[^ \t]/ { on = 0 } on && !/^[ \t]*$/ { print }')
+  _sa_keys=$(printf '%s\n' "$_sa_on" | sed -n 's/^  \([A-Za-z_]*\):.*$/\1/p' | sort | tr '\n' ' ')
+  _sa_c=$(printf '%s\n' "$_sa_on" | awk '
+    /^  [A-Za-z_]+:/ { sect = $1; next }
+    sect == "schedule:" { sl++; if ($0 ~ /^    - cron: \047([1-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) \* \* [0-6]\047$/) nc++ }
+    END { print sl + 0, nc + 0 }')
+  set -- "$_sa_wf" $_sa_c
+  if [ "$#" != 3 ]; then _gsh_fail "scheduled-anchor SA1 — the on: block could not be read (the awk answered $# words, want 3)"; return 0; fi  # SA1
+  if [ "$2" != 1 ] || [ "$3" != 1 ] || [ "$_sa_keys" != "pull_request push schedule " ]; then  # SA1
+    _gsh_fail "scheduled-anchor SA1 — on: must hold exactly the keys pull_request, push and schedule (no workflow_dispatch, no other trigger), and the schedule exactly one weekly cron ('<minute 1-59> <hour 0-23> * * <weekday 0-6>') (found keys: ${_sa_keys:-none}; schedule lines $2, weekly crons $3)"  # SA1
+  fi  # SA1
+  _sa_nh=$(grep -Ec '^  nightly-report:[[:space:]]*$' "$_sa_wf" || :)
+  if [ "$_sa_nh" != 1 ]; then _gsh_fail "scheduled-anchor SA2 — the nightly-report job must exist exactly once (found $_sa_nh)"; return 0; fi
+  _sa_blk=$(_sa_job "$_sa_wf" nightly-report)
+  _sa_pm=$(printf '%s\n' "$_sa_blk" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' | awk '
+    /^    permissions:/ { np++; v = $0; sub(/^    permissions:[ \t]*/, "", v); if (v != "") inl++; p = 1; next }
+    p && /^[ \t]*$/ { next }
+    p { match($0, /^ */); if (RLENGTH > 4) { x = $0; sub(/^ +/, "", x); items = items (items == "" ? "" : "; ") x; ni++; next } p = 0 }
+    END { print np + 0, inl + 0, ni + 0, items }')
+  if [ "$_sa_pm" != "1 0 1 issues: write" ]; then  # SA2
+    _sa_pm=${_sa_pm#* }; _sa_pm=${_sa_pm#* }; _sa_pm=${_sa_pm#* }
+    _gsh_fail "scheduled-anchor SA2 — the nightly-report permissions must be one block key holding exactly one line, 'issues: write' (every line deeper than permissions: is read; trailing comments are stripped first; found: ${_sa_pm:-none})"  # SA2
+  fi  # SA2
+  _sa_us=$(printf '%s\n' "$_sa_blk" | grep -Ec '(^|[^A-Za-z0-9_-])uses[[:space:]]*:' || :)
+  _sa_rp=$(printf '%s\n' "$_sa_blk" | grep -Ec '(scripts|conformance|hooks)/|[.]claude/|(^|[^A-Za-z0-9_./-])(sh|bash|source|[.])[[:space:]]+[.]?/' || :)
+  if [ "$_sa_us" != 0 ] || [ "$_sa_rp" != 0 ]; then  # SA3
+    _gsh_fail "scheduled-anchor SA3 — nightly-report must use no action and run no repo script ($_sa_us uses: lines, $_sa_rp lines naming a repo path or running a relative path): it holds a write token and must run no repository code"  # SA3
+  fi  # SA3
+  _sa_if=$(printf '%s\n' "$_sa_blk" | grep -E '^    if[[:space:]]*:' || :)
+  if [ "$_sa_if" != "    if: always() && github.event_name == 'schedule'" ]; then  # SA4
+    _gsh_fail "scheduled-anchor SA4 — the nightly-report job-level if: must be exactly \"always() && github.event_name == 'schedule'\" (found: ${_sa_if:-none})"  # SA4
+  fi  # SA4
+  _sa_ids=$(sed 's/#.*//' "$_sa_wf" | awk '/^jobs:[ \t]*$/ { inj = 1; next } /^[^ \t]/ { inj = 0 } inj && /^  [A-Za-z0-9_-]+:[ \t]*$/ { j = $1; sub(/:$/, "", j); if (j != "nightly-report" && j != "ci-time-report") print j }' | sort)
+  _sa_nd=$(printf '%s\n' "$_sa_blk" | awk '/^    needs:[ \t]*$/ { n = 1; next } n && /^      - [A-Za-z0-9_-]+[ \t]*$/ { print $2; next } n { n = 0 }' | sort)
+  if [ "$_sa_ids" != "$_sa_nd" ]; then  # SA5
+    _sa_ms=''; _sa_ex=''
+    for _sa_x in $_sa_ids; do case " $(printf '%s' "$_sa_nd" | tr '\n' ' ') " in *" $_sa_x "*) : ;; *) _sa_ms="$_sa_ms $_sa_x" ;; esac; done  # SA5
+    for _sa_x in $_sa_nd; do case " $(printf '%s' "$_sa_ids" | tr '\n' ' ') " in *" $_sa_x "*) : ;; *) _sa_ex="$_sa_ex $_sa_x" ;; esac; done  # SA5
+    _gsh_fail "scheduled-anchor SA5 — nightly-report's needs: (a block list) must name every job id except nightly-report and ci-time-report, once each (missing:${_sa_ms:- none}; not a job or repeated:${_sa_ex:- none})"  # SA5
+  fi  # SA5
+  _sa_lit=$(printf '%s\n' "$_sa_blk" | sed -n 's/^          PR_SCOPED_JOBS: //p')
+  _sa_ln=$(printf '%s\n' "$_sa_lit" | grep -c . || :)
+  _sa_lw=$(printf '%s\n' $_sa_lit | sort | tr '\n' ' ')
+  _sa_dw=$(sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' "$_sa_wf" | awk '/^jobs:[ \t]*$/ { inj = 1; next } /^[^ \t]/ { inj = 0 } inj && /^  [A-Za-z0-9_-]+:$/ { j = $1; sub(/:$/, "", j) } inj && /^    if: github[.]event_name == \047pull_request\047$/ { print j }' | sort | tr '\n' ' ')
+  if [ "$_sa_ln" != 1 ] || [ -z "$_sa_dw" ] || [ "$_sa_lw" != "$_sa_dw" ]; then  # SA6
+    _gsh_fail "scheduled-anchor SA6 — PR_SCOPED_JOBS (once, in nightly-report's env) must equal the jobs whose job-level if: is exactly the pull_request clause (literal: ${_sa_lw:-none}; derived: ${_sa_dw:-none})"  # SA6
+  fi  # SA6
+  _sa_xl=$(printf '%s\n' "$_sa_blk" | awk '
+    /^(        |      - )run:/ { v = $0; sub(/^(        |      - )run:[ \t]*/, "", v); if (v ~ /^[|>]/) { blk = 1; next } if (v ~ /[$][{][{]/) print NR; next }
+    blk { match($0, /^ */); if (RLENGTH >= 10) { if ($0 ~ /[$][{][{]/) print NR; next } blk = 0 }')
+  _sa_tj=$(printf '%s\n' "$_sa_blk" | grep -Fc 'toJSON(needs)' || :)
+  _sa_jq=$(printf '%s\n' "$_sa_blk" | grep -Fxc -- "$_SA_JQ" || :)
+  _sa_gh=$(printf '%s\n' "$_sa_blk" | awk '{ gsub(/[(;&|`]/, " "); for (i = 1; i <= NF; i++) if ($i == "gh") print "gh " $(i + 1) " " $(i + 2) }' | sort -u | grep -Evx 'gh issue (list|create|comment)' || :)
+  if [ -n "$_sa_xl" ] || [ "$_sa_tj" != 1 ] || ! printf '%s\n' "$_sa_blk" | grep -Fxq '          NEEDS_JSON: ${{ toJSON(needs) }}' || [ "$_sa_jq" != 1 ] || [ -n "$_sa_gh" ]; then  # SA7
+    _gsh_fail "scheduled-anchor SA7 — nightly-report must hold no workflow expression in a run body (job line $(printf '%s' "$_sa_xl" | tr '\n' ' ')), toJSON(needs) once bound through env (found $_sa_tj), its jq line byte for byte (found $_sa_jq), and only gh issue list, create and comment (found: $(printf '%s' "$_sa_gh" | tr '\n' ';'))"  # SA7
+  fi  # SA7
+  _sa_ch=$(_sa_job "$_sa_wf" changes | awk -v p="$_SA_PUSH_LANE" -v f="$_SA_DOCS_FALSE" '$0 == p { np++; pl = NR } $0 == f && !df { df = NR } END { print np + 0, (df > 0 && pl > 0 && df < pl) ? 1 : 0 }')
+  if [ "$_sa_ch" != "1 1" ]; then  # SA8
+    _gsh_fail "scheduled-anchor SA8 — the changes job must enter its push-graded lane only on [ \"\$EVENT\" = \"push\" ] && [ \"\$GITHUB_REF\" = \"refs/heads/main\" ] (once, byte for byte) and write docs_only=false before it (found: $_sa_ch): on a schedule the lane must not run, or the full proof would skip"  # SA8
+  fi  # SA8
+  return 0
 }
 
 selftest() {
@@ -4636,49 +4801,55 @@ selftest() {
     cp "$_kr/.github/workflows/golden-path.yml" "$d/cg/CG5/.github/workflows/golden-path.yml"
     cp "$_kr/conformance/gate-dispositions.txt" "$d/cg/CG5/conformance/gate-dispositions.txt"
     _ot_case CG7 "$d/cg/CG5" 1 "CORE_FACE_TARGETS is empty" "--own-tree reds a kit tree whose core-face list is empty"
-    # H2D0-H2D10 (SWAS-376 Slice 0, C2 + C4) — the H2 step's battery-defer lock. H2D0 is the positive control on the REAL ci.yml; each mutant is a
+    # H2D0-H2D10 (SWAS-376 Slice 0, C2 + C4; SWAS-864 re-anchored them on the h2-face job) — the H2 step's battery-defer lock. H2D0 is the positive control on the REAL ci.yml; each mutant is a
     # SCRATCH COPY and must red AND name its cause. The first occurrence only is mutated where another job repeats the text: H2 is the first
-    # `gb-ref` clone in the file (cf-verify-enforced, cf-export-claims and cf-claims write the same variables to $GITHUB_ENV, legitimately).
+    # `gb-ref` clone in the file (h2-face sits right after conformance-core, ahead of cf-verify-enforced, cf-export-claims and cf-claims, which write the same variables to $GITHUB_ENV, legitimately).
     # H2D1 deletes the clone, H2D2/H2D3 drop one variable from the call, H2D4 writes a variable to $GITHUB_ENV inside the step, H2D5 adds a job
-    # env: naming one to conformance-core, H2D6 deletes the step timeout, H2D7 changes it, H2D8 renames the step (the lock finds none),
-    # H2D9 masks the call with `|| true`, H2D10 runs the clone deletion through the REAL --own-tree entry point.
+    # env: naming one to h2-face, H2D6 deletes the step timeout, H2D7 changes it, H2D8 renames the step (the lock finds none),
+    # H2D9 masks the call with `|| true`, H2D10 runs the clone deletion through the REAL --own-tree entry point. H2D30/H2D31 drop --face / --output-file from the call and H2D32
+    # puts a second lane step into conformance-core (the wall would come back), H2D33 plants a defer variable in conformance-core's env.
     mkdir -p "$d/h2"
     _h2_real="$_kr/.github/workflows/ci.yml"
     if check_h2_defer_step "$_h2_real" >/dev/null 2>&1; then
-      echo "selftest PASS: H2D0 — the real ci.yml's H2 step clones the workspace, passes the defer variables inline to the one lane call, is bounded at 180 min and leaves conformance-core's environment alone"
+      echo "selftest PASS: H2D0 — the real ci.yml's H2 step clones the workspace, passes the defer variables inline to the one lane call, is bounded at 180 min and leaves h2-face's environment alone (conformance-core names no defer variable)"
       awk '/git clone -q "\$GITHUB_WORKSPACE" "\$RUNNER_TEMP\/gb-ref"/ && !done { done = 1; next } { print }' "$_h2_real" > "$d/h2/m1.yml"
       sed '/^ *KIT_GUARD_BATTERY_REF="\$RUNNER_TEMP\/gb-ref" \\$/d' "$_h2_real" > "$d/h2/m2.yml"
       sed '/^ *KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \\$/d' "$_h2_real" > "$d/h2/m3.yml"
       awk '{ print } /git clone -q "\$GITHUB_WORKSPACE" "\$RUNNER_TEMP\/gb-ref"/ && !done { done = 1; print "          echo \"KIT_GUARD_BATTERY_REF=$RUNNER_TEMP/gb-ref\" >> \"$GITHUB_ENV\"" }' "$_h2_real" > "$d/h2/m4.yml"
-      awk '{ print } /^  conformance-core:[ \t]*$/ { print "    env:"; print "      KIT_GUARD_BATTERY_REF: /x" }' "$_h2_real" > "$d/h2/m5.yml"
+      awk '{ print } /^  h2-face:[ \t]*$/ { print "    env:"; print "      KIT_GUARD_BATTERY_REF: /x" }' "$_h2_real" > "$d/h2/m5.yml"
       awk '/^      - name: Fixture-hermeticity lane/ { inh = 1 } inh && /^        timeout-minutes: 180[ \t]*$/ { inh = 0; next } { print }' "$_h2_real" > "$d/h2/m6.yml"
       awk '/^      - name: Fixture-hermeticity lane/ { inh = 1 } inh && /^        timeout-minutes: 180[ \t]*$/ { inh = 0; print "        timeout-minutes: 360"; next } { print }' "$_h2_real" > "$d/h2/m7.yml"
       sed 's/^      - name: Fixture-hermeticity lane/      - name: Fixture hermeticity lane/' "$_h2_real" > "$d/h2/m8.yml"
-      sed 's/^\( *\)sh conformance\/selftest-hermetic\.sh --touched$/\1sh conformance\/selftest-hermetic.sh --touched || true/' "$_h2_real" > "$d/h2/m9.yml"
+      sed 's/^\( *sh conformance\/selftest-hermetic\.sh --touched --face .*\)$/\1 || true/' "$_h2_real" > "$d/h2/m9.yml"
       # H2D11-H2D19 (fix round): nothing may mask the lane's verdict. A step-level key that masks or changes it (continue-on-error, if, shell,
-      # working-directory, env), a job-level continue-on-error, an `exit` before the call (other than the two pinned guard branches) or any line
-      # after the call, and a GB_CONSUMERS without conformance-core (the deferral must be bound to guard-battery's result).
+      # working-directory, env), a job-level continue-on-error, an `exit` before the call (other than the pinned merge-base branch) or any line
+      # after the call, and a GB_CONSUMERS without h2-hermetic (the deferral must be bound to guard-battery's result).
       for _h2_k in "m11:continue-on-error: true" "m12:if: false" "m13:shell: sh {0}" "m14:working-directory: /" "m15:env:"; do
         awk -v ins="        ${_h2_k#*:}" '/^      - name: Fixture-hermeticity lane/ { f = 1 } { print } f && /^        timeout-minutes: 180[ \t]*$/ { print ins; f = 0 }' "$_h2_real" > "$d/h2/${_h2_k%%:*}.yml"
       done
-      awk '{ print } /^  conformance-core:[ \t]*$/ { print "    continue-on-error: true" }' "$_h2_real" > "$d/h2/m16.yml"
+      awk '{ print } /^  h2-face:[ \t]*$/ { print "    continue-on-error: true" }' "$_h2_real" > "$d/h2/m16.yml"
       awk '/git clone -q "\$GITHUB_WORKSPACE" "\$RUNNER_TEMP\/gb-ref"/ && !done { done = 1; print "          exit 0" } { print }' "$_h2_real" > "$d/h2/m17.yml"
-      awk '{ print } /^ +sh conformance\/selftest-hermetic\.sh --touched[ \t]*$/ && !done { done = 1; print "          exit 0" }' "$_h2_real" > "$d/h2/m18.yml"
-      sed 's/ \${{ needs\.conformance-core\.result }}$//' "$_h2_real" > "$d/h2/m19.yml"
-      # security-confirm round: the H2 run body is pinned byte for byte (the BR17 method), not pattern-matched for exits. m20 flips the guard
-      # condition (N/A and exit 0 on every PR), m21 duplicates the exempt echo+exit pair before the clone, m22 plants `exec true` (no `exit` word),
-      # m23 changes the echo text, m24 deletes the fetch.
-      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /^ +if \[ "\$GITHUB_EVENT_NAME" != "pull_request" \]/ { done = 1; sub(/if \[/, "if true || [") } { print }' "$_h2_real" > "$d/h2/m20.yml"
+      awk '{ print } /^ +sh conformance\/selftest-hermetic\.sh --touched --face / && !done { done = 1; print "          exit 0" }' "$_h2_real" > "$d/h2/m18.yml"
+      sed 's/ \${{ needs\.h2-hermetic\.result }}$//' "$_h2_real" > "$d/h2/m19.yml"
+      # security-confirm round: the H2 run body is pinned byte for byte (the BR17 method), not pattern-matched for exits. m20 flips the merge-base
+      # condition (the base is never checked), m21 duplicates an exempt echo+exit pair before the clone, m22 plants `exec true` (no `exit` word),
+      # m23 changes the FAIL echo text, m24 deletes the base ref read (SWAS-864: the old guard branch and the base fetch left the step).
+      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /^ +if ! git merge-base HEAD "refs\/remotes\/origin\/\$\{GITHUB_BASE_REF:-main\}"/ { done = 1; sub(/if ! git/, "if false \\&\\& ! git") } { print }' "$_h2_real" > "$d/h2/m20.yml"
       awk '/git clone -q "\$GITHUB_WORKSPACE" "\$RUNNER_TEMP\/gb-ref"/ && !done { done = 1; print "          echo \"N/A by design: dup\""; print "          exit 0" } { print }' "$_h2_real" > "$d/h2/m21.yml"
       awk '/git clone -q "\$GITHUB_WORKSPACE" "\$RUNNER_TEMP\/gb-ref"/ && !done { done = 1; print "          exec true" } { print }' "$_h2_real" > "$d/h2/m22.yml"
-      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /re-run nothing it has not already graded/ { done = 1; sub(/re-run nothing/, "re-run something") } { print }' "$_h2_real" > "$d/h2/m23.yml"
-      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /^ +git fetch -q --no-tags origin/ { done = 1; next } { print }' "$_h2_real" > "$d/h2/m24.yml"
+      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /refusing to silent-pass/ { done = 1; sub(/refusing to silent-pass/, "refusing to pass") } { print }' "$_h2_real" > "$d/h2/m23.yml"
+      awk '/^      - name: Fixture-hermeticity lane/ { f = 1 } f && !done && /^ +git rev-parse --verify "refs\/remotes\/origin\// { done = 1; next } { print }' "$_h2_real" > "$d/h2/m24.yml"
       # re-confirm round: P5 a comment or a blank line inside the run block joins the backslash continuation and unexports the inline assignments
       # (m25 a comment, m26 a blank line, both right after the VARIANTS line); P9 a job-level env: on conformance-core can re-point PATH (m27), and a
       # workflow-level env: naming PATH (m28) or BASH_ENV (m29) does the same for every job.
       awk '{ print } /^ +KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \\$/ { print "            # x" }' "$_h2_real" > "$d/h2/m25.yml"
       awk '{ print } /^ +KIT_GUARD_BATTERY_VARIANTS="case0-tmp0-git1-uid00 case0-tmp1-git1-uid00" \\$/ { print "" }' "$_h2_real" > "$d/h2/m26.yml"
-      awk '{ print } /^  conformance-core:[ \t]*$/ { print "    env:"; print "      PATH: docs/bin:/usr/bin" }' "$_h2_real" > "$d/h2/m27.yml"
+      awk '{ print } /^  h2-face:[ \t]*$/ { print "    env:"; print "      PATH: docs/bin:/usr/bin" }' "$_h2_real" > "$d/h2/m27.yml"
+      # SWAS-864: the call must carry --face and --output-file (m30, m31); a second lane step in conformance-core brings the wall back (m32: a conformance-core step renamed to the lane's name)
+      sed 's/ --face "\${{ matrix\.face }}"//' "$_h2_real" > "$d/h2/m30.yml"
+      sed 's/ --output-file "\$RUNNER_TEMP\/h2-face-\${{ matrix\.face }}\.rec"//' "$_h2_real" > "$d/h2/m31.yml"
+      sed 's/^      - name: Union-declassification ratchet/      - name: Fixture-hermeticity lane - a second copy/' "$_h2_real" > "$d/h2/m32.yml"
+      awk '{ print } /^  conformance-core:[ \t]*$/ { print "    env:"; print "      KIT_GUARD_BATTERY_REF: /x" }' "$_h2_real" > "$d/h2/m33.yml"
       awk 'NR == 1 { print "env:"; print "  PATH: docs/bin:/usr/bin" } { print }' "$_h2_real" > "$d/h2/m28.yml"
       awk 'NR == 1 { print "env:"; print "  BASH_ENV: /x" } { print }' "$_h2_real" > "$d/h2/m29.yml"
       for _h2_m in "m11:step-level key that masks:H2D11:continue-on-error on the step" \
@@ -4686,20 +4857,20 @@ selftest() {
                    "m13:step-level key that masks:H2D13:a shell: key on the step" \
                    "m14:step-level key that masks:H2D14:a working-directory: key on the step" \
                    "m15:step-level key that masks:H2D15:an env: key on the step" \
-                   "m16:must not set a job-level:H2D16:continue-on-error on conformance-core" \
+                   "m16:must not set a job-level:H2D16:continue-on-error on h2-face (the leg would report success whatever failed)" \
                    "m17:run body must be exactly:H2D17:an exit 0 planted before the lane call" \
                    "m18:run body must be exactly:H2D18:an exit 0 planted after the lane call" \
-                   "m20:run body must be exactly:H2D20:the guard condition flipped (if true ||, N/A on every PR)" \
-                   "m21:run body must be exactly:H2D21:the exempt echo+exit pair duplicated before the clone" \
+                   "m20:run body must be exactly:H2D20:the merge-base condition made false (the base never checked)" \
+                   "m21:run body must be exactly:H2D21:an echo+exit pair duplicated before the clone" \
                    "m22:run body must be exactly:H2D22:exec true planted before the clone (no exit word)" \
-                   "m23:run body must be exactly:H2D23:the N/A echo text changed" \
-                   "m24:run body must be exactly:H2D24:the base fetch deleted" \
+                   "m23:run body must be exactly:H2D23:the FAIL echo text changed" \
+                   "m24:run body must be exactly:H2D24:the base ref read deleted" \
                    "m25:run body must be exactly:H2D25:a comment line after the VARIANTS line (it would unexport the inline assignments)" \
                    "m26:run body must be exactly:H2D26:a blank line after the VARIANTS line" \
-                   "m27:must not set a job-level:H2D27:a job-level env: re-pointing PATH on conformance-core" \
+                   "m27:must not set a job-level:H2D27:a job-level env: re-pointing PATH on h2-face" \
                    "m28:workflow-level env:H2D28:a workflow-level env: naming PATH" \
                    "m29:workflow-level env:H2D29:a workflow-level env: naming BASH_ENV" \
-                   "m19:GB_CONSUMERS:H2D19:conformance-core dropped from GB_CONSUMERS (the deferral bound to nothing)"; do
+                   "m19:GB_CONSUMERS:H2D19:h2-hermetic dropped from GB_CONSUMERS (the deferral bound to nothing)"; do
         _h2_f=${_h2_m%%:*}; _h2_r=${_h2_m#*:}; _h2_want=${_h2_r%%:*}; _h2_r=${_h2_r#*:}
         _h2_id=${_h2_r%%:*}; _h2_desc=${_h2_r#*:}
         if cmp -s "$_h2_real" "$d/h2/$_h2_f.yml"; then
@@ -4714,11 +4885,15 @@ selftest() {
                    "m2:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D2:KIT_GUARD_BATTERY_REF dropped from the call" \
                    "m3:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D3:KIT_GUARD_BATTERY_VARIANTS dropped from the call" \
                    "m4:must not write to GITHUB_ENV:H2D4:a defer variable written to \$GITHUB_ENV inside the step" \
-                   "m5:no other line of conformance-core may name KIT_GUARD_BATTERY:H2D5:a job-level env: naming the variable" \
+                   "m5:no other line of the h2-face job may name KIT_GUARD_BATTERY:H2D5:a job-level env: naming the variable" \
                    "m6:must carry timeout-minutes:H2D6:the step timeout deleted" \
                    "m7:must carry timeout-minutes:H2D7:the step timeout changed to 360" \
                    "m8:exactly one 'Fixture-hermeticity lane' step:H2D8:the step renamed so the lock finds none" \
-                   "m9:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D9:the lane call masked with || true"; do
+                   "m9:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D9:the lane call masked with || true" \
+                   "m30:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D30:--face dropped from the lane call (the leg would run both faces)" \
+                   "m31:must pass KIT_GUARD_BATTERY_REF and KIT_GUARD_BATTERY_VARIANTS inline:H2D31:--output-file dropped from the lane call (no record for the join)" \
+                   "m32:the lane runs in h2-face only:H2D32:a second Fixture-hermeticity lane step in conformance-core (the wall comes back)" \
+                   "m33:conformance-core may not name KIT_GUARD_BATTERY:H2D33:a job-level env: naming the variable planted in conformance-core (the old lock's coverage)"; do
         _h2_f=${_h2_m%%:*}; _h2_r=${_h2_m#*:}; _h2_want=${_h2_r%%:*}; _h2_r=${_h2_r#*:}
         _h2_id=${_h2_r%%:*}; _h2_desc=${_h2_r#*:}
         if cmp -s "$_h2_real" "$d/h2/$_h2_f.yml"; then
@@ -4736,6 +4911,50 @@ selftest() {
       _ot_case H2D10 "$d/h2t" 1 "must clone the workspace to \$RUNNER_TEMP/gb-ref" "--own-tree reds a kit tree whose H2 step lost its same-commit clone"
     else
       echo "selftest FAIL: H2D0 — the real ci.yml's H2 step is not sound (SWAS-376 Slice 0)"; sf=1
+    fi
+    # H2F0-H2F19 (SWAS-864) — the h2-face matrix and the h2-hermetic join lock (check_h2_legs). H2F0 is the positive control on the REAL ci.yml; every other cell is a SCRATCH COPY with one
+    # tagged edit (sed, or awk scoped to one job) and a `cmp -s` guard, and must red AND name its cause. H2F1/H2F2 change the matrix list (a dropped face, a third face), H2F3/H2F4 the leg's
+    # lane condition (the marker, the push-graded clause), H2F5 adds a fetch to the leg, H2F6/H2F7 weaken its checkout, H2F8 its upload, H2F9/H2F10 the join's `if:`, H2F11 the LEG_RESULTS
+    # env, H2F12 the join's first step, H2F13/H2F14 its download and --join call (one record only), H2F15/H2F16 its needs and step list, H2F17-H2F19 the aggregator (join dropped from needs:
+    # and from RESULTS, the leg listed).
+    _h2f_rep() {  # <id> <want> <desc> -> judges $d/h2/<id>.yml against the real file
+      if cmp -s "$_h2_real" "$d/h2/$1.yml"; then echo "selftest FAIL: $1 — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1
+      elif _h2f_o=$(check_h2_legs "$d/h2/$1.yml" 2>&1); then echo "selftest FAIL: $1 — $3 was NOT caught"; sf=1
+      elif _has "$_h2f_o" "$2"; then echo "selftest PASS: $1 — $3 -> RED, naming '$2'"
+      else echo "selftest FAIL: $1 — $3 reds without naming '$2': $_h2f_o"; sf=1; fi
+    }
+    _h2f_m() { sed "$4" "$_h2_real" > "$d/h2/$1.yml"; _h2f_rep "$1" "$2" "$3"; }   # <id> <want> <desc> <sed-expr>
+    _h2f_a() {  # <id> <want> <desc> <job> <awk-rules ending in { print }> (rules see j = 1 inside <job>)
+      awk -v job="$4" 'BEGIN { hdr = "^  " job ":[ \t]*(#.*)?$" } $0 ~ hdr { j = 1 } j && /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ && $0 !~ hdr { j = 0 } '"$5" "$_h2_real" > "$d/h2/$1.yml"
+      _h2f_rep "$1" "$2" "$3"
+    }
+    if check_h2_legs "$_h2_real" >/dev/null 2>&1; then
+      echo "selftest PASS: H2F0 — the real ci.yml's h2-face matrix is [a, b] with the lane condition and its marker, a token-free full-history checkout and the pinned upload; the h2-hermetic join reads the legs' result first, downloads both records, runs --join, and the aggregator lists the join"
+      _h2f_m H2F1 "must be exactly 'face: [a, b]'" "the matrix list drops face b (half the lane graded)" 's/^        face: \[a, b\]$/        face: [a]/'
+      _h2f_m H2F2 "must be exactly 'face: [a, b]'" "a third face added to the matrix" 's/^        face: \[a, b\]$/        face: [a, b, c]/'
+      _h2f_a H2F3 "lacks the marker" "the leg's job-level if: loses its leg marker" h2-face '/^    if:/ && j { sub(/ *# not a required check.*$/, "") } { print }'
+      _h2f_a H2F4 "must carry exactly one line" "the leg's if: drops the push-graded clause" h2-face '/^    if:/ && j { sub(/ && needs\.changes\.outputs\.push_graded != .true./, "") } { print }'
+      _h2f_a H2F5 "runs a git fetch" "a git fetch step added to the leg" h2-face 'j && /^        run: sh scripts\/install-shellcheck\.sh --check$/ { print; print "      - run: git fetch origin"; next } { print }'
+      _h2f_a H2F6 "checkout must be the pinned actions/checkout" "fetch-depth: 0 dropped from the leg's checkout" h2-face 'j && /^          fetch-depth: 0$/ { next } { print }'
+      _h2f_a H2F7 "checkout must be the pinned actions/checkout" "persist-credentials: false dropped from the leg's checkout" h2-face 'j && /^          persist-credentials: false$/ { next } { print }'
+      _h2f_a H2F8 "upload must be the last step and exactly" "the leg's upload turned from if-no-files-found: error to warn" h2-face 'j && /^          if-no-files-found: error$/ { print "          if-no-files-found: warn"; next } { print }'
+      _h2f_a H2F9 "join's if: must be exactly" "the join's if: drops needs.changes.result == 'success'" h2-hermetic '/^    if:/ && j { sub(/needs\.changes\.result == .success. && /, "") } { print }'
+      _h2f_a H2F10 "join's if: must be exactly" "the join's if: drops the docs-only clause" h2-hermetic '/^    if:/ && j { sub(/ && needs\.changes\.outputs\.docs_only != .true./, "") } { print }'
+      _h2f_m H2F11 "job env must be exactly LEG_RESULTS" "the join's LEG_RESULTS reads another job's result" 's/LEG_RESULTS: \${{ needs\.h2-face\.result }}/LEG_RESULTS: ${{ needs.changes.result }}/'
+      _h2f_m H2F12 "FIRST step must red unless LEG_RESULTS reads success" "the join's first step weakened to != failure" 's/\[ "\$LEG_RESULTS" = success \]/[ "$LEG_RESULTS" != failure ]/'
+      _h2f_m H2F13 "third step must be the pinned download" "the download narrowed to one face's artifact" 's/^          pattern: h2-face-\*$/          pattern: h2-face-a/'
+      _h2f_m H2F14 "last step must run exactly" "the --join call over one record only" 's|--join "\$RUNNER_TEMP"/h2/\*\.rec|--join "$RUNNER_TEMP"/h2/h2-face-a.rec|'
+      _h2f_a H2F15 "needs: must be a block list of exactly changes and h2-face" "the join's needs: loses h2-face" h2-hermetic 'j && /^      - h2-face$/ { next } { print }'
+      _h2f_a H2F16 "exactly 4 steps" "an extra step in the join" h2-hermetic 'j && /^        run: sh conformance\/selftest-hermetic\.sh --join / { print; print "      - run: echo extra"; next } { print }'
+      _h2f_m H2F17 "right after conformance-core" "the aggregator's needs: loses h2-hermetic" 's/conformance-core, h2-hermetic, /conformance-core, /'
+      _h2f_m H2F18 "RESULTS must read needs.h2-hermetic.result" "the aggregator's RESULTS loses the join's result" 's/ \${{ needs\.h2-hermetic\.result }} \${{ needs\.conformance-docs\.result }}/ ${{ needs.conformance-docs.result }}/'
+      _h2f_m H2F19 "lists the leg h2-face" "the aggregator's needs: lists the leg h2-face" 's/conformance-core, h2-hermetic, /conformance-core, h2-hermetic, h2-face, /'
+      _h2f_a H2F21 "must not set a job-level continue-on-error, defaults, permissions or strategy" "a job-level continue-on-error: true planted in the join" h2-hermetic '{ print } j && /^    runs-on: / { print "    continue-on-error: true" }'
+      _h2f_a H2F22 "must not set a job-level continue-on-error, defaults, permissions or strategy" "a job-level defaults: block planted in the join" h2-hermetic '{ print } j && /^    runs-on: / { print "    defaults:"; print "      run:"; print "        shell: bash {0}" }'
+      cp "$d/h2/H2F15.yml" "$d/h2t/.github/workflows/ci.yml"
+      _ot_case H2F20 "$d/h2t" 1 "the h2-hermetic join's needs: must be a block list" "--own-tree reds a kit tree whose join lost its needs on h2-face (check_h2_legs is wired into the kit block)"
+    else
+      echo "selftest FAIL: H2F0 — the real ci.yml's h2-face matrix and h2-hermetic join are not sound (SWAS-864)"; sf=1
     fi
     # GD10 (SWAS-332) — the guard-delta stress-cell exclusion lock. `agent-autonomy.sh --delta` does not replay a NAMED list of cap and
     # budget stress cells (AA_DELTA_STRESS: each replay pass over them costs minutes); the guard-battery job runs them with an asserted
@@ -5022,17 +5241,19 @@ AGGCLS
   # regression backstop — the kit's OWN live ci.yml must pass this leg today (the SESSION-SURFACE
   # T3/F1 fix). Gated on the same kit-tree marker AGG5/AGG6 use, so an adopter export is unjudged.
   if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
-    # LS10 (SWAS-250; folds LS4) — the fleet pin: the six jobs that claim to hold no token, kit tree only.
-    _ls_ci="$_agg_kr/.github/workflows/ci.yml"; _ls_ag="$_agg_kr/profiles/adopter-gates.yml"; _ls_bad=""
+    # LS10 (SWAS-250; folds LS4) — the fleet pin: the seven jobs that claim to hold no token, kit tree only.
+    # SWAS-258: the sixth CRED-DROP copy is profiles/adopter-trunk-trace.yml's trunk-trace job (its own workflow file).
+    _ls_ci="$_agg_kr/.github/workflows/ci.yml"; _ls_ag="$_agg_kr/profiles/adopter-gates.yml"; _ls_tr="$_agg_kr/profiles/adopter-trunk-trace.yml"; _ls_bad=""
     for _ls_j in ceremony-binding loop-state review-lane; do
       check_cred_before_prtree "$_ls_ci" "$_ls_j" >/dev/null 2>&1 || _ls_bad="$_ls_bad ci.yml:$_ls_j"
       [ "$_ls_j" = loop-state ] || check_cred_before_prtree "$_ls_ag" "$_ls_j" >/dev/null 2>&1 || _ls_bad="$_ls_bad adopter-gates.yml:$_ls_j"
     done
     check_cred_before_prtree "$_ls_ag" loop-state >/dev/null 2>&1 || _ls_bad="$_ls_bad adopter-gates.yml:loop-state"
-    _ls_five=$(for _ls_x in "$_ls_ci:ceremony-binding" "$_ls_ci:loop-state" "$_ls_ci:review-lane" "$_ls_ag:ceremony-binding" "$_ls_ag:review-lane"; do cred_block "${_ls_x%%:*}" "${_ls_x#*:}" | cksum | cut -d' ' -f1; done | sort -u | wc -l | tr -d ' ')
-    if [ -z "$_ls_bad" ] && [ "$_ls_five" = 1 ] && [ -n "$(cred_block "$_ls_ci" ceremony-binding)" ]; then
-      echo "selftest PASS: LS10 — all six token-free jobs pass the pin and the five CRED-DROP blocks are byte-identical (folds LS4)"
-    else echo "selftest FAIL: LS10 — pin failures:${_ls_bad:- none}; distinct block copies=$_ls_five (want 1)"; sf=1; fi
+    check_cred_before_prtree "$_ls_tr" trunk-trace >/dev/null 2>&1 || _ls_bad="$_ls_bad adopter-trunk-trace.yml:trunk-trace"
+    _ls_six=$(for _ls_x in "$_ls_ci:ceremony-binding" "$_ls_ci:loop-state" "$_ls_ci:review-lane" "$_ls_ag:ceremony-binding" "$_ls_ag:review-lane" "$_ls_tr:trunk-trace"; do cred_block "${_ls_x%%:*}" "${_ls_x#*:}" | cksum | cut -d' ' -f1; done | sort -u | wc -l | tr -d ' ')
+    if [ -z "$_ls_bad" ] && [ "$_ls_six" = 1 ] && [ -n "$(cred_block "$_ls_ci" ceremony-binding)" ]; then
+      echo "selftest PASS: LS10 — all seven token-free jobs pass the pin and the six CRED-DROP blocks are byte-identical (folds LS4)"
+    else echo "selftest FAIL: LS10 — pin failures:${_ls_bad:- none}; distinct block copies=$_ls_six (want 1)"; sf=1; fi
   else
     echo "selftest SKIP: LS10 — not a kit tree"
   fi
@@ -5312,6 +5533,36 @@ AGGCLS
       *" conformance-docs "*) echo "selftest FAIL: TT4zf — the docs JOIN is still in TT_CI_EXCLUDED, but it checks out at the default depth and holds no tags: drop it"; sf=1 ;;
       *) echo "selftest PASS: TT4zf — the docs join (default-depth checkout) is not in TT_CI_EXCLUDED" ;;
     esac
+    # TT7 (SWAS-258) — profiles/adopter-trunk-trace.yml, the third workflow file: its one job (trunk-trace) holds NO tags (a default-depth checkout
+    # and --no-tags fetches only), so it owes no tripwire and joins neither TT_AG_JOBS nor an exclusion list. What is pinned instead, on the real
+    # file: no tag-bearing job (the scan against EMPTY lists), main's persist-credentials value (the TT_PC_TABLE `tt` row), and the full-ref
+    # trunk read (check_trunk_full_ref; TF6 also sweeps profiles/*.yml). Each is graded against a mutant of the real file that must red.
+    _tt_tr="$_agg_kr/profiles/adopter-trunk-trace.yml"
+    if [ -f "$_tt_tr" ] && check_tt_tagbearing "$_tt_tr" "" "" >/dev/null 2>&1; then
+      echo "selftest PASS: TT7a — trunk-trace holds no tags (no depth-0 checkout, no fetch-tags, every git fetch carries --no-tags), so no tripwire is owed"
+    else echo "selftest FAIL: TT7a — profiles/adopter-trunk-trace.yml is missing or a job in it holds tags without a tripwire"; sf=1; fi
+    { cat "$_tt_tr"; printf '  zz-tags:\n    steps:\n      - uses: actions/checkout@x\n        with:\n          fetch-depth: 0\n'; } > "$d/tt-tr.yml"
+    _t4_msg=$(check_tt_tagbearing "$d/tt-tr.yml" "" "" 2>&1 >/dev/null || true)
+    case "$_t4_msg" in
+      *"job zz-tags holds tags (fetch-depth:0)"*) echo "selftest PASS: TT7b — a depth-0 job added beside trunk-trace -> FAIL, naming the job (the empty list is load-bearing)" ;;
+      *) echo "selftest FAIL: TT7b — the added depth-0 job was not caught; msg='$_t4_msg'"; sf=1 ;;
+    esac
+    if check_tt_credentials tt "$_tt_tr" trunk-trace >/dev/null 2>&1; then
+      echo "selftest PASS: TT7c — the trunk-trace checkout keeps the persisted credential its two fetches need (it is dropped by the CRED-DROP block, not by the flag)"
+    else echo "selftest FAIL: TT7c — the trunk-trace checkout's persist-credentials differs from the TT_PC_TABLE row"; sf=1; fi
+    _tt_pcmut "$_tt_tr" trunk-trace add > "$d/tt-tr.yml"
+    _t4_msg=$(check_tt_credentials tt "$d/tt-tr.yml" trunk-trace 2>&1 >/dev/null || true)
+    case "$_t4_msg" in
+      *"trunk-trace (tt) persist-credentials differs from main"*) echo "selftest PASS: TT7d — persist-credentials: false added to the trunk-trace checkout -> FAIL (it would break the fetches)" ;;
+      *) echo "selftest FAIL: TT7d — the credential mutant was not caught; msg='$_t4_msg'"; sf=1 ;;
+    esac
+    if check_trunk_full_ref "$_tt_tr" >/dev/null 2>&1; then
+      echo "selftest PASS: TT7e — trunk-trace reads the trunk by its full ref only (no short name, no tag can stand in)"
+    else echo "selftest FAIL: TT7e — trunk-trace reads the trunk by a short name"; sf=1; fi
+    sed 's# --from "refs/remotes/origin/\${DEFAULT_BRANCH}"# --from origin/main#' "$_tt_tr" > "$d/tt-tr.yml"
+    if cmp -s "$d/tt-tr.yml" "$_tt_tr"; then echo "selftest FAIL: TT7f setup — the short-name mutant did not differ from the real file"; sf=1
+    elif check_trunk_full_ref "$d/tt-tr.yml" >/dev/null 2>&1; then echo "selftest FAIL: TT7f — a --from short name in trunk-trace was NOT caught"; sf=1
+    else echo "selftest PASS: TT7f — --from origin/main in trunk-trace -> FAIL (the full-ref lock binds the new file)"; fi
   else
     echo "selftest SKIP: TT0-TT5 — not a kit tree"
   fi
@@ -6093,8 +6344,9 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     if check_line_breaks_tree "$_agg_kr" > "$d/lb/lbr.out" 2>&1; then _lbr_rc=0; else _lbr_rc=$?; fi
     # 26 = the 25 before SWAS-552 plus its on-demand macOS workflow (.github/workflows/boundary-redteam-macos.yml), a deliberate add
     # 27 = the 26 plus SWAS-725's dispatch-only adopter fixture workflow (.github/workflows/adopter-fixture.yml), a deliberate add
-    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 27 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 27 judged files"
-    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 27; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
+    # 28 = the 27 plus SWAS-258's trunk-trace workflow template (profiles/adopter-trunk-trace.yml), a deliberate add
+    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 28 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 28 judged files"
+    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 28; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
   else echo "selftest SKIP: LBr — not a kit tree"; fi
   # the mutants: a sed-edited COPY of this script runs the cell's fixture; the original must show the needle (the positive control) and the mutant must not.
   # A sed that matches nothing is "unbound" and fails loud: the pinned line moved, and a mutant equal to the original proves nothing.
@@ -6211,9 +6463,9 @@ EOF
   _scp_case SCP11 "a data-flow list in shellcheck.sh with one more file than the lock holds -> RED naming it" 1 "SC_NOFLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list1"
   _scp_case SCP11b "both lists equal to the lock's literals -> green" 0 "the data-flow lists match" "$d/scp/t-list2"
   _scp_case SCP11c "the no--x list widened by one file -> RED naming SC_NOFOLLOW_FILES" 1 "SC_NOFOLLOW_FILES in conformance/shellcheck.sh" "$d/scp/t-list3"
-  # SCP12: the real kit tree, exactly its eight linting jobs (a new linting job is a deliberate edit of this count, with its installer; the eighth is SWAS-725's adopter-fixture job)
+  # SCP12: the real kit tree, exactly its twelve linting jobs (a new linting job is a deliberate edit of this count, with its installer; the eighth is SWAS-725's adopter-fixture job; SWAS-837 adds the three artifact shard jobs, each with its installer first; SWAS-864 adds h2-face, whose lane step runs selftest-hermetic.sh --touched after the installer and --check, while conformance-core still lints through its gate-lint step)
   if [ -f "$_kr/.github/workflows/ci.yml" ] && { [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
-    _scp_case SCP12 "the real kit tree: its 8 linting jobs all run the pinned installer first, and the data-flow lists match" 0 "OK: shellcheck-pin — 8 linting job(s)" "$_kr"
+    _scp_case SCP12 "the real kit tree: its 12 linting jobs all run the pinned installer first, and the data-flow lists match" 0 "OK: shellcheck-pin — 12 linting job(s)" "$_kr"
   else echo "selftest SKIP: SCP12 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned)"; fi
   # SCP13: a .github/workflows/ that holds no workflow file must RED (a glob that matched nothing is a vacuous green)
   mkdir -p "$d/scp/t-empty/.github/workflows"
@@ -6304,15 +6556,17 @@ EOF
   fi
   _st_mark SCP
 
-  # RS0-RS1 and M280-1..M280-15 (SWAS-280) — the runner-switch lock (R1-R7). RS0 is the positive control on the REAL kit tree (and on its ci.yml alone);
+  # RS0-RS1 and M280-1..49 (24 is unused; 30-45 are the tree and fixture legs below; 46-49 are SWAS-882's) — the runner-switch lock (R1-R7). RS0 is the positive control on the REAL kit tree (and on its ci.yml alone);
   # each mutant is a SCRATCH COPY and must red AND name its cause. A mutant is judged only when RS0 is green, so a missing lock cannot make every
   # mutant red for the wrong reason. M280-1/2 put the expression on a gate / write a label by hand, M280-3/4/5 break one part of the expression,
   # M280-6/7 drop persist-credentials from a moved checkout, M280-8 moves a floor job, M280-9 adds a job on neither list, M280-10/11 plant a RunsOn
   # fragment in another workflow / the App-writable runs-on.yml, M280-13/14/15 give a moved job a token or a wider scope, and M280-12 runs an
   # INCEPTED adopter tree (expression on a non-moved job, runs-on.yml present) through the REAL --own-tree entry: it must PASS (the lock is N/A there).
+  # M280-46..49 (SWAS-882) pin the schedule branch: the old PR-only expression on one moved job, the parentheses dropped, a third event added, the schedule event swapped.
   mkdir -p "$d/rs"
   _rs_real="$_kr/.github/workflows/ci.yml"
   RSX=$(printf %s "$KIT_RUNNER_EXPR"); export RSX  # the awk actions below read the expression through ENVIRON (an awk -v would process escapes)
+  RSO=$(printf %s "$KIT_RUNNER_EXPR" | sed "s/(github\.event_name == 'schedule' || //; s/github\.repository) &&/github.repository \&\&/"); export RSO  # M280-46: the pre-SWAS-882 PR-only expression, derived from the constant (an unchanged derivation makes m46 equal the original, which the loop reds)
   if [ ! -f "$_rs_real" ] || { [ ! -f "$_kr/docs/ROADMAP-KIT.md" ] && [ ! -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
     # the twin-marker discriminator (as AGG5/AGG6): ci.yml and the kit markers are export-ignored, so an adopter export has none of them
     echo "selftest SKIP: RS0/M280 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned); the cells grade the KIT's own ci.yml. M280-12 below runs everywhere"
@@ -6346,6 +6600,10 @@ EOF
     _rs_in_job boundary-redteam '{ print } j && /^    runs-on:/ { print "    runs-on: ubuntu-24.04" }' > "$d/rs/m27.yml"
     _rs_in_job non-vacuity 'j && /^ +persist-credentials: false[ \t]*$/ { next } j && /uses: actions\/checkout@/ { sub(/@[0-9a-f]+/, "&\"") ; sub(/uses: /, "uses: \"") } { print }' > "$d/rs/m28.yml"
     _rs_in_job guard-delta 'j && !done && /^        with:[ \t]*$/ { done = 1; print "        env:"; next } { print }' > "$d/rs/m29.yml"
+    _rs_in_job conformance-docs-1 'j && /^    runs-on:/ { print "    runs-on: " ENVIRON["RSO"]; next } { print }' > "$d/rs/m46.yml"
+    sed "s/(github\.event_name == 'schedule'/github.event_name == 'schedule'/; s/github\.repository) &&/github.repository \&\&/" "$_rs_real" > "$d/rs/m47.yml"
+    sed "s/(github\.event_name == 'schedule'/(github.event_name == 'push' || github.event_name == 'schedule'/" "$_rs_real" > "$d/rs/m48.yml"
+    sed "s/(github\.event_name == 'schedule'/(github.event_name == 'workflow_dispatch'/" "$_rs_real" > "$d/rs/m49.yml"
     for _rs_m in "m1:(R1):M280-1:the expression on a security gate" \
                  "m2:cf-claims:M280-2:a hand-written RunsOn label on a moved job" \
                  "m3:variable guard:M280-3:the vars.KIT_CI_RUNNER guard removed" \
@@ -6370,7 +6628,11 @@ EOF
                  "m26:docs-links:M280-26:a floor job runs-on with a #-glued RunsOn fragment" \
                  "m27:more than one runs-on:M280-27:a second job-level runs-on on boundary-redteam" \
                  "m28:non-vacuity:M280-28:a quoted uses: checkout without persist-credentials" \
-                 "m29:guard-delta:M280-29:persist-credentials under env: instead of with:"; do
+                 "m29:guard-delta:M280-29:persist-credentials under env: instead of with:" \
+                 "m46:schedule branch:M280-46:the old PR-only expression on one moved job" \
+                 "m47:(R1):M280-47:the parentheses dropped on every line" \
+                 "m48:(R1):M280-48:a third event added inside the parentheses" \
+                 "m49:schedule branch:M280-49:the schedule event swapped for workflow_dispatch"; do
       _rs_f=${_rs_m%%:*}; _rs_r=${_rs_m#*:}; _rs_want=${_rs_r%%:*}; _rs_r=${_rs_r#*:}
       _rs_id=${_rs_r%%:*}; _rs_desc=${_rs_r#*:}
       if cmp -s "$_rs_real" "$d/rs/$_rs_f.yml"; then
@@ -6444,6 +6706,42 @@ $1"
     elif _rs_unv "$_rs_vt" "$d/rs/u3"; then
       echo "selftest FAIL: M280-40 — a closing PARITY-CORE: UNVERIFIED line was NOT reported by step 3's verdict test"; sf=1
     else echo "selftest PASS: M280-40 — step 3's verdict test reports a real UNVERIFIED result row and a closing PARITY-CORE: UNVERIFIED line"; fi
+    # M280-41..45 (SWAS-760): step 3 also grades the slice AS CODE. Three lines are cut out of the REAL workflow (the DOCS_FALSE_LINE assignment, the grep that reports a missing
+    # '# docs-only: false', and the grep that reports a missing review-lane structural pass) and run against inline outputs via _rs_unv (rc 1 = the step's exit 1).
+    # M280-41: a clean code-slice output (docs-only false, review-lane's structural pass) reads clean. M280-42: a docs-only true output is reported. M280-43: a review-lane output
+    # without the structural pass (an N-A) is reported. M280-44/45: the mutants (the docs-only test dropped; the review-lane test dropped) read their red fixture clean, so each test is
+    # carried by its own line. An empty extraction reads clean and so fails M280-42/43: the cells are not vacuous.
+    _rs_ct=$(sed -n -e '/^ *DOCS_FALSE_LINE=/p' -e '/prepush\.txt"; then res "FAIL the prepush run did not read/p' -e '/review-lane\.txt"; then res "FAIL review-lane --pre-push did not print/p' "$_kr/.github/workflows/$KIT_FIXTURE_WORKFLOW")
+    mkdir -p "$d/rs/c1" "$d/rs/c2" "$d/rs/c3"
+    printf '%s\n' '# docs-only: false' '  OK    twin               review-lane review-lane.sh --pre-push    1s' 'PARITY-CORE: OK' > "$d/rs/c1/prepush.txt"
+    printf '%s\n' 'review-lane: grading head abc (class=ordinary)' 'review-lane: rc=0 (structural pass; the approval is branch protection'"'"'s, not this check'"'"'s)' > "$d/rs/c1/review-lane.txt"
+    printf '%s\n' '# docs-only: true' '  OK    twin               review-lane review-lane.sh --pre-push    1s' 'PARITY-CORE: OK' > "$d/rs/c2/prepush.txt"
+    cp "$d/rs/c1/review-lane.txt" "$d/rs/c2/review-lane.txt"
+    cp "$d/rs/c1/prepush.txt" "$d/rs/c3/prepush.txt"
+    printf '%s\n' 'review-lane: N-A — ordinary AND docs-only. The scope cut is the CLASSIFIER'"'"'s, not this gate'"'"'s judgment (design 4.1).' > "$d/rs/c3/review-lane.txt"
+    _rs_cd=$(printf '%s\n' "$_rs_ct" | sed '/prepush\.txt"; then res "FAIL the prepush run did not read/d')
+    _rs_cr=$(printf '%s\n' "$_rs_ct" | sed '/review-lane\.txt"; then res "FAIL review-lane --pre-push did not print/d')
+    if ! _has "$_rs_ct" 'DOCS_FALSE_LINE=' || ! _has "$_rs_ct" 'did not read' || ! _has "$_rs_ct" 'did not print its structural pass'; then
+      echo "selftest FAIL: M280-41 — the code-slice tests (DOCS_FALSE_LINE, the docs-only grep, the structural-pass grep) were not all found in $KIT_FIXTURE_WORKFLOW step 3"; sf=1
+    elif ! _rs_unv "$_rs_ct" "$d/rs/c1"; then
+      echo "selftest FAIL: M280-41 — step 3's code-slice tests report a clean code-slice output (docs-only false, review-lane structural pass)"; sf=1
+    else echo "selftest PASS: M280-41 — step 3's code-slice tests read a clean code-slice output (docs-only false, review-lane structural pass) clean"; fi
+    if _rs_unv "$_rs_ct" "$d/rs/c2"; then
+      echo "selftest FAIL: M280-42 — a '# docs-only: true' prepush output was NOT reported by step 3's code-slice tests"; sf=1
+    else echo "selftest PASS: M280-42 — step 3's code-slice tests report a prepush output that reads '# docs-only: true'"; fi
+    if _rs_unv "$_rs_ct" "$d/rs/c3"; then
+      echo "selftest FAIL: M280-43 — a review-lane output without its structural pass was NOT reported by step 3's code-slice tests"; sf=1
+    else echo "selftest PASS: M280-43 — step 3's code-slice tests report a review-lane output without its structural pass"; fi
+    if [ "$_rs_cd" = "$_rs_ct" ]; then
+      echo "selftest FAIL: M280-44 — the docs-only mutant equals the original (the docs-only grep moved)"; sf=1
+    elif ! _rs_unv "$_rs_cd" "$d/rs/c2"; then
+      echo "selftest FAIL: M280-44 — the mutant with the docs-only test dropped still reports a docs-only true output (the cell cannot tell)"; sf=1
+    else echo "selftest PASS: M280-44 — with the docs-only test dropped a docs-only true output reads clean -> the docs-only line carries that test"; fi
+    if [ "$_rs_cr" = "$_rs_ct" ]; then
+      echo "selftest FAIL: M280-45 — the review-lane mutant equals the original (the structural-pass grep moved)"; sf=1
+    elif ! _rs_unv "$_rs_cr" "$d/rs/c3"; then
+      echo "selftest FAIL: M280-45 — the mutant with the structural-pass test dropped still reports an N-A review-lane output (the cell cannot tell)"; sf=1
+    else echo "selftest PASS: M280-45 — with the structural-pass test dropped an N-A review-lane output reads clean -> that line carries that test"; fi
     # M280-W: the --own-tree wiring, through the REAL entry point on a kit-marked scratch tree (as GD4): the secret-scan mutant must red there.
     mkdir -p "$d/rs/tw/.github/workflows" "$d/rs/tw/docs" "$d/rs/tw/conformance"
     : > "$d/rs/tw/docs/ROADMAP-KIT.md"
@@ -6455,6 +6753,377 @@ $1"
     _ot_case M280-W0 "$d/rs/tw" 0 "OK: ci-gates --own-tree" "the real ci.yml on a kit-marked scratch tree -> green"
     cp "$d/rs/m1.yml" "$d/rs/tw/.github/workflows/ci.yml"
     _ot_case M280-W "$d/rs/tw" 1 "KIT_RUNNER_MOVABLE" "--own-tree reds a kit tree whose ci.yml puts the expression on a security gate"
+    # TR8P-1..10 (SWAS-658): the three artifact gates' TR8 assert steps (derived from verify's own run, not a re-run) are cut out of the REAL ci.yml by step name and run against
+    # inline fixture trees. In the kit-tree branch ONLY: on an adopter artifact ci.yml is the adopter's own. Design: docs/architecture/2026-11-08-tr8-once-658-design.md.
+    # TR8P-1: each block passes where P1-P5 hold. TR8P-2..6: each broken precondition reds, NAMING its own P-number. TR8P-7: the block minus P2 lets the one-commit fixture through (TR8P-3 binds).
+    # TR8P-8: the pin over the lane's TR8 code the derivation reads. An empty extraction fails TR8P-1 (never a vacuous pass). TR8P-10: an if:/continue-on-error: AFTER the run block is caught too.
+    # Not checked by these cells: a JOB-level (4-space) if:/continue-on-error:. The TR8P list is now 1..10.
+    _tr8p_cut() {  # <leg prefix after "TR8 ran clean on the "> [file, default the real ci.yml] -> the step's run block, dedented, on stdout (empty when the step is not found)
+      _tp_cf=${2:-$_rs_real}
+      awk -v pre="      - name: TR8 ran clean on the $1" '
+        st == 0 && index($0, pre) == 1 { st = 1; next }
+        st == 2 && !/^          / && !/^[ \t]*$/ { st = 3 }
+        (st == 1 || st == 3) && /^        (if|continue-on-error):/ { print "TR8P-STEP-HAS-CONDITION"; next }
+        st == 1 && $0 == "        run: |" { st = 2; next }
+        st == 1 && /^      - / { exit }
+        st == 2 && /^          / { print substr($0, 11); next }
+        st == 2 && /^[ \t]*$/ { print ""; next }
+        st == 3 && /^      - / { exit }
+        st == 3 && !/^      / && !/^[ \t]*$/ { exit }
+      ' "$_tp_cf"
+    }
+    _tr8p_leg() {  # <art|gl|bf> -> that job's artifact dir, kept verify file and CI-file kind
+      case "$1" in
+        art) _tp_dir=adopter; _tp_vf=verify-artifact.txt; _tp_kind=github ;;
+        gl)  _tp_dir=adopter-gl; _tp_vf=verify-gl.txt; _tp_kind=gitlab ;;
+        *)   _tp_dir=adopter-bf; _tp_vf=verify-bf.txt; _tp_kind=github ;;
+      esac
+    }
+    _tr8p_blk() { case "$1" in art) printf '%s\n' "$_tp_ba" ;; gl) printf '%s\n' "$_tp_bg" ;; *) printf '%s\n' "$_tp_bb" ;; esac; }
+    _tr8p_row() {  # <root> <PASS|FAIL|N-A|none> -> the kept verify file, in verify's own row format, with a look-alike decoy row
+      { printf '  %-9s %-18s %s\n' '[control]' verify-enforced-wired PASS
+        printf '  %-9s %-18s %s\n' '[control]' prepush-lanes PASS
+        [ "$2" = none ] || printf '  %-9s %-18s %s\n' '[control]' prepush-lane "$2"
+        # FAIL also holds an indented PASS look-alike (verify's emit_diag prints child lines indented 6): the anchored P5 regex must ignore it
+        [ "$2" != FAIL ] || printf '      %s\n' "$(printf '  %-9s %-18s %s' '[control]' prepush-lane PASS)"
+      } > "$1/$_tp_vf"
+    }
+    _tr8p_mk() {  # <root> <key> <commits> -> a git fixture of the artifact where P1-P5 hold (one or two commits)
+      _tr8p_leg "$2"; _tp_a="$1/$_tp_dir"
+      mkdir -p "$_tp_a/conformance"
+      for _tp_f in agent-autonomy citation-live prepush-lane; do : > "$_tp_a/conformance/$_tp_f.sh"; done
+      if [ "$_tp_kind" = github ]; then mkdir -p "$_tp_a/.github/workflows"; : > "$_tp_a/.github/workflows/ci.yml"; fi
+      _tr8p_row "$1" PASS
+      ( cd "$_tp_a" || exit 1
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+        GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+        git init -q && git add -A && git -c user.name=tr8p -c user.email=tr8p@fixture -c commit.gpgsign=false commit -q -m one
+        [ "$3" -lt 2 ] || git -c user.name=tr8p -c user.email=tr8p@fixture -c commit.gpgsign=false commit -q --allow-empty -m two
+      ) >/dev/null 2>&1
+    }
+    _tr8p_one() {  # <key> <mutation|good> [block override] -> _tp_rc and _tp_out of the block run on that fixture
+      _tp_c=2; [ "$2" != onecommit ] || _tp_c=1
+      _tp_root="$d/tr8p/$1-$2$$"; rm -rf "$_tp_root"; mkdir -p "$_tp_root"
+      _tr8p_mk "$_tp_root" "$1" "$_tp_c"
+      case "$2" in
+        nokit) rm -f "$_tp_a/conformance/citation-live.sh" ;;
+        ciwrong) if [ "$_tp_kind" = github ]; then rm -f "$_tp_a/.github/workflows/ci.yml"; else mkdir -p "$_tp_a/.github/workflows"; : > "$_tp_a/.github/workflows/ci.yml"; fi ;;
+        kitmark) mkdir -p "$_tp_a/docs"; : > "$_tp_a/docs/ROADMAP-KIT.md" ;;
+        kitmark2) mkdir -p "$_tp_a/.github/workflows"; : > "$_tp_a/.github/workflows/golden-path.yml" ;;
+        rowfail) _tr8p_row "$_tp_root" FAIL ;;
+        rowna) _tr8p_row "$_tp_root" N-A ;;
+        rownone) _tr8p_row "$_tp_root" none ;;
+      esac
+      _tp_b=${3:-$(_tr8p_blk "$1")}
+      if _tp_out=$(env RUNNER_TEMP="$_tp_root" SHAPE=fixture GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 sh -c "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; $_tp_b" 2>&1); then _tp_rc=0; else _tp_rc=$?; fi
+    }
+    _tr8p_red() {  # <id> <what> <P-number named> <mutation...> -> PASS when every job's block reds on every mutation, naming that P-number
+      _tp_id=$1; _tp_what=$2; _tp_want=$3; shift 3; _tp_bad=""
+      for _tp_m in "$@"; do
+        for _tp_k in art gl bf; do
+          _tr8p_one "$_tp_k" "$_tp_m"
+          if [ "$_tp_rc" -eq 0 ] || ! _has "$_tp_out" "TR8 precondition $_tp_want"; then _tp_bad="$_tp_bad $_tp_k/$_tp_m(rc=$_tp_rc)"; fi
+        done
+      done
+      if [ -z "$_tp_bad" ]; then echo "selftest PASS: $_tp_id — $_tp_what -> RED in all three TR8 assert steps, naming 'TR8 precondition $_tp_want'"
+      else echo "selftest FAIL: $_tp_id — $_tp_what was NOT caught (or not named $_tp_want) by:$_tp_bad"; sf=1; fi
+    }
+    _tr8p_cells() {
+      mkdir -p "$d/tr8p"
+      _tp_ba=$(_tr8p_cut 'artifact '); _tp_bg=$(_tr8p_cut 'GitLab artifact '); _tp_bb=$(_tr8p_cut 'brownfield artifact ')
+      _tp_bad=""
+      for _tp_b in "$_tp_ba" "$_tp_bg" "$_tp_bb"; do
+        for _tp_p in P1 P2 P3 P4 P5; do _has "$_tp_b" "TR8 precondition $_tp_p" || _tp_bad="$_tp_bad $_tp_p"; done
+        _has "$_tp_b" 'OK: TR8 ran clean' || _tp_bad="$_tp_bad OK-line"
+        ! _has "$_tp_b" 'TR8P-STEP-HAS-CONDITION' || _tp_bad="$_tp_bad TR8P-STEP-HAS-CONDITION(an if: or continue-on-error: on a TR8 assert step would make it advisory)"
+      done
+      if [ -n "$_tp_bad" ]; then
+        echo "selftest FAIL: TR8P-1 — a TR8 assert step was not found in ci.yml, or lacks a precondition, or carries a condition (missing/found:$_tp_bad)"; sf=1
+      else
+        _tp_bad=""
+        for _tp_k in art gl bf; do _tr8p_one "$_tp_k" good; if [ "$_tp_rc" -ne 0 ]; then _tp_bad="$_tp_bad $_tp_k(rc=$_tp_rc: $_tp_out)"; fi; done
+        if [ -z "$_tp_bad" ]; then echo "selftest PASS: TR8P-1 — all three TR8 assert steps pass on a fixture where P1-P5 hold"
+        else echo "selftest FAIL: TR8P-1 — a TR8 assert step reds a fixture where P1-P5 hold:$_tp_bad"; sf=1; fi
+        _tr8p_red TR8P-2 "a missing kit file (P1)" P1 nokit
+        _tr8p_red TR8P-3 "a one-commit artifact (P2)" P2 onecommit
+        _tr8p_red TR8P-4 "the wrong CI-file state for the job (P3)" P3 ciwrong
+        _tr8p_red TR8P-5 "a kit marker, ROADMAP-KIT.md or golden-path.yml (P4)" P4 kitmark kitmark2
+        _tr8p_red TR8P-6 "verify's prepush-lane row reading FAIL, N-A or absent (P5)" P5 rowfail rowna rownone
+        _tp_mut=$(printf '%s\n' "$(_tr8p_blk art)" | sed '/TR8 precondition P2/d')
+        _tr8p_one art onecommit; _tp_r1=$_tp_rc
+        _tr8p_one art onecommit "$_tp_mut"; _tp_r2=$_tp_rc
+        if [ "$_tp_mut" = "$(_tr8p_blk art)" ]; then echo "selftest FAIL: TR8P-7 — the mutant equals the original (the P2 line moved)"; sf=1
+        elif [ "$_tp_r1" -ne 0 ] && [ "$_tp_r2" -eq 0 ]; then echo "selftest PASS: TR8P-7 — with the P2 line deleted the one-commit fixture passes (rc 0) where the real block reds -> TR8P-3 binds to that line"
+        else echo "selftest FAIL: TR8P-7 — the P2 mutant does not differ from the real block on the one-commit fixture (real rc $_tp_r1, mutant rc $_tp_r2)"; sf=1; fi
+        # TR8P-9: the P1 line of each block holds no invocation (the census exclude rows account that line as a bare test)
+        _tp_bad=""
+        for _tp_b in "$_tp_ba" "$_tp_bg" "$_tp_bb"; do
+          _tp_p1=$(printf '%s\n' "$_tp_b" | grep -F '[ -f conformance/agent-autonomy.sh ]' || :)
+          if [ -z "$_tp_p1" ]; then _tp_bad="$_tp_bad (no-P1-line)"
+          elif _has "$_tp_p1" 'sh conformance/'; then _tp_bad="$_tp_bad (invocation-on-P1-line)"; fi
+        done
+        if [ -z "$_tp_bad" ]; then echo "selftest PASS: TR8P-9 — the P1 line of each TR8 assert step holds no 'sh conformance/' invocation"
+        else echo "selftest FAIL: TR8P-9 — a TR8 assert step's P1 line is missing or hides an invocation:$_tp_bad"; sf=1; fi
+        # TR8P-10: a continue-on-error: placed AFTER the run block (still the same step) is detected; the real file carries none
+        _tp_cp="$d/tr8p/ci-after-run.yml"
+        if awk '
+          a == 0 && index($0, "      - name: TR8 ran clean on the artifact ") == 1 { a = 1 }
+          a == 1 && $0 == "        run: |" { a = 2; print; next }
+          a == 2 && !/^          / && !/^[ \t]*$/ { print "        continue-on-error: true"; a = 3 }
+          { print }
+          END { exit (a == 3 ? 0 : 1) }
+        ' "$_rs_real" > "$_tp_cp"; then
+          _tp_cx=$(_tr8p_cut 'artifact ' "$_tp_cp"); _tp_cr=$(_tr8p_cut 'artifact ')
+          if ! _has "$_tp_cx" 'TR8P-STEP-HAS-CONDITION'; then echo "selftest FAIL: TR8P-10 — a continue-on-error: after the artifact TR8 step's run block was NOT detected"; sf=1
+          elif _has "$_tp_cr" 'TR8P-STEP-HAS-CONDITION'; then echo "selftest FAIL: TR8P-10 — the real ci.yml's artifact TR8 step reads as carrying a condition"; sf=1
+          else echo "selftest PASS: TR8P-10 — a continue-on-error: inserted after the run block is detected (and the real file carries none)"; fi
+        else echo "selftest FAIL: TR8P-10 — the insertion point after the artifact TR8 step's run block was not found in ci.yml"; sf=1; fi
+      fi
+      _tr8p_pin
+    }
+    # TR8P-8: the derivation reads selftest_touched_replay up to its rc-0 sfx, off_kit, tr8_gate and tr8_noci, and the roster running touched_replay. A cksum of those lines is pinned; any edit
+    # (an added early return included) reds this cell and sends the editor to design section 2, which says what the derivation needs. Bumping the pin is that deliberate edit.
+    # PIN: the measured cksum (crc-size) of those lines at SWAS-658's build; the FAIL line prints the new value when they change.
+    _TR8P_PIN=1267903540-1285
+    _tr8p_pin() {
+      _tp_src="$_kr/conformance/prepush-lane.sh"
+      _tp_got=$(awk '
+        /^off_kit\(\) / { print }
+        /^tr8_gate\(\) \{$/ { g = 1 }
+        /^tr8_noci\(\) \{$/ { g = 1 }
+        g { print }
+        g && /^\}$/ { g = 0 }
+        /^selftest_touched_replay\(\) \{$/ { t = 1 }
+        t { print }
+        t && index($0, "sfx \"TR8: the plan on the real tree is rc 0\"") { t = 0 }
+      ' "$_tp_src" | cksum | awk '{ print $1 "-" $2 }')
+      _tp_ro=$(sed -n '/^ *touched_failclosed /p' "$_tp_src")
+      case "$_tp_got" in
+        ''|*-0) echo "selftest FAIL: TR8P-8 — the pin extraction found no TR8 lines in conformance/prepush-lane.sh (measured $_tp_got)"; sf=1 ;;
+        *) if ! _has "$_tp_ro" ' touched_replay '; then echo "selftest FAIL: TR8P-8 — the selftest roster no longer runs touched_replay, so verify's prepush-lane PASS would not cover TR8"; sf=1
+           elif [ "$_tp_got" != "$_TR8P_PIN" ]; then echo "selftest FAIL: TR8P-8 — the lane's TR8 code the derivation reads changed (measured cksum $_tp_got, pinned $_TR8P_PIN): re-read design 2026-11-08-tr8-once-658 section 2, then bump _TR8P_PIN"; sf=1
+           else echo "selftest PASS: TR8P-8 — the TR8 code the derived proof reads (selftest_touched_replay to its rc-0 sfx, off_kit, tr8_gate, tr8_noci) matches the pin, and the roster runs touched_replay"; fi ;;
+      esac
+    }
+    _tr8p_cells
+    # AGSJ-1..9 (SWAS-837, S1 of SWAS-857; plan docs/plans/2026-11-12-artifact-gate-shard-837-plan.md, design 2026-11-12-ci-affected-set-design.md section 2.4 and errata E3, review M6): each artifact
+    # family (artifact-gate, artifact-gate-gitlab, artifact-gate-brownfield) runs verify --require as four row shards (<family>-shard, rows by ordinal mod 4) and a JOIN (the family's own job key, so
+    # the check names do not change) that rebuilds the same tree, runs verify --merge over the four records and then every assertion the serial run had (M6), now on the merged output. The cells are cut out of
+    # the REAL ci.yml, in the kit-tree branch ONLY (on an adopter artifact ci.yml is the adopter's own).
+    # AGSJ-1: structure, for all three families, with temp-copy mutants. AGSJ-2..6: the join's merge-and-assert step cut out of ci.yml and run on a fixture tree whose verify.sh is a stand-in that refuses unless it is
+    # handed four records: a good output passes, and a missing Summary, an unparseable n/a, a --kitself row, fewer than 50 registry rows and n/a = 0 each red. AGSJ-7: the row-floor test removed lets the
+    # fewrows fixture through (so AGSJ-6 binds to that line). AGSJ-8: one shard record dropped reds the join, and removing the exit-status line and the whole M6 tail TOGETHER lets it through (each alone still reds,
+    # so the join has two guards). AGSJ-9: the readers of the artifact job keys (aggregator and TW1, gate-shape, runner switch, shellcheck pin, sbom parity) still read the new graph.
+    # The date pin: every shard and join runs incept with --date from the checked-out commit and commits with fixed dates, so every leg holds the same HEAD (incept.sh:829 stamps today's date otherwise).
+    _agsj_blk() {  # <job> [ci.yml] -> that job's lines, its header to the next job key (comments kept)
+      awk -v job="$1" 'BEGIN { hdr = "^  " job ":[ \t]*(#.*)?$" } $0 ~ hdr { j = 1; print; next } j && /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { j = 0 } j { print }' "${2:-$_rs_real}"
+    }
+    _agsj_code() {  # stdin -> the lines without whole-line comments and without a trailing ` #` comment
+      grep -v '^[[:space:]]*#' | sed 's/[[:space:]]#.*$//' || :
+    }
+    _agsj_n() { printf '%s\n' "$1" | grep -cF -- "$2" || :; }   # <text> <fixed string> -> the number of lines holding it
+    _agsj_fam() {  # <art|gl|bf> -> the family's join key, shard key, shard directory, adopter directory, artifact name stem, step-name prefixes
+      case "$1" in
+        art) _ag_join=artifact-gate; _ag_shard=artifact-gate-shard; _ag_dir=ag-shards; _ag_ad=adopter
+             _ag_stem='artifact-gate-${{ matrix.stack }}-${{ matrix.archetype }}-shard'; _ag_ex='Export the kit UNPRUNED'; _ag_in='Incept the export'
+             _ag_m6="The adopter's OWN conformance must be green ON THE ARTIFACT" ;;
+        gl)  _ag_join=artifact-gate-gitlab; _ag_shard=artifact-gate-gitlab-shard; _ag_dir=ag-gl-shards; _ag_ad=adopter-gl
+             _ag_stem=artifact-gate-gitlab-shard; _ag_ex='Export the kit UNPRUNED'; _ag_in='Incept the export with --ci gitlab'
+             _ag_m6="The adopter's OWN conformance must be green ON THE GITLAB ARTIFACT" ;;
+        *)   _ag_join=artifact-gate-brownfield; _ag_shard=artifact-gate-brownfield-shard; _ag_dir=ag-bf-shards; _ag_ad=adopter-bf
+             _ag_stem=artifact-gate-brownfield-shard; _ag_ex='Export the kit UNPRUNED, then seed'; _ag_in='Incept'
+             _ag_m6="The adopter's OWN full conformance must be green ON THE BROWNFIELD ARTIFACT" ;;
+      esac
+    }
+    _agsj_run() {  # <job block> <step name prefix> -> that step's run: text (a block scalar dedented 10 columns, or the one-line value)
+      printf '%s\n' "$1" | awk -v pre="      - name: $2" '
+        st == 0 && index($0, pre) == 1 { st = 1; next }
+        st == 1 && /^      - / { exit }
+        st == 1 && $0 == "        run: |" { st = 2; next }
+        st == 1 && /^        run: / { v = $0; sub(/^        run: /, "", v); print v; exit }
+        st == 2 && /^          / { print substr($0, 11); next }
+        st == 2 && /^[ \t]*$/ { print ""; next }
+        st == 2 { exit }'
+    }
+    _agsj_struct() {  # <ci.yml> -> one line per structural break of the three families (none when sound)
+      for _ag_k in art gl bf; do
+        _agsj_fam "$_ag_k"
+        _ag_jb=$(_agsj_blk "$_ag_join" "$1"); _ag_sb=$(_agsj_blk "$_ag_shard" "$1")
+        if [ -z "$_ag_jb" ] || [ -z "$_ag_sb" ]; then echo "$_ag_k: the join $_ag_join or its shard job $_ag_shard is missing"; continue; fi
+        _ag_jc=$(printf '%s\n' "$_ag_jb" | _agsj_code); _ag_sc=$(printf '%s\n' "$_ag_sb" | _agsj_code)
+        _has "$_ag_jc" "$(printf '\n    needs:\n      - changes\n      - %s' "$_ag_shard")" || echo "$_ag_k: the join's needs: is not the block list changes, $_ag_shard"
+        _has "$_ag_sc" "        shard: [1, 2, 3, 4]" || echo "$_ag_k: the shard matrix is not exactly shard: [1, 2, 3, 4]"
+        [ "$(_agsj_n "$_ag_sc" 'shard: [')" = 1 ] || echo "$_ag_k: the shard job carries a second shard list"
+        _ag_vn=$(_agsj_n "$_ag_sc" 'conformance/verify.sh --require'); _ag_vg=$(_agsj_n "$_ag_sc" 'conformance/verify.sh --require --shard "$SHARD/4" --output-file')
+        if [ "$_ag_vn" -lt 1 ] || [ "$_ag_vn" != "$_ag_vg" ]; then echo "$_ag_k: every verify --require line of the shard job must be --shard \"\$SHARD/4\" --output-file (found $_ag_vn, of which $_ag_vg are)"; fi
+        [ "$(_agsj_n "$_ag_jc" 'conformance/verify.sh --require')" = 0 ] || echo "$_ag_k: the join still runs a bare verify --require"
+        printf '%s\n' "$_ag_jc" | grep -F 'conformance/verify.sh --merge' | grep -Fq -- "\"\$RUNNER_TEMP\"/$_ag_dir/*.rec" || echo "$_ag_k: the join does not run verify --merge over its own $_ag_dir/*.rec"
+        _ag_up=$(printf '%s\n' "$_ag_sc" | awk '
+          function endstep() { if (up) { n++; if (alw && nof) ok++ } up = 0; alw = 0; nof = 0 }
+          /^      - / { endstep() }
+          /^ +(- )?uses: actions\/upload-artifact@/ { up = 1 }
+          /^        if: always\(\)[ \t]*$/ { alw = 1 }
+          /^          if-no-files-found: error[ \t]*$/ { nof = 1 }
+          END { endstep(); print ((n >= 1 && n == ok) ? "ok" : "bad") }')
+        [ "$_ag_up" = ok ] || echo "$_ag_k: the shard's upload step must carry if: always() and if-no-files-found: error (a dropped record must red the join, never go unseen)"
+        _ag_if=$(printf '%s\n' "$_ag_jc" | grep -E '^    if:' | sed -n 1p)
+        _has "$_ag_if" "if: \${{ !cancelled() && needs.changes.result == 'success' &&" || echo "$_ag_k: the join's if: must begin \${{ !cancelled() && needs.changes.result == 'success' && (a failed shard must red the join by name, not skip it)"
+        for _ag_b in "$_ag_sc" "$_ag_jc"; do
+          [ "$(_agsj_n "$_ag_b" 'scripts/incept.sh --noninteractive')" = 1 ] || echo "$_ag_k: a shard or join job does not run exactly one incept"
+          [ "$(_agsj_n "$_ag_b" '--date "$kit_date"')" = 1 ] || echo "$_ag_k: every incept call must carry --date \"\$kit_date\" (the same stamped date on every leg)"
+          [ "$(_agsj_n "$_ag_b" 'kit_date=$(TZ=UTC git -C "$GITHUB_WORKSPACE" log -1 --date=format-local:%Y-%m-%d --format=%cd)')" = 1 ] || echo "$_ag_k: kit_date must be the checked-out commit's UTC committer date, once per job"
+          [ "$(_agsj_n "$_ag_b" 'kit_ts=$(TZ=UTC git -C "$GITHUB_WORKSPACE" log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)')" = 1 ] || echo "$_ag_k: kit_ts must be the checked-out commit's UTC committer time, once per job"
+          [ "$(_agsj_n "$_ag_b" 'export GIT_AUTHOR_DATE="$kit_ts" GIT_COMMITTER_DATE="$kit_ts"')" = 1 ] || echo "$_ag_k: the baseline commits need fixed commit dates from kit_ts, once per job (one HEAD on every leg)"
+        done
+        if [ "$_ag_k" = art ]; then
+          [ "$(_agsj_n "$_ag_sc" 'stack: python')" = 4 ] || echo "$_ag_k: the shard matrix must list exactly four stack: python include entries"
+          [ "$(printf '%s\n' "$_ag_sc" | awk '/^ +- stack: python$/ { p = 1; next } p && /^ +shard: [0-9]+$/ { s = s $2; p = 0 } END { print s }')" = 1234 ] || echo "$_ag_k: the python include entries must carry shard 1, 2, 3 and 4 in order"
+        fi
+        for _ag_s in "$_ag_ex" "$_ag_in"; do
+          _ag_x=$(_agsj_run "$_ag_sb" "$_ag_s"); _ag_y=$(_agsj_run "$_ag_jb" "$_ag_s")
+          if [ -z "$_ag_x" ] || [ "$_ag_x" != "$_ag_y" ]; then echo "$_ag_k: the step '$_ag_s' differs from the join's (or is missing): the shard and the join must build one tree"; fi
+        done
+        _has "$_ag_sc" "name: $_ag_stem-\${{ matrix.shard }}" || echo "$_ag_k: the shard's upload is not named $_ag_stem-<shard>"
+        _has "$_ag_jc" "pattern: $_ag_stem-*" || echo "$_ag_k: the join does not download pattern $_ag_stem-*"
+        _has "$_ag_jc" "path: \${{ runner.temp }}/$_ag_dir" || echo "$_ag_k: the join does not download into $_ag_dir"
+      done
+    }
+    _agsj_mut() {  # <id> <what> <mutated ci.yml> <needle> -> PASS when AGSJ-1's reader reds the mutant naming the needle
+      if cmp -s "$_rs_real" "$3"; then echo "selftest FAIL: $1 — the mutant equals the original (the line it edits moved)"; sf=1; return 0; fi
+      _ag_mo=$(_agsj_struct "$3")
+      if [ -z "$_ag_mo" ]; then echo "selftest FAIL: $1 — $2 was NOT caught by AGSJ-1"; sf=1
+      elif _has "$_ag_mo" "$4"; then echo "selftest PASS: $1 — $2 -> RED, naming '$4'"
+      else echo "selftest FAIL: $1 — $2 reds without naming '$4': $_ag_mo"; sf=1; fi
+    }
+    _ag_seq=0
+    _agsj_fx() {  # <art|gl|bf> <good|nosummary|badna|zerona|kitself|fewrows|rowsfile|missing> -> a fixture root in _ag_root: the incepted-tree directory with a stand-in verify.sh, and the shard directory with four records (three for missing)
+      _agsj_fam "$1"
+      _ag_seq=$((_ag_seq + 1)); _ag_root="$d/agsj/fx$_ag_seq"
+      mkdir -p "$_ag_root/$_ag_ad/conformance" "$_ag_root/$_ag_dir"
+      _ag_vf="$_ag_root/$_ag_ad/conformance/verify.sh"
+      printf '%s\n' '#!/bin/sh' \
+        '[ "${1:-}" = "--merge" ] || { echo "stub: not a merge" >&2; exit 2; }' \
+        'n=0' \
+        'for a in "$@"; do' \
+        '  case "$a" in' \
+        '    *.rec) n=$((n + 1)); [ -f "$a" ] || { echo "verify --merge: REFUSED (no record at $a)"; exit 1; } ;;' \
+        '  esac' \
+        'done' \
+        '[ "$n" -eq 4 ] || { echo "verify --merge: REFUSED (missing coordinate(s): $n record(s) given, M is 4)"; exit 1; }' \
+        'mode=$(cat "$RUNNER_TEMP/mode")' \
+        'echo "Conformance verification (honest aggregate)"' \
+        'echo "  [control] prepush-lane PASS"' \
+        'case "$mode" in' \
+        '  nosummary) : ;;' \
+        '  badna) echo "Summary: 70 controls · x n/a · 0 failed" ;;' \
+        '  zerona) echo "Summary: 70 controls · 0 n/a · 0 failed" ;;' \
+        '  *) echo "Summary: 70 controls · 3 n/a · 0 failed" ;;' \
+        'esac' \
+        'echo "RESULT: OK"' \
+        'exit 0' > "$_ag_vf"
+      _ag_rows=60; [ "$2" != fewrows ] || _ag_rows=10
+      _ag_i=0
+      while [ "$_ag_i" -lt "$_ag_rows" ]; do _ag_i=$((_ag_i + 1)); printf 'check control row%s sh x\n' "$_ag_i"; done >> "$_ag_vf"
+      [ "$2" != kitself ] || printf 'check control leak --kitself sh x\n' >> "$_ag_vf"
+      [ "$2" != rowsfile ] || : > "$_ag_root/$_ag_ad/conformance/verify-kitself.rows"
+      printf '%s\n' "$2" > "$_ag_root/mode"
+      _ag_nrec=4; [ "$2" != missing ] || _ag_nrec=3
+      _ag_i=0
+      while [ "$_ag_i" -lt "$_ag_nrec" ]; do _ag_i=$((_ag_i + 1)); : > "$_ag_root/$_ag_dir/shard-$_ag_i.rec"; done
+    }
+    _agsj_m6() { _agsj_fam "$1"; _ag_m6b=$(_agsj_run "$(_agsj_blk "$_ag_join")" "$_ag_m6"); }   # <art|gl|bf> -> _ag_m6b: that join's merge-and-assert step, cut out of the real ci.yml
+    _agsj_exec() {  # <fixture root> <block text> -> _ag_rc and _ag_out of the block run in that fixture
+      if _ag_out=$(env RUNNER_TEMP="$1" KIT_GUARD_BATTERY_REF=/nonexistent KIT_GUARD_BATTERY_VARIANTS=none sh -e -c "$2" 2>&1); then _ag_rc=0; else _ag_rc=$?; fi
+    }
+    _agsj_red() {  # <id> <what> <fixture variant> <needle> -> PASS when every family's join step reds that fixture, naming the needle
+      _ag_bad=""
+      for _ag_k in art gl bf; do
+        _agsj_m6 "$_ag_k"; _agsj_fx "$_ag_k" "$3"; _agsj_exec "$_ag_root" "$_ag_m6b"
+        if [ -z "$_ag_m6b" ] || [ "$_ag_rc" -eq 0 ] || ! _has "$_ag_out" "$4"; then _ag_bad="$_ag_bad $_ag_k(rc=$_ag_rc)"; fi
+      done
+      if [ -z "$_ag_bad" ]; then echo "selftest PASS: $1 — $2 -> RED in all three join steps, naming '$4'"
+      else echo "selftest FAIL: $1 — $2 was NOT caught (or not named '$4') by:$_ag_bad"; sf=1; fi
+    }
+    _agsj_cells() {
+      mkdir -p "$d/agsj"
+      _ag_o=$(_agsj_struct "$_rs_real")
+      if [ -n "$_ag_o" ]; then
+        echo "selftest FAIL: AGSJ-1 — the real ci.yml breaks the artifact shard shape:"; printf '%s\n' "$_ag_o"; sf=1
+      else
+        echo "selftest PASS: AGSJ-1 — all three artifact families are four row shards plus a join: the join needs its shard job, the matrix is exactly [1, 2, 3, 4], every verify line is --shard i/4 --output-file, the upload is if: always() with if-no-files-found: error, the join runs under !cancelled() behind the changes result, merges its own directory, and shard and join build one tree (same export and incept steps, one pinned date, fixed commit dates)"
+        sed 's/shard: \[1, 2, 3, 4\]/shard: [1, 2, 3]/' "$_rs_real" > "$d/agsj/m1.yml"
+        _agsj_mut AGSJ-1a "a shard list of three" "$d/agsj/m1.yml" "shard matrix is not exactly"
+        sed 's/^\(    if: \${{\) !cancelled() && /\1 /' "$_rs_real" > "$d/agsj/m2.yml"
+        _agsj_mut AGSJ-1b "a join if: without !cancelled()" "$d/agsj/m2.yml" "if: must begin"
+        sed 's/^\( *if-no-files-found:\) error/\1 warn/' "$_rs_real" > "$d/agsj/m3.yml"
+        _agsj_mut AGSJ-1c "if-no-files-found: warn on the shard upload" "$d/agsj/m3.yml" "upload step must carry"
+        sed 's#sh conformance/verify.sh --merge --timing-file "$RUNNER_TEMP/ag-row-times.tsv" "$RUNNER_TEMP"/ag-shards/\*.rec#sh conformance/verify.sh --require#' "$_rs_real" > "$d/agsj/m4.yml"
+        _agsj_mut AGSJ-1d "a bare verify --require restored in the artifact-gate join" "$d/agsj/m4.yml" "still runs a bare verify --require"
+        sed '/^      - artifact-gate-shard$/d' "$_rs_real" > "$d/agsj/m5.yml"
+        _agsj_mut AGSJ-1e "the shard job dropped from the join's needs:" "$d/agsj/m5.yml" "needs: is not the block list"
+        awk '!dd && index($0, " --date \"$kit_date\"") { sub(/ --date "\$kit_date"/, ""); dd = 1 } { print }' "$_rs_real" > "$d/agsj/m6.yml"
+        _agsj_mut AGSJ-1f "one leg's incept without --date" "$d/agsj/m6.yml" "every incept call must carry --date"
+        awk '!dd && index($0, "--name ArtifactGate --intent-owner") { sub(/ArtifactGate/, "ArtifactGateX"); dd = 1 } { print }' "$_rs_real" > "$d/agsj/m7.yml"
+        _agsj_mut AGSJ-1g "the shard's incept step edited away from the join's" "$d/agsj/m7.yml" "differs from the join's"
+        awk '!dd && index($0, "export GIT_AUTHOR_DATE=") { dd = 1; next } { print }' "$_rs_real" > "$d/agsj/m8.yml"
+        _agsj_mut AGSJ-1h "one leg's baseline commits without fixed dates" "$d/agsj/m8.yml" "fixed commit dates"
+        awk '!dd && /^          - stack: python$/ { dd = 1; skip = 3 } skip > 0 { skip--; next } { print }' "$_rs_real" > "$d/agsj/m9.yml"
+        _agsj_mut AGSJ-1i "one python include entry dropped from the shard matrix" "$d/agsj/m9.yml" "exactly four stack: python"
+      fi
+      # AGSJ-2: a good merged output passes in every family. An empty cut fails here (never a vacuous pass).
+      _ag_bad=""
+      for _ag_k in art gl bf; do
+        _agsj_m6 "$_ag_k"; _agsj_fx "$_ag_k" good; _agsj_exec "$_ag_root" "$_ag_m6b"
+        if [ -z "$_ag_m6b" ] || [ "$_ag_rc" -ne 0 ] || ! _has "$_ag_out" "three-outcome render asserted"; then _ag_bad="$_ag_bad $_ag_k(rc=$_ag_rc: $_ag_out)"; fi
+      done
+      if [ -z "$_ag_bad" ]; then echo "selftest PASS: AGSJ-2 — each join's merge-and-assert step passes a good merged output (four records, a Summary, n/a 3, 60 registry rows, no --kitself row)"
+      else echo "selftest FAIL: AGSJ-2 — a join's merge-and-assert step was not found, or reds a good merged output:$_ag_bad"; sf=1; fi
+      _agsj_red AGSJ-3 "a merged output with no ^Summary: line" nosummary "no ^Summary: line"
+      _agsj_red AGSJ-4 "a Summary line with an unparseable n/a field" badna "no parseable n/a field"
+      _agsj_red AGSJ-5 "a --kitself row in the tree's verify.sh" kitself "--kitself row(s)"
+      _agsj_red AGSJ-6 "fewer than 50 registry rows (the implausibility floor)" fewrows "registry-row floor derived as"
+      _agsj_red AGSJ-6b "n/a = 0 (the classifier died)" zerona "n/a=0"
+      _agsj_red AGSJ-6c "conformance/verify-kitself.rows present in the artifact" rowsfile "verify-kitself.rows is present"
+      # AGSJ-7: the row-floor test removed lets the fewrows fixture through, so AGSJ-6 is carried by that line.
+      _ag_bad=""
+      for _ag_k in art gl bf; do
+        _agsj_m6 "$_ag_k"
+        _ag_mut=$(printf '%s\n' "$_ag_m6b" | sed 's/\[ "\$rows" -ge 50 \]/true/')
+        _agsj_fx "$_ag_k" fewrows; _agsj_exec "$_ag_root" "$_ag_mut"
+        if [ -z "$_ag_m6b" ] || [ "$_ag_mut" = "$_ag_m6b" ] || [ "$_ag_rc" -ne 0 ]; then _ag_bad="$_ag_bad $_ag_k(rc=$_ag_rc)"; fi
+      done
+      if [ -z "$_ag_bad" ]; then echo "selftest PASS: AGSJ-7 — with the row-floor test removed the fewrows fixture passes (rc 0) where the real step reds -> AGSJ-6 binds to that line"
+      else echo "selftest FAIL: AGSJ-7 — the row-floor mutant did not differ from the real step on the fewrows fixture:$_ag_bad"; sf=1; fi
+      # AGSJ-8: one shard record dropped. The real step reds, naming the merge's refusal. The exit-status line removed alone, and the M6 tail removed alone, still red (two guards); both removed together let it through.
+      _ag_bad=""
+      for _ag_k in art gl bf; do
+        _agsj_m6 "$_ag_k"
+        _ag_ma=$(printf '%s\n' "$_ag_m6b" | sed '/^\[ "\$rc" -eq 0 \] ||/d')
+        _ag_mb=$(printf '%s\n' "$_ag_m6b" | sed '/^sm=\$(grep/,$d')
+        _ag_mc=$(printf '%s\n' "$_ag_mb" | sed '/^\[ "\$rc" -eq 0 \] ||/d')
+        if [ -z "$_ag_m6b" ] || [ "$_ag_ma" = "$_ag_m6b" ] || [ "$_ag_mb" = "$_ag_m6b" ] || [ "$_ag_mc" = "$_ag_mb" ]; then _ag_bad="$_ag_bad $_ag_k(mutants did not apply)"; continue; fi
+        _agsj_fx "$_ag_k" missing; _agsj_exec "$_ag_root" "$_ag_m6b"
+        if [ "$_ag_rc" -eq 0 ] || ! _has "$_ag_out" "missing coordinate"; then _ag_bad="$_ag_bad $_ag_k/real(rc=$_ag_rc)"; fi
+        _agsj_fx "$_ag_k" missing; _agsj_exec "$_ag_root" "$_ag_ma"
+        if [ "$_ag_rc" -eq 0 ] || ! _has "$_ag_out" "no ^Summary: line"; then _ag_bad="$_ag_bad $_ag_k/no-rc-line(rc=$_ag_rc)"; fi
+        _agsj_fx "$_ag_k" missing; _agsj_exec "$_ag_root" "$_ag_mb"
+        if [ "$_ag_rc" -eq 0 ] || ! _has "$_ag_out" "the verify merge exited"; then _ag_bad="$_ag_bad $_ag_k/no-tail(rc=$_ag_rc)"; fi
+        _agsj_fx "$_ag_k" missing; _agsj_exec "$_ag_root" "$_ag_mc"
+        if [ "$_ag_rc" -ne 0 ]; then _ag_bad="$_ag_bad $_ag_k/neither(rc=$_ag_rc)"; fi
+      done
+      if [ -z "$_ag_bad" ]; then echo "selftest PASS: AGSJ-8 — a dropped shard record reds every join (the merge refuses, naming the missing coordinate); without the exit-status line it still reds on the missing Summary, without the M6 tail it still reds on the exit status, and without both it passes -> the join has two guards"
+      else echo "selftest FAIL: AGSJ-8 — the dropped-record cell failed:$_ag_bad"; sf=1; fi
+      # AGSJ-9: the readers of the artifact job keys still read the new graph. Each is a function of this file, run on the real ci.yml; the rest (verify's CI-SHAPE leg, the prepush census) are graded where they run.
+      _ag_bad=""
+      aggregator_needs_lock "$_rs_real" "$_kr/conformance/ci-classify-changes.sh" >/dev/null 2>&1 || _ag_bad="$_ag_bad aggregator-needs-lock(incl. TW1)"
+      check_gate_shape "$_rs_real" "$_kr/conformance/ci-gate-state.sh" >/dev/null 2>&1 || _ag_bad="$_ag_bad gate-shape"
+      check_runner_switch "$_rs_real" >/dev/null 2>&1 || _ag_bad="$_ag_bad runner-switch"
+      check_shellcheck_pin_tree "$_kr" >/dev/null 2>&1 || _ag_bad="$_ag_bad shellcheck-pin"
+      check_sbom_parity "$_rs_real" >/dev/null 2>&1 || _ag_bad="$_ag_bad sbom-parity"
+      if [ -z "$_ag_bad" ]; then echo "selftest PASS: AGSJ-9 — the aggregator lock (needs: and the TW1 report job), gate-shape, the runner switch, the shellcheck pin and sbom parity all still read the new artifact graph green"
+      else echo "selftest FAIL: AGSJ-9 — a reader of the artifact job keys reds the new graph:$_ag_bad"; sf=1; fi
+    }
+    _agsj_cells
   else
     echo "selftest FAIL: RS0 — the real kit tree does not satisfy the runner-switch lock (SWAS-280)"; sf=1
   fi
@@ -6867,6 +7536,103 @@ $1"
   if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-gt-foreign.yml" "$d/agg/cls-ok.sh" 3 2>&1); then echo "selftest FAIL: AGG9 — a foreign job in needs: was NOT caught"; sf=1
   else case "$_agg_out" in *"not allowed in the aggregator's needs: side-job"*) echo "selftest PASS: AGG9 — a job in needs: that neither PG_NEEDED nor the gate set names -> RED, on the 'not allowed' line" ;; *) echo "selftest FAIL: AGG9 — reds without the not-allowed line: $_agg_out"; sf=1 ;; esac; fi
   _st_mark GT
+
+  # SA0-SA8, GT5x (SWAS-869) — the scheduled-anchor lock (check_scheduled_anchor, run by check_gate_shape). SA0 is the positive control on the real ci.yml; each mutant is a scratch copy of it (a
+  # fixture job is appended with printf) and must red AND name its cause. GT5x: the GTM5 exemption is name-exact, so an always() job that is not nightly-report still owes the changes clause.
+  mkdir -p "$d/sa"
+  _sa_case() {  # <id> <mutant file> <needle> <what> -> the mutant must differ from the real ci.yml, then check_scheduled_anchor must name the needle
+    if cmp -s "$_gt_real" "$d/sa/$2.yml"; then echo "selftest FAIL: $1 — the mutant equals the original (nothing to mutate; the line is not pinned)"; sf=1; return 0; fi
+    o=$(check_scheduled_anchor "$d/sa/$2.yml" 2>&1)
+    if [ -z "$o" ]; then echo "selftest FAIL: $1 — $4 was NOT caught"; sf=1
+    elif _has "$o" "$3"; then echo "selftest PASS: $1 — $4 -> RED, naming '$3'"
+    else echo "selftest FAIL: $1 — $4 reds without naming '$3': $o"; sf=1; fi
+  }
+  if [ ! -f "$_gt_real" ] || { [ ! -f "$_kr/docs/ROADMAP-KIT.md" ] && [ ! -f "$_kr/.github/workflows/golden-path.yml" ]; }; then
+    echo "selftest SKIP: SA0-SA8/GT5x — not a kit tree (no kit-source ci.yml)"
+  else
+    o=$(check_scheduled_anchor "$_gt_real" 2>&1)
+    if [ -z "$o" ]; then echo "selftest PASS: SA0 — the real ci.yml: exactly the keys pull_request, push and schedule with one weekly cron, a nightly-report job holding issues: write and nothing else, no action or repo script, its if: and needs: exact, its text and its jq line pinned, the changes job's push lane entered on a push only"
+    else echo "selftest FAIL: SA0 — the real ci.yml does not satisfy the scheduled-anchor lock: $o"; sf=1; fi
+    # SA0b — a small fixture (printf-built, the nightly-report job cut from the real file with its needs: and PR_SCOPED_JOBS rewritten): another weekday and hour pass too, so the lock is not tied to the kit's own numbers
+    { printf 'on:\n  pull_request:\n    types: [opened]\n  push:\n    branches: [main]\n  schedule:\n    - cron: %s\njobs:\n  a:\n    if: %s\n    runs-on: ubuntu-24.04\n' "'5 4 * * 2'" "github.event_name == 'pull_request'"
+      printf '  changes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: |\n%s\n%s\n            :\n            fi\n  nightly-report:\n    needs:\n      - a\n      - changes\n' "$_SA_DOCS_FALSE" "$_SA_PUSH_LANE"
+      _sa_job "$_gt_real" nightly-report | awk '/^    needs:[ \t]*$/ { n = 1; next } n && /^      - / { next } { n = 0; print }' | sed 's/^\(          PR_SCOPED_JOBS: \).*$/\1a/'; } > "$d/sa/fx.yml"
+    o=$(check_scheduled_anchor "$d/sa/fx.yml" 2>&1)
+    if [ -z "$o" ]; then echo "selftest PASS: SA0b — the printf-built fixture (weekly cron on another weekday and hour, the real job text, a two-job needs: list) satisfies the lock"
+    else echo "selftest FAIL: SA0b — the fixture does not satisfy the scheduled-anchor lock: $o"; sf=1; fi
+    sed -e 's/^    needs:$/    needs: [a, changes]/' -e '/^      - a$/d' -e '/^      - changes$/d' "$d/sa/fx.yml" > "$d/sa/fxm.yml"
+    o=$(check_scheduled_anchor "$d/sa/fxm.yml" 2>&1)
+    if [ -z "$o" ]; then echo "selftest FAIL: SA0b-M — a flow-style needs: list on the fixture was NOT caught"; sf=1
+    elif _has "$o" "scheduled-anchor SA5"; then echo "selftest PASS: SA0b-M — a flow-style needs: list on the fixture -> RED, naming 'scheduled-anchor SA5'"
+    else echo "selftest FAIL: SA0b-M — reds without naming SA5: $o"; sf=1; fi
+    sed '/^  schedule:$/,/^    - cron:/d' "$_gt_real" > "$d/sa/m1.yml"
+    sed "s/- cron: '37 8 \* \* 1'/- cron: '37 8 * * *'/" "$_gt_real" > "$d/sa/m2.yml"
+    awk '{ print } /^    - cron: / { print "  workflow_dispatch:" }' "$_gt_real" > "$d/sa/m3.yml"
+    awk '{ print } /^    - cron: / { print "  merge_group:" }' "$_gt_real" > "$d/sa/m3b.yml"
+    _gt_inj nightly-report '{ print } j && /^      issues: write$/ { print "      contents: read" }' > "$d/sa/m4.yml"
+    _gt_inj nightly-report '{ print } j && /^      issues: write$/ { print "      pull-requests: write" }' > "$d/sa/m5.yml"
+    _gt_inj nightly-report '{ print } j && /^      issues: write$/ { print "      contents: write  # x" }' > "$d/sa/m5b.yml"
+    _gt_inj nightly-report '{ print } j && /^      issues: write$/ { print "      contents: \047write\047" }' > "$d/sa/m5c.yml"
+    _gt_inj nightly-report '{ print } j && /^    steps:$/ { print "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" }' > "$d/sa/m6.yml"
+    _gt_inj nightly-report '{ print } j && /^          set -eu$/ { print "          sh scripts/ci-time-report.sh" }' > "$d/sa/m7.yml"
+    _gt_inj nightly-report 'j && /^    if: / { print "    if: github.event_name == \047schedule\047"; next } { print }' > "$d/sa/m8.yml"
+    _gt_inj nightly-report 'j && /^    if: / { print "    if: always() && github.event_name != \047pull_request\047"; next } { print }' > "$d/sa/m9.yml"
+    { cat "$_gt_real"; printf '  extra-job:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo x\n'; } > "$d/sa/m10.yml"
+    { cat "$_gt_real"; printf "  pr-only-extra:\n    runs-on: ubuntu-24.04\n    if: github.event_name == 'pull_request'\n    steps:\n      - run: echo x\n"; } > "$d/sa/m11.yml"
+    _gt_inj nightly-report '{ print } j && /^          set -eu$/ { print "          echo ${{ github.event.head_commit.message }}" }' > "$d/sa/m12.yml"
+    _gt_inj nightly-report '{ print } j && /^    steps:$/ { print "      - run: echo ${{ github.event.head_commit.message }}" }' > "$d/sa/m12b.yml"
+    _gt_inj nightly-report '{ print } j && /^          set -eu$/ { print "          gh api repos/x/y" }' > "$d/sa/m13.yml"
+    sed 's/\.value\.result as \$r/.value.outputs as $r/' "$_gt_real" > "$d/sa/m14.yml"
+    sed 's/ and (\$r != "skipped" or (\$scoped | split(" ") | any(\. == \$k) | not))//' "$_gt_real" > "$d/sa/m14b.yml"
+    sed 's/(\$r != "skipped" or (\$scoped | split(" ") | any(\. == \$k) | not))/$r != "skipped"/' "$_gt_real" > "$d/sa/m14c.yml"
+    { cat "$_gt_real"; printf '  other-report:\n    needs: gate\n    if: always()\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo x\n'; } > "$d/gt/m15.yml"
+    sed 's/if \[ "\$EVENT" = "push" \] && \[ "\$GITHUB_REF"/if [ "$EVENT" != "pull_request" ] \&\& [ "$GITHUB_REF"/' "$_gt_real" > "$d/sa/m16.yml"
+    _gt_inj changes '!d && j && /^            echo "docs_only=false"/ { d = 1; next } { print }' > "$d/sa/m17.yml"
+    _sa_case SAM1 m1 "scheduled-anchor SA1" "the schedule: trigger dropped"
+    _sa_case SAM2 m2 "scheduled-anchor SA1" "the cron made daily (* * *)"
+    _sa_case SAM3 m3 "scheduled-anchor SA1" "a workflow_dispatch: trigger added (the GO'd errata C2 bars it)"
+    _sa_case SAM3b m3b "scheduled-anchor SA1" "a merge_group: trigger added (the on: key set is exactly pull_request, push, schedule)"
+    _sa_case SAM4 m4 "scheduled-anchor SA2" "contents: read added to nightly-report"
+    _sa_case SAM5 m5 "scheduled-anchor SA2" "pull-requests: write added to nightly-report"
+    _sa_case SAM5b m5b "scheduled-anchor SA2" "contents: write with a trailing comment added after issues: write"
+    _sa_case SAM5c m5c "scheduled-anchor SA2" "contents: 'write' (a quoted value) added after issues: write"
+    _sa_case SAM6 m6 "scheduled-anchor SA3" "an actions/checkout step in nightly-report"
+    _sa_case SAM7 m7 "scheduled-anchor SA3" "a repo script (sh scripts/ci-time-report.sh) run by nightly-report"
+    _sa_case SAM8 m8 "scheduled-anchor SA4" "always() dropped from nightly-report's if:"
+    _sa_case SAM9 m9 "scheduled-anchor SA4" "nightly-report's if: widened to != 'pull_request'"
+    _sa_case SAM10 m10 "scheduled-anchor SA5" "a job outside nightly-report's needs"
+    _sa_case SAM11 m11 "scheduled-anchor SA6" "a PR-only job missing from PR_SCOPED_JOBS"
+    _sa_case SAM12 m12 "scheduled-anchor SA7" "a workflow expression in the run body"
+    _sa_case SAM12b m12b "scheduled-anchor SA7" "a workflow expression in a one-line '- run:' step"
+    _sa_case SAM13 m13 "scheduled-anchor SA7" "a gh api call in the run body"
+    _sa_case SAM14 m14 "scheduled-anchor SA7" "the jq line reading .value.outputs"
+    _sa_case SAM14b m14b "scheduled-anchor SA7" "the jq line's skipped clause removed (the byte pin: every skip would read loud)"
+    _sa_case SAM14c m14c "scheduled-anchor SA7" "the jq line's skipped clause made the old quiet filter, and \$r != \"skipped\" (the byte pin: an unexpected skip would read green)"
+    # SA9 — the report's own jq filter, cut from the file and RUN on a sample needs object: a success and a PR-scoped skip are quiet; an unlisted skip, a failure, a cancelled job with an off-shape name and an unknown result are reported
+    _sa_jqrun() {  # <workflow> -> the lines the report's jq filter prints for the sample needs object
+      _sa_jf=$(awk -F"'" '/^          jq -r --arg scoped / { print $2; exit }' "$1")
+      printf '{"a":{"result":"success"},"b":{"result":"skipped"},"c":{"result":"failure"},"pr":{"result":"skipped"},"Bad Name":{"result":"cancelled"},"u":{"result":"weird"}}' | jq -r --arg scoped pr "$_sa_jf" 2>&1 || :
+    }
+    _sa_want=$(printf '%s\n' '- b: skipped-unexpected' '- c: failure' '- off-shape-job-name: cancelled' '- u: unexpected')
+    if ! command -v jq >/dev/null 2>&1; then echo "selftest SKIP: SA9 — it needs jq"
+    else
+      o=$(_sa_jqrun "$_gt_real")
+      if [ "$o" = "$_sa_want" ]; then echo "selftest PASS: SA9 — the report's jq filter, run on a sample: a PR-scoped skip is quiet, an unlisted skip reads skipped-unexpected, failures and odd names are reported"
+      else echo "selftest FAIL: SA9 — the report's jq filter printed: $(printf '%s' "$o" | tr '\n' '|')"; sf=1; fi
+      _sa_loud=$(printf '%s\n' '- b: skipped-unexpected' '- c: failure' '- pr: skipped-unexpected' '- off-shape-job-name: cancelled' '- u: unexpected')
+      o=$(_sa_jqrun "$d/sa/m14b.yml")
+      if [ "$o" = "$_sa_loud" ]; then echo "selftest PASS: SA9-M — with the skipped clause removed every skip is loud: the PR-scoped job reads '- pr: skipped-unexpected' (a jq error could not satisfy this exact output)"
+      else echo "selftest FAIL: SA9-M — the filter without its skipped clause printed: $(printf '%s' "$o" | tr '\n' '|')"; sf=1; fi
+      _sa_quiet=$(printf '%s\n' '- c: failure' '- off-shape-job-name: cancelled' '- u: unexpected')
+      o=$(_sa_jqrun "$d/sa/m14c.yml")
+      if [ "$o" = "$_sa_quiet" ]; then echo "selftest PASS: SA9-Q — with the old quiet filter ('\$r != \"skipped\"') the unlisted skip '- b: skipped-unexpected' is missing from the output (the dangerous direction reads green, and SA9 sees it)"
+      else echo "selftest FAIL: SA9-Q — the quiet-filter mutant printed: $(printf '%s' "$o" | tr '\n' '|')"; sf=1; fi
+    fi
+    _gt_m SAM15 m15 "status function" "GT5x — an always() job other than nightly-report without the changes-result clause (the exemption is name-exact)"
+    _sa_case SAM16 m16 "scheduled-anchor SA8" "the changes job's push lane widened to any non-PR event"
+    _sa_case SAM17 m17 "scheduled-anchor SA8" "the changes job's docs_only=false line dropped"
+  fi
+  _st_mark SA
   _st_end
 
   if [ "$sf" -eq 0 ]; then echo "OK: ci-gates selftest"; exit 0; else echo "FAIL: ci-gates selftest"; exit 1; fi
@@ -6932,7 +7698,7 @@ _unv_end() {
 _st_begin() {  # first statement of selftest(): state reset with no conditions (an inherited _st_done=1 must not survive), then the traps
   d=$(mktemp -d)
   _st_done=0 _st_seen='' _st_last=''
-  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB SCP RS CS GT YF'
+  _ST_SECTIONS='SEAMS OT DQ RP KIT AGG LS BP TT TF ST TB SJ LB SCP RS CS GT YF SA'
   trap '_st_rc=$?; rm -rf "$d"; if [ "$_st_done" != 1 ]; then echo "FAIL: ci-gates selftest ended before its end marker (last section: ${_st_last:-none}, rc $_st_rc)" >&2; exit 1; fi; exit "$_st_rc"' EXIT
   trap 'exit 130' INT TERM
 }

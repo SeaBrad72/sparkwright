@@ -1,0 +1,25 @@
+> **DRAFT: inferred from the repository by an agent. Not ratified. A person reviews it and moves what is right into place.**
+
+# Inception draft: <CHARTER | ADR-000-stack | RUNBOOK | BACKLOG-GAPS | GUARD-PROPOSALS>
+
+Every draft under `docs/inception-draft/` starts with the banner line above, exactly as written, and then this legend. The skill is `skills/inception-from-code/SKILL.md`. The banner and the tags belong to the draft. When a person moves a fact into a ratified file, they edit what is wrong, drop the banner and the tags they do not want, and delete the draft. `conformance/inception-done.sh` fails while `docs/inception-draft/` exists or one of the four ratified files still carries the banner line.
+
+## Tag legend
+
+Each stated fact carries exactly one tag.
+
+| Tag | Meaning | What sits beside it |
+|---|---|---|
+| `[verified]` | The agent ran a read-only command from outside the repository and saw the result. | The command, written out. |
+| `[read]` | Quoted or paraphrased from a file in the repository. | The `path:line`. |
+| `[inferred]` | Concluded from one or more `[read]` facts. | The `[read]` facts it rests on, named. |
+| `[asserted]` | The agent's judgment, with no source. Kept only where a template field needs a value and none can be read. | Nothing. These are the facts most worth checking. |
+
+A field with no supporting fact stays unfilled: the ratified template's own placeholder stays in place.
+
+## Example
+
+- Runtime: Node 22 `[read]` `<file>:<line>`
+- Runtime version flag answers 22 `[verified]` by `<version command>`, run with the working directory outside the repository
+- Deploys on merge to main `[inferred]` from the two `[read]` facts it names (`<file>:<line>` each)
+- Owner of the on-call rota: `[asserted]`

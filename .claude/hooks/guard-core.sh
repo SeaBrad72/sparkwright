@@ -5026,7 +5026,8 @@ _cp8b_abs_literal_phys() {
     *) return 1 ;;
   esac
   case "$1" in
-    *..*|*[!A-Za-z0-9._/@:+=,-]*) return 1 ;;
+    *..*) return 1 ;;   # G-REDIR-DOTDOT
+    *[!A-Za-z0-9._/@:+=,-]*) return 1 ;;
   esac
   _resolve_physical "$1"
 }
@@ -5297,7 +5298,8 @@ _cp8b_tad_is_clone_exec() {
 # Each fixes its argv exactly (the generic `_cp8b_clone_args_ok` walk is not reused), peels no wrapper, refuses any earlier environment
 # change on the line, and takes redirect targets only under a temp root and outside the protected root. G4 and G5 reach git in the clone,
 # so they also require the clone-integrity checks of §3.7 (the git-config ALLOWLIST, no live hooks) and G4 the origin, conf and root==main
-# checks of §3.6. A bug here fails CLOSED to the verdict the segment had before. HONEST CEILING (design §11): G1, G2, G3 and G5 run
+# checks of §3.6. A sixth grammar, G6 `sparkwright new <fresh temp dest> ...` (SWAS-875), is chosen inside the `scripts/sparkwright` arm of
+# `_cp8b_g_dispatch` by the first argument; G1 is untouched. A bug here fails CLOSED to the verdict the segment had before. HONEST CEILING (design §11): G1, G2, G3, G5 and G6 run
 # agent-authored code; every check below is decided once at hook time and acted on later; these are speed bumps for honest mistakes,
 # against clone code the honest control is the credential's own scope, not the host binding (docs/governance/DECISIONS.md D-241017-1).
 # =============================================================================================
@@ -5449,7 +5451,7 @@ _cp8b_g_hooks_ok() {
 
 # The ROOT's board code table (design §3.6, C3): every file G4 runs, sources or reads from the root. Closed; a drift leg in
 # conformance/agent-autonomy.sh (SWAS278A-X12f) reds when a table file names a computed sibling-script path that is not here.
-_CP8B_G4_TABLE='scripts/board.sh scripts/board-claim.sh scripts/tracker-conf.sh scripts/tracker-cred.sh scripts/tracker-jira.sh scripts/tracker-read.sh scripts/runaway-guard.sh conformance/backlog-lib.sh .kit/budget.conf'
+_CP8B_G4_TABLE='scripts/board.sh scripts/board-claim.sh scripts/checkout-lease.sh scripts/tracker-conf.sh scripts/tracker-cred.sh scripts/tracker-jira.sh scripts/tracker-read.sh scripts/runaway-guard.sh conformance/backlog-lib.sh .kit/budget.conf'
 
 # _cp8b_g_root_main_ok: design §3.6 (C1, N6). 0 iff every table file of the ROOT worktree hashes equal to `refs/remotes/origin/main:<path>`.
 # `rev-parse` and `hash-object` without `-w` write nothing (a `git diff` would refresh and rewrite the root's index). The baseline is the
@@ -5776,6 +5778,147 @@ _cp8b_g5() {
   _cp8b_g_hooks_ok "$_CP8B_CLONE" || { _CP8B_G_WHY=hooks; return 1; }
 }
 
+# _cp8b_g6_line: G6-LINE (SWAS-875, design docs/architecture/2026-11-13-dev-clone-g6-new-875-design.md §2.2), judged on the RAW line (`_tad_raw`), not on
+# the argv: every dest check below runs at hook time, so an earlier segment of the same line could create the dest after the check and before
+# `new` runs. 0 iff the line is exactly `cd <abs path that is the clone> && <this segment>`: no `;` newline `|` `||`, no second `&&`, no background
+# `&` or `&>`, no `<` `$` backtick or `(` anywhere, and on this segment only one `>`/`>>` to a literal absolute scratch file that does not exist yet,
+# and `2>&1`. A subshell body: the `set -f` ends with it.
+_cp8b_g6_line() (
+  _g6l=${_tad_raw:-}
+  case "$_g6l" in
+    *"$_cp8b_nl"*|*';'*|*'|'*|*'<'*|*'$'*|*'`'*|*'('*) return 1 ;;
+  esac
+  case "$_g6l" in
+    *'&&'*) : ;;
+    *) return 1 ;;
+  esac
+  _g6a=${_g6l%%'&&'*}; _g6b=${_g6l#*'&&'}
+  case "$_g6b" in
+    *'&&'*) return 1 ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $_g6a
+  [ $# = 2 ] && [ "$1" = cd ] || return 1
+  case "$2" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  case "$2" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/@:+=,-]*) return 1 ;;
+  esac
+  [ "$2" -ef "$_CP8B_CLONE" ] || return 1   # G6-CD
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $_g6b
+  _g6g=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      '2>&1') shift ;;
+      '>'|'>>') [ -z "$_g6g" ] && [ $# -ge 2 ] || return 1; _g6g=$2; shift 2 ;;
+      *'>'*|*'&'*) return 1 ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$_g6g" ] || return 0
+  case "$_g6g" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  case "$_g6g" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/@:+=,-]*) return 1 ;;
+  esac
+  # a .. in the log is the common redirect rule's (_cp8b_abs_literal_phys, G-REDIR-DOTDOT), which runs on this segment
+  _under_temp "$_g6g" || return 1
+  # no symlink on the walk from the log's parent up to its deepest existing ancestor (a dangling link counts as present), and that ancestor is a real directory; the leaf itself is G6-LOGNEW's
+  _g6x=$(dirname "$_g6g")
+  while [ ! -e "$_g6x" ] && [ ! -L "$_g6x" ]; do _g6x=$(dirname "$_g6x"); done
+  { [ -d "$_g6x" ] && [ ! -L "$_g6x" ]; } || return 1   # G6-LOGNOLINK
+  { [ ! -e "$_g6g" ] && [ ! -L "$_g6g" ]; } || return 1   # G6-LOGNEW
+  # the log's deepest existing ancestor must be in no repository either: a log is never created inside another lane's clone or its .git
+  _g6t=$(_resolve_physical "$_g6g") || return 1
+  while [ ! -d "$_g6t" ]; do _g6t=$(dirname "$_g6t"); done
+  _cp8b_g6_notree "$_g6t"   # G6-LOGTREE
+)
+
+# _cp8b_g6_notree "<dir>": G6-DEST-NOTREE. 0 iff git itself says <dir> is in no repository: `rev-parse --is-inside-work-tree` exits 128 and its output
+# STARTS WITH `fatal: not a git repository (or any of the parent directories)` (the discovery-failure text; a different fatal does not match). Rc 0 (a work tree, the inside of a `.git`, a bare repository) declines, and so does every other error: dubious
+# ownership, a `.git` file with a missing gitdir, an unknown repository extension, a corrupt repository, a mount boundary. `_cp8b_g_git` pins LC_ALL=C.
+_cp8b_g6_notree() {
+  _g6r=0; _g6o=$(_cp8b_g_git -C "$1" rev-parse --is-inside-work-tree 2>&1) || _g6r=$?
+  case "$_g6r" in
+    0) return 1 ;;   # G6-NOTREE-RC0
+    128) _g6k=${_g6o#'fatal: not a git repository (or any of the parent directories)'}; [ "$_g6k" != "$_g6o" ] || return 1 ;;   # G6-NOTREE-TEXT
+    *) return 1 ;;
+  esac
+}
+
+# _cp8b_g6_flags <args after the dest>: G6-FLAGS and G6-BOARD. Exactly `--noninteractive` and `--stack|--team|--board|--harness|--name <value>`, each
+# once, in any order. A value is the next token and never starts with `-`; the `--flag=value` form never matches. `--board` must be `md`.
+_cp8b_g6_flags() {
+  _g6s=' '
+  while [ $# -gt 0 ]; do
+    _g6f=$1; shift
+    case "$_g6f" in
+      --noninteractive) : ;;
+      --stack|--team|--board|--harness|--name)
+        [ $# -gt 0 ] || return 1
+        case "$1" in
+          ''|-*) return 1 ;;
+        esac
+        [ "$_g6f" != --board ] || [ "$1" = md ] || { _CP8B_G_WHY=board; return 1; }   # G6-BOARD
+        shift ;;
+      *) return 1 ;;
+    esac
+    case "$_g6s" in
+      *" $_g6f "*) return 1 ;;   # G6-ONCE
+    esac
+    _g6s="$_g6s$_g6f "
+  done
+  case "$_g6s" in
+    *' --noninteractive '*) : ;;
+    *) return 1 ;;   # G6-NONINT
+  esac
+  for _g6f in --stack --team --board --harness --name; do
+    case "$_g6s" in
+      *" $_g6f "*) : ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# _cp8b_g6 <args...>: G6, `sparkwright new <dest> --noninteractive --stack <s> --team <t> --board md --harness <h> --name <n> [> <log>] [2>&1]` (SWAS-875,
+# design 2026-11-13-dev-clone-g6-new-875-design.md §2.2). The checks run in order; the `<why>` is `line`, `dest`, `board`, `config-key`, `hooks`, or none.
+# The dest must be absolute, spelled with no `..`, under a temp root as spelled AND as physically resolved, with its deepest existing ancestor in no
+# repository, and not exist (not even as a broken link). `--stack`, `--team`, `--harness` and `--name` get the dispatch's plain-token class only:
+# `new` validates each against its own registries and refuses before writing.
+_cp8b_g6() {
+  _CP8B_G_WHY=''
+  _cp8b_g6_line || { _CP8B_G_WHY=line; return 1; }   # G6-LINE
+  _g6d=${2:-}
+  [ "${_g6d#*..}" = "$_g6d" ] || { _CP8B_G_WHY=dest; return 1; }   # G6-DOTDOT
+  [ "$_cx_p" -ef "$_CP8B_CLONE/scripts/sparkwright" ] || return 1   # G6-IDENT
+  [ "${1:-}" = new ] || return 1   # G6-VERB
+  case "$_g6d" in
+    /*) : ;;
+    *) _CP8B_G_WHY=dest; return 1 ;;
+  esac
+  # no symlink on the walk from the dest up to its deepest existing ancestor (a dangling link counts as present), and that ancestor is a real directory
+  _g6w=$_g6d
+  while [ ! -e "$_g6w" ] && [ ! -L "$_g6w" ]; do _g6w=$(dirname "$_g6w"); done
+  { [ -d "$_g6w" ] && [ ! -L "$_g6w" ]; } || { _CP8B_G_WHY=dest; return 1; }   # G6-NOLINK
+  _g6p=$(_resolve_physical "$_g6d") || { _CP8B_G_WHY=dest; return 1; }
+  { _under_temp "$_g6d" && _under_temp "$_g6p"; } || { _CP8B_G_WHY=dest; return 1; }   # G6-TEMP
+  _g6e=$_g6p
+  while [ ! -d "$_g6e" ]; do _g6e=$(dirname "$_g6e"); done
+  _cp8b_g6_notree "$_g6e" || { _CP8B_G_WHY=dest; return 1; }   # G6-NOTREE
+  [ ! -e "$_g6d" ] && [ ! -L "$_g6d" ] || { _CP8B_G_WHY=dest; return 1; }   # G6-NEW
+  shift 2
+  _cp8b_g6_flags "$@" || return 1
+  _cp8b_g_cfg_allow "$_CP8B_CLONE" || { _CP8B_G_WHY="config-key $(_cp8b_g_clean "${_gbk:-}")"; return 1; }   # G6-CFG
+  _cp8b_g_hooks_ok "$_CP8B_CLONE" || { _CP8B_G_WHY=hooks; return 1; }   # G6-HOOKS
+}
+
 # _cp8b_g_dispatch <tokens...>: the redirect-stripped words of one segment. Every token is plain (CLONE-BYTES set), the lead is the script
 # after an optional bare sh/bash/dash, or `pipx`; the script selects the grammar. G4's script is the ROOT's board.sh, by physical path and file
 # identity; G1-G3's is the clone's, by `_cp8b_clone_script_rel` (relative, or absolute into the same clone).
@@ -5803,7 +5946,8 @@ _cp8b_g_dispatch() {
   esac
   _cp8b_clone_script_rel "$_gd_lead" || return 1
   case "$_cx_rel" in
-    scripts/sparkwright) _CP8B_G_KNOWN=1; _cp8b_g1 "$@" ;;
+    scripts/sparkwright) _CP8B_G_KNOWN=1
+      if [ "${1:-}" = new ]; then _cp8b_g6 "$@"; else _cp8b_g1 "$@"; fi ;;   # G6-DISPATCH
     conformance/ci-gates.sh) _CP8B_G_KNOWN=1; _cp8b_g2 "$@" ;;
     conformance/promotion-readiness.sh) _CP8B_G_KNOWN=1; _cp8b_g3 "$@" ;;
     *) return 1 ;;
@@ -9733,6 +9877,461 @@ _kbs_seg_denied() {
   return 1
 }
 
+# SWAS-795 - raw git writes to refs/local-claims/* (the local claims area board-claim.sh writes before any remote exists).
+# _lc795_denied "<cmd>" "<the cmd, quotes/backslash/$ stripped>": PREDICATE (0 = deny). R18's shape over the same stripped view,
+# flat across the command: a git invocation, a WRITE verb, and a destination naming the namespace. One statement per line, each
+# ending in a marker the selftest mutants address. READS are untouched (for-each-ref, rev-parse, cat-file, show, log, a fetch with
+# no `:` destination). An update-ref / symbolic-ref operand that cannot be read ({ $ or a backtick after the verb) fails closed.
+# The caller already tested selfedit_allowed and the KIT_CLAIM_FRONT_DOOR sentinel (process environment only, as R18's is).
+_lc795_denied() {
+  # Both views are read with NEWLINES FOLDED to spaces, so a backslash-newline or a bare newline between the verb and its operand
+  # (or inside a push) cannot split the text the patterns read. An unreadable operand sets _lc795_unread so the sentence can say so.
+  _lc795_unread=0
+  _lc_fv=$(printf '%s' "$2" | tr '\n' ' ') || _guard_fault lc-fold   # 795-FOLDV
+  # The THIRD view is the raw command with ONLY the quote and backslash bytes deleted ({ $ and the backtick are kept), so a split verb
+  # (`upd''ate-ref`, `update\-ref`) is joined for the unreadable-operand tests while the expansion bytes stay visible.
+  _lc_fu=$(printf '%s' "$1" | tr -d '"\\'"'" | tr '\n' ' ') || _guard_fault lc-fold   # 795-FOLDU
+  case "$1" in
+    *[!\"\'\\[:space:]]*) _guard_vanished lc-view "$1" "$_lc_fu" ;;
+  esac
+  set -- "$1" "$_lc_fv" "$_lc_fu"
+  _gmq lc-git "$2" -Eq -- '(^|[^[:alnum:]_])git([[:space:]]|$)' || return 1   # 795-GIT
+  if _gmq lc-refverb "$2" -Eq -- '(^|[^[:alnum:]_])(update-ref|symbolic-ref)([[:space:]]|$)'; then   # 795-REFVERB
+    if _gmq lc-unres "$3" -Eq -- '(update-ref|symbolic-ref)[[:space:]].*[{$`]'; then _lc795_unread=1; return 0; fi   # 795-UNRES
+    if _gmq lc-ns "$2" -Eiq -- '(^|[^[:alnum:]_])[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-NS
+  fi
+  _lc_w=0
+  if _gmq lc-cfgverb "$2" -Eq -- '(^|[^[:alnum:]_])(config|remote)([[:space:]]|$)'; then _lc_w=1; fi   # 795-CFGVERB
+  if _gmq lc-spec "$2" -Eq -- '(^|[^[:alnum:]_])(fetch|pull|push|send-pack)([[:space:]]|$)'; then   # 795-SPEC
+    _lc_w=1
+    if _gmq lc-dest "$2" -Eiq -- ':[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-DEST
+    if _gmq lc-bare "$2" -Eiq -- '(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-BARE
+  fi
+  # A refspec verb (fetch, pull, push, send-pack, remote, config) with a `:` AND a { $ or backtick anywhere: the destination cannot be read.
+  if [ "$_lc_w" = 1 ]; then
+    if _gmq lc-unref "$3" -Eq -- '(:.*[{$`])|([{$`].*:)'; then _lc795_unread=1; return 0; fi   # 795-UNREF
+  fi
+  if _gmq lc-cfg "$2" -Eiq -- '(^|[^[:alnum:]_])config[[:space:]]+([^;&|]*[[:space:]])?remote\.[^[:space:]=]*\.(fetch|push)[[:space:]=][^;&|]*refs/local-claims(/|$)'; then return 0; fi   # 795-CFG
+  return 1
+}
+
+# SWAS-192 slice A - raw git writes to the CHECKOUT LEASE (scripts/checkout-lease.sh): its refs (refs/local-lease/*, refs/local-lease-log/*, and the
+# origin namespaces refs/leases/*, refs/leases-log/* a later slice writes) and the `kit.checkoutLease` key that turns the lease on. R795's shape,
+# over the same stripped view: a git invocation, a WRITE verb, a destination naming the namespace; one statement per line, each ending in a marker
+# the selftest mutants address. Two legs, two sentences (_cl192_kind = ref | key):
+#   * THE KEY is never exempt: no verb writes it (a human opts a checkout in or out in their own terminal), so the sentinel does not open it. Any `git config`
+#     naming the key is denied unless the whole command is the plain read (`git config [--local|--get|--bool]... kit.checkoutLease`, an optional `2>/dev/null`).
+#     So `git config --unset kit.checkoutLease`, `--replace-all`, `--add`, `-f <file>`, `--remove-section kit` and a chained read-then-write all deny.
+#   * THE REFS: denied unless KIT_LEASE_FRONT_DOOR=1 is in the guard's own PROCESS environment (the verb's own writes; text never carries it). The
+#     unreadable-operand cases (a brace, `$` or backtick in an update-ref, symbolic-ref or refspec operand) are already denied fail-closed by _lc795_denied
+#     above, whatever the namespace, so this predicate does not repeat them. READS are untouched: for-each-ref, rev-parse, cat-file, show, log.
+# The caller already tested selfedit_allowed. A drift control, not a boundary: a forged sentinel, an alias, a rewrite command, an interpreter wrapper and
+# a plain terminal are not covered (escape card R38). THE SENTINEL IS FORGEABLE, as KIT_CLAIM_FRONT_DOOR is: it is honoured from the guard's PROCESS
+# environment, so any process that can set that environment (the launch environment, a harness `env` block, and under shims a shell rc, `.envrc`,
+# `BASH_ENV` or an `export` before an `sh` script) opens the REF legs. That makes the ref legs a SEATBELT against a drifting agent's raw write, never a
+# boundary against a process that means to. The key leg takes no sentinel, but a plain terminal and `git config --edit` are not graded.
+_cl192_denied() {
+  _cl192_kind=ref
+  _cl_v=$(printf '%s' "$2" | tr '\n' ' ') || _guard_fault cl192-fold   # 192-FOLDV
+  # THE PLAIN-READ TEST reads the RAW command (newlines folded), never the quote-stripped view: with quotes deleted, `git config kit.checkoutLease ""`
+  # (which writes an empty value, turning the lease off) would read as the plain read. A quoted spelling of a real read is therefore refused too (priced, R38).
+  _cl_raw=$(printf '%s' "$1" | tr '\n' ' ') || _guard_fault cl192-fold   # 192-FOLDR
+  _gmq cl-git "$_cl_v" -Eq -- '(^|[^[:alnum:]_])git([[:space:]]|$)' || return 1   # 192-GIT
+  if _gmq cl-key "$_cl_v" -Eiq -- 'kit\.checkoutlease'; then   # 192-KEYNAME
+    if _gmq cl-cfgverb "$_cl_v" -Eq -- '(^|[^[:alnum:]_])config([[:space:]]|$)'; then   # 192-CFGVERB
+      if ! _gmq cl-read "$_cl_raw" -Eiq -- '^[[:space:]]*git[[:space:]]+config([[:space:]]+(--get|--local|--bool))*[[:space:]]+kit\.checkoutlease[[:space:]]*(2>/dev/null)?[[:space:]]*$'; then _cl192_kind=key; return 0; fi   # 192-KEYWRITE
+    fi
+  fi
+  if _gmq cl-rmsec "$_cl_v" -Eiq -- '(^|[^[:alnum:]_])config[[:space:]]+([^;&|]*[[:space:]])?(--remove-section|--rename-section)[[:space:]]+kit([[:space:].]|$)'; then _cl192_kind=key; return 0; fi   # 192-RMSEC
+  [ "${KIT_LEASE_FRONT_DOOR:-}" != "1" ] || return 1   # 192-SENT
+  if _gmq cl-refverb "$_cl_v" -Eq -- '(^|[^[:alnum:]_])(update-ref|symbolic-ref)([[:space:]]|$)'; then   # 192-REFVERB
+    if _gmq cl-ns "$_cl_v" -Eiq -- '(^|[^[:alnum:]_])[^[:alnum:]]*(refs/)?(local-lease(-log)?|leases(-log)?)(/|$)'; then return 0; fi   # 192-NS
+  fi
+  if _gmq cl-spec "$_cl_v" -Eq -- '(^|[^[:alnum:]_])(fetch|pull|push|send-pack)([[:space:]]|$)'; then   # 192-SPEC
+    # `refs/` is OPTIONAL in a destination: git resolves a short name (`local-lease/checkout`) to an existing refs/local-lease/checkout (A1)
+    if _gmq cl-dest "$_cl_v" -Eiq -- ':[^[:alnum:]]*(refs/)?(local-lease(-log)?|leases(-log)?)(/|$)'; then return 0; fi   # 192-DEST
+    if _gmq cl-bare "$_cl_v" -Eiq -- '(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*(refs/)?(local-lease(-log)?|leases(-log)?)(/|$)'; then return 0; fi   # 192-BARE
+  fi
+  if _gmq cl-cfg "$_cl_v" -Eiq -- '(^|[^[:alnum:]_])config[[:space:]]+([^;&|]*[[:space:]])?remote\.[^[:space:]=]*\.(fetch|push)[[:space:]=][^;&|]*refs/(local-lease(-log)?|leases(-log)?)(/|$)'; then return 0; fi   # 192-CFG
+  return 1
+}
+
+# SWAS-842 - the LEASED-DELETE ADMISSION. _lda842_admitted "<cmd>": rc 0 iff the whole command is the one compare-and-swap delete the kit's own verbs make:
+#   git [-C <dir>] push [-q|--quiet] --force-with-lease=<ref>:<full sha> <remote> :<ref>      (options in any order; board-claim.sh and checkout-lease.sh differ)
+# with <ref> = refs/leases/<name> under KIT_LEASE_FRONT_DOOR=1, or refs/claims/<ROW> under KIT_CLAIM_FRONT_DOOR=1, each sentinel read from the guard's PROCESS
+# environment only (text never carries it) and each opening only its own namespace. It is consulted by ONE rule, the force-push rule below, which it lets skip its
+# deny for this form; there is no early return, so push-to-main and every later rule still run. Pure `case` tests over tokens (no matcher, no regex fork); a
+# subshell, so `set -f` and the positionals do not leak; any other rc, a failed fork included, means NOT admitted and today's refusal stands. One statement per rule,
+# each ending in a marker the mutants address. Rule A: the raw text holds only [A-Za-z0-9._/@:%=-] and single spaces (no leading, trailing or double space, so an empty
+# argv element, which the shim joins into a double space, is never admitted; no `+`, `~`, quote or metacharacter). Rule B: the token walk. Rule C: the sentinel pairing.
+# CEILING, stated: the sentinel is FORGEABLE under the shims (a process that sets the guard's environment, as for R18 and R38), and an absolute-path git skips the shim
+# altogether; the plain unconditional delete under the sentinel is already admitted by R18 and R38 (the force-push rule never matched it) - SWAS-852 narrows that.
+_lda842_admitted() (
+  set -f; LC_ALL=C; export LC_ALL
+  _l8_c=$1
+  # explicit letter lists, never a letter range: a range widens under a UTF-8 locale in bash 3.2 (the range-bytes lock)
+  case "$_l8_c" in
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/@:%=' '-]*) return 1 ;;   # 842-LIT
+  esac
+  case "$_l8_c" in
+    ' '*|*' '|*'  '*) return 1 ;;   # 842-SPACE
+  esac
+  # the split is by parameter expansion, with no word splitting and no IFS: runs of spaces collapse and no other byte splits, as a space-only split would
+  _l8_rest=$_l8_c
+  set --
+  while :; do
+    _l8_rest=${_l8_rest#"${_l8_rest%%[! ]*}"}
+    [ -n "$_l8_rest" ] || break
+    _l8_tok=${_l8_rest%% *}
+    set -- "$@" "$_l8_tok"
+    [ "$#" -le 16 ] || return 1   # 842-CAP
+    _l8_rest=${_l8_rest#"$_l8_tok"}
+  done
+  [ "${1:-}" = git ] || return 1   # 842-LEAD
+  shift
+  if [ "${1:-}" = -C ]; then
+    case "${2:-}" in
+      ''|-*|*=*) return 1 ;;   # 842-GLOBAL
+    esac
+    shift 2
+  fi
+  [ "${1:-}" = push ] || return 1   # 842-VERB
+  shift
+  _l8_lease=''; _l8_nl=0; _l8_nq=0; _l8_n=0; _l8_rem=''; _l8_spec=''
+  for _l8_t in "$@"; do
+    case "$_l8_t" in
+      --force-with-lease=*)
+        _l8_nl=$((_l8_nl + 1)); _l8_lease=${_l8_t#--force-with-lease=} ;;
+      -q|--quiet)
+        _l8_nq=$((_l8_nq + 1)) ;;
+      -*)
+        return 1 ;;   # 842-OPT
+      *)
+        _l8_n=$((_l8_n + 1))
+        [ "$_l8_n" != 1 ] || _l8_rem=$_l8_t
+        [ "$_l8_n" != 2 ] || _l8_spec=$_l8_t ;;
+    esac
+  done
+  [ "$_l8_nl" = 1 ] && [ "$_l8_nq" -le 1 ] || return 1   # 842-ONE
+  [ "$_l8_n" = 2 ] || return 1   # 842-POS
+  case "$_l8_rem" in
+    ''|-*|:*) return 1 ;;
+  esac
+  case "$_l8_lease" in
+    *:*:*|*:|:*|'') return 1 ;;
+    *:*) : ;;
+    *) return 1 ;;
+  esac
+  _l8_ref=${_l8_lease%%:*}; _l8_sha=${_l8_lease#*:}
+  case "$_l8_sha" in
+    *[!0123456789abcdef]*|'') return 1 ;;   # 842-SHA
+  esac
+  case ${#_l8_sha} in
+    40|64) : ;;
+    *) return 1 ;;   # 842-SHA
+  esac
+  [ "$_l8_spec" = ":$_l8_ref" ] || return 1   # 842-EQ
+  case "$_l8_ref" in
+    refs/leases/*) _l8_nm=${_l8_ref#refs/leases/}; _l8_k=lease ;;   # 842-NS
+    refs/claims/*) _l8_nm=${_l8_ref#refs/claims/}; _l8_k=claim ;;   # 842-NS
+    *) return 1 ;;
+  esac
+  if [ "$_l8_k" = lease ]; then
+    _l8_cs=abcdefghijklmnopqrstuvwxyz0123456789-; _l8_fc=abcdefghijklmnopqrstuvwxyz; _l8_max=32
+    _l8_sv=${KIT_LEASE_FRONT_DOOR:-}   # 842-PAIR
+  else
+    _l8_cs=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-; _l8_fc=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789; _l8_max=64
+    _l8_sv=${KIT_CLAIM_FRONT_DOOR:-}   # 842-PAIR
+  fi
+  case "$_l8_nm" in
+    ''|*[!$_l8_cs]*) return 1 ;;
+  esac
+  case "$_l8_nm" in
+    [$_l8_fc]*) : ;;
+    *) return 1 ;;
+  esac
+  [ "${#_l8_nm}" -le "$_l8_max" ] || return 1
+  [ "$_l8_sv" = 1 ] || return 1   # 842-SENT
+  return 0
+)
+
+# SWAS-883 - the FIRST-PUSH ADMISSION. _fp883_admitted "<cmd>" "<cwd>": rc 0 iff the whole command is `git [-C <P>] push [-u|--set-upstream] <R> main` AND P is a
+# plain kit repository whose pre-push hook and guard core are byte-identical to the running guard's own, whose effective config cannot turn that hook off or reroute the
+# push, and whose every push URL is https, ssh or scp-form; the guard's own environment must carry none of the git/kit override names. It is consulted by ONE rule, the
+# push-to-main deny below, which skips its deny for this one segment; the force-push rule and every later rule still run. The decision on the remote is NOT made here: git
+# runs the kit's pre-push hook at push time, and the hook admits only the creation of a main that is absent. This function only proves that hook will run. Local reads
+# only (rev-parse, config, remote get-url, cmp): no ls-remote, no fetch, no network. A near miss (the grammar matched, a later condition failed) leaves the failed
+# condition's NAME in _FP883_WHY (grammar, repository, hook, core, config, URL or environment), never a path, URL or config value. The work is _fp883_run, a subshell
+# function (so `set -f` and the positionals do not leak); it prints the name on a miss, and any other failure, a failed fork included, is a miss. The checks
+# that carry a marker are the mutants' targets. A credential helper is read with `git config -z --show-scope` (a NUL-free form of the output is parsed; a value holding a newline, \001 or \002 declines in the parse;
+# any other byte declines through the exact-match list): at any scope but global or system a non-empty value declines (an empty value is a list reset); at global or system scope only an empty value, exactly
+# `!<absolute path ending /gh> auth git-credential` (MUT-883-GHFORM) or one of the words osxkeychain, store, manager is admitted. core.askPass at any scope, a submodule setting, .gitmodules or .git/modules, and
+# push.gpgSign decline; an askPass, alias, include or credential read that fails other than rc 1 declines. Design: docs/architecture/2026-11-14-guard-first-push-883-design.md.
+# CEILING, stated: the window between this check and git's hook lookup (a parallel config write or hook swap), and GIT_EXEC_PATH replacing git, are residuals (design 4); see threat-model R2 (the profile-snapshot class), R6 and R8.
+_fp883_run() (
+  set -f; LC_ALL=C; export LC_ALL
+  _fp_c=$1; _fp_cwd=${2:-}
+  _fp_al='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  _fp_nl='
+'
+  # 3.1 the whole command: explicit letter lists, never a range; one segment, single spaces only (no quote, $, backtick, backslash, ; & | < > or newline can appear)
+  case "$_fp_c" in
+    ''|*[!$_fp_al._/:' '-]*) return 1 ;;   # 883-LIT
+  esac
+  case "$_fp_c" in
+    ' '*|*' '|*'  '*) return 1 ;;   # 883-SPACE
+  esac
+  _fp_rest=$_fp_c
+  set --
+  while :; do
+    _fp_rest=${_fp_rest#"${_fp_rest%%[! ]*}"}
+    [ -n "$_fp_rest" ] || break
+    _fp_tok=${_fp_rest%% *}
+    set -- "$@" "$_fp_tok"
+    [ "$#" -le 8 ] || return 1   # 883-CAP
+    _fp_rest=${_fp_rest#"$_fp_tok"}
+  done
+  [ "${1:-}" = git ] || return 1   # 883-LEAD
+  shift
+  _fp_p=''
+  if [ "${1:-}" = -C ]; then
+    _fp_p=${2:-}
+    [ -n "$_fp_p" ] || { printf grammar; return 1; }
+    shift 2
+  fi
+  [ "${1:-}" = push ] || { printf grammar; return 1; }
+  shift
+  case "${1:-}" in
+    -u|--set-upstream) shift ;;
+  esac
+  [ "$#" = 2 ] || { printf grammar; return 1; }
+  _fp_r=$1; _fp_ref=$2
+  [ "$_fp_ref" = main ] || { printf grammar; return 1; }   # MUT-883-REFSPEC
+  case "$_fp_r" in
+    [$_fp_al]*) : ;;
+    *) printf grammar; return 1 ;;
+  esac
+  case "$_fp_r" in
+    *[!$_fp_al._-]*) printf grammar; return 1 ;;
+  esac
+  # P is the -C value, else the payload cwd (an empty cwd declines). Absolute, plain characters, no `//`, `.` or `..` component.
+  if [ -z "$_fp_p" ]; then _fp_p=$_fp_cwd; _fp_pw=repository; else _fp_pw=grammar; fi
+  [ -n "$_fp_p" ] || { printf repository; return 1; }
+  case "$_fp_p" in
+    /*) : ;;
+    *) printf '%s' "$_fp_pw"; return 1 ;;
+  esac
+  case "$_fp_p" in
+    *[!$_fp_al._/-]*|*//*|*/./*|*/../*|*/.|*/..) printf '%s' "$_fp_pw"; return 1 ;;
+  esac
+  # 3.5 the environment seatbelt: set, even empty, declines. A seatbelt only: the guard cannot see the Bash tool's own shell (design 3.8 makes the main decision independent of it).
+  if [ -n "${KIT_GUARD_CORE+x}${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_COMMON_DIR+x}${GIT_EXEC_PATH+x}${GIT_CONFIG_PARAMETERS+x}${GIT_CONFIG_COUNT+x}${GIT_CONFIG_GLOBAL+x}${GIT_CONFIG_SYSTEM+x}${GIT_CONFIG_NOSYSTEM+x}${GIT_SSH+x}${GIT_SSH_COMMAND+x}${GIT_ASKPASS+x}${SSH_ASKPASS+x}" ]; then   # 883-ENV
+    printf environment; return 1
+  fi
+  _fp_git() { git -C "$_fp_p" -c core.fsmonitor=false "$@" </dev/null; }
+  _fp_bool_off() {   # <key>: rc 0 iff the key is unset or a false boolean (an unparsable value, or a bare key, declines)
+    _fb_rc=0; _fb_v=$(_fp_git config --bool --get "$1" 2>/dev/null) || _fb_rc=$?
+    [ "$_fb_rc" = 1 ] && return 0
+    [ "$_fb_rc" = 0 ] && [ "$_fb_v" = false ]
+  }
+  _fp_ghform() {   # <value starting with !>: rc 0 iff it is exactly !<absolute path ending /gh, plain characters, no // /./ /../> auth git-credential
+    _fg_w=${1#!}
+    _fg_p=${_fg_w% auth git-credential}
+    [ "$_fg_p" != "$_fg_w" ] || return 1
+    case "$_fg_p" in
+      /gh|/*/gh) : ;;
+      *) return 1 ;;
+    esac
+    case "$_fg_p" in
+      *[!$_fp_al._/-]*|*//*|*/./*|*/../*) return 1 ;;
+    esac
+    return 0
+  }
+  # 3.2 a plain repository at its own root: P/.git a real directory (no symlink, no gitfile), not bare, --show-toplevel equal to P physically
+  { [ -d "$_fp_p/.git" ] && [ ! -L "$_fp_p/.git" ]; } || { printf repository; return 1; }   # MUT-883-PLAIN
+  _fp_bare=$(_fp_git rev-parse --is-bare-repository 2>/dev/null) || _fp_bare=''
+  [ "$_fp_bare" = false ] || { printf repository; return 1; }   # MUT-883-PLAIN
+  _fp_t=$(_fp_git rev-parse --show-toplevel 2>/dev/null) || _fp_t=''
+  _fp_tp=''
+  [ -z "$_fp_t" ] || _fp_tp=$(CDPATH='' cd "$_fp_t" 2>/dev/null && pwd -P) || _fp_tp=''
+  _fp_pp=$(CDPATH='' cd "$_fp_p" 2>/dev/null && pwd -P) || _fp_pp=''
+  [ -n "$_fp_tp" ] && [ "$_fp_tp" = "$_fp_pp" ] || { printf repository; return 1; }   # MUT-883-PLAIN
+  [ -n "$_fp_pp" ] || { printf repository; return 1; }
+  _fp_git config --get "remote.$_fp_r.url" >/dev/null 2>&1 || { printf repository; return 1; }
+  # 3.3 the hook git will run: P/.git/hooks/pre-push or P/hooks/pre-push physically, a regular executable file, byte-identical to the one beside the running guard's core
+  [ -n "${PROTECTED_ROOT:-}" ] || { printf hook; return 1; }
+  _fp_h=$(_fp_git rev-parse --git-path hooks/pre-push 2>/dev/null) || _fp_h=''
+  case "$_fp_h" in
+    '') printf hook; return 1 ;;
+    /*) : ;;
+    *) _fp_h="$_fp_p/$_fp_h" ;;
+  esac
+  _fp_hd=$(CDPATH='' cd "${_fp_h%/*}" 2>/dev/null && pwd -P) || _fp_hd=''
+  case "$_fp_hd/${_fp_h##*/}" in
+    "$_fp_pp/.git/hooks/pre-push"|"$_fp_pp/hooks/pre-push") : ;;
+    *) printf hook; return 1 ;;
+  esac
+  { [ -f "$_fp_h" ] && [ ! -L "$_fp_h" ] && [ -x "$_fp_h" ]; } || { printf hook; return 1; }
+  cmp -s "$_fp_h" "$PROTECTED_ROOT/hooks/pre-push" || { printf hook; return 1; }   # MUT-883-HOOKCMP
+  # 3.4 the kit's core in place: a regular file (no symlinked directory above it), byte-identical to the running core
+  _fp_k="$_fp_p/.claude/hooks/guard-core.sh"
+  { [ ! -L "$_fp_p/.claude" ] && [ ! -L "$_fp_p/.claude/hooks" ] && [ -f "$_fp_k" ] && [ ! -L "$_fp_k" ]; } || { printf core; return 1; }
+  cmp -s "$_fp_k" "$PROTECTED_ROOT/.claude/hooks/guard-core.sh" || { printf core; return 1; }   # MUT-883-CORECMP
+  # 3.5 the effective config (never --local): nothing may turn the hook off or reroute the push
+  _fp_hv=$(_fp_git config --get-all core.hooksPath 2>/dev/null) || _fp_hv=''
+  if [ -n "$_fp_hv" ]; then
+    case "$_fp_hv" in
+      *"$_fp_nl"*) printf config; return 1 ;;
+      /*) : ;;
+      *) _fp_hv="$_fp_p/$_fp_hv" ;;
+    esac
+    _fp_hvp=$(CDPATH='' cd "$_fp_hv" 2>/dev/null && pwd -P) || _fp_hvp=''
+    [ "$_fp_hvp" = "$_fp_pp/hooks" ] || { printf config; return 1; }
+  fi
+  _fp_rc=0; _fp_git config --get-regexp '^(include|includeif)\.' >/dev/null 2>&1 || _fp_rc=$?
+  [ "$_fp_rc" = 1 ] || { printf config; return 1; }   # MUT-883-INCLUDE
+  _fp_bool_off "remote.$_fp_r.mirror" || { printf config; return 1; }
+  if _fp_git config --get-all "remote.$_fp_r.receivepack" >/dev/null 2>&1; then printf config; return 1; fi
+  if _fp_git config --get-all "remote.$_fp_r.vcs" >/dev/null 2>&1; then printf config; return 1; fi
+  if _fp_git config --get-all core.sshCommand >/dev/null 2>&1; then printf config; return 1; fi
+  # core.askPass at any scope (a read that fails other than rc 1 declines)
+  _fp_rc=0; _fp_git config --get-all core.askPass >/dev/null 2>&1 || _fp_rc=$?
+  [ "$_fp_rc" = 1 ] || { printf config; return 1; }   # MUT-883-ASKPASS
+  # an alias named credential-<word> runs in place of a missing git-credential-<word> program (measured), so any such key at any scope declines
+  _fp_rc=0; _fp_git config --get-regexp '^alias\.credential-' >/dev/null 2>&1 || _fp_rc=$?
+  [ "$_fp_rc" = 1 ] || { printf config; return 1; }   # MUT-883-ALIAS
+  # submodules and signing: each unset or a false boolean; no .gitmodules (any type) and no .git/modules
+  _fp_bool_off push.recurseSubmodules || { printf config; return 1; }
+  _fp_bool_off submodule.recurse || { printf config; return 1; }
+  _fp_bool_off push.gpgSign || { printf config; return 1; }
+  if [ -e "$_fp_p/.gitmodules" ] || [ -L "$_fp_p/.gitmodules" ]; then printf config; return 1; fi   # MUT-883-SUBMOD
+  if [ -e "$_fp_p/.git/modules" ] || [ -L "$_fp_p/.git/modules" ]; then printf config; return 1; fi
+  # 3.5 the credential helpers. A shell variable cannot hold NUL, so the -z output goes through tr, which maps NUL to \001 and any \001 already in a value to \002 (a value holding \002 then
+  # declines); the exit status rides in a trailing `rcN` line after the records. MEASURED -z --show-scope layout: each entry is <scope> NUL <key> NL <value> NUL, so after the
+  # tr the records alternate scope, then key-newline-value, each ended by \001. A different layout (a scope token holding a newline or a tab, a bare key with no newline, a value holding a
+  # newline) makes the parse decline: on doubt, decline. The exit status is captured with `|| _fp_x=$?` because the guard runs under `set -eu` (guard.sh): a bare `$?` after a git that exits 1
+  # (no helper at any scope) never printed, and every first push declined. rc 0 and rc 1 parse; any other rc declines.
+  _fp_so=$(printf '\001'); _fp_sx=$(printf '\002'); _fp_tb=$(printf '\t')
+  _fp_cr=$({ _fp_x=0; _fp_git config -z --show-scope --get-regexp '^credential\.(.*\.)?helper$' 2>/dev/null || _fp_x=$?; printf 'rc%s\n' "$_fp_x"; } | tr '\001\000' '\002\001')
+  _fp_rcw=${_fp_cr##*"$_fp_so"}
+  case "$_fp_rcw" in
+    rc0|rc1) : ;;
+    *) printf config; return 1 ;;
+  esac
+  _fp_rest=${_fp_cr%"$_fp_rcw"}
+  case "$_fp_rest" in
+    *"$_fp_sx"*) printf config; return 1 ;;
+  esac
+  _fp_sc=''
+  while [ -n "$_fp_rest" ]; do
+    case "$_fp_rest" in
+      *"$_fp_so"*) : ;;
+      *) printf config; return 1 ;;
+    esac
+    _fp_l=${_fp_rest%%"$_fp_so"*}; _fp_rest=${_fp_rest#*"$_fp_so"}
+    if [ -z "$_fp_sc" ]; then
+      case "$_fp_l" in
+        ''|*"$_fp_nl"*|*"$_fp_tb"*) printf config; return 1 ;;
+      esac
+      _fp_sc=$_fp_l
+      continue
+    fi
+    case "$_fp_l" in
+      *"$_fp_nl"*) : ;;
+      *) printf config; return 1 ;;
+    esac
+    _fp_k=${_fp_l%%"$_fp_nl"*}; _fp_v=${_fp_l#*"$_fp_nl"}
+    case "$_fp_v" in
+      *"$_fp_nl"*) printf config; return 1 ;;
+    esac
+    case "$_fp_k" in
+      *.helper) : ;;
+      *) printf config; return 1 ;;
+    esac
+    _fp_s=$_fp_sc; _fp_sc=''
+    case "$_fp_s" in
+      global|system) : ;;
+      *) [ -z "$_fp_v" ] && continue; printf config; return 1 ;;   # MUT-883-HELPERSCOPE
+    esac
+    [ -n "$_fp_v" ] || continue
+    if [ "${_fp_v#!}" != "$_fp_v" ]; then
+      _fp_ghform "$_fp_v" || { printf config; return 1; }   # MUT-883-GHFORM
+      continue
+    fi
+    _fp_wl=no
+    case "$_fp_v" in
+      osxkeychain|store|manager) _fp_wl=yes ;;   # MUT-883-HELPERLIST
+    esac
+    [ "$_fp_wl" = yes ] || { printf config; return 1; }
+  done
+  [ -z "$_fp_sc" ] || { printf config; return 1; }
+  # 3.5 every PUSH url (after insteadOf and pushInsteadOf): https://, ssh:// or scp-form user@host:path. A helper (`x::`), ext::, fd::, file:// or a bare path declines, an empty answer too.
+  _fp_u=$(_fp_git remote get-url --push --all "$_fp_r" 2>/dev/null) || _fp_u=''   # MUT-883-PUSHURL
+  [ -n "$_fp_u" ] || { printf URL; return 1; }
+  _fp_rest=$_fp_u
+  while [ -n "$_fp_rest" ]; do
+    case "$_fp_rest" in
+      *"$_fp_nl"*) _fp_l=${_fp_rest%%"$_fp_nl"*}; _fp_rest=${_fp_rest#*"$_fp_nl"} ;;
+      *) _fp_l=$_fp_rest; _fp_rest='' ;;
+    esac
+    case "$_fp_l" in
+      https://*) : ;;
+      ssh://*)
+        # ssh://[user@]host[:port]/path: host and user lead with a letter or digit; a port is digits only; the path is non-empty
+        _fp_ur=${_fp_l#ssh://}
+        case "$_fp_ur" in
+          */*) _fp_au=${_fp_ur%%/*}; _fp_up=${_fp_ur#*/} ;;
+          *) printf URL; return 1 ;;
+        esac
+        [ -n "$_fp_up" ] || { printf URL; return 1; }
+        case "$_fp_au" in
+          *@*) _fp_us=${_fp_au%%@*}; _fp_ah=${_fp_au#*@}
+            case "$_fp_us" in
+              ''|[!$_fp_al]*|*[!$_fp_al._-]*) printf URL; return 1 ;;
+            esac ;;
+          *) _fp_ah=$_fp_au ;;
+        esac
+        case "$_fp_ah" in
+          *:*) _fp_uh=${_fp_ah%%:*}; _fp_po=${_fp_ah#*:}
+            case "$_fp_po" in
+              ''|*[!0-9]*) printf URL; return 1 ;;
+            esac ;;
+          *) _fp_uh=$_fp_ah ;;
+        esac
+        case "$_fp_uh" in
+          ''|[!$_fp_al]*|*[!$_fp_al.-]*) printf URL; return 1 ;;
+        esac ;;
+      *@*:*)
+        _fp_us=${_fp_l%%@*}; _fp_ur=${_fp_l#*@}; _fp_uh=${_fp_ur%%:*}; _fp_up=${_fp_ur#*:}
+        case "$_fp_us" in
+          ''|[!$_fp_al]*|*[!$_fp_al._-]*) printf URL; return 1 ;;
+        esac
+        case "$_fp_uh" in
+          ''|[!$_fp_al]*|*[!$_fp_al.-]*) printf URL; return 1 ;;
+        esac
+        case "$_fp_up" in
+          ''|/*) printf URL; return 1 ;;
+        esac ;;
+      *) printf URL; return 1 ;;
+    esac
+    : # MUT-883-ALLURLS
+  done
+  return 0
+)
+_fp883_admitted() {
+  _FP883_WHY=''
+  _fp883_w=$(_fp883_run "$1" "${2:-}") && return 0
+  case "$_fp883_w" in
+    grammar|repository|hook|core|config|URL|environment) _FP883_WHY=$_fp883_w ;;
+  esac
+  return 1
+}
+# the one clause the near-miss refusal adds: a fixed word per failed condition, nothing taken from the command, the repository or its config
+_fp883_clause() {
+  [ -n "${_FP883_WHY:-}" ] || return 0
+  printf ' (first-push admission: the %s check failed)' "$_FP883_WHY"
+}
+
 # _kbs_nm "<token>": 0 iff it names kit-base, kit-base/…, refs/kit or refs/kit/… at a REF-COMPONENT boundary — after `/`,
 # `:`, `+`, `^`, `~`, `=` or `,` — never as a substring (`feature/kit-base-shared` is not it). The token is already
 # lowercased, quote-stripped and claim-scratch-carved.
@@ -9832,6 +10431,7 @@ _kitbase_ref_denied() {
 # `tool_name` on PreToolUse stdin). Omitted or empty ⇒ the repo root, i.e. exactly today.
 guard_check_command() {
   cmd=$1
+  _fp883_cwd=${2:-}   # SWAS-883: the payload cwd, kept for the first-push admission below (read there, not as $2, so a positional reset in between cannot change it)
   _cp8b_seed_from_cwd "${2:-}"
   # design §15: the glob-walk budget is per COMMAND. Every walk draws on this one count (the target arm that runs them is a
   # single `$(…)` per command, so its segments share the subshell's counter and no per-operand cap is needed).
@@ -10000,8 +10600,8 @@ guard_check_command() {
   # type its way past this line. HONEST: like every sentinel here it is forgeable by an actor who
   # can set the guard's environment; it is a DRIFT CONTROL, not a boundary.
   #
-  # NOT COVERED, and not claimed to be: git plumbing that writes a LOCAL ref (`update-ref`),
-  # `symbolic-ref` repointing, alias indirection, interpreter wrappers, and an actor with push
+  # NOT COVERED, and not claimed to be: git plumbing that writes a LOCAL ref (`update-ref`; refs/local-claims is the exception,
+  # guarded by the sibling arm below, R37), `symbolic-ref` repointing, alias indirection, interpreter wrappers, and an actor with push
   # rights at a plain terminal (no harness, no shims). The control that binds a human is the forge
   # ruleset on `refs/claims/**` + `refs/claims-log/**`, which is an owner keystroke and is named
   # not done.
@@ -10038,6 +10638,26 @@ guard_check_command() {
      && _gmq claim-refs "$_b2_claims_cmd" -Eq '(^|[^[:alnum:]_])(push|send-pack|config)([[:space:]]|=|$)' \
      && _gmq claim-refs "$_b2_claims_cmd" -Eiq -- ':[^[:alnum:]]*refs/claims(-log)?/|(--delete|-d)[[:space:]]+[^[:alnum:]]*refs/claims(-log)?/|(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/claims(-log)?/|remote\.[^[:space:]=]*\.push[[:space:]=][^;&|]*refs/claims(-log)?/'; then
     printf '%s' '13: raw pushes whose refspec DESTINATION is refs/claims/ or refs/claims-log/ are denied, DELETES INCLUDED (`:refs/claims/X`, `--delete`, `-d`, `<sha>:refs/claims/X`, two-refspec, send-pack, --prune, and the `remote.*.push` configured routes, in any remote spelling). These refs are the work-in-progress truth (B4 counts the WIP ceiling from them) and the release record; a raw delete IS a release, and would make board-claim.sh refusing an unprovably-stale release into theatre. Use the front door: scripts/board-claim.sh claim | release [--stale] | status, which proves staleness and logs every non-holder release. Reads are allowed (`git ls-remote origin refs/claims/*`, the --depth=1 scratch fetch). This deny is a drift control, not a boundary; its ceiling is stated in the escape-card row. (escape card R18 claims)'; return 1
+  fi
+  # SWAS-795 - the local claims area, R18's sibling: same stripped view, same sentinel (process environment only), see _lc795_denied.
+  if ! selfedit_allowed; then
+    if [ "${KIT_CLAIM_FRONT_DOOR:-}" != "1" ]; then   # 795-SENT
+      if _lc795_denied "$cmd" "$_b2_claims_cmd"; then   # 795-CALL
+        if [ "$_lc795_unread" = 1 ]; then
+          printf '%s' '13: a git ref operand could not be read (a brace, $ or backtick beside a ref write or a refspec), so it may name refs/local-claims/*, and raw git writes there are denied: local claims are written only by sh scripts/board.sh claim, release and publish. (escape card R37 local-claims)'; return 1
+        fi
+        printf '%s' '13: raw git writes to refs/local-claims/* are denied: local claims are written only by sh scripts/board.sh claim, release and publish. (escape card R37 local-claims)'; return 1
+      fi
+    fi
+  fi
+  # SWAS-192 slice A - the checkout lease's refs and its key, R37's sibling: same stripped view, sentinel from the process environment only (the key is never exempt), see _cl192_denied.
+  if ! selfedit_allowed; then
+    if _cl192_denied "$cmd" "$_b2_claims_cmd"; then   # 192-CALL
+      if [ "$_cl192_kind" = key ]; then
+        printf '%s' '13: raw git config writes to kit.checkoutLease are denied: a person opts a checkout in or out of the checkout lease, in their own terminal. (escape card R38 checkout-lease)'; return 1
+      fi
+      printf '%s' '13: raw git writes to the checkout lease refs (refs/local-lease/*, refs/local-lease-log/*, refs/leases/*, refs/leases-log/*) are denied: the lease is written only by sh scripts/checkout-lease.sh (sparkwright lease acquire, release, sync and break). (escape card R38 checkout-lease)'; return 1
+    fi
   fi
 
   # KIT-BASE-SHARED (design §11.1): raw git writes onto kit-base / refs/kit/ — see `_kitbase_ref_denied`. Reads the
@@ -10228,6 +10848,12 @@ guard_check_command() {
       _fpc=$(_cp8b_collapse_quotes "$cmd") || _guard_fault forcepush-collapse ;;   # GSR C5: the quote-collapsed third view
   esac
   _fpt=$(printf '%s\n%s\n%s' "$cmd" "$_fpq" "$_fpc") || _guard_fault forcepush-view
+  # SWAS-842: this rule alone skips its deny for the kit's own compare-and-swap delete of a lease or claim ref (_lda842_admitted: grammar-exact, paired with its
+  # sentinel in the process environment): an admitted command hands the rule an empty subject, so the rule line below stays byte-identical and the rule does not
+  # fire. No early return: push-to-main and every later rule still run. Design: docs/architecture/2026-11-11-leased-delete-admission-842-design.md.
+  if _lda842_admitted "$cmd"; then
+    _fpt=''   # 842-CALL
+  fi
   if _gmq force-push "$_fpt" -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
     { printf '%s%s' '13: force/mirror push rewrites or deletes published history - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
@@ -10241,8 +10867,13 @@ guard_check_command() {
   # The segmenter also JOINS backslash-newline continuations first, which closes a pre-existing hole:
   # grep is line-oriented, so `git push \<newline> origin main` put `push` and `main` on different lines
   # and the flat regex matched NEITHER.
+  # SWAS-883: this one deny is skipped for the exact first-push shape `git [-C <abs>] push [-u] <remote> main` in a kit repository whose pre-push hook and core are byte-identical
+  # to the running guard's (_fp883_admitted; local reads only). git then runs that hook, which admits only the creation of an absent main. A near miss adds one fixed clause naming the
+  # failed condition. Force-push (above) and every later rule still run. Design: docs/architecture/2026-11-14-guard-first-push-883-design.md.
   if _cp8b_push_main_denied "$cmd"; then
-    { printf '%s%s' '13: pushing directly to main/master bypasses review - human-gated.' "$(_guard_stop_pointer push-main)"; return 1; }
+    if ! _fp883_admitted "$cmd" "$_fp883_cwd"; then   # 883-CALL
+      { printf '%s%s%s' '13: pushing directly to main/master bypasses review - human-gated.' "$(_fp883_clause)" "$(_guard_stop_pointer push-main)"; return 1; }
+    fi
   fi
   # S6: gh pr merge --admin/--administrator BYPASSES branch protection (incl. the control-plane-
   # ratification / required-review gate) — the fox opening its own henhouse. A SPEED BUMP (string

@@ -147,8 +147,9 @@ install_pipeline() {  # <src> <dst> <kit-own-marker-ERE> — brownfield-safe cop
   [ -f "$2" ] || return 0
   if ! grep -qF "$PIPELINE_ORIGIN_MARKER" "$2" 2>/dev/null; then   # idempotent: never double-stamp
     # Unpredictable temp name beside the target (same idiom as install_codeowners) — avoids following
-    # a pre-placed symlink at a predictable path.
-    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || _ip_tmp="$2.origin.$$"
+    # a pre-placed symlink at a predictable path. A failed mktemp STOPS the write: there is no
+    # fallback name, because a guessable name brings that symlink back (SWAS-754).
+    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || { printf '%s\n' "incept: could not create a temporary file in $(dirname "$2") (mktemp failed), so incept stopped part-way and this directory is half-incepted; check the disk has free space and the directory is writable, then re-export the kit into a fresh directory and run 'sh scripts/incept.sh' there (in an existing repository, restore it from git instead and rerun)" >&2; exit 1; }
     { printf '%s\n' "$PIPELINE_ORIGIN_MARKER"; cat "$2"; } > "$_ip_tmp" && mv "$_ip_tmp" "$2"
   fi
 }
@@ -280,9 +281,11 @@ fi
 # root of its own repo?". The two diverge only when nested, which is why every non-nested test
 # agrees and why the kit once wrote a pre-push hook into a stranger's repository.
 #
-# BOTH sides of the compare must be PHYSICAL paths: `--show-toplevel` is symlink-resolved, `$PWD`
-# is not. On macOS /tmp -> /private/tmp, so a logical compare FALSE-REFUSES under /tmp while
-# passing on Linux CI. Normalizing both sides is the only compare that cannot drift.
+# The root test asks git (`--is-inside-work-tree` plus `--show-prefix`, see owns_itself); it does NOT
+# compare path strings. A path compare drifts: `--show-toplevel` is symlink-resolved while `$PWD` is not
+# (macOS /tmp -> /private/tmp), and on a case-insensitive filesystem a case-variant `cd` keeps its
+# spelling in `pwd -P` while git reports the stored one (SWAS-463). The physical paths below only
+# decide "in no repo at all" and name the owner in the refusal text.
 #
 # CP-11 closes the git-dir-CONTAINMENT gap: GIT_DIR/GIT_WORK_TREE env redirects are hard-refused, and
 # submodule / `git worktree add` trees are refused unless gated behind --allow-nested. Residual (named,
@@ -301,11 +304,17 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   [ -n "$_phys" ] || return 1
   _own=$(owning_repo_root "$1")
   [ -n "$_own" ] || return 0
-  [ "$_own" = "$_phys" ]
+  # Ask git whether <dir> is the root, never compare path strings: on a case-insensitive filesystem `cd` into a
+  # case-variant spelling keeps that spelling in `pwd -P` while git reports the toplevel as stored, so a string
+  # compare refused the repository's own root. `--show-prefix` prints an empty line exactly at the root.
+  # git also prints an empty prefix when the cwd is OUTSIDE the work tree (a `core.worktree` pointing elsewhere), so the same subshell requires
+  # `--is-inside-work-tree` to print exactly `true`; anything else refuses.
+  _pfx=$( CDPATH='' cd "$1" 2>/dev/null && [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] && git rev-parse --show-prefix 2>/dev/null ) || return 1   # MUT-OWNSINSIDE
+  [ -z "$_pfx" ]   # MUT-OWNSROOT
 }
 
 # --- CP-11: git-dir redirection is a hard precondition (closes CP-4 §6) --------------------
-# CP-4 proves toplevel==pwd, but `--show-toplevel` reports the cwd even when GIT_DIR/GIT_WORK_TREE, a
+# CP-4 proves the cwd is the work-tree root (an empty `--show-prefix` inside the work tree), but `--show-toplevel` reports the cwd even when GIT_DIR/GIT_WORK_TREE, a
 # submodule, or a `git worktree add` tree redirect the git dir ELSEWHERE (measured). The hook then lands
 # in a repo the operator does not own (env) or a shared/other .git (structural). Invariant: the git dir
 # that will receive the write lives INSIDE the tree I own. BOTH sides physical (the /tmp symlink landmine).
@@ -399,9 +408,10 @@ install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform
   # whatever its leading glyph — `*`, `/`, or a bare-word path a future profile might use). Header comments
   # and blank lines are untouched. (dual-review Minor: don't couple to the current `*`/`/` rule shapes.)
   sedi 's/^\([[:space:]]*[^#[:space:]]\)/# \1/' "$2"
-  # Unpredictable temp name (mktemp, O_EXCL) beside the target, falling back to the pid name if mktemp is
-  # unavailable — avoids following a pre-placed symlink at a predictable path (dual-review Low).
-  _ic_tmp=$(mktemp "$(dirname "$2")/.codeowners.XXXXXX" 2>/dev/null) || _ic_tmp="$2.co.$$"
+  # Unpredictable temp name (mktemp, O_EXCL) beside the target — avoids following a pre-placed symlink
+  # at a predictable path (dual-review Low). A failed mktemp STOPS the write: there is no pid-name
+  # fallback, because a guessable name brings that symlink back (SWAS-754).
+  _ic_tmp=$(mktemp "$(dirname "$2")/.codeowners.XXXXXX" 2>/dev/null) || { printf '%s\n' "incept: could not create a temporary file in $(dirname "$2") (mktemp failed), so incept stopped part-way and this directory is half-incepted; check the disk has free space and the directory is writable, then re-export the kit into a fresh directory and run 'sh scripts/incept.sh' there (in an existing repository, restore it from git instead and rerun)" >&2; exit 1; }
   {
     echo "# EDIT before enabling require_code_owner_reviews: replace the commented @your-org/*"
     echo "# placeholder teams below with REAL teams/users, then uncomment. An active @your-org"
@@ -416,6 +426,55 @@ install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform
   warn_codeowners_active_placeholder "$2"
 }
 
+# --- safety guards ---
+# SWAS-784: these tree checks run AHEAD of the preflight call below (they were after it), so a directory that is no un-incepted export gets
+# the plain sentence naming the cwd, not preflight's generic "missing prerequisites" line (preflight now refuses a wrong directory too).
+# Only their order and the principles check's message changed; they stay after the CP-11 and CP-4 refusals and before every write to the tree.
+# They use only [ -f ], [ -e ] and grep, never jq, so they hold on a machine whose prerequisites are missing.
+[ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
+incept_not_export_die() {
+  # incept has no guard_path_hostile: a control character in the cwd (a newline forges a whole line) replaces the whole path
+  case "$PWD" in *[[:cntrl:]]*) _ic_cwd='<unprintable path>' ;; *) _ic_cwd=$PWD ;; esac
+  printf '%s\n' "error: $_ic_cwd is not an un-incepted Sparkwright export (principles CLAUDE.md not found). cd to your exported project's root. Aborting." >&2
+  exit 1
+}
+{ [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || incept_not_export_die   # MUT-ICOTHER
+
+# --- INCEPT-CONTAIN: refuse a tree that carries kit-internal artifacts --------------------------
+# incept transforms a CLEAN adopter distribution: adopter-export.sh (git archive --worktree-attributes)
+# strips every export-ignored path, so an adopter tree carries NO kit internals. The kit's OWN dev repo
+# and a raw `git clone` of it DO. Refuse BEFORE any mutation and redirect to the export path. This is a
+# PROPERTY check (tree has kit internals), not an identity check (dev-repo vs clone are byte-identical).
+# Soundness: every marker below is export-ignored in .gitattributes, so a clean export can never trip
+# this — locked by conformance/incept-containment.sh (refusal-set ⊆ export-ignored). Sibling: CP-11
+# (GIT_DIR/GIT_WORK_TREE redirect). KEEP KIT_INTERNAL_MARKERS ON ONE LINE — the lock greps this line
+# (and scripts/preflight.sh reads it, as its third reader, to tell the kit checkout from an export).
+# Markers MUST be glob-free and match [A-Za-z0-9._/-] only: the unquoted `for` word-split below relies
+# on no pathname expansion, and the soundness lock's ERE escaper covers exactly this character class.
+KIT_INTERNAL_MARKERS='SPARKWRIGHT-CONSOLIDATED-BACKLOG.md docs/ROADMAP-KIT.md docs/superpowers .superpowers .publish-identifiers docs/governance/meta-control-log.md'
+incept_kit_die() {  # <marker>: the kit-internal refusal, before any write
+  echo "" >&2
+  echo "ERROR: this tree contains Sparkwright kit-internal files ($1)." >&2
+  echo "incept transforms a clean adopter distribution — not the kit source or a raw clone." >&2
+  echo "Produce one, then incept inside it:" >&2
+  echo "  sh scripts/adopter-export.sh <dest-dir>   &&   cd <dest-dir> && sh scripts/incept.sh ..." >&2
+  echo "Nothing has been written." >&2
+  exit 1
+}
+# SWAS-784 errata: the loop below tests each marker at the cwd only, so a --allow-nested subdirectory of the kit checkout that holds a principles CLAUDE.md passed it.
+# The toplevel leg also refuses when the git toplevel is the kit root: a marker AND the principles CLAUDE.md there, and no ENGINEERING-PRINCIPLES.md. A monorepo root that only
+# a plugin marked (.superpowers, no principles CLAUDE.md) is not the kit root. Default git environment only (CP-11 has refused a redirect by now).
+_ic_top=$(git rev-parse --show-toplevel 2>/dev/null) || _ic_top=""
+if [ -n "$_ic_top" ] && [ "$_ic_top" != "$PWD" ] && [ "$_ic_top" != "$(pwd -P)" ] && [ ! -f "$_ic_top/ENGINEERING-PRINCIPLES.md" ] && [ -f "$_ic_top/CLAUDE.md" ] && grep -q "Engineering Principles & Definition of Done" "$_ic_top/CLAUDE.md" 2>/dev/null; then   # MUT-ICTOP
+  for _m in $KIT_INTERNAL_MARKERS; do   # values are glob-free literals
+    if [ -e "$_ic_top/$_m" ]; then incept_kit_die "$_ic_top/$_m"; fi
+  done
+fi
+for _m in $KIT_INTERNAL_MARKERS; do   # values are glob-free literals; `set -eu` word-split is safe
+  [ -e "$_m" ] || continue
+  incept_kit_die "$_m"
+done
+
 # 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
 # guard and conformance, so proceeding would only defer a cryptic failure.
 _pf_nested=""
@@ -426,33 +485,6 @@ if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh --boundary-advisory 
   echo "incept: missing prerequisites. Run 'sh scripts/preflight.sh' for the list + install hints. Aborting." >&2
   exit 1
 fi
-
-# --- safety guards ---
-[ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
-{ [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || {
-  echo "error: not an un-incepted Sparkwright kit (principles CLAUDE.md not found). Aborting." >&2; exit 1; }
-
-# --- INCEPT-CONTAIN: refuse a tree that carries kit-internal artifacts --------------------------
-# incept transforms a CLEAN adopter distribution: adopter-export.sh (git archive --worktree-attributes)
-# strips every export-ignored path, so an adopter tree carries NO kit internals. The kit's OWN dev repo
-# and a raw `git clone` of it DO. Refuse BEFORE any mutation and redirect to the export path. This is a
-# PROPERTY check (tree has kit internals), not an identity check (dev-repo vs clone are byte-identical).
-# Soundness: every marker below is export-ignored in .gitattributes, so a clean export can never trip
-# this — locked by conformance/incept-containment.sh (refusal-set ⊆ export-ignored). Sibling: CP-11
-# (GIT_DIR/GIT_WORK_TREE redirect). KEEP KIT_INTERNAL_MARKERS ON ONE LINE — the lock greps this line.
-# Markers MUST be glob-free and match [A-Za-z0-9._/-] only: the unquoted `for` word-split below relies
-# on no pathname expansion, and the soundness lock's ERE escaper covers exactly this character class.
-KIT_INTERNAL_MARKERS='SPARKWRIGHT-CONSOLIDATED-BACKLOG.md docs/ROADMAP-KIT.md docs/superpowers .superpowers .publish-identifiers docs/governance/meta-control-log.md'
-for _m in $KIT_INTERNAL_MARKERS; do   # values are glob-free literals; `set -eu` word-split is safe
-  [ -e "$_m" ] || continue
-  echo "" >&2
-  echo "ERROR: this tree contains Sparkwright kit-internal files ($_m)." >&2
-  echo "incept transforms a clean adopter distribution — not the kit source or a raw clone." >&2
-  echo "Produce one, then incept inside it:" >&2
-  echo "  sh scripts/adopter-export.sh <dest-dir>   &&   cd <dest-dir> && sh scripts/incept.sh ..." >&2
-  echo "Nothing has been written." >&2
-  exit 1
-done
 
 # brownfield safety: warn (never modify) if a .claude/ exists without the kit guard wired.
 if [ -f .claude/settings.json ] && ! grep -q 'guard\.sh' .claude/settings.json; then
@@ -541,7 +573,24 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
   printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
   printf 'Harness(es), comma-separated, of: %s [%s]: ' "$HARNESS_ADAPTERS" "$HARNESS"; read -r _h || true; [ -n "${_h:-}" ] && HARNESS="$_h"
-  printf 'Governance (solo/team) [%s] (docs/operations/review-lane.md): ' "$TEAM"; read -r _tm || true; [ -n "${_tm:-}" ] && { TEAM="$_tm"; TEAM_EXPLICIT=1; }
+  # SWAS-843 (SWAS-774 PR 1): the question is the forge-account count the merge verbs ask (docs/adoption/vc-hosts.md §Solo or team): 1 = solo, 2 or more = team.
+  # Enter takes team, the safe side, unless --team/INCEPT_TEAM already chose. A typed answer that maps to nothing is refused just below; only a preset default (--team or INCEPT_TEAM) reaches the registry check. No dial is written.
+  _tm_def="$TEAM"; [ "$TEAM_EXPLICIT" -eq 1 ] || _tm_def="team"   # MUT-I1D
+  printf 'How many forge accounts will this work run under? 1 = solo, 2 or more = team [%s]: ' "$_tm_def"; read -r _tm || true
+  _tm_typed="${_tm:-}"
+  _tm="${_tm:-$_tm_def}"
+  case "$_tm" in
+    solo|team) : ;;                            # the words are accepted as typed
+    *[!0-9]*) : ;;                              # not all digits: refused just below when typed, else the default goes to the registry check
+    1) _tm="solo" ;;                           # MUT-I1
+    [2-9]|[1-9][0-9]*) _tm="team" ;;
+  esac
+  # An answer that maps to nothing (0, 3x, Solo) is refused here in the person's own words, not as a flag they never typed.
+  case "$_tm" in
+    solo|team) : ;;
+    *) [ -z "$_tm_typed" ] || { printf '%s\n' "incept: answer 1, 2 or more, solo or team (got '$_tm_typed')." >&2; exit 2; } ;;
+  esac
+  TEAM="$_tm"; TEAM_EXPLICIT=1
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
@@ -604,7 +653,7 @@ if [ -f scripts/preflight.sh ]; then
   [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ] && _pf_waiver="--allow-runtime-mismatch"
   # shellcheck disable=SC2086  # both are deliberate single optional flags, not word lists
   if ! _pf_out=$(sh scripts/preflight.sh --boundary-advisory --stack "$STACK" $_pf_nested $_pf_waiver 2>&1); then   # advisory: the floor message is never caused by the boundary
-    echo "incept: the '$STACK' toolchain does not meet its declared floor." >&2
+    echo "incept: toolchain check failed: a required tool is missing or below its declared floor (run sh scripts/preflight.sh --stack $STACK for the list)" >&2
     echo "" >&2
     printf '%s\n' "$_pf_out" | sed 's/^/  /' >&2
     echo "" >&2
@@ -622,15 +671,59 @@ if [ -f scripts/preflight.sh ]; then
     # being told, and would leave an adopter's own automation refusing for a reason it cannot act on.
     if [ "$INTERACTIVE" -eq 1 ]; then
       echo "  Refusing before any file is written — fix the toolchain above, then re-run." >&2
-      echo "  To proceed anyway, accepting that the emitted project may not build, re-run with:" >&2
-      echo "    --allow-runtime-mismatch" >&2
+      echo "  install each tool preflight lists as MISS, and upgrade each one below its floor." >&2
+      printf '%s\n' "  Check again with: sh scripts/preflight.sh --stack $STACK" >&2
+      echo "  (--allow-runtime-mismatch waives only a version floor; it installs nothing.)" >&2
       exit 1
     fi
-    echo "  WARNING (--noninteractive): proceeding anyway. Scaffolding is safe on this runtime, but" >&2
-    echo "  BUILDING the emitted project is not — its first dependency install will fail until the" >&2
-    echo "  floor above is met. Pass --allow-runtime-mismatch to acknowledge this deliberately." >&2
+    echo "  WARNING (--noninteractive): proceeding anyway. Scaffolding is safe, but BUILDING the emitted project" >&2
+    echo "  will fail until the toolchain above is fixed: install each tool preflight lists as MISS, and upgrade each one below its floor." >&2
+    printf '%s\n' "  Check again with: sh scripts/preflight.sh --stack $STACK" >&2
+    echo "  (--allow-runtime-mismatch waives only a version floor; it installs nothing.)" >&2
   fi
   [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ] && echo "notice: --allow-runtime-mismatch — the '$STACK' runtime floor was WAIVED, not met. The emitted project may not build." || true
+fi
+
+# SWAS-807: refuse EARLY, before the first write, a starter scaffold that would be written THROUGH a symlink.
+# `[ -e ]` and `[ -d ]` follow links, so a linked `tests/` (or `tests/integration/`) reads as "already there" and the
+# copy below would mkdir and cp into the link's target, outside this project; a dangling leaf link is the same hole.
+# The copy runs in a pipe, where an `exit` would end only the subshell after some files were written, so the refusal
+# is decided here, in the main shell. _scaf_skip is the ONE list of paths the copy skips, shared by both.
+# _scaf_tests_pre is recorded once, before any write; the copy loop and its SWAS-786 note read the same value.
+_scaf_tests_pre=0; [ -d tests ] && _scaf_tests_pre=1
+_scaf_skip() {  # <rel> -> 0 iff the scaffold copy skips this path
+  # .gitignore is MERGED after the copy (the project already has a root .gitignore), not copied.
+  if [ "$1" = ".gitignore" ]; then return 0; fi
+  # An existing tests/ keeps its own import layout: skip the scaffold's package markers there (SWAS-786).
+  if [ "$_scaf_tests_pre" -eq 1 ]; then
+    case "$1" in tests/__init__.py|tests/*/__init__.py) return 0 ;; esac
+  fi
+  # Never copy stray build artifacts (a dirty dev tree may have them; they are gitignored but
+  # `find` still sees them). Keeps an incepted project clean — no node_modules/coverage/pyc/etc.
+  case "$1" in
+    node_modules/*|*/node_modules/*|dist/*|*/dist/*|build/*|*/build/*|coverage/*|*/coverage/*|\
+    target/*|*/target/*|bin/*|*/bin/*|obj/*|*/obj/*|__pycache__/*|*/__pycache__/*|\
+    .pytest_cache/*|*/.pytest_cache/*|.gradle/*|*/.gradle/*|.coverage|*.pyc) return 0 ;;
+  esac
+  return 1
+}
+if [ -d "profiles/${STACK}/scaffold" ]; then
+  # The first offending path (the kit's own scaffold path, never the link's target) is printed by the walk and
+  # collected here; the decision is taken in the main shell.
+  _scaf_bad=$( ( cd "profiles/${STACK}/scaffold" && find . -type f ) | while IFS= read -r rel; do
+    rel=${rel#./}
+    if _scaf_skip "$rel"; then continue; fi
+    if [ "$(dirname "$rel")" != "." ] && _kb_path_has_symlink "$(dirname "$rel")"; then
+      printf '%s\n' "$_kb_acc"; break
+    fi
+    if [ -L "$rel" ] && [ ! -e "$rel" ]; then
+      printf '%s\n' "$rel"; break
+    fi
+  done )
+  if [ -n "$_scaf_bad" ]; then
+    printf '%s\n' "error: \`$_scaf_bad\` is a symlink. incept would write the $STACK starter scaffold through it, outside this project. Nothing has been written. Replace the link with a real folder (or remove it), then re-run." >&2
+    exit 1
+  fi
 fi
 
 # RATIFY-PARITY: the §13 control-plane-ratification gate installs (github CI) from the single
@@ -1503,6 +1596,17 @@ case "$CI" in
       echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
       exit 1
     fi
+    # SWAS-258: the after-the-fact trunk trace (`trunk-trace`, push to the default branch, observe by default)
+    # is its OWN workflow file so a push run can never skip a required job in adopter-gates.yml. Installed
+    # unconditionally like adopter-gates.yml; never a required context (see the source file's header).
+    # conformance/adopter-gates-parity.sh locks that this stays the sole, wired, stack-neutral copy.
+    if [ -f profiles/adopter-trunk-trace.yml ]; then
+      cp_kit_replace profiles/adopter-trunk-trace.yml .github/workflows/adopter-trunk-trace.yml 'COPY & ADAPT|Sparkwright'
+    else
+      echo "incept: profiles/adopter-trunk-trace.yml is MISSING — cannot install the after-the-fact trunk trace." >&2
+      echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
+      exit 1
+    fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       install_pipeline "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
@@ -1537,17 +1641,15 @@ fi
 # Brownfield-safe: each file is copied ONLY where absent (never clobbers existing app source).
 # See profiles/${STACK}/scaffold/README.md for any one-time lockfile/wrapper step.
 if [ -d "profiles/${STACK}/scaffold" ]; then
+  # SWAS-786: the scaffold's tests/__init__.py files make its test folders packages. In a repo that ALREADY has a
+  # tests/ folder they would change how pytest names that repo's tests (the repo root goes on sys.path in place of
+  # tests/, so `import helpers` can break), so they are copied only where tests/ is new.
+  # (_scaf_tests_pre was set once, before the first write, by the SWAS-807 check above; _scaf_skip is shared with it.)
   ( cd "profiles/${STACK}/scaffold" && find . -type f ) | while IFS= read -r rel; do
     rel=${rel#./}
-    # .gitignore is MERGED below (the project already has a root .gitignore), not copied here.
-    if [ "$rel" = ".gitignore" ]; then continue; fi
-    # Never copy stray build artifacts (a dirty dev tree may have them; they are gitignored but
-    # `find` still sees them). Keeps an incepted project clean — no node_modules/coverage/pyc/etc.
-    case "$rel" in
-      node_modules/*|*/node_modules/*|dist/*|*/dist/*|build/*|*/build/*|coverage/*|*/coverage/*|\
-      target/*|*/target/*|bin/*|*/bin/*|obj/*|*/obj/*|__pycache__/*|*/__pycache__/*|\
-      .pytest_cache/*|*/.pytest_cache/*|.gradle/*|*/.gradle/*|.coverage|*.pyc) continue ;;
-    esac
+    if _scaf_skip "$rel"; then continue; fi
+    # SWAS-807 belt: the early check above refuses a linked path; a link made after it is still never written through.
+    _kb_path_has_symlink "$rel" && continue
     if [ ! -e "$rel" ]; then
       mkdir -p "$(dirname "$rel")"
       cp "profiles/${STACK}/scaffold/$rel" "$rel"
@@ -1565,6 +1667,9 @@ if [ -d "profiles/${STACK}/scaffold" ]; then
     done < "$sgi"
   fi
   echo "copied starter scaffold from profiles/${STACK}/scaffold/ (brownfield-safe) + merged its .gitignore rules"
+  if [ "$_scaf_tests_pre" -eq 1 ] && [ -f "profiles/${STACK}/scaffold/tests/__init__.py" ]; then
+    echo "note: tests/ already existed, so the scaffold's tests/__init__.py files were not copied (they would change how pytest names your existing tests). Add an empty __init__.py to each test folder yourself if two test files may share a name."
+  fi
   # Stack-specific one-time step to make the first CI push green (exact command, not a generic hint).
   case "$STACK" in
     python)      echo "  first-green step: uv lock && git add uv.lock && git commit -m 'lock deps'" ;;
@@ -1602,7 +1707,7 @@ fi
 # stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
 # (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/adopter-gates.yml,
 # profiles/adopter-tracker-gates.yml (TBG-TRUSTED-JOB — same top-level, non-stack asset shape as
-# ratification.yml/adopter-gates.yml, B6), profiles/_TEMPLATE.md,
+# ratification.yml/adopter-gates.yml, B6), profiles/adopter-trunk-trace.yml (SWAS-258 — same shape), profiles/_TEMPLATE.md,
 # profiles/.gitignore (the tree-level build-output ignore file — CP7R5-K4-IGNORE; it MUST outlive the prune)
 # (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
 # capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps

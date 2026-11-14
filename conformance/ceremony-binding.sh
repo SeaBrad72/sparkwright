@@ -286,8 +286,9 @@ esac
 # (1) THE LEGACY-PARENT LIST (design 2.3a, G2/G4). The full 40-hex `approved-sha` of every design note
 # in this kit's ledger that was recorded with NO basis (`basis: (none recorded)`), taken from the note
 # itself so a reviewer sees what each entry vouches for. A basis-less parent binds ONLY when its commit
-# is on this list; the gate reads the FIRST field and compares it to the parent's full sha by exact
-# string equality, never by prefix. UNCONDITIONAL assignment, never `${CB_LEGACY_PARENTS:-…}`: an
+# is on this list; the gate reads the whole entry (`<sha>  kit-row <row>  scope <scope>`) and compares sha,
+# kit-row and scope to the parent record's own, each by exact string equality, never by prefix (SWAS-323:
+# a note can hold several records, so the sha alone no longer names the parent record). UNCONDITIONAL assignment, never `${CB_LEGACY_PARENTS:-…}`: an
 # environment variable of the same name is overwritten at load and can neither add nor remove an entry.
 # Only selftest() reassigns it, inside the function, to its fixture shas. Adding an entry is a
 # control-plane edit to this gate: visible in the diff and ratified like any change to the gate. After
@@ -354,10 +355,12 @@ _cb_unquote() {
   esac
   printf '%s' "$_uq"
 }
-_legacy_parent() {   # <full 40-hex> -> 0 when it is the FIRST field of an entry (exact equality)
+_legacy_parent() {   # <full 40-hex> <scope> <kit-row> -> 0 when an entry reads `<sha>  kit-row <row>  scope <scope>` exactly (SWAS-323: a note can
+                     # hold several records, so the sha alone no longer names the parent record; an entry that omits either field matches nothing)
   while IFS= read -r _lp_line; do
     _lp_f="${_lp_line%%[[:space:]]*}"
-    if [ -n "$_lp_f" ] && [ "$_lp_f" = "$1" ]; then return 0; fi
+    _lp_t="$(printf '%s\n' "$_lp_line" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+    if [ -n "$_lp_f" ] && [ "$_lp_f" = "$1" ] && [ "$_lp_t" = "$1 kit-row $3 scope $2" ]; then return 0; fi
   done <<LEGACY_PARENTS_EOF
 $CB_LEGACY_PARENTS
 LEGACY_PARENTS_EOF
@@ -669,6 +672,38 @@ GOV_SET_EOF
   return 2
 }
 
+# THE RECORD SPLITTER (SWAS-323): a note is a LIST of records. A record starts at a header line `record: promotion ` or
+# `land: promotion ` (a `land:` record is of another type that no GO reader takes), and the blank lines between
+# records are dropped, so each record's bytes are exactly what `record` composed. The note is DEFECTIVE, and holds NO record at
+# all (so it binds nothing: fail closed), when its first line is not a header (D1), a non-blank line is not `key: value` (D2), or
+# a key repeats inside one record (D3: the matcher greps every line while other readers take `head -1`, so a repeat would let
+# them judge different values). Out = `bad` (1 when defective), `n` (record count, 0 when defective), `type` or `body` of record
+# <k>. KEEP THE TWO IN STEP: scripts/promotion-verify.sh carries this block byte for byte (cell P1).
+# BEGIN kit_note_records
+kit_note_records() {
+  awk -v out="$1" -v k="${2:-0}" '
+    function hdr(s) { return s ~ /^(record|land): promotion / }
+    NF == 0 { next }
+    { if (NR == 1 && !hdr($0)) bad = 1
+      if (hdr($0)) { n++; typ[n] = $0; sub(/: .*/, "", typ[n]) } else if (n == 0) bad = 1
+      if ($0 !~ /^[A-Za-z0-9_-]+:( |$)/) bad = 1
+      else { key = $0; sub(/:.*/, "", key); if ((n, key) in seen) bad = 1; seen[n, key] = 1 }
+      if (n > 0) bod[n] = bod[n] $0 "\n" }
+    END { if (n > 64) bad = 1
+          if (bad) n = 0
+          if (out == "bad") print bad + 0; else if (out == "n") print n + 0
+          else if (out == "type") print typ[k]; else if (out == "body") printf "%s", bod[k] }'
+}
+# END kit_note_records
+# _cb_unit_load <unit> — a unit is `<annotated object>:<record index>`. Sets _obj, _ri, _rn (the note's record count) and _body
+# (that ONE record's lines), so the matcher, the classifier and every downstream leg see one record and never a union (SWAS-323).
+_cb_unit_load() {
+  _obj="${1%%:*}"; _ri="${1##*:}"
+  _un="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
+  _rn="$(printf '%s\n' "$_un" | kit_note_records n)"
+  _body="$(printf '%s\n' "$_un" | kit_note_records body "$_ri")"
+}
+
 # _matches_scope <record-body> — THE matcher, and the ONLY one. 0 (true) when the record carries a
 # `scope:` line equal to ANY assembled key. Line-anchored + fixed-string (`grep -qF -x`) for the same
 # reason the gate line is: a substring or multi-line pattern turns the binding into an OR that every
@@ -765,7 +800,13 @@ render_records() {
   _rr_body=''; _rr_matched=0; _rr_ok=''; _rr_bad=''
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _rr_obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
-      _rr_b="$(git notes --ref="$NOTES_REF" show "$_rr_obj" 2>/dev/null || true)"
+      # SWAS-323: a note is a LIST of records; each GO record is matched and rendered alone, labelled with its place in the note.
+      _rr_note="$(git notes --ref="$NOTES_REF" show "$_rr_obj" 2>/dev/null || true)"
+      _rr_n="$(printf '%s\n' "$_rr_note" | kit_note_records n)"; _rr_k=0
+      while [ "$_rr_k" -lt "$_rr_n" ]; do
+      _rr_k=$((_rr_k + 1))
+      [ "$(printf '%s\n' "$_rr_note" | kit_note_records type "$_rr_k")" = record ] || continue
+      _rr_b="$(printf '%s\n' "$_rr_note" | kit_note_records body "$_rr_k")"
       # BOTH accepted gate values, LABELLED BY TYPE — and the label is derived HERE, inside the single
       # source, never in a workflow (the parity lock refuses a regrown workflow-side matcher, and a
       # copy that learned only `design` would render NOTHING on exactly the PRs the governance arm
@@ -782,7 +823,14 @@ render_records() {
         _rr_pw="${_rr_bs%%:*}"
         _rr_p40="$(git rev-parse -q --verify "${_rr_pw}^{commit}" 2>/dev/null)" || _rr_p40=''
         _rr_pn=''
-        if [ -n "$_rr_p40" ]; then _rr_pn="$(git notes --ref="$NOTES_REF" show "$_rr_p40" 2>/dev/null)" || _rr_pn=''; fi
+        if [ -n "$_rr_p40" ]; then
+          _rr_pn="$(git notes --ref="$NOTES_REF" show "$_rr_p40" 2>/dev/null)" || _rr_pn=''
+          # the picker reads the child through the judging globals; save them and put them back, so the render never leaks into a judgment (S6)
+          _rr_sv_body="${_body-}"; _rr_sv_path="${_ip_path-}"; _rr_sv_w="${_ip_w-}"
+          _body="$_rr_b"; _ip_path="${_rr_bs#*:}"; _ip_w="$_rr_pw"; _rr_pn="$(_ip_pick_parent "$_rr_pn")"
+          _body="$_rr_sv_body"; _ip_path="$_rr_sv_path"; _ip_w="$_rr_sv_w"
+          if [ "$_rr_pn" = AMBIGUOUS ]; then _rr_pn=''; fi
+        fi
         if [ -n "$_rr_pn" ]; then
           _rr_f1="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^scope: //p' | head -1)")"
           _rr_f2="$(_rr_cut120 "$(printf '%s\n' "$_rr_pn" | sed -n 's/^kit-row: //p' | head -1)")"
@@ -796,11 +844,12 @@ render_records() {
         fi
       fi
       if [ -z "$_rr_body" ]; then
-        _rr_body="--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
+        _rr_body="--- record $_rr_obj ($_rr_k of $_rr_n) [$_rr_type] ---${_rr_nl}${_rr_b}"
       else
-        _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
+        _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj ($_rr_k of $_rr_n) [$_rr_type] ---${_rr_nl}${_rr_b}"
       fi
       if [ -n "$_rr_inh_rec" ]; then _rr_body="${_rr_body}${_rr_nl}${_rr_inh_rec}"; fi
+      done
     done
   fi
   if [ -z "$_rr_body" ]; then
@@ -1053,10 +1102,20 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # valid same-key record (measured: `00c0…` < `924e…` on #509). Restoring the `break` REDs legR1.
   # NOT FIXED HERE, on purpose: the record→poster race and any new scope key are slice (b)'s job
   # (BRANCH-SCOPE-END-TO-END, owner-ruled split 2026-08-08) — this rider changes ADJUDICATION only.
-  _design_note=""; _gate_seen=0; _seen_gov=0; _seen_design=0; _match_count=0; _matches=""
+  _design_note=""; _gate_seen=0; _seen_gov=0; _seen_design=0; _match_count=0; _matches=""; _def_notes=""
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
-      _body="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
+      # SWAS-323: the unit is ONE RECORD of the note (a note is a list). Every GO record is read alone, so a `scope:` line of one
+      # record and a `gate:` line of another can never combine into a match; a record of another type (a land record) is skipped.
+      _note="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
+      _rn="$(printf '%s\n' "$_note" | kit_note_records n)"; _ri=0
+      # A DEFECTIVE note binds nothing, but one whose raw text carries a `scope:` line for THIS change is not silence: it is an
+      # anomaly, reported after the loop as rc 2 (a broken record is red, never the waiting yellow).
+      if [ "$(printf '%s\n' "$_note" | kit_note_records bad)" = 1 ] && _matches_scope "$_note"; then _def_notes="$_def_notes $_obj"; fi
+      while [ "$_ri" -lt "$_rn" ]; do
+      _ri=$((_ri + 1))
+      [ "$(printf '%s\n' "$_note" | kit_note_records type "$_ri")" = record ] || continue
+      _body="$(printf '%s\n' "$_note" | kit_note_records body "$_ri")"
       # BOTH conditions on the SAME record, each line-anchored. C8: the gate half now accepts EITHER
       # accepted value through the one classifier — a record carrying both is collected here and
       # DISQUALIFIED downstream, never silently routed to one arm.
@@ -1069,8 +1128,15 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
         *) _seen_gov=1; _seen_design=1 ;;
       esac
       _matches_scope "$_body" || continue
-      _matches="$_matches $_obj"; _match_count=$((_match_count + 1))
+      _matches="$_matches $_obj:$_ri"; _match_count=$((_match_count + 1))
+      done
     done
+  fi
+  if [ "$_match_count" -eq 0 ] && [ -n "$_def_notes" ]; then
+    echo "FAIL: ceremony-binding — the note on$_def_notes is DEFECTIVE (a first line that is not a header, a line that is not" >&2
+    echo "      'key: value', a repeated key in one record, or more than 64 records) and names 'scope: $_keys_display'." >&2
+    echo "      A defective note binds NOTHING, and a broken record for this change is an anomaly, not a wait: re-record the GO." >&2
+    return 2
   fi
   # THE NEAR-MISS VOCABULARY, derived once for both modes' diagnostics (C8). An operator whose ledger
   # holds only GOVERNANCE records must not be told to record a DESIGN GO — that instruction is how a
@@ -1172,22 +1238,24 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     echo "ceremony-binding: CONTAINMENT leg 2 (not-already-integrated) SKIPPED — no base history resolved (no usable --base-ref, and no local default-branch ref: shallow clone or absent ref); containment is REACHABLE-ONLY for this run, rc unchanged." >&2
   fi
   _survivor=""; _defects=""; _examined=0; _defect_n=0
-  for _obj in $_matches; do
+  for _unit in $_matches; do
     _examined=$((_examined + 1))
-    _body="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
+    _cb_unit_load "$_unit"
     _design_note="$_obj"
     _cdr_rc=0
     _cdr_out="$( check_design_record 2>&1 )" || _cdr_rc=$?
     if [ "$_cdr_rc" -eq 0 ]; then
-      [ -n "$_survivor" ] || _survivor="$_obj"
+      [ -n "$_survivor" ] || _survivor="$_unit"
     else
       _defect_n=$((_defect_n + 1))
       # The gate value is APPENDED, never inserted: `record <sha> is DEFECTIVE` stays an intact
       # substring (legR3 and any adopter log-scraper match on it), while a governance defect is no
-      # longer indistinguishable from a design one in a mixed-record verdict.
+      # longer indistinguishable from a design one in a mixed-record verdict. SWAS-323: the record's
+      # place in its note is named on the next line, so the substring above is untouched.
       _dfl="$(_record_gate_type "$_body")" || _dfl="unknown"
       _defects="$_defects
 record $_obj is DEFECTIVE (gate: $_dfl):
+  (record $_ri of $_rn on this commit)
 $_cdr_out"
     fi
   done
@@ -1198,11 +1266,12 @@ $_cdr_out"
     echo "      change is broken, not patient (WAITING-GATES-RENDER-AS-RED)." >&2
     return 2
   fi
-  _body="$(git notes --ref="$NOTES_REF" show "$_survivor" 2>/dev/null || true)"
+  _cb_unit_load "$_survivor"
+  _survivor="$_obj"; _survivor_pos="(record $_ri of $_rn)"
   _design_note="$_survivor"
   if ! check_design_record >/dev/null 2>&1; then
     echo "FAIL: ceremony-binding — the surviving record's re-adjudication DIVERGED from its first pass" >&2
-    echo "      (record $_survivor). Fail closed: a non-deterministic verdict is an anomaly." >&2
+    echo "      (record $_survivor $_survivor_pos). Fail closed: a non-deterministic verdict is an anomaly." >&2
     return 2
   fi
 
@@ -1215,7 +1284,7 @@ $_cdr_out"
   if [ "$CB_RECORD_TYPE" = "governance" ]; then _gate_word="GOVERNANCE GATE"; fi
   if [ "$_cb_prepush" -eq 1 ]; then
     echo "OK: ceremony-binding --pre-push — change-class '$_cls'; $_gate_word recorded (scope $_keys_display)."
-    echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
+    echo "    Survivor: record $_survivor $_survivor_pos — examined $_examined matching record(s), $_defect_n defective"
     echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; defects render at CI)."
     echo "    Matched on key: $_survivor_key."
     echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
@@ -1236,7 +1305,7 @@ $_cdr_out"
     return 0
   fi
   echo "OK: ceremony-binding — change-class '$_cls'; $_gate_word recorded (scope $_keys_display)."
-  echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
+  echo "    Survivor: record $_survivor $_survivor_pos — examined $_examined matching record(s), $_defect_n defective"
   echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; ALL matches render at CI)."
   echo "    Matched on key: $_survivor_key."
   echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
@@ -1285,6 +1354,27 @@ _hex_is_prefix() {
   case "$2" in "$_hx_w"*) return 0 ;; esac
   return 1
 }
+_ip_pick_parent() {   # <P's whole note> -> prints the parent record (see the comment at its call); empty when the note holds no GO record
+  _pp_n="$(printf '%s\n' "$1" | kit_note_records n)"; _pp_i=0; _pp_first=""; _pp_hits=0; _pp_hit=""
+  _pp_cgb="$(printf '%s\n' "$_body" | sed -n 's/^go-by: //p' | head -1)"
+  _pp_ctk="$(_cb_unquote "$(printf '%s\n' "$_body" | sed -n 's/^approval-token: //p' | head -1)")"
+  while [ "$_pp_i" -lt "$_pp_n" ]; do
+    _pp_i=$((_pp_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_pp_i")" = record ] || continue
+    _pp_r="$(printf '%s\n' "$1" | kit_note_records body "$_pp_i")"
+    [ -n "$_pp_first" ] || _pp_first="$_pp_r"
+    [ "$(_record_gate_type "$_pp_r" || true)" = design ] || continue
+    [ "$(printf '%s\n' "$_pp_r" | sed -n 's/^basis: //p' | head -1)" = "$_ip_path" ] || continue
+    [ "$(printf '%s\n' "$_pp_r" | sed -n 's/^go-by: //p' | head -1)" = "$_pp_cgb" ] || continue
+    _pp_ptk="$(_cb_unquote "$(printf '%s\n' "$_pp_r" | sed -n 's/^approval-token: //p' | head -1)")"
+    [ "$_pp_ctk" = "inherits $_ip_w: $_pp_ptk" ] || continue
+    _pp_hits=$((_pp_hits + 1)); _pp_hit="$_pp_r"
+  done
+  # More than one record qualifies: the quote does not say which GO it inherits, so nothing binds (the caller refuses on the sentinel).
+  if [ "$_pp_hits" -gt 1 ]; then printf '%s\n' AMBIGUOUS; return 0; fi
+  if [ "$_pp_hits" -eq 1 ]; then printf '%s\n' "$_pp_hit"; return 0; fi
+  printf '%s\n' "$_pp_first"
+}
 _ip_parent_record() {
   # ---- step 2: the parent commit resolves (it is reachable only while a branch holds it, 2.4 (b)).
   _ip_p40="$(git rev-parse -q --verify "${_ip_w}^{commit}" 2>/dev/null)" || _ip_p40=""
@@ -1299,7 +1389,16 @@ _ip_parent_record() {
     return 2
   fi
   # ---- step 3: a design GO exists AT P, gate `design` only, approved-sha == P.
-  _ip_pb="$(git notes --ref="$NOTES_REF" show "$_ip_p40" 2>/dev/null)" || _ip_pb=""
+  # SWAS-323: P's note is a LIST of records. The parent is the GO record at P with `gate: design` exactly whose basis path and
+  # go-by satisfy the child's quote (the first one in note order; newest-wins is not used, and a record of another type, such
+  # as a land record, never qualifies). With none that qualifies, the FIRST GO record is judged, so a one-record note gets
+  # every refusal below exactly as before.
+  _ip_pn="$(git notes --ref="$NOTES_REF" show "$_ip_p40" 2>/dev/null)" || _ip_pn=""
+  _ip_pb="$(_ip_pick_parent "$_ip_pn")"
+  if [ "$_ip_pb" = AMBIGUOUS ]; then
+    _inh_fail "more than one design record at $_ip_p40 satisfies the child's basis, go-by and token: the quote does not say which GO it inherits."
+    return 2
+  fi
   _ip_pt="$(_record_gate_type "$_ip_pb")" || _ip_pt=""
   if [ -z "$_ip_pt" ]; then
     _inh_fail "no design GO record at $_ip_p40 (named by the child's basis as $_ip_w):" \
@@ -1341,7 +1440,7 @@ _ip_parent_record() {
     return 2
   fi
   if [ "$_ip_bs" = "(none recorded)" ]; then
-    if ! _legacy_parent "$_ip_p40"; then
+    if ! _legacy_parent "$_ip_p40" "$(printf '%s\n' "$_ip_pb" | sed -n 's/^scope: //p' | head -1)" "$(printf '%s\n' "$_ip_pb" | sed -n 's/^kit-row: //p' | head -1)"; then
       _inh_fail "parent $_ip_w names no basis and is not a legacy record; re-record the design GO with --basis <path>" \
         "(a basis-less parent binds only when it is on this gate's committed legacy list; record refuses to mint new ones)."
       return 2
@@ -1613,8 +1712,7 @@ check_design_record() {
   # The pointer originally stopped the WITHDRAWN ordering predicate accepting ANY design doc in history
   # (every one is an ancestor of everything, so it would have gone VACUOUSLY GREEN). Ordering is gone —
   # see the tombstone below — so the pointer now does one job: bind the GO to the artifact. NO ordering claim.
-  _basis="$(git notes --ref="$NOTES_REF" show "$_design_note" 2>/dev/null \
-            | sed -n 's/^basis: //p' | head -1)"
+  _basis="$(printf '%s\n' "$_body" | sed -n 's/^basis: //p' | head -1)"
   if [ -z "$_basis" ] || [ "$_basis" = "(none recorded)" ]; then
     echo "FAIL: ceremony-binding — the '--gate design' record on $_design_note names no artifact." >&2
     echo "      Re-record it with --basis <path-to-the-design-doc>." >&2
@@ -2819,8 +2917,10 @@ selftest() {
   # first would decide whether the diff-shape guard applies at all. Same class as the #509 wedge.
   # The gate parameter carries a literal newline, so _mkfix writes TWO `gate:` lines.
   _mkfix "$_tmp/fG5" "$(printf 'design\ngate: governance')" "docs/architecture/d-design.md" real
-  _expect_fail legG5 "$_tmp/fG5" "BOTH 'gate: design' and 'gate: governance'" \
-    "a record carrying two accepted gate values" 2 "$_tmp/fG5"
+  # SWAS-323: two `gate:` lines in one record is a repeated key, so the note is DEFECTIVE at the splitter (D3) and is reported as an
+  # rc-2 anomaly before any gate-value adjudication; the "BOTH" refusal in check_design_record is now defence in depth.
+  _expect_fail legG5 "$_tmp/fG5" "is DEFECTIVE" \
+    "a record carrying two accepted gate values (a repeated gate key: D3)" 2 "$_tmp/fG5"
 
   # LEG G6 (THE SLICE'S THESIS, AND ITS LOAD-BEARING NEGATIVE) — a VALID governance record whose
   # change-set carries a control-plane payload is DEFECTIVE, and the escaping path is NAMED. Every
@@ -3012,10 +3112,11 @@ selftest() {
   # production _legacy_parent. Both real legacy parents must be found and an off-list sha must not.
   _legs=$((_legs+1))   # LEGACY-DEFAULT
   _ld_ok=1
-  for _ld in 77c374a33cbf0377517091b28e91acc7f99b4797 68b5980606d90ac48026e666ad60a30373e22aa3; do
-    _legacy_parent "$_ld" || _ld_ok=0
-  done
-  if _legacy_parent 0123456789abcdef0123456789abcdef01234567 || _legacy_parent 77c374a; then _ld_ok=0; fi
+  # SWAS-323: an entry matches on sha, scope AND kit-row together; the values below are those of the two real parent notes (read from the ledger).
+  _legacy_parent 77c374a33cbf0377517091b28e91acc7f99b4797 branch/docs/ci-shaping-314 SWAS-314 || _ld_ok=0
+  _legacy_parent 68b5980606d90ac48026e666ad60a30373e22aa3 branch/docs/milestone-c-design SWAS-290 || _ld_ok=0
+  if _legacy_parent 0123456789abcdef0123456789abcdef01234567 branch/docs/ci-shaping-314 SWAS-314 || _legacy_parent 77c374a branch/docs/ci-shaping-314 SWAS-314; then _ld_ok=0; fi
+  if _legacy_parent 77c374a33cbf0377517091b28e91acc7f99b4797 branch/docs/other SWAS-314 || _legacy_parent 77c374a33cbf0377517091b28e91acc7f99b4797 branch/docs/ci-shaping-314 SWAS-1; then _ld_ok=0; fi
   if [ "$_ld_ok" = 1 ]; then
     echo "PASS LEGACY-DEFAULT: the production CB_LEGACY_PARENTS finds 77c374a3… and 68b59806… and refuses an off-list sha and a prefix"
   else
@@ -3072,7 +3173,7 @@ selftest() {
   _ih_pgate=governance; _mkinh "$_tmp/i15"
   _inh_neg IN15 "$_tmp/i15" "$_cp" "parent gate" "the parent's gate is governance"
   _ih_pgate="design+governance"; _mkinh "$_tmp/i15b"
-  _inh_neg IN15 "$_tmp/i15b" "$_cp" "parent gate" "the parent's gate is design+governance"
+  _inh_neg IN15 "$_tmp/i15b" "$_cp" "no design GO record at" "the parent's gate is design+governance (two gate lines: the parent note is DEFECTIVE and holds no record)"
   _ih_cwhere=side; _mkinh "$_tmp/i16"
   _inh_neg IN16 "$_tmp/i16" "$_cp" "NOT an ancestor of the graded head" "the child's approved sha is not in the head's history"
   _ih_rename=1; _ih_cbasis="@P@:docs/architecture/d2-design.md"; _mkinh "$_tmp/i17"
@@ -3166,7 +3267,7 @@ selftest() {
   _ih_pbasis="(none recorded)"; _ih_pclass=ordinary; _ih_pgoby="owner (reviewer-login) [self-asserted]"
   _ih_ptok="GO SWAS-314 design, Q1–Q11 as recommended"
   _ih_ctok="inherits @P@: GO SWAS-314 design, Q1–Q11 as recommended"; _mkinh "$_tmp/i21"
-  CB_LEGACY_PARENTS="$(cat "$_tmp/i21/.P")  kit-row SWAS-314  scope branch/docs/ci-shaping-314"
+  CB_LEGACY_PARENTS="$(cat "$_tmp/i21/.P")  kit-row SWAS-PARENT  scope branch/parent-x"   # SWAS-323: the entry now names the fixture parent's own kit-row and scope
   _inh_pos IN21 "$_tmp/i21" "$_cp" "INHERITED" "the real SWAS-314 parent shape, judged as control-plane, P on the injected legacy list"
   CB_LEGACY_PARENTS="0000000000000000000000000000000000000001  kit-row SWAS-1  scope branch/x"
   _inh_neg IN22 "$_tmp/i21" "$_cp" "not a legacy record" "the same parent with P NOT on the legacy list"
@@ -3250,6 +3351,228 @@ selftest() {
     echo "FAIL IN20c: expected an announced 2 KB cut, resolved lines kept and the unresolved line cut: $(printf '%s\n' "$_o20c" | head -20)"
     _fails=$((_fails+1))
   fi
+
+  # ── SWAS-323 cells: a note is a LIST of records (C1 C2 L4 D1 D2 D3 P1, the parent-pick fallback, the legacy-parent key).
+  # Load-bearing mutants: the splitter cells (D1 D2 D3 L4) and P1 carry theirs IN the cell (a sed over the splitter block, or over a copy of
+  # the sibling file). C1 and C2 name theirs and are proven in a second clone with the Edit tool (see the report): C1 = the collect loop and
+  # _cb_unit_load read the WHOLE note as one record (n forced to 1, body = the note); C2 = _matches_scope run over the whole note.
+  _rec323() {   # <approved-sha> <gate> <scope> [<header line>] -> one record, the shape `record` writes
+    printf '%s\n' "${4:-record: promotion GO (approve->execute->log)}" "approved-sha: $1" "approved-by: Fixture Human [committer]" \
+      "gate: $2" "scope: $3" "change-class: control-plane" "basis: docs/architecture/d-design.md"
+  }
+  _m323() {   # <leg> <dir> <rc> <needle> <desc> [run_ceremony_binding args…]
+    _legs=$((_legs+1)); _ml="$1"; _md="$2"; _mrc="$3"; _mn="$4"; _mde="$5"; shift 5
+    _mo="$( cd "$_md" && run_ceremony_binding "$_tmp/changed-cp" "$@" 2>&1 )" && _mr=0 || _mr=$?
+    case "$_mr:$_mo" in
+      "$_mrc":*"$_mn"*) echo "PASS $_ml: $_mde" ;;
+      *) echo "FAIL $_ml: $_mde — want rc $_mrc naming '$_mn', got rc=$_mr: $_mo"; _fails=$((_fails+1)) ;;
+    esac
+  }
+  # C1: two GO records for two scopes on ONE commit; each scope binds, in CI mode and in --pre-push mode.
+  _mkfix "$_tmp/m1" design "docs/architecture/d-design.md" real
+  _a323="$(git -C "$_tmp/m1" rev-parse HEAD)"
+  { _rec323 "$_a323" design PR-1; printf '\n'; _rec323 "$_a323" design branch/b2-pp; } > "$_tmp/m1.note"
+  git -C "$_tmp/m1" notes --ref=promotions add -f -F "$_tmp/m1.note" HEAD
+  _m323 C1a "$_tmp/m1" 0 "(record 1 of 2)" "the first of two records on one commit binds its scope" --scope PR-1
+  _m323 C1b "$_tmp/m1" 0 "(record 2 of 2)" "the second record binds its own (branch) key" --scope PR-2 --head-branch b2-pp
+  git -C "$_tmp/m1" checkout -q -b b2-pp
+  _m323 C1c "$_tmp/m1" 0 "(record 2 of 2)" "--pre-push binds the second record by the branch key" --pre-push
+  # C2: cross-record isolation. X = gate design, scope branch/x; Y = gate merge, scope PR-9. PR-9 alone must WAIT: Y's scope never combines with X's gate.
+  _mkfix "$_tmp/m2" design "docs/architecture/d-design.md" real
+  _a323="$(git -C "$_tmp/m2" rev-parse HEAD)"
+  { _rec323 "$_a323" design branch/x; printf '\n'; _rec323 "$_a323" merge PR-9; } > "$_tmp/m2.note"
+  git -C "$_tmp/m2" notes --ref=promotions add -f -F "$_tmp/m2.note" HEAD
+  _m323 C2 "$_tmp/m2" 1 "NONE is scoped to this change" "a merge record's scope never combines with another record's design gate" --scope PR-9
+  # L4: a land-typed record carrying gate: design satisfies nothing, and its lines are not folded into the GO record above it.
+  _mkfix "$_tmp/m3" design "docs/architecture/d-design.md" real
+  _a323="$(git -C "$_tmp/m3" rev-parse HEAD)"
+  { _rec323 "$_a323" design PR-1; printf '\n'; _rec323 "$_a323" design PR-7 "land: promotion LAND (approve->execute->log)"; } > "$_tmp/m3.note"
+  git -C "$_tmp/m3" notes --ref=promotions add -f -F "$_tmp/m3.note" HEAD
+  _m323 L4a "$_tmp/m3" 1 "NONE is scoped to this change" "a land record with gate: design binds nothing" --scope PR-7
+  _m323 L4b "$_tmp/m3" 0 "(record 1 of 2)" "the GO record above a land record still binds" --scope PR-1
+  _legs=$((_legs+1))
+  _o4="$( cd "$_tmp/m3" && run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" || true
+  case "$_o4" in
+    *"scope: PR-7"*) echo "FAIL L4c: the land record's lines were folded into the rendered GO record"; _fails=$((_fails+1)) ;;
+    *"(1 of 2)"*) echo "PASS L4c: the render shows the GO record alone, labelled (1 of 2)" ;;
+    *) echo "FAIL L4c: the render did not label the record: $_o4"; _fails=$((_fails+1)) ;;
+  esac
+  # D1 D2 D3: a defective note holds no record, so it binds nothing (rc 1, as if there were no note at all).
+  for _d323 in D1 D2 D3; do
+    _mkfix "$_tmp/m$_d323" design "docs/architecture/d-design.md" real
+    _a323="$(git -C "$_tmp/m$_d323" rev-parse HEAD)"
+    case "$_d323" in
+      D1) _rec323 "$_a323" design PR-1 | sed 1d ;;
+      D2) { _rec323 "$_a323" design PR-1; printf '%s\n' 'this line is not a field'; } ;;
+      D3) { _rec323 "$_a323" design PR-1; printf '%s\n' 'scope: PR-2'; } ;;
+    esac > "$_tmp/m$_d323.note"
+    git -C "$_tmp/m$_d323" notes --ref=promotions add -f -F "$_tmp/m$_d323.note" HEAD
+    _m323 "$_d323" "$_tmp/m$_d323" 2 "is DEFECTIVE" "a defective note ($_d323) that names this scope is an rc-2 anomaly, never a pass or a wait" --scope PR-1
+    _m323 "$_d323-other" "$_tmp/m$_d323" 1 "no '--gate design' record was found" "the same defective note binds nothing for another scope (rc 1: no record)" --scope PR-3
+  done
+  # S6: more than 64 records make the note defective (a volume bound on the splitter's work), end to end and at the splitter.
+  _legs=$((_legs+1))
+  _i65=0; : > "$_tmp/big.note"
+  while [ "$_i65" -lt 65 ]; do
+    _i65=$((_i65 + 1)); { _rec323 "$_a323" design "branch/big$_i65"; printf '\n'; } >> "$_tmp/big.note"
+  done
+  if [ "$(kit_note_records n < "$_tmp/big.note")" = 0 ] && [ "$(kit_note_records bad < "$_tmp/big.note")" = 1 ] \
+     && [ "$(head -n 512 "$_tmp/big.note" | kit_note_records n)" = 64 ]; then
+    echo "PASS S6: 65 records make the note defective; 64 are accepted"
+  else
+    echo "FAIL S6: the 64-record bound is not enforced"; _fails=$((_fails+1))
+  fi
+  # D3b: each record's bytes, and so their sha256, are exactly what `record` composed (the separator blank lines are not part of a record).
+  _legs=$((_legs+1))
+  _a323="$(git -C "$_tmp/m1" rev-parse HEAD)"
+  if [ "$(kit_note_records body 2 < "$_tmp/m1.note")" = "$(_rec323 "$_a323" design branch/b2-pp)" ] \
+     && [ "$(kit_note_records n < "$_tmp/m1.note")" = 2 ]; then
+    echo "PASS D3b: record 2 of 2 is byte-exact to what was composed (no separator lines)"
+  else
+    echo "FAIL D3b: the split record differs from the composed bytes"; _fails=$((_fails+1))
+  fi
+  # The splitter's own mutants, in-cell: the block is extracted, sed-mutated, sourced over the original, judged, and the original restored.
+  _blk323() { sed -n '/^# BEGIN kit_note_records$/,/^# END kit_note_records$/p' "$DIR/conformance/ceremony-binding.sh"; }
+  _blk323 > "$_tmp/sp.orig"
+  _sp_ok() { [ "$(printf 'record: promotion GO x\ngate: design\n\nrecord: promotion GO y\ngate: merge\n' | kit_note_records n)" = 2 ]; }
+  _sp_d1() { [ "$(printf 'stray: x\nrecord: promotion GO x\ngate: design\n' | kit_note_records n)" = 0 ]; }
+  _sp_d2() { [ "$(printf 'record: promotion GO x\ngate: design\nnot a field\n' | kit_note_records n)" = 0 ]; }
+  _sp_d3() { [ "$(printf 'record: promotion GO x\nscope: a\nscope: b\n' | kit_note_records n)" = 0 ]; }
+  _sp_l4() { [ "$(printf 'record: promotion GO x\ngate: design\n\nland: promotion LAND x\ngate: design\n' | kit_note_records n)" = 2 ]; }
+  _sp323() {   # <leg> <predicate> <sed|-> <desc>
+    _legs=$((_legs+1)); cp "$_tmp/sp.orig" "$_tmp/sp.cur"
+    if [ "$3" != - ]; then
+      sed "$3" "$_tmp/sp.orig" > "$_tmp/sp.cur"
+      if cmp -s "$_tmp/sp.orig" "$_tmp/sp.cur"; then echo "FAIL $1: the mutant changed nothing (it no longer matches the splitter)"; _fails=$((_fails+1)); return 0; fi
+    fi
+    # shellcheck disable=SC1090,SC1091 # the extracted splitter block, sourced over the original and restored below
+    . "$_tmp/sp.cur"
+    if "$2"; then _spr=0; else _spr=1; fi
+    # shellcheck disable=SC1090,SC1091
+    . "$_tmp/sp.orig"
+    if [ "$3" = - ]; then
+      if [ "$_spr" = 0 ]; then echo "PASS $1: $4"; else echo "FAIL $1: $4"; _fails=$((_fails+1)); fi
+    elif [ "$_spr" = 1 ]; then echo "PASS $1: $4 (the mutant is killed)"
+    else echo "FAIL $1: $4 — the mutant SURVIVED"; _fails=$((_fails+1)); fi
+  }
+  _sp323 SP-live _sp_ok - "the splitter reads two records"
+  _sp323 D1-split _sp_d1 - "a first line that is not a header makes the note hold no record"
+  _sp323 D1-mut _sp_d1 '/NR == 1/ s/bad = 1/bad = 0/; /if (hdr(/ s/bad = 1/bad = 0/' "D1: the first-line rule"
+  _sp323 D2-split _sp_d2 - "a line that is not key: value makes the note hold no record"
+  _sp323 D2-mut _sp_d2 '/!~/ s/bad = 1/bad = 0/' "D2: the key: value rule"
+  _sp323 D3-split _sp_d3 - "a repeated key makes the note hold no record"
+  _sp323 D3-mut _sp_d3 '/in seen/ s/bad = 1/bad = 0/' "D3: the repeated-key rule"
+  _sp323 L4-split _sp_l4 - "a land: header starts its own record"
+  _sp323 L4-mut _sp_l4 '/function hdr/ s/(record|land): promotion/record: promotion/' "L4: the generic header rule"
+  # P1: the splitter block is byte-identical in both files (cksum); the mutant edits one copy.
+  _p1blk() { sed -n '/^# BEGIN kit_note_records$/,/^# END kit_note_records$/p' "$1" | cksum; }
+  _p1v="$DIR/scripts/promotion-verify.sh"
+  _legs=$((_legs+1))
+  if [ -f "$_p1v" ] && [ "$(_p1blk "$DIR/conformance/ceremony-binding.sh")" = "$(_p1blk "$_p1v")" ] \
+     && [ "$(_p1blk "$_p1v")" != "$(printf '' | cksum)" ]; then
+    echo "PASS P1: the splitter block is byte-identical in promotion-verify.sh and ceremony-binding.sh"
+  else
+    echo "FAIL P1: the two splitter blocks differ (or one is missing)"; _fails=$((_fails+1))
+  fi
+  _legs=$((_legs+1))
+  if [ -f "$_p1v" ]; then
+    sed 's/NF == 0 { next }/NF == 1 { next }/' "$_p1v" > "$_tmp/p1.mut"
+    if [ "$(_p1blk "$_tmp/p1.mut")" != "$(_p1blk "$DIR/conformance/ceremony-binding.sh")" ]; then
+      echo "PASS P1m: editing one copy of the splitter makes the parity check differ (the mutant is killed)"
+    else
+      echo "FAIL P1m: the mutant copy still matched"; _fails=$((_fails+1))
+    fi
+  else
+    echo "FAIL P1m: $_p1v is missing"; _fails=$((_fails+1))
+  fi
+  # D3b at the splitter: a record's bytes carry no separator blank line (so the record's sha256 is what `record` composed); the mutant keeps them.
+  _sp_d3b() { [ "$(printf 'record: promotion GO x\ngate: design\n\nrecord: promotion GO y\ngate: merge\n' | kit_note_records body 1 | cksum)" = "$(printf 'record: promotion GO x\ngate: design\n' | cksum)" ]; }
+  _sp323 D3b-split _sp_d3b - "record 1's bytes end at its last field line (no separator kept)"
+  _sp323 D3b-mut _sp_d3b 's/NF == 0 { next }/NF == 0 { if (n > 0) bod[n] = bod[n] "\\n"; next }/' "D3b: the separator rule"
+  # C1 / C2 in-cell mutants: the cell's property must hold on the fixture's OWN copy of this script (the production entry, through its own
+  # authority copy) and must FAIL on a sed-mutated copy that still RUNS (a verdict from this script is printed). Run through the fixture's
+  # copy, never the host's (HERM2).
+  _mut323() {   # <leg> <fixture> <sed> <want rc> <needle> <desc> [args…]
+    _legs=$((_legs+1)); _mg="$1"; _mfx="$2"; _msd="$3"; _mwr="$4"; _mwn="$5"; _mde="$6"; shift 6
+    if ! _inh_authority "$_mfx"; then echo "FAIL $_mg: the authority copy into the fixture failed"; _fails=$((_fails+1)); return 0; fi
+    _mo="$( cd "$_mfx" && sh "$_mfx/conformance/ceremony-binding.sh" "$@" 2>&1 )" && _mr=0 || _mr=$?
+    cp "$_mfx/conformance/ceremony-binding.sh" "$_tmp/cb.orig"
+    sed "$_msd" "$_tmp/cb.orig" > "$_mfx/conformance/ceremony-binding.sh"
+    if cmp -s "$_tmp/cb.orig" "$_mfx/conformance/ceremony-binding.sh"; then
+      echo "FAIL $_mg: the mutant changed nothing (it no longer matches this script)"; _fails=$((_fails+1)); cp "$_tmp/cb.orig" "$_mfx/conformance/ceremony-binding.sh"; return 0
+    fi
+    _mo2="$( cd "$_mfx" && sh "$_mfx/conformance/ceremony-binding.sh" "$@" 2>&1 )" && _mr2=0 || _mr2=$?
+    cp "$_tmp/cb.orig" "$_mfx/conformance/ceremony-binding.sh"
+    case "$_mr:$_mo" in
+      "$_mwr":*"$_mwn"*) ;;
+      *) echo "FAIL $_mg: $_mde — the property does not hold on the real copy: rc=$_mr: $_mo"; _fails=$((_fails+1)); return 0 ;;
+    esac
+    case "$_mo2" in
+      *ceremony-binding*) ;;
+      *) echo "FAIL $_mg: the mutant copy did not run to a verdict (a crashed copy would pass as killed): $_mo2"; _fails=$((_fails+1)); return 0 ;;
+    esac
+    case "$_mr2:$_mo2" in
+      "$_mwr":*"$_mwn"*) echo "FAIL $_mg: $_mde — the mutant SURVIVED"; _fails=$((_fails+1)) ;;
+      *) echo "PASS $_mg: $_mde (holds; the mutant is killed: rc=$_mr2)" ;;
+    esac
+  }
+  # The subprocess fixtures: main = base; feat = the design commit (the approved one: it touches the artifact and is not in main) then a
+  # conformance/x.sh head, so the production entry derives control-plane from the fixture's own diff.
+  _mk323p() {   # <dir> <gate1> <scope1> <gate2> <scope2> -> two records on the design commit
+    mkdir -p "$1"
+    ( cd "$1" || exit 1
+      git init -q 2>/dev/null; git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+      git config user.email fixture@example.invalid; git config user.name Fixture; git config commit.gpgsign false
+      printf 'fixture repo\n' > README.md; git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+      git checkout -q -b feat; _ih_doc docs/architecture/d-design.md; git add -A 2>/dev/null; git commit -q -m design >/dev/null 2>&1
+      _pa="$(git rev-parse HEAD)"
+      mkdir -p conformance; printf '#!/bin/sh\necho x\n' > conformance/x.sh; git add -A 2>/dev/null; git commit -q -m head >/dev/null 2>&1
+      { _rec323 "$_pa" "$2" "$3"; printf '\n'; _rec323 "$_pa" "$4" "$5"; } > .note323
+      git notes --ref=promotions add -f -F .note323 "$_pa" )
+  }
+  _mk323p "$_tmp/mp1" design PR-1 design branch/feat
+  _mk323p "$_tmp/mp2" design branch/x merge PR-9
+  _mut323 C1m "$_tmp/mp1" 's/kit_note_records body "\$_ri")"/kit_note_records body 1)"/' 0 "(record 2 of 2)" \
+    "C1: the second record binds its own key (the mutant reads record 1 for every index)" --scope PR-2 --head-branch feat
+  _mut323 C2m "$_tmp/mp2" 's/_body="\$(printf .%s\\n. "\$_note" | kit_note_records body "\$_ri")"/_body="$_note"/;s/_body="\$(printf .%s\\n. "\$_un" | kit_note_records body "\$_ri")"/_body="$_un"/' 1 "NONE is scoped to this change" \
+    "C2: a merge record's scope never combines with another record's design gate (the mutant judges the whole note)" --scope PR-9
+  # S4: two design records at P that both satisfy the child's basis, go-by and token are ambiguous and bind nothing; two that differ in token
+  # bind by the token the child quotes.
+  _mkinh "$_tmp/i324"
+  ( cd "$_tmp/i324" || exit 1
+    _p="$(cat .P)"; git notes --ref=promotions show "$_p" > .pn
+    { cat .pn; printf '\n'; sed 's/^recorded-at: .*/recorded-at: 2026-10-24T17:00:00Z/; s/^scope: .*/scope: branch\/parent-y/' .pn; } > .pn2
+    git notes --ref=promotions add -f -F .pn2 "$_p" )
+  _inh_neg IN324 "$_tmp/i324" "$_cp" "more than one design record at" "two design records at P both satisfy the quote: nothing binds"
+  _mkinh "$_tmp/i325"
+  ( cd "$_tmp/i325" || exit 1
+    _p="$(cat .P)"; git notes --ref=promotions show "$_p" > .pn
+    { sed 's/^approval-token: .*/approval-token: "another GO"/' .pn; printf '\n'; cat .pn; } > .pn2
+    git notes --ref=promotions add -f -F .pn2 "$_p" )
+  _inh_pos IN325 "$_tmp/i325" "$_cp" "INHERITED" "two design records at P differing in token: the one whose token the child quotes binds (not the first)"
+  # IN326 (L1's end state, design 5 L1): a merge GO recorded on the design commit P sits beside P's design record, in either order, and an
+  # inherited child at P still binds: the pick finds the design record by its gate, basis, go-by and token, never by position.
+  for _o326 in design-first merge-first; do
+    _mkinh "$_tmp/i326$_o326"
+    ( cd "$_tmp/i326$_o326" || exit 1
+      _p="$(cat .P)"; git notes --ref=promotions show "$_p" > .pn
+      sed 's/^gate: design$/gate: release-candidate/; s/^scope: .*/scope: PR #5/' .pn > .pm
+      if [ "$_o326" = design-first ]; then { cat .pn; printf '\n'; cat .pm; } > .pn2; else { cat .pm; printf '\n'; cat .pn; } > .pn2; fi
+      git notes --ref=promotions add -f -F .pn2 "$_p" )
+    _inh_pos "IN326-$_o326" "$_tmp/i326$_o326" "$_cp" "INHERITED" "a merge GO beside P's design record ($_o326): the inherited child at P still binds"
+  done
+  # IN323: the parent pick's fallback never binds. P holds a MERGE record (right basis) first and a DESIGN record with ANOTHER basis second:
+  # no record qualifies, the first GO record is judged, and it is not a design GO, so the inherited child refuses.
+  _ih_pbasis='docs/architecture/other-design.md'; _mkinh "$_tmp/i323"
+  ( cd "$_tmp/i323" || exit 1
+    _p="$(cat .P)"; git notes --ref=promotions show "$_p" > .pn
+    { sed 's/^gate: design$/gate: merge/; s#^basis: .*#basis: docs/architecture/d-design.md#' .pn; printf '\n'; cat .pn; } > .pn2
+    git notes --ref=promotions add -f -F .pn2 "$_p" )
+  _inh_neg IN323 "$_tmp/i323" "$_cp" "no design GO record at" "a parent whose only design record has another basis does not bind, whatever merge record sits beside it"
+  # IN22c: a legacy entry matches on sha, kit-row AND scope together.
+  CB_LEGACY_PARENTS="$(cat "$_tmp/i21/.P")  kit-row SWAS-PARENT  scope branch/another"
+  _inh_neg IN22c "$_tmp/i21" "$_cp" "not a legacy record" "the right sha with another scope is not a legacy parent"
+  CB_LEGACY_PARENTS=''
 
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
@@ -3413,7 +3736,7 @@ _mkfix2() {
     _lo=$(printf '%s\n%s\n' "$_c1" "$_c2" | LC_ALL=C sort | head -n 1)
     if [ "$_lo" = "$_c1" ]; then _hi="$_c2"; else _hi="$_c1"; fi
     _note2() { # <commit> <defective:1|0> — both commits touch the basis, so approved-sha binds
-      if [ "$2" = 1 ]; then _ap2="change-class: control-plane"; else _ap2="approved-by: Fixture Human [committer]"; fi
+      if [ "$2" = 1 ]; then _ap2="x-no-approver: (this record carries no approved-by line)"; else _ap2="approved-by: Fixture Human [committer]"; fi
       printf '%s\n' "record: promotion GO (approve->execute->log)" \
         "gate: design" "scope: PR-1" "$_ap2" "approved-sha: $1" \
         "change-class: control-plane" "basis: docs/architecture/d-design.md" \
@@ -3563,8 +3886,8 @@ _mkbigrec() {
     git init -q 2>/dev/null
     git config user.email fixture@example.invalid; git config user.name Fixture
     git commit -q --allow-empty -m fixture >/dev/null 2>&1
-    { printf '%s\n' "gate: design" "scope: $_scb"
-      awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 40; j++) print s }'
+    { printf '%s\n' "record: promotion GO (approve->execute->log)" "gate: design" "scope: $_scb"
+      awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 40; j++) print "pad-" j ": " s }'
     } | git notes --ref=promotions add -f -F - HEAD 2>/dev/null
   )
 }
@@ -3575,7 +3898,7 @@ _mkfix() {
   _d="$1"; _gate="$2"; _basis="$3"; _kind="$4"
   _sc="${_scope:-PR-1}"; _lb="${_label:-committer}"; _ao="${_asha_override:-}"
   # _label=NONE builds a record with NO approved-by line at all (leg 14's shape).
-  if [ "$_lb" = NONE ]; then _apline="change-class: control-plane"
+  if [ "$_lb" = NONE ]; then _apline="x-no-approver: (this record carries no approved-by line)"
   else _apline="approved-by: Fixture Human [$_lb]"; fi
   mkdir -p "$_d/docs/architecture"
   (
@@ -3644,7 +3967,7 @@ _mkfix() {
             _ashaline="approved-sha: $(git rev-parse HEAD)" ;;
       SHORT) _ashaline="approved-sha: $(git rev-parse --short HEAD)" ;;
       SYMBOLIC) _ashaline="approved-sha: HEAD" ;;
-      NONE) _ashaline="change-class: control-plane" ;;
+      NONE) _ashaline="x-no-approved-sha: (this record carries no approved-sha line)" ;;
       *)    _ashaline="approved-sha: $(git rev-parse HEAD)" ;;
     esac
     printf '%s\n' "record: promotion GO (approve->execute->log)" \
@@ -3970,7 +4293,7 @@ _mkinh() {
         "approval-token: \"$_hctok\"" "basis: $(_hsub "${_ih_cbasis-@P@:$_hdm}")" \
         "recorded-at: 2026-10-25T10:00:00Z"
       if [ "${_ih_cpad-0}" = 1 ]; then   # the volume attack in miniature: this body alone passes 8 KB
-        awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 12; j++) print s }'
+        awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 12; j++) print "pad-" j ": " s }'
       fi
     } | git notes --ref=promotions add -f -F - "$_hck" 2>/dev/null
     while IFS= read -r _hmk; do   # one inherited child per extra commit (the summary-block 2 KB bound)

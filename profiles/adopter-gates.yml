@@ -1,8 +1,10 @@
 # Reference ADOPTER-GATES workflow — the board/loop merge-time gates the kit uses on itself,
 # ported for an adopted project: `backlog-presence` (a gated PR binds a board row), `ceremony-binding`
-# (a gated PR carries a recorded design GO), and `loop-state` (the Entry-Declaration refusal floor —
+# (a gated PR carries a recorded design GO), `loop-state` (the Entry-Declaration refusal floor —
 # shipped ACTIVE and ENFORCING; `observe` is the one-line opt-out, see the dial
-# below). THE SINGLE, STACK-NEUTRAL SOURCE — like
+# below) and `review-lane` (a code PR names a graded plan and review record; ships `observe`). The
+# after-the-fact trunk-side trace is NOT here: it is `trunk-trace` in adopter-trunk-trace.yml, its own file,
+# so that no push run can skip a required job of this one. THE SINGLE, STACK-NEUTRAL SOURCE — like
 # profiles/ratification.yml, this file runs no toolchain step, so it is identical for every stack and
 # lives here once (a shared, non-stack asset), NOT once per profile. scripts/incept.sh installs it for
 # EVERY stack, unconditionally; conformance/adopter-gates-parity.sh locks that it stays the sole,

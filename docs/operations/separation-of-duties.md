@@ -62,7 +62,7 @@ This runs the full fixture table (distinct approver, author-only approves, appro
 
 ## NATIVE — GitHub
 
-Two authoring identities satisfy the contract by role, and either is acceptable: a **GitHub App token** or a push-only **machine user** (below). The machine user is the recommended posture; this repo has chosen it and has not yet switched it on (see the status paragraph under [Forge identity](#forge-identity--agent-sessions-hold-no-admin)). `sparkwright doctor --as agent` verifies a *user* token; an App installation or CI token cannot read its own identity (HTTP 403), so the check reports it UNVERIFIED and the App's settings page is where its permissions are confirmed. The App pattern:
+Two authoring identities satisfy the contract by role, and either is acceptable: a **GitHub App token** or a push-only **machine user** (below). The machine user is the recommended posture; this repo has chosen it and has not yet switched it on (see the status paragraph under [Forge identity](#forge-identity--agent-sessions-hold-no-admin)). `sh scripts/sparkwright doctor --as agent` verifies a *user* token; an App installation or CI token cannot read its own identity (HTTP 403), so the check reports it UNVERIFIED and the App's settings page is where its permissions are confirmed. The App pattern:
 
 - The App is a distinct PR author (its login is `<app-slug>[bot]`), so the PR author is different from any human reviewer from the moment the PR is opened.
 - A GitHub App token is scoped — the App can be granted only the permissions it needs (contents + pull-requests), with no human-seat cost.
@@ -110,9 +110,9 @@ SoD above keeps an agent from ratifying its own work. This section keeps it from
 
 **The rule, by role (host-neutral):** *the agent identity holds no admin on the forge; approvals come from a different identity than the author; CI uses its own token.* GitHub is the worked example below; `docs/adoption/vc-hosts.md` says how another host maps it.
 
-**Status in this repo.** The model is stated and `sparkwright doctor --as agent` measures it, but this repo has **not yet switched the boundary on**: agent sessions still run under the owner's login, and the residual (an admin login within the agents' reach) stays open until the switch is proven (the act sheet is [`forge-identity-switch.md`](forge-identity-switch.md)).
+**Status in this repo.** The model is stated and `sh scripts/sparkwright doctor --as agent` measures it, but this repo has **not yet switched the boundary on**: agent sessions still run under the owner's login, and the residual (an admin login within the agents' reach) stays open until the switch is proven (the act sheet is [`forge-identity-switch.md`](forge-identity-switch.md)).
 
-**Solo project.** A one-account project runs the agent under its own login; `sparkwright doctor` reports that as INFO, not a warning (declaring a ratification seat in `.kit/ratification-seats.conf` turns the INFO into a counted warning). The switch becomes worth its cost once a separate identity reviews. (This is below the minimum model; see [above](#the-minimum-identity-model--one-human-plus-one-agent-identity).)
+**Solo project.** A one-account project runs the agent under its own login; `sh scripts/sparkwright doctor` reports that as INFO, not a warning (declaring a ratification seat in `.kit/ratification-seats.conf` turns the INFO into a counted warning). The switch becomes worth its cost once a separate identity reviews. (This is below the minimum model; see [above](#the-minimum-identity-model--one-human-plus-one-agent-identity).)
 
 ### The identity set
 
@@ -134,7 +134,7 @@ The machine user's token is a classic token with exactly `repo` and `workflow` (
 
 ### Where an owner credential is still reachable
 
-The machine user is a lock only if no owner credential is reachable by the OS user the agents run as. Six paths to check; `sparkwright doctor` sees only the first kind (the credential `gh` resolves) and says so:
+The machine user is a lock only if no owner credential is reachable by the OS user the agents run as. Six paths to check; `sh scripts/sparkwright doctor` sees only the first kind (the credential `gh` resolves) and says so:
 
 1. **The GitHub MCP connector** available to a session acts as whichever account connected it. Its control is the guard's MCP capability gate, which is policy, not a measured control. Disconnect it, or reconnect it as the machine user.
 2. **A personal access token exported from the shell profile** into every session's environment. Remove it and revoke it on the forge; removing it does not invalidate copies in running shells or logs.
@@ -157,9 +157,9 @@ A control-plane design GO is bound today by `[committer]`, which derives only wh
 
 - **The board backend is untouched.** Nothing here reads or writes the board; a `BACKLOG.md` adopter keeps every behaviour it had.
 - **The forge contract is host-neutral; GitHub is the reference.** The kit's forge surface is already GitHub-first (the CI profiles are GitHub Actions, the protection scripts use the GitHub API). This section follows that posture and does not create it.
-- **A host without a forge adapter is never a failure.** On such a host the default doctor line reads `forge identity: N/A — no forge adapter for <host>`, and `sparkwright doctor --as agent` exits 2 (UNVERIFIED, naming the missing adapter), never 1.
+- **A host without a forge adapter is never a failure.** On such a host the default doctor line reads `forge identity: N/A — no forge adapter for <host>`, and `sh scripts/sparkwright doctor --as agent` exits 2 (UNVERIFIED, naming the missing adapter), never 1.
 
-`sparkwright doctor` prints one advisory `forge identity:` line (login, type, permission, and the remedy when it holds admin or maintain); the exit code is unchanged. `sparkwright doctor --as agent` runs that check alone and exits 1 on admin, maintain, a login that lacks push, a permission it cannot read, an unauthenticated `gh`, or a missing `gh`; 0 on push; 2 (UNVERIFIED) on a usage error, an unverifiable host, an `origin` whose push URL names another repository than its fetch URL, or a token that cannot read its own identity (HTTP 403: an App installation or CI token, such as CI's `GITHUB_TOKEN`; the default line is N/A there). The check reads the literal `origin` host, so an SSH host alias reports no adapter. It reads `origin`'s fetch and push URLs only: a push to another remote (`remote.pushDefault`, `branch.<b>.pushRemote`, or an explicit `git push <url>`) is not checked. It never sees the credential git itself pushes with; over HTTPS and SSH it prints the credential helper's name or says the SSH key is invisible to it.
+`sh scripts/sparkwright doctor` prints one advisory `forge identity:` line (login, type, permission, and the remedy when it holds admin or maintain); the exit code is unchanged. `sh scripts/sparkwright doctor --as agent` runs that check alone and exits 1 on admin, maintain, a login that lacks push, a permission it cannot read, an unauthenticated `gh`, or a missing `gh`; 0 on push; 2 (UNVERIFIED) on a usage error, an unverifiable host, an `origin` whose push URL names another repository than its fetch URL, or a token that cannot read its own identity (HTTP 403: an App installation or CI token, such as CI's `GITHUB_TOKEN`; the default line is N/A there). The check reads the literal `origin` host, so an SSH host alias reports no adapter. It reads `origin`'s fetch and push URLs only: a push to another remote (`remote.pushDefault`, `branch.<b>.pushRemote`, or an explicit `git push <url>`) is not checked. It never sees the credential git itself pushes with; over HTTPS and SSH it prints the credential helper's name or says the SSH key is invisible to it.
 
 ---
 

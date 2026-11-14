@@ -220,7 +220,10 @@ case "$cmd" in
     [ $# -ge 2 ] || { echo "usage: kit-guard mcp \"<mcp__tool>\" [policy-path]" >&2; exit 2; }
     pol=${3:-$SELF_DIR/../.claude/mcp-policy.json}
     al=""; ov=""
-    if [ -f "$pol" ] && command -v jq >/dev/null 2>&1; then
+    if [ -f "$pol" ]; then
+      # The policy file decides; jq is then REQUIRED. Without it the classOverride map (which can tighten) would be
+      # dropped and the name heuristic would allow what the policy denies (SWAS-590).
+      command -v jq >/dev/null 2>&1 || { printf 'kit-guard: jq is required to read the MCP policy (%s); install jq - denying fail-closed\n' "$pol" >&2; exit 1; }
       # A policy that cannot be read is a fault, never "no allowlist / no overrides" (the same rule as the adapter's).
       al=$(jq -r '.allow[]? // empty' "$pol" 2>/dev/null) || _guard_fault mcp-policy
       ov=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$pol" 2>/dev/null) || _guard_fault mcp-policy
@@ -643,6 +646,185 @@ case "$_claims_msg" in
   *)
     echo "FAIL: the claim-ref deny message does not state its coverage and point at its ceiling row, got: $_claims_msg"; fail=1 ;;
 esac
+
+# --- SWAS-795: raw git writes to refs/local-claims/* (R37), R18's sibling. No sentinel in any deny cell. ---
+deny  "LCL795 update-ref create"          'git update-ref refs/local-claims/R abc1234'
+deny  "LCL795 update-ref -d"              'git update-ref -d refs/local-claims/R abc1234'
+deny  "LCL795 update-ref --no-deref"      'git update-ref --no-deref refs/local-claims/R abc1234 0000000000000000000000000000000000000000'
+deny  "LCL795 symbolic-ref"               'git symbolic-ref refs/local-claims/R refs/heads/main'
+deny  "LCL795 fetch refspec destination"  'git fetch origin refs/claims/R:refs/local-claims/R'
+deny  "LCL795 push to self"               'git push . abc1234:refs/local-claims/R'
+deny  "LCL795 config remote fetch"        'git config remote.o.fetch refs/claims/R:refs/local-claims/R'
+deny  "LCL795 -c remote push"             'git -c remote.o.push=x:refs/local-claims/R push o'
+deny  "LCL795 quoted spelling"            'git update-ref "refs/local-claims/R" abc1234'
+deny  "LCL795 backslash spelling"         'git update-ref refs\/local-claims/R abc1234'
+deny  "LCL795 ANSI-C spelling"            "git update-ref \$'refs/local-claims/R' abc1234"
+deny  "LCL795 upper-case spelling"        'git update-ref REFS/LOCAL-CLAIMS/R abc1234'
+deny  "LCL795 brace spelling symbolic-ref" 'git symbolic-ref refs/lo{cal-claims/R,} refs/heads/main'
+deny  "LCL795 brace spelling update-ref"  'git update-ref {refs/local-claims/R,abc1234}'
+deny  "LCL795 variable spelling"          'git update-ref refs/$P/R abc1234'
+deny  "LCL795 substitution spelling"      'git update-ref $(printf %s/%s refs local-claims)/R abc1234'
+deny  "LCL795 bare-ref push"              'git push origin refs/local-claims/R'
+# The unreadable-operand test and the bare push read the command FLAT: a quoted pipe, a backslash-newline or a bare newline cannot hide the text.
+_lcl_nl=$(printf '\n.'); _lcl_nl=${_lcl_nl%.}
+deny  "LCL795 brace after a quoted pipe"  'git update-ref -m "a|b" refs/lo{cal,heads/x}-claims/R'
+deny  "LCL795 brace after backslash-newline" "git update-ref \\${_lcl_nl}refs/lo{cal,heads/x}-claims/R"
+deny  "LCL795 brace after a bare newline" "git update-ref ${_lcl_nl}refs/lo{cal,heads/x}-claims/R"
+deny  "LCL795 bare-ref push split by backslash-newline" "git push origin \\${_lcl_nl}refs/local-claims/R"
+# A split verb is joined before the unreadable-operand test; a refspec with a brace or $ beside a ':' is unreadable too.
+deny  "LCL795 quote-split verb with a brace operand" "git upd''ate-ref -d refs/lo{cal-claims/R,cal-claims/R}"
+deny  "LCL795 backslash-split verb with a brace operand" 'git update\-ref -d refs/lo{cal-claims/R,cal-claims/R}'
+deny  "LCL795 fetch refspec destination with a brace" 'git fetch origin refs/claims/R:refs/lo{cal-claims/R,cal-claims/R}'
+deny  "LCL795 fetch refspec of variables (priced over-deny)" 'git fetch origin "$B:$B"'
+allow "LCL795 read: for-each-ref"         'git for-each-ref refs/local-claims/'
+allow "LCL795 read: rev-parse"            'git rev-parse --verify refs/local-claims/R'
+allow "LCL795 read: cat-file"             'git cat-file -s refs/local-claims/R:CLAIM'
+allow "LCL795 read: plain fetch"          'git fetch origin'
+allow "LCL795 read: fetch with no destination" 'git fetch origin refs/local-claims/R'
+allow "LCL795 read: symbolic-ref of HEAD"  'git symbolic-ref --short HEAD'
+allow "LCL795 unrelated update-ref"       'git update-ref refs/heads/x abc1234'
+if KIT_CLAIM_FRONT_DOOR=1 sh "$0" cmd 'git update-ref refs/local-claims/R abc1234 0000000000000000000000000000000000000000' >/dev/null 2>&1; then
+  echo "PASS allow: LCL795 the sentinel from the process environment admits board-claim's own write"
+else
+  echo "FAIL (wanted allow): LCL795 the sentinel in the process environment must admit board-claim's own write"; fail=1
+fi
+deny  "LCL795 sentinel in command TEXT"   'KIT_CLAIM_FRONT_DOOR=1 git update-ref refs/local-claims/R abc1234'
+# hand edits under .git/ fall to the existing path rules (a Write-tool edit and a shell redirect)
+pdeny "LCL795 Write-tool edit of .git/refs/local-claims/R" '.git/refs/local-claims/R'
+deny  "LCL795 redirect into .git/refs/local-claims/R"      'echo abc1234 > .git/refs/local-claims/R'
+# The deny message names the namespace and its escape-card row, and never the sentinel.
+_lcl_msg=$(sh "$0" cmd 'git update-ref refs/local-claims/R abc1234' 2>&1 >/dev/null || true)
+case "$_lcl_msg" in
+  *FRONT_DOOR*) echo "FAIL: the local-claims deny message names the sentinel, got: $_lcl_msg"; fail=1 ;;
+  *"refs/local-claims/*"*"sh scripts/board.sh claim, release and publish"*"escape card R37 local-claims"*)
+    echo "PASS deny: the local-claims deny message names the namespace, the route and escape card R37, and no sentinel" ;;
+  *) echo "FAIL: the local-claims deny message does not name the namespace, the route and its row, got: $_lcl_msg"; fail=1 ;;
+esac
+# On the unreadable-operand path the sentence says the ref could not be read (design 1).
+_lcl_msg=$(sh "$0" cmd 'git symbolic-ref refs/lo{cal-claims/R,} refs/heads/main' 2>&1 >/dev/null || true)
+case "$_lcl_msg" in
+  *FRONT_DOOR*) echo "FAIL: the unreadable-operand deny message names the sentinel, got: $_lcl_msg"; fail=1 ;;
+  *"could not be read"*"escape card R37 local-claims"*) echo "PASS deny: the unreadable-operand deny says the ref could not be read, and names escape card R37" ;;
+  *) echo "FAIL: the unreadable-operand deny does not say the ref could not be read, got: $_lcl_msg"; fail=1 ;;
+esac
+
+# --- SWAS-192 slice A, cell CL16: raw git writes to the checkout lease's refs and key (R38), R37's sibling. No sentinel in any deny cell. ---
+deny  "CL16 update-ref create"             'git update-ref refs/local-lease/checkout abc1234'
+deny  "CL16 update-ref -d"                 'git update-ref -d refs/local-lease/checkout abc1234'
+deny  "CL16 update-ref --no-deref, the log" 'git update-ref --no-deref refs/local-lease-log/checkout abc1234 0000000000000000000000000000000000000000'
+deny  "CL16 symbolic-ref"                  'git symbolic-ref refs/local-lease/checkout refs/heads/main'
+deny  "CL16 push to the land lease"        'git push origin abc1234:refs/leases/land'
+deny  "CL16 push delete, colon form"       'git push origin :refs/leases/land'
+deny  "CL16 push delete, --delete"         'git push origin --delete refs/leases/land'
+deny  "CL16 push bare ref, the land log"   'git push origin refs/leases-log/land'
+deny  "CL16 fetch refspec destination"     'git fetch origin refs/heads/main:refs/local-lease/checkout'
+deny  "CL16 config remote fetch"           'git config remote.o.fetch refs/heads/x:refs/local-lease/checkout'
+deny  "CL16 config remote fetch, no colon" 'git config remote.o.fetch refs/local-lease/checkout'
+deny  "CL16 -c remote push"                'git -c remote.o.push=x:refs/leases/land push o'
+deny  "CL16 quoted spelling"               'git update-ref "refs/local-lease/checkout" abc1234'
+deny  "CL16 backslash spelling"            'git update-ref refs\/local-lease/checkout abc1234'
+deny  "CL16 upper-case spelling"           'git update-ref REFS/LOCAL-LEASE/CHECKOUT abc1234'
+deny  "CL16 key: set false"                'git config kit.checkoutLease false'
+deny  "CL16 key: --unset"                  'git config --unset kit.checkoutLease'
+deny  "CL16 key: --local --unset-all"      'git config --local --unset-all kit.checkoutLease'
+deny  "CL16 key: a read then the write"    'git config --get kit.checkoutLease && git config --unset kit.checkoutLease'
+deny  "CL16 key: upper-case spelling"      'git config KIT.CHECKOUTLEASE false'
+deny  "CL16 key: quoted spelling"          'git config --unset "kit.checkoutLease"'
+deny  "CL16 key: --file"                   'git config -f .git/config --unset kit.checkoutLease'
+deny  "CL16 key: --remove-section"         'git config --remove-section kit'
+# L1: the plain-read test reads the RAW command, so an empty value written through quotes is not "a read"
+deny  "CL16 key: empty value, double quotes" 'git config kit.checkoutLease ""'
+deny  "CL16 key: empty value, single quotes" "git config kit.checkoutLease ''"
+deny  "CL16 key: empty value with --local --bool" 'git config --local --bool kit.checkoutLease ""'
+deny  "CL16 key: empty value, stderr dropped" 'git config kit.checkoutLease "" 2>/dev/null'
+# A1: git resolves a short destination (local-lease/checkout) to the existing refs/local-lease/checkout
+deny  "CL16 short destination, write"      'git push . abc1234:local-lease/checkout'
+deny  "CL16 short destination, delete (colon)" 'git push . :local-lease/checkout'
+deny  "CL16 short destination, --delete"   'git push . --delete local-lease/checkout'
+deny  "CL16 short destination, the land lease" 'git push origin abc1234:leases/land'
+deny  "CL16 update-ref with a short name (the used marker)" 'git update-ref -d local-lease-log/used'
+# C6: the human dial (KIT_LEASE_FORCE_BREAK), mirroring KIT_CLAIM_FORCE_RELEASE: the in-line prefix over the in-tree script is denied (it names a control-plane
+# path under an unvetted prefix, R32); an `export` as its own call is MEASURED UNCOVERED and is pinned as an ALLOW, never claimed closed.
+deny  "CL16 dial: in-line prefix over the script" 'KIT_LEASE_FORCE_BREAK=1 sh scripts/checkout-lease.sh break --reason abcdefghijklmnopqrstuvwxyz'
+allow "CL16 dial: export as its own call (MEASURED UNCOVERED, pinned, not closed)" 'export KIT_LEASE_FORCE_BREAK=1'
+allow "CL16 read: for-each-ref"            'git for-each-ref refs/local-lease/'
+allow "CL16 read: rev-parse"               'git rev-parse --verify refs/local-lease/checkout'
+allow "CL16 read: cat-file"                'git cat-file -s refs/local-lease/checkout:LEASE'
+allow "CL16 read: log of the lease log"    'git log refs/local-lease-log/checkout'
+allow "CL16 read: fetch with no destination" 'git fetch origin refs/leases/land'
+allow "CL16 key read: --get"               'git config --get kit.checkoutLease'
+allow "CL16 key read: --local --get"       'git config --local --get kit.checkoutLease'
+allow "CL16 key read: --get, stderr dropped" 'git config --get kit.checkoutLease 2>/dev/null'
+allow "CL16 unrelated config write"        'git config user.name x'
+allow "CL16 unrelated update-ref"          'git update-ref refs/heads/x abc1234'
+# the sentinel from the process environment admits the verb's own REF writes, and never the key
+if KIT_LEASE_FRONT_DOOR=1 sh "$0" cmd 'git update-ref --no-deref refs/local-lease/checkout abc1234 0000000000000000000000000000000000000000' >/dev/null 2>&1; then
+  echo "PASS allow: CL16 the sentinel from the process environment admits the verb's own ref write"
+else
+  echo "FAIL (wanted allow): CL16 the sentinel in the process environment must admit the verb's own ref write"; fail=1
+fi
+if KIT_LEASE_FRONT_DOOR=1 sh "$0" cmd 'git config --unset kit.checkoutLease' >/dev/null 2>&1; then
+  echo "FAIL (wanted deny):  CL16 the sentinel must not open the key"; fail=1
+else
+  echo "PASS deny:  CL16 the sentinel does not open the key"
+fi
+deny  "CL16 sentinel in command TEXT"      'KIT_LEASE_FRONT_DOOR=1 git update-ref refs/local-lease/checkout abc1234'
+_cl16_msg=$(sh "$0" cmd 'git update-ref refs/local-lease/checkout abc1234' 2>&1 >/dev/null || true)
+case "$_cl16_msg" in
+  *FRONT_DOOR*) echo "FAIL: the lease deny message names the sentinel, got: $_cl16_msg"; fail=1 ;;
+  *"refs/local-lease/*"*"sh scripts/checkout-lease.sh"*"escape card R38 checkout-lease"*) echo "PASS deny: the lease-ref deny message names the namespace, the route and escape card R38, and no sentinel" ;;
+  *) echo "FAIL: the lease-ref deny message does not name the namespace, the route and its row, got: $_cl16_msg"; fail=1 ;;
+esac
+_cl16_msg=$(sh "$0" cmd 'git config --unset kit.checkoutLease' 2>&1 >/dev/null || true)
+case "$_cl16_msg" in
+  *FRONT_DOOR*) echo "FAIL: the lease-key deny message names the sentinel, got: $_cl16_msg"; fail=1 ;;
+  *"kit.checkoutLease"*"escape card R38 checkout-lease"*) echo "PASS deny: the lease-key deny message names the key and escape card R38, and no sentinel" ;;
+  *) echo "FAIL: the lease-key deny message does not name the key and its row, got: $_cl16_msg"; fail=1 ;;
+esac
+# the Claude adapter route reads the same core: the lease-ref write is denied there too (needs jq, as the adapter does)
+if command -v jq >/dev/null 2>&1 && [ -f "$SELF_DIR/../.claude/hooks/guard.sh" ]; then
+  _cl16_json=$(jq -n --arg c 'git update-ref refs/local-lease/checkout abc1234' '{tool_name:"Bash",tool_input:{command:$c}}')
+  case "$(printf '%s' "$_cl16_json" | sh "$SELF_DIR/../.claude/hooks/guard.sh" 2>/dev/null || true)" in
+    *'"permissionDecision":"deny"'*) echo "PASS deny:  CL16 the Claude adapter route denies the lease-ref write" ;;
+    *) echo "FAIL (wanted deny):  CL16 the Claude adapter route allowed the lease-ref write"; fail=1 ;;
+  esac
+else
+  echo "SKIP: CL16 the Claude adapter route (no jq, or no .claude/hooks/guard.sh beside this script)"
+fi
+# THE MUTANTS: each is a sed-mutated COPY of the core, sourced in a subshell; it must RUN to a verdict (a control command is still denied)
+# and the verdict the cell asserts must flip. <label> <marker> <sed-body> <command> <want allow|deny> <sentinel 0|1>
+_cl16_mut() {
+  _cm_d=$(mktemp -d)
+  sed "/# 192-$2\$/$3" "$CORE" > "$_cm_d/core.sh"
+  if cmp -s "$CORE" "$_cm_d/core.sh"; then echo "FAIL: CL16 mutant $1: did not apply (no line ends with # 192-$2, or the sed matched nothing)"; fail=1; rm -rf "$_cm_d"; return 0; fi
+  _cm_ctl=0; ( unset KIT_GUARD_SELFEDIT KIT_LEASE_FRONT_DOOR; . "$_cm_d/core.sh"; guard_check_command 'rm -rf /tmp/x' >/dev/null 2>&1 ) || _cm_ctl=$?
+  _cm_rc=0
+  if [ "$6" = 1 ]; then
+    ( unset KIT_GUARD_SELFEDIT; KIT_LEASE_FRONT_DOOR=1; export KIT_LEASE_FRONT_DOOR; . "$_cm_d/core.sh"; guard_check_command "$4" >/dev/null 2>&1 ) || _cm_rc=$?
+  else
+    ( unset KIT_GUARD_SELFEDIT KIT_LEASE_FRONT_DOOR; . "$_cm_d/core.sh"; guard_check_command "$4" >/dev/null 2>&1 ) || _cm_rc=$?
+  fi
+  rm -rf "$_cm_d"
+  if [ "$_cm_ctl" != 1 ]; then echo "FAIL: CL16 mutant $1: the mutated core did not run to a verdict (control rc=$_cm_ctl), so a crash is not a kill"; fail=1; return 0; fi
+  case "$5:$_cm_rc" in
+    allow:0) echo "PASS deny: CL16 mutant $1 is killed (the mutant allows what the cell denies)" ;;
+    deny:1)  echo "PASS deny: CL16 mutant $1 is killed (the mutant denies what the cell allows)" ;;
+    *) echo "FAIL: CL16 mutant $1 SURVIVED (wanted $5, mutant rc=$_cm_rc)"; fail=1 ;;
+  esac
+}
+_cl16_mut "the whole arm dropped"            CALL    's|if _cl192_denied "\$cmd" "\$_b2_claims_cmd"; then|if false; then|' 'git update-ref refs/local-lease/checkout abc1234' allow 0
+_cl16_mut "the ref-name leg dropped"         NS      's|if _gmq cl-ns .*|if false; then return 0; fi   # 192-NS|' 'git update-ref refs/local-lease/checkout abc1234' allow 0
+_cl16_mut "the refspec destination dropped"  DEST    's|if _gmq cl-dest .*|if false; then return 0; fi   # 192-DEST|' 'git push . abc1234:refs/leases/land' allow 0
+_cl16_mut "the bare-ref push dropped"        BARE    's|if _gmq cl-bare .*|if false; then return 0; fi   # 192-BARE|' 'git push origin refs/leases-log/land' allow 0
+_cl16_mut "the remote.*.fetch config dropped" CFG    's|if _gmq cl-cfg .*|if false; then return 0; fi   # 192-CFG|' 'git config remote.o.fetch refs/local-lease/checkout' allow 0
+_cl16_mut "the key leg dropped"              KEYNAME 's|if _gmq cl-key .*|if false; then   # 192-KEYNAME|' 'git config kit.checkoutLease false' allow 0
+_cl16_mut "the key read matched on the stripped view" KEYWRITE 's|_gmq cl-read "\$_cl_raw"|_gmq cl-read "$_cl_v"|' 'git config kit.checkoutLease ""' allow 0
+_cl16_mut "the optional refs/ dropped from the destination" DEST 's|(refs/)?|refs/|' 'git push . abc1234:local-lease/checkout' allow 0
+_cl16_mut "the optional refs/ dropped from the update-ref leg" NS 's|(refs/)?|refs/|' 'git update-ref -d local-lease-log/used' allow 0
+_cl16_mut "the optional refs/ dropped from the bare push" BARE 's|(refs/)?|refs/|' 'git push . --delete local-lease/checkout' allow 0
+_cl16_mut "the key write verdict dropped"    KEYWRITE 's|_cl192_kind=key; return 0; fi   #|:; fi   #|' 'git config --unset kit.checkoutLease' allow 0
+_cl16_mut "the remove-section leg dropped"   RMSEC   's|if _gmq cl-rmsec .*|if false; then _cl192_kind=key; return 0; fi   # 192-RMSEC|' 'git config --remove-section kit' allow 0
+_cl16_mut "the sentinel check dropped"       SENT    's|\[ "\${KIT_LEASE_FRONT_DOOR:-}" != "1" \] \|\| return 1|:|' 'git update-ref --no-deref refs/local-lease/checkout abc1234 0000000000000000000000000000000000000000' deny 1
 
 # --- GUARD-HOOKSPATH-CASE-BYPASS: config-key / secret-name matchers fold case (D-240813-1) ---
 # §1: hooksPath — unconditional fold, no fork (git config keys are case-insensitive BY SPEC).
@@ -1180,6 +1362,93 @@ klog_check "--denials --last filters"       "$(sh "$KG_SELF" --denials --file "$
 printf 'not json at all\n' >> "$KLOG_FIX"
 klog_check "--denials reports malformed lines" "$(sh "$KG_SELF" --denials --file "$KLOG_FIX" 2>&1 | sed -n 's/.*(+\([0-9]*\) malformed.*/\1/p')" "1"
 klog_check "--denials on an absent log is 0, not an error" "$(sh "$KG_SELF" --denials --file "$KLOG_TMP/nope.ndjson" 2>&1 | grep -c '0 denials recorded')" "1"
+# --- SWAS-590 NJ1-NJ4: `kit-guard mcp` with the policy present and jq MISSING (design 2026-11-08-kit-guard-mcp-no-jq-590) ---
+# Kept with the mcp cells in intent; placed here because it needs the temp root ($KLOG_TMP) made above and
+# cleaned by klog_cleanup below. A policy `classOverride` can TIGHTEN (read-named tool -> destructive); with no
+# jq the overrides were silently dropped, so the verb fell back to the name heuristic and ALLOWED. Fixed: the
+# policy file decides, jq is then required. `mdeny`/`mallow` inherit PATH and pass no policy, so these cells use
+# their own helper (which, unlike `mallow`, sets fail=1).
+nj_ok()  { echo "PASS mcp-nojq: $1"; }
+nj_bad() { echo "FAIL (mcp-nojq): $1"; fail=1; }
+# nj_run <PATH> <tool> <policy> [script]: sets NJ_RC and NJ_ERR (stderr only) for `kit-guard mcp` under that PATH.
+nj_run() {
+  NJ_ERR=$(env PATH="$1" sh "${4:-$0}" mcp "$2" "$3" 2>&1 >/dev/null) && NJ_RC=0 || NJ_RC=$?
+}
+# A PATH with no jq, built by symlinking every executable on the current PATH except jq. Empty, relative and
+# missing entries are skipped; the first match wins on a name collision, as PATH lookup does.
+NJ_DIR="$KLOG_TMP/nojq"; NJ_BIN="$NJ_DIR/bin"; mkdir -p "$NJ_BIN"
+_nj_old_ifs=$IFS; IFS=:
+set -f   # the PATH split below must not glob-expand an entry; the inner "$dir"/* glob is re-enabled per entry
+for _nj_d in $PATH; do
+  set +f
+  case "$_nj_d" in /*) ;; *) continue ;; esac
+  [ -d "$_nj_d" ] || continue
+  for _nj_f in "$_nj_d"/*; do
+    [ -f "$_nj_f" ] && [ -x "$_nj_f" ] || continue
+    _nj_n=${_nj_f##*/}
+    [ "$_nj_n" != jq ] || continue
+    [ -e "$NJ_BIN/$_nj_n" ] || [ -L "$NJ_BIN/$_nj_n" ] || ln -s "$_nj_f" "$NJ_BIN/$_nj_n" 2>/dev/null || :
+  done
+done
+set +f
+IFS=$_nj_old_ifs
+NJ_TOOL="mcp__x__get_report"
+NJ_POL="$NJ_DIR/policy.json"; NJ_EMPTY="$NJ_DIR/empty.json"; NJ_MISSING="$NJ_DIR/absent.json"
+printf '%s\n' '{"classOverride":{"mcp__x__get_report":"destructive"}}' > "$NJ_POL"
+printf '%s\n' '{}' > "$NJ_EMPTY"
+NJ_JQ_SENTENCE="jq is required to read the MCP policy"
+if ( PATH="$NJ_BIN"; command -v jq ) >/dev/null 2>&1; then
+  nj_bad "NJ0 the no-jq PATH still resolves jq (cells below would be vacuous)"
+else
+  nj_ok "NJ0 the built PATH has no jq"
+fi
+# NJ1: no jq + policy -> deny, exit 1, stderr names jq AND the remedy. A bare non-zero is not enough.
+nj_run "$NJ_BIN" "$NJ_TOOL" "$NJ_POL"
+case "$NJ_RC:$NJ_ERR" in
+  1:*"$NJ_JQ_SENTENCE"*"install jq"*) nj_ok "NJ1 no jq + policy denies, naming jq and the remedy" ;;
+  *) nj_bad "NJ1 no jq + policy must exit 1 naming jq (rc=$NJ_RC, stderr=[$NJ_ERR])" ;;
+esac
+# NJ2/NJ3 need a host jq; with none they are SKIPPED and labelled, never passed.
+if command -v jq >/dev/null 2>&1; then
+  nj_run "$PATH" "$NJ_TOOL" "$NJ_POL"
+  case "$NJ_RC:$NJ_ERR" in
+    1:*"$NJ_JQ_SENTENCE"*) nj_bad "NJ2 with jq the deny must come from the override, not the jq sentence" ;;
+    1:*"(destructive)"*) nj_ok "NJ2 with jq + policy the override is honoured (destructive-class deny)" ;;
+    *) nj_bad "NJ2 with jq + policy must deny with the destructive reason (rc=$NJ_RC, stderr=[$NJ_ERR])" ;;
+  esac
+  nj_run "$PATH" "$NJ_TOOL" "$NJ_EMPTY"
+  if [ "$NJ_RC" = 0 ]; then nj_ok "NJ3 with jq + empty policy the tool is allowed (the deny is the override, not the name)"
+  else nj_bad "NJ3 with jq + empty policy must allow (rc=$NJ_RC, stderr=[$NJ_ERR])"; fi
+else
+  echo "SKIP mcp-nojq: NJ2 and NJ3 - this host has no jq (they need one; they do not count)"
+fi
+# NJ4: no jq, policy path names a MISSING file (3rd arg; the default path would fault) -> allowed as before.
+nj_run "$NJ_BIN" "$NJ_TOOL" "$NJ_MISSING"
+if [ "$NJ_RC" = 0 ]; then nj_ok "NJ4 no jq + no policy file allows (a missing jq denies only when a policy exists)"
+else nj_bad "NJ4 no jq + no policy file must allow (rc=$NJ_RC, stderr=[$NJ_ERR])"; fi
+# Mutant: the old `&& command -v jq` condition restored in a temp copy; NJ1 must RED against it.
+NJ_MUT="$NJ_DIR/kit-guard-mutant"
+sed 's|^\( *\)if \[ -f "[$]pol" \]; then$|\1if [ -f "$pol" ] \&\& command -v jq >/dev/null 2>\&1; then|' "$0" > "$NJ_MUT"
+# The check reads the copy line by line (no grep): a line whose text, after its leading spaces, is EXACTLY the old
+# condition. The cell's own lines never equal it (each carries more or less), so it cannot be satisfied by itself.
+NJ_RESTORED=0
+while IFS= read -r _nj_l; do
+  _nj_t=${_nj_l#"${_nj_l%%[! ]*}"}
+  case "$_nj_t" in
+    'if [ -f "$pol" ] && command -v jq >/dev/null 2>&1; then') NJ_RESTORED=1 ;;
+  esac
+done < "$NJ_MUT"
+if cmp -s "$0" "$NJ_MUT" || [ "$NJ_RESTORED" != 1 ]; then
+  nj_bad "NJ-mutant the old condition was not restored (substitution matched nothing)"
+else
+  NJ_ERR=$(KIT_GUARD_CORE="$CORE" env PATH="$NJ_BIN" sh "$NJ_MUT" mcp "$NJ_TOOL" "$NJ_POL" 2>&1 >/dev/null) && NJ_RC=0 || NJ_RC=$?
+  case "$NJ_RC:$NJ_ERR" in
+    0:*"$NJ_JQ_SENTENCE"*) nj_bad "NJ-mutant exited 0 but printed the jq sentence (the mutant did not run as the old code)" ;;
+    0:*) nj_ok "NJ-mutant the old condition reds NJ1 (rc=0, no jq sentence)" ;;
+    1:*"$NJ_JQ_SENTENCE"*) nj_bad "NJ-mutant the old condition still passed NJ1 (the cell is vacuous)" ;;
+    *) nj_bad "NJ-mutant the mutant did not run cleanly (rc=$NJ_RC, stderr=[$NJ_ERR])" ;;
+  esac
+fi
 klog_cleanup; trap - EXIT INT TERM
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

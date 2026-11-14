@@ -385,7 +385,8 @@ prov_probe() {
   if [ "$_pp_rc" != 0 ]; then return 3; fi      # the QUERY failed — network/auth/unreachable forge
   [ -n "$_run" ] || return 0                    # query worked, no run for this SHA -> honest N/A (NEVER retried)
   _pp_rc=0
-  _pp_out=$(_prov_gh_retry gh run view "$_run" --json jobs --jq '.jobs[] | .name + "\t" + .conclusion') || _pp_rc=$?
+  # SWAS-813 E7: also the conclusion of the image attest STEP (a job that ran can still have skipped its attest step), as one more line `image-provenance/attest<TAB><conclusion>`.
+  _pp_out=$(_prov_gh_retry gh run view "$_run" --json jobs --jq '.jobs[] | (.name + "\t" + .conclusion), (select(.name == "image-provenance") | .steps[]? | select(.name == "Attest image provenance (digest-bound)") | "image-provenance/attest\t" + (.conclusion // ""))') || _pp_rc=$?
   if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
   if [ "$_pp_rc" != 0 ]; then return 3; fi
   return 0
@@ -662,10 +663,10 @@ _pg_job_verdict() {
           _pg_disp=$(_prov_disposition "$_pg_gid")
           if [ "$_pg_disp" = na ]; then
             _pg_reason=$(_strip_ctrl "$(_prov_reason "$_pg_gid")")
-            echo "release-tag: N/A ($_pg_gid) — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} and $_pg_gid is validated na (${_pg_reason:-reason on file}). Revisit if the repo becomes public/org-owned." >&2
+            echo "release-tag: N/A ($_pg_gid) — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} and $_pg_gid is validated na (${_pg_reason:-reason on file}). Revisit if the repo becomes public or declares KIT_ATTEST_PRIVATE." >&2
             return 0
           fi
-          echo "release-tag: LOUD — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} (disposition $_pg_gid: $_pg_disp). A provenance/image-provenance gate that never ran must not pass silently. Cure: make the repo public / move it to a GitHub org, OR record a dated na disposition in $GATE_DISP_FILE, OR set RELEASE_TAG_PROV_PROBE for your forge." >&2
+          echo "release-tag: LOUD — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} (disposition $_pg_gid: $_pg_disp). A provenance/image-provenance gate that never ran must not pass silently. Cure: make the repo public / declare GitHub Enterprise Cloud by setting the KIT_ATTEST_PRIVATE variable to true, OR record a dated na disposition in $GATE_DISP_FILE, OR set RELEASE_TAG_PROV_PROBE for your forge." >&2
           return 1 ;;
         *)
           # [owner adjudication + security MED-2, fix round 1] any OTHER conclusion (failure,
@@ -760,6 +761,12 @@ provenance_gate() {
       image-provenance) _pg_g=gate-sbom ;;
     esac
     _pg_job_verdict "$_pg_j" "$_pg_g" || _pg_loud=1
+    if [ "$_pg_j" = image-provenance ]; then
+      # SWAS-813 E7: the image job can conclude success while its attest STEP was skipped (a private repo without KIT_ATTEST_PRIVATE). A step line in the probe is judged
+      # as a job is: success quiet, skipped N/A with a validated na (gate-provenance) else LOUD, anything else LOUD. A probe with no such line (older runs, a seam) is not judged.
+      set +e; _prov_conclusion "image-provenance/attest" "$_pg_probe" >/dev/null; _pg_src=$?; set -e   # MUT-ATTESTSTEP
+      [ "$_pg_src" = 1 ] || { _pg_job_verdict "image-provenance/attest" gate-provenance || _pg_loud=1; }
+    fi
   done
 
   if [ "$_pg_loud" = 1 ]; then
@@ -1498,6 +1505,52 @@ selftest() {
     echo "PASS: provenance_gate — Dockerfile present + image-provenance skipped -> LOUD naming it"
   else
     echo "FAIL: PG7 (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+
+  # PG-ATT (SWAS-813 E7): the image job can conclude SUCCESS while its attest STEP was skipped (a private repo without KIT_ATTEST_PRIVATE),
+  # which read as a green. A step line in the probe (`image-provenance/attest`) is judged as a skipped job is: LOUD (apply), N/A with a
+  # validated na for gate-provenance, quiet on success. PG-ATT-mut runs a copy with the step read dropped (marker MUT-ATTESTSTEP) as the real
+  # --provenance-only route under enforce: the intact script refuses (rc 1), the mutant must not.
+  d="$t/pgatt1"; _pg_mk "$d" 1 apply n/a apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\nimage-provenance\tsuccess\nimage-provenance/attest\tskipped\n"'; RELEASE_TAG_PROVENANCE=observe; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q "image-provenance/attest" && printf '%s' "$_pgout" | grep -q LOUD; then
+    echo "PASS: provenance_gate — image job success + attest step skipped (no na) -> LOUD naming the step"
+  else
+    echo "FAIL: PG-ATT1 (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+  d="$t/pgatt2"; _pg_mk "$d" 1 na "no attestable image on a private repo" apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\nimage-provenance\tsuccess\nimage-provenance/attest\tskipped\n"'; RELEASE_TAG_PROVENANCE=observe; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q "N/A (gate-provenance)" && ! printf '%s' "$_pgout" | grep -q LOUD; then
+    echo "PASS: provenance_gate — attest step skipped + a validated na for gate-provenance -> N/A, not LOUD"
+  else
+    echo "FAIL: PG-ATT2 (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+  d="$t/pgatt3"; _pg_mk "$d" 1 apply n/a apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\nimage-provenance\tsuccess\nimage-provenance/attest\tsuccess\n"'; RELEASE_TAG_PROVENANCE=observe; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 0 ] && [ -z "$_pgout" ]; then
+    echo "PASS: provenance_gate — image job and attest step both success -> quiet pass"
+  else
+    echo "FAIL: PG-ATT3 (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+  d="$t/pgattm"; _pg_mk "$d" 1 apply n/a apply n/a
+  mkdir -p "$d/.kit"; printf 'RELEASE_TAG_PROVENANCE=enforce\n' > "$d/.kit/dials.conf"
+  _pgprobe='printf "provenance\tsuccess\nimage-provenance\tsuccess\nimage-provenance/attest\tskipped\n"'
+  sed '/# MUT-ATTESTSTEP$/s/.*/      _pg_src=1/' "$here/release-tag.sh" > "$t/relmut.sh"
+  if cmp -s "$here/release-tag.sh" "$t/relmut.sh"; then
+    echo "FAIL: PG-ATT-mut did not apply (the sed expression matched nothing)"; st=1
+  elif ! sh -n "$t/relmut.sh" 2>/dev/null; then
+    echo "FAIL: PG-ATT-mut does not parse (a mutant that cannot run would read as killed)"; st=1
+  else
+    _pgrc=0; ( cd "$d" && RELEASE_TAG_CI_GATES="$here/../conformance/ci-gates.sh" RELEASE_TAG_PROV_PROBE="$_pgprobe" sh "$here/release-tag.sh" --provenance-only >/dev/null 2>&1 ) || _pgrc=$?
+    _pgmrc=0; ( cd "$d" && RELEASE_TAG_CI_GATES="$here/../conformance/ci-gates.sh" RELEASE_TAG_PROV_PROBE="$_pgprobe" sh "$t/relmut.sh" --provenance-only >/dev/null 2>&1 ) || _pgmrc=$?
+    if [ "$_pgrc" = 1 ] && [ "$_pgmrc" = 0 ]; then
+      echo "PASS: PG-ATT-mut — the intact route refuses (rc 1) on a skipped attest step; the mutant that drops the step read does not (rc 0)"
+    else
+      echo "FAIL: PG-ATT-mut (intact rc=$_pgrc, mutant rc=$_pgmrc; want 1 and 0)"; st=1
+    fi
   fi
 
   # PG-SHA (reviewer Important-2, CP-10 — the SHA-pinning proof): the RELEASE_SHA is pinned BEFORE

@@ -1,6 +1,6 @@
 # sparkwright doctor — reference
 
-**`sparkwright doctor` is an adopter-facing POSTURE command** that composes the kit's mechanizable
+**`sh scripts/sparkwright doctor` is an adopter-facing POSTURE command** that composes the kit's mechanizable
 conformance and drift-detection checks into one sweep. It automates the mechanizable drift axes
 (D claim-integrity, E git ground-truth) from [`drift-self-check.md`](./drift-self-check.md) — the
 semantic axes (intent/scope, plan alignment, overclaim judgment) remain agent/human judgment.
@@ -8,10 +8,10 @@ semantic axes (intent/scope, plan alignment, overclaim judgment) remain agent/hu
 ## What it composes
 
 ```
-sparkwright doctor
+sh scripts/sparkwright doctor
   ├─ conformance/verify.sh       [GATING]    every registered conformance check
   ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier (kit-self; N/A on an adopter tree; the row counts N-A claims)
-  ├─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment
+  ├─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment (tag: the kit's own tree only)
   └─ conformance/kit-current.sh  [ADVISORY]  is the kit you ADOPTED behind the current release?
 ```
 
@@ -27,10 +27,10 @@ The split is intentional and the naming is exact.
 |--------------|---------|----------------------------------------------------|
 | `conformance`| GATING  | `conformance/verify.sh` (all checks)               |
 | `claims`     | GATING (kit-self) | `conformance/claims-registry.sh`; `N/A (kit-self…)` on an adopter tree. The row carries the registry's N-A count, e.g. `PASS (2 N-A: verified nothing here, …)`: an N-A claim's verifier exited 0 but declared it checked nothing, so it is never counted as holding |
-| `git`        | ADVISORY| branch · dirty-tree · tag alignment                |
+| `git`        | ADVISORY| branch · dirty-tree · tag alignment (the kit's own tree only: the tag is the kit's release tag, so an adopter's row and header carry no `untagged/unreleased` note and no `latest-tag:`) |
 | `kit-update` | ADVISORY| `conformance/kit-current.sh` — adopted kit vs current release |
 
-A FAIL or UNVERIFIED on either gating dimension sets exit 1. The git dimension is ADVISORY only
+A FAIL or UNVERIFIED on either gating dimension sets exit 1. A failing row says why under itself: the battery's FAIL and UNVERIFIED rows by name (at most 10, or `(verify failed without naming a row)`), or the claims registry's FAIL lines; the `Overall: FAIL` line names the dimensions that failed. The git dimension is ADVISORY only
 (WARN-level, never hard-fails alone) — it re-establishes ground truth (axis E from
 `drift-self-check.md`) without blocking a green posture on working-branch commits.
 
@@ -199,17 +199,17 @@ check that proves nothing.
 
 ## Honest ceiling
 
-`sparkwright doctor` automates the **mechanizable** drift axes:
+`sh scripts/sparkwright doctor` automates the **mechanizable** drift axes:
 
 - **D (claim-integrity)** — re-runs every registered claim's verifier via `claims-registry.sh` (kit-self; N/A on an adopter tree).
-- **E (git ground-truth)** — re-establishes branch, dirty-tree, and tag alignment without trusting stale in-context memory.
+- **E (git ground-truth)** — re-establishes branch, dirty-tree, and (on the kit's own tree) tag alignment without trusting stale in-context memory.
 
 It does **not** detect **semantic drift** — intent vs accepted spec, plan alignment, or whether a
 doc overclaims what a control actually does. Those are judgment calls that require reading
 intent, not running a script. They remain the agent/human checkpoint in
 [`drift-self-check.md`](./drift-self-check.md) (axes A/B/C and the judgment half of D).
 
-**A green `sparkwright doctor` does not mean "the project is correct."** It means the registered
+**A green `sh scripts/sparkwright doctor` does not mean "the project is correct."** It means the registered
 conformance checks pass, the claims are backed by passing verifiers, and git state is what you
 expect. Correctness — whether the right thing was built and the docs accurately describe it — is
 still agent/human territory.

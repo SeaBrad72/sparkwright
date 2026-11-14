@@ -2267,18 +2267,37 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   # K6 — LAST: the REAL registry carries exactly the
   # counted --kitselftest rows (SWAS-605, below), and agent-autonomy's is one of them. Read off this file's own `^check` rows, the same
   # single source the census reads; the fixtures above are printf strings, so they cannot satisfy these greps.
-  # SWAS-605: the count is EXACT (18 = the 8 earlier rows + the 12 read in Task 0, less eval-harness, which SWAS-625 removed, and escalation-seam, whose row SWAS-626 removed), so a marker dropped by accident and a
+  # SWAS-605: the count is EXACT (22 = the 8 earlier rows + the 12 read in Task 0, less eval-harness, which SWAS-625 removed, and escalation-seam, whose row SWAS-626 removed, + the 4 read in SWAS-420B), so a marker dropped by accident and a
   # marker added to a row that never had its inputs read both red; changing the set on purpose changes this number in the diff.
   _ks_count() { grep -Ec '^check +[a-z]+ +("[^"]*"|[A-Za-z0-9_.-]+) +--kitselftest( |$)' "$1" || true; }
   _ks_nrows=$(_ks_count "$_SELF")
-  [ "${_ks_nrows:-0}" -eq 18 ] || _ks_die "K6: the registry has ${_ks_nrows:-0} --kitselftest rows, not exactly 18 — a marker was dropped or added; change this number in the same diff only after the row's inputs were read"
+  [ "${_ks_nrows:-0}" -eq 22 ] || _ks_die "K6: the registry has ${_ks_nrows:-0} --kitselftest rows, not exactly 22 — a marker was dropped or added; change this number in the same diff only after the row's inputs were read"
   sed 's/^\(check control runaway-killswitch\) --kitselftest/\1/' "$_SELF" > "$_ksd/k6-dropped.sh"
   cmp -s "$_SELF" "$_ksd/k6-dropped.sh" && _ks_die "K6: mutant (i) changed nothing - its target row (runaway-killswitch) moved; retarget the sed"
-  [ "$(_ks_count "$_ksd/k6-dropped.sh")" -ne 18 ] || _ks_die "K6: mutant (i) — one marker removed — still counts 18, so the exact count would not catch a dropped marker"
+  [ "$(_ks_count "$_ksd/k6-dropped.sh")" -ne 22 ] || _ks_die "K6: mutant (i) — one marker removed — still counts 22, so the exact count would not catch a dropped marker"
   sed 's/^\(check control selftest-hermetic\) /\1 --kitselftest /' "$_SELF" > "$_ksd/k6-added.sh"
   cmp -s "$_SELF" "$_ksd/k6-added.sh" && _ks_die "K6: mutant (ii) changed nothing - its target row (selftest-hermetic) moved or is already marked; retarget the sed"
-  [ "$(_ks_count "$_ksd/k6-added.sh")" -ne 18 ] || _ks_die "K6: mutant (ii) — one marker added to an unmarked row — still counts 18, so the exact count would not catch an unread row"
+  [ "$(_ks_count "$_ksd/k6-added.sh")" -ne 22 ] || _ks_die "K6: mutant (ii) — one marker added to an unmarked row — still counts 22, so the exact count would not catch an unread row"
   grep -Eq '^check +control +agent-autonomy +--kitselftest( |$)' "$_SELF" || _ks_die "K6: the agent-autonomy row does not carry --kitselftest — the 532 s row the whole change exists to skip"
+  # K7 (SWAS-420B) — the four moved rows carry the marker, release-tag (its static half) does not and its unflagged row still runs release-tag-wired.sh, and release-tag-wired.sh no longer runs the selftest
+  # (that call is graded by release-tag-selftest). <verify-copy> <wired-copy>; rc 0 holds, 1 broken.
+  _k7_holds() {
+    for _k7n in harness-adapter-selftest ci-gates-selftest inception-done-surface release-tag-selftest; do
+      grep -Eq "^check +control +$_k7n +--kitselftest( |\$)" "$1" || return 1
+    done
+    ! grep -Eq '^check +control +release-tag +--kitselftest( |$)' "$1" || return 1
+    grep -Eq '^check +control +release-tag +sh conformance/release-tag-wired\.sh' "$1" || return 1
+    ! grep -Ev '^[[:space:]]*#' "$2" | grep -Eq '(sh +)?"?\$(_core|\{_core\})"? +--selftest|release-tag\.sh"? +--selftest' || return 1
+  }
+  _k7_wired="$(dirname "$_SELF")/release-tag-wired.sh"
+  _k7_holds "$_SELF" "$_k7_wired" || _ks_die "K7: a moved row lost --kitselftest, release-tag gained it, or release-tag-wired.sh runs the release-tag selftest again (it is graded by release-tag-selftest)"
+  sed 's/^\(check control ci-gates-selftest\) --kitselftest/\1/' "$_SELF" > "$_ksd/k7-dropped.sh"
+  cmp -s "$_SELF" "$_ksd/k7-dropped.sh" && _ks_die "K7: mutant (i) changed nothing - its target row (ci-gates-selftest) moved; retarget the sed"
+  ! _k7_holds "$_ksd/k7-dropped.sh" "$_k7_wired" || _ks_die "K7: mutant (i) — a moved row's marker dropped — still holds, so the cell would not catch it"
+  sed '/^  \[ -f "\$_core" \]/a\
+  sh "$_core" --selftest >/dev/null 2>&1 || rc=1' "$_k7_wired" > "$_ksd/k7-wired.sh"
+  cmp -s "$_k7_wired" "$_ksd/k7-wired.sh" && _ks_die "K7: mutant (ii) changed nothing - the presence-check line of release-tag-wired.sh moved; retarget the sed"
+  ! _k7_holds "$_SELF" "$_ksd/k7-wired.sh" || _ks_die "K7: mutant (ii) — the selftest call put back into release-tag-wired.sh — still holds, so the cell would not catch it"
   rm -rf "$_ksd"
 
   # ── KR (SWAS-607) — the kit-self rows file is data, judged before anything runs ─────────────────────────────
@@ -2555,7 +2574,9 @@ check control hardlink-integrity          sh conformance/hardlink-integrity.sh
 check control hardlink-integrity-selftest sh conformance/hardlink-integrity.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code
 check control harness-generic  sh conformance/harness-adapter.sh adapters/generic
-check control harness-adapter-selftest sh conformance/harness-adapter.sh --selftest
+# --kitselftest (SWAS-420B): the --selftest builds mktemp manifests; its expect-0 fixtures read the live AGENTS.md, agents-brief.sh, model-tiering.sh and agents/*.agent.md,
+# which the every-push rows harness-adapter, harness-generic, agents-brief and model-tiering-lock-run still grade.
+check control harness-adapter-selftest --kitselftest sh conformance/harness-adapter.sh --selftest
 # agents-brief carries the ENTRY-CONTRACT lock (§1 byte-identical in every adapter's declared
 # contextFile). It ran only in CI and via harness-adapter's floor_holds, so `non-vacuity.sh --only
 # agents-brief.sh` matched NO targeted check — the sweep selects from `^check control` rows here, and
@@ -2600,7 +2621,8 @@ check control named-adapters-selftest  sh conformance/named-adapters.sh --selfte
 # enforcement the paragraph above says this row exists for. Re-classified during T4's mandatory re-triage
 # pass; flagged in the build's self-verify report for reviewer attention.
 check control ci-gates-own     --adopter sh conformance/ci-gates.sh --own-tree
-check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
+# --kitselftest (SWAS-420B): the --selftest runs conformance/ci-gates.sh's own lock functions on fixtures and mutants of itself; the script is a conformance/ file.
+check control ci-gates-selftest --kitselftest sh conformance/ci-gates.sh --selftest
 check control secret-scan-wired-selftest  sh conformance/secret-scan-wired.sh --selftest
 check control dep-scan-visibility           sh conformance/dep-scan-visibility.sh
 # --kitselftest (design §3 (b), SWAS-605): the --selftest builds temp-fixture workflows only; the script is a conformance/ file.
@@ -2743,6 +2765,8 @@ check control surface-lib-wired sh conformance/surface-lib-wired.sh --selftest
 # run as a dedicated ci.yml step on the kit source (which satisfies ci-selftest-coverage) plus the standing
 # self-negative inside --selftest; non-vacuity sweeps conformance/*.sh directly, so it is covered regardless.
 check control release-tag       sh conformance/release-tag-wired.sh
+# --kitselftest (SWAS-420B): split out of release-tag-wired.sh; the selftest reads only scripts/release-tag.sh (a scripts/ file) + temp fixtures.
+check control release-tag-selftest --kitselftest sh scripts/release-tag.sh --selftest
 check control token-scope         sh conformance/token-scope.sh
 check control author-not-approver sh conformance/author-not-approver-wired.sh
 # --kitselftest (design §3 (a)+(b)): reads scripts/runaway-guard.sh and the real .kit/budget.conf (both control-plane) + temp git fixtures.
@@ -2760,7 +2784,8 @@ check control control-plane-revert-drill  sh conformance/control-plane-revert-dr
 # the real .kit/budget.conf (all control-plane) + temp git fixtures; the bare run only greps those same three control-plane files.
 check control promotion-actuate  --kitselftest sh conformance/promotion-actuate-wired.sh --selftest
 check control promotion-actuate-run  --kitselftest sh conformance/promotion-actuate-wired.sh
-check control inception-done-surface  sh conformance/inception-done.sh --selftest
+# --kitselftest (SWAS-420B): the --selftest grades conformance/inception-done.sh on fixtures cloned from HEAD; the script is a conformance/ file.
+check control inception-done-surface  --kitselftest sh conformance/inception-done.sh --selftest
 # SWAS-202 (GO-PROFILE-BASELINE-CI-RED) — the Go profile's toolchain pins (go.mod, setup-go, Dockerfile tag, linter,
 # docs) move as ONE set. The bare run is --adopter: it grades the kit's profile in the kit and the adopter's OWN root
 # go.mod / Dockerfile / emitted ci.yml after incept (advisory there: a WARN, never a red --require). The --eol face is

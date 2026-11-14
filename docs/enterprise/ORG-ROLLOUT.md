@@ -51,10 +51,12 @@ The adoption stages above describe **org scope** (how many teams). This describe
 
 | Stage | Conformance posture |
 |-------|---------------------|
-| **Stage 1** *(new / pilot)* | Core gates **advisory**; waivers **liberal** (time-boxed); progressive-delivery basics — **staged rollout** (`../operations/progressive-delivery.md`, the Stage-1 baseline); **branch protection on**. |
-| **Stage 2** | Gates **blocking on *changed* code**; **coverage ratchet** from a committed baseline (`../../scripts/coverage-ratchet.sh`); **`secret-scan` + `branch-protection` non-negotiable** (never waivable, per `../../templates/WAIVER-REGISTER.md`). |
+| **Stage 1** *(new / pilot)* | Core gates **advisory**, except **`secret-scan` + `branch-protection`, non-negotiable from Stage 1** (never waivable, per `../../templates/WAIVER-REGISTER.md`; the plan limit, not protection itself, has the `branch-protection-plan` route, SWAS-814); waivers **liberal** (time-boxed); progressive-delivery basics — **staged rollout** (`../operations/progressive-delivery.md`, the Stage-1 baseline); **branch protection on**. |
+| **Stage 2** | Gates **blocking on *changed* code**; **coverage ratchet** from a committed baseline (`../../scripts/coverage-ratchet.sh`); **`secret-scan` + `branch-protection` stay non-negotiable**. |
 | **Stage 3** | **All 7 required §14 gates blocking** (`../../DEVELOPMENT-STANDARDS.md` §14); **supply-chain enforced** — SBOM + build provenance; **waivers expiring toward zero**. |
 | **Stage 4** *(production scale)* | **SRE-style hard gating** — error-budget / DORA freezes (`../operations/dora-metrics.md`) block promotion on breach; **zero waivers**; **full attestation** (every released artifact carries SBOM + provenance, audit evidence complete). |
+
+**Inception maps onto this ladder in two lists** (`../../START-HERE.md`, `../../DEVELOPMENT-PROCESS.md` §3 item 8): the **first-slice set** is Stage 1 (what a project needs before its first slice); the **first-deploy set** (SLO posture, environments, the on-call role, the BIA, and RUNBOOK deploy, rollback, disaster recovery and monitoring) is owed before the first production deploy, at Stage 3 (environments, deploy, rollback) to Stage 4 (SLO, on-call, BIA, disaster recovery, monitoring), and is reported, not yet gated.
 
 This single progression **unifies the maturity mentions previously scattered across the kit** — the DORA error-budget gating that hardens from soft to blocking, progressive-delivery's "Stage-1 baseline" staged rollout, and error-budget-driven promotion freezes are all the *same climb*, expressed here as Stage 1 → Stage 4. Other docs point to this anchor rather than re-defining their own ladder.
 

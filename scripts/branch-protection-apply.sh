@@ -351,8 +351,11 @@ fetch_merge_methods() {
 do_replace() {
   _dr_repo=$1; _dr_branch=$2; _dr_profile=$3
   _dr_payload=$(build_replace_payload "$4" "$_dr_profile") || return 1
-  if ! printf '%s' "$_dr_payload" | gh_quiet api -X PUT "repos/$_dr_repo/branches/$_dr_branch/protection" --input - >/dev/null 2>&1; then
-    printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state; the merge-method PATCH was not attempted"
+  # gh's stderr is kept (the PUT's stdout stays discarded): a free private repository's 403 says why there, and the
+  # FAIL line used to drop it. The text is gh's own, so control bytes are stripped and it is capped before it prints.
+  if ! _dr_err=$(printf '%s' "$_dr_payload" | gh_quiet api -X PUT "repos/$_dr_repo/branches/$_dr_branch/protection" --input - 2>&1 >/dev/null); then
+    _dr_err=$(printf '%s' "$_dr_err" | tr '\n' ' ' | tr -d '[:cntrl:]' | cut -c1-200)
+    printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state; the merge-method PATCH was not attempted${_dr_err:+; gh said: $_dr_err}"
     return 1
   fi
   if ! build_merge_payload | gh_quiet api -X PATCH "repos/$_dr_repo" --input - >/dev/null 2>&1; then
@@ -952,7 +955,7 @@ printf '== ARGS: %s\n' "$*" >> "$STUB_DIR/env.log"
 env | grep -e '^GH_' -e '^GITHUB_ENTERPRISE_TOKEN=' | sed 's/^\([A-Za-z_]*TOKEN\)=.*/\1=<set>/' | sort >> "$STUB_DIR/env.log" 2>/dev/null || true
 case "$*" in
   *"api user"*) echo stub-login ;;
-  *"-X PUT"*) cat > "$STUB_DIR/put.body"; exit "${STUB_PUT_RC:-0}" ;;
+  *"-X PUT"*) cat > "$STUB_DIR/put.body"; [ -z "${STUB_PUT_ERR:-}" ] || printf '%s\n' "$STUB_PUT_ERR" >&2; exit "${STUB_PUT_RC:-0}" ;;
   *"-X PATCH"*) cat > "$STUB_DIR/patch.body"; exit "${STUB_PATCH_RC:-0}" ;;
   *"-X POST"*) exit 0 ;;
   *"/collaborators"*) [ -z "${STUB_COLLAB_FAIL:-}" ] || exit 1; for l in ${STUB_COLLAB:-}; do echo "$l"; done ;;
@@ -1015,6 +1018,21 @@ STUBTP
   : > "$_tplog"
   _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; export STUB_DIR STUB_PUT_RC; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
   if [ "$_rc" = 1 ] && ! grep -qF -- "-X PATCH" "$_tplog" && printf '%s\n' "$_o" | grep -qF "did not report success" && ! printf '%s\n' "$_o" | grep -qF "nothing landed"; then echo "selftest PASS: a failed PUT exits 1, never attempts the PATCH, and does not claim nothing landed (S-5)"; else echo "selftest FAIL: PUT-failure path (rc=$_rc, log=$(cat "$_tplog" 2>/dev/null))"; st=1; fi
+  # T7d (SWAS-212). a PUT refused with the upgrade text puts gh's stderr on the FAIL line, stripped of control bytes and
+  # capped; the PATCH is still not attempted, and the rc is still 1.
+  : > "$_tplog"
+  _esc=$(printf '\033'); _long=$(printf 'x%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80)
+  _upg="gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)"
+  _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; STUB_PUT_ERR="${_esc}[31m$_upg $_long$_long$_long"; export STUB_DIR STUB_PUT_RC STUB_PUT_ERR; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" = 1 ] && printf '%s\n' "$_o" | grep -qF "; gh said: [31m$_upg" && ! printf '%s' "$_o" | grep -q "$_esc" \
+     && [ "$(printf '%s\n' "$_o" | head -n 1 | sed 's/^.*; gh said: //' | wc -c | tr -d ' ')" -le 202 ] && ! grep -qF -- "-X PATCH" "$_tplog"; then
+    echo "selftest PASS: a refused PUT prints gh's stderr on the FAIL line, control bytes stripped and capped"
+  else
+    echo "selftest FAIL: PUT stderr on the FAIL line (rc=$_rc, out=$_o)"; st=1
+  fi
+  # a silent PUT failure keeps the line exactly as before (no dangling 'gh said')
+  _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; export STUB_DIR STUB_PUT_RC; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" = 1 ] && ! printf '%s\n' "$_o" | grep -qF "gh said"; then echo "selftest PASS: a PUT that says nothing adds no 'gh said' text"; else echo "selftest FAIL: silent PUT failure line (rc=$_rc, out=$_o)"; st=1; fi
   # T7c (A4). GH env containment reaches the new calls (PUT and PATCH): under each call's header the
   # four stale-state variables are absent, GH_CONFIG_DIR and GH_TOKEN reach gh.
   : > "$_tp/env.log"

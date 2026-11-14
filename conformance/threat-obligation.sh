@@ -453,16 +453,66 @@ selftest() {
     echo "SELFTEST FAIL: the fingerprinted fixture on a KIT-shaped tree (docs/ROADMAP-KIT.md present) was denied — this would permanently break the kit's own CI on every future sensitive-surface PR"; rc=1
   fi
   # LEG 11b (drift detection, SKIP-SAFE) — the REAL $DIR/THREAT-MODEL.md, when it exists (the kit's own
-  # tree; ABSENT on the pruned adopter export, where this leg must not red), still carries both fingerprint
+  # tree; ABSENT on the pruned adopter export, and skipped on any tree without docs/ROADMAP-KIT.md, such as
+  # an adopter's own THREAT-MODEL.md (SWAS-633), where this leg must not red), still carries both fingerprint
   # constants verbatim. This is the only place the real file is read at all, and its absence is a SKIP, not
   # a FAIL — the hermetic legs above already prove the mechanism works with no dependency on it.
-  _kmroot="$DIR/THREAT-MODEL.md"
-  if [ -f "$_kmroot" ] && [ -s "$_kmroot" ]; then
-    if ! grep -qF -e "$OBL_KIT_FINGERPRINT_1" -e "$OBL_KIT_FINGERPRINT_2" "$_kmroot"; then
-      echo "SELFTEST FAIL: the kit's own root THREAT-MODEL.md no longer carries either kit-fingerprint constant — K4's own drift detector would go silently blind"; rc=1
+  # The check lives in _to_drift_root <root> (statuses on its own line below; it never touches rc), so
+  # later legs can drive it on fixture roots.
+  _to_drift_root() {   # arg: <root>; status 2 = not the kit's own tree (skipped), 1 = drift (FAIL text printed), 0 = clean or skipped
+    if [ ! -f "$1/docs/ROADMAP-KIT.md" ]; then
+      echo "SELFTEST NOTE: leg 11b skipped — not the kit's own tree (no docs/ROADMAP-KIT.md); an adopter's THREAT-MODEL.md is theirs"
+      return 2
     fi
-  else
+    _kmroot="$1/THREAT-MODEL.md"
+    if [ -f "$_kmroot" ] && [ -s "$_kmroot" ]; then
+      if ! grep -qF -e "$OBL_KIT_FINGERPRINT_1" -e "$OBL_KIT_FINGERPRINT_2" "$_kmroot"; then
+        echo "SELFTEST FAIL: the kit's own root THREAT-MODEL.md no longer carries either kit-fingerprint constant — K4's own drift detector would go silently blind"
+        return 1
+      fi
+      return 0
+    fi
     echo "SELFTEST NOTE: leg 11b skipped — no real THREAT-MODEL.md on this tree (expected on the pruned adopter export; the hermetic legs above do not depend on it)"
+    return 0
+  }
+  _to_drift_root "$DIR" && _kdr=0 || _kdr=$?
+  if [ "$_kdr" = 1 ]; then rc=1; fi
+  # LEG 11d (SWAS-633): an adopter-shaped root, i.e. its own filled THREAT-MODEL.md with no kit fingerprint
+  # and no docs/ROADMAP-KIT.md. Leg 11b's check must SKIP it with the not-the-kit's-tree NOTE (status 2) and
+  # never FAIL it. An adopter who writes their own threat model, as the kit asks, must not red the selftest
+  # that runs in their verify --require.
+  mkdir -p "$_tmp/drift_adopter"
+  { echo '# Threat Model'
+    echo
+    echo '**System:** Acme orders service.'
+    echo 'Spoofing is mitigated by MFA on every operator login.'
+    echo 'Tampering with order records is mitigated by signed audit entries.'
+  } > "$_tmp/drift_adopter/THREAT-MODEL.md"
+  _kd11="$(_to_drift_root "$_tmp/drift_adopter" 2>&1)" && _kd11rc=0 || _kd11rc=$?
+  case "$_kd11" in
+    *"not the kit's own tree"*) _kd11note=1 ;;
+    *) _kd11note=0 ;;
+  esac
+  if [ "$_kd11rc" != 2 ] || [ "$_kd11note" != 1 ]; then
+    echo "SELFTEST FAIL: leg 11d — an adopter-shaped THREAT-MODEL.md (no kit marker) was not skipped by leg 11b's check (status $_kd11rc): $_kd11"; rc=1
+  fi
+  # LEG 11e (SWAS-633): the drift detector still bites on a kit-shaped root (docs/ROADMAP-KIT.md present, a
+  # THREAT-MODEL.md carrying no fingerprint constant) -> status 1 and leg 11b's FAIL text.
+  mkdir -p "$_tmp/drift_kit/docs"
+  printf '# roadmap\n' > "$_tmp/drift_kit/docs/ROADMAP-KIT.md"
+  { echo '# Threat Model'
+    echo
+    echo '**System:** a reworded header with no kit marker.'
+    echo 'Spoofing is mitigated by MFA on every operator login.'
+    echo 'Tampering with records is mitigated by signed audit entries.'
+  } > "$_tmp/drift_kit/THREAT-MODEL.md"
+  _ke11="$(_to_drift_root "$_tmp/drift_kit" 2>&1)" && _ke11rc=0 || _ke11rc=$?
+  case "$_ke11" in
+    *"no longer carries either kit-fingerprint constant"*) _ke11note=1 ;;
+    *) _ke11note=0 ;;
+  esac
+  if [ "$_ke11rc" != 1 ] || [ "$_ke11note" != 1 ]; then
+    echo "SELFTEST FAIL: leg 11e — a kit-shaped THREAT-MODEL.md without the fingerprint was not caught by leg 11b's check (status $_ke11rc): $_ke11"; rc=1
   fi
   # LEG 11c (drift detection, SKIP-SAFE, PUBLIC-DEIDENTIFICATION fix round) — the SHIPPED reference
   # copy, docs/enterprise/KIT-THREAT-MODEL.md, is a K4 copy-denial concern too: threat-obligation.sh
@@ -487,7 +537,7 @@ selftest() {
   # (LEG 5's assertion already ran above in this same selftest(); nothing further to build here.)
   unset KIT_OBL_TEST   # defence in depth: if this file is ever SOURCED rather than run, the fixture-flag
                        # escape hatch must not survive into the caller's environment.
-  [ "$rc" = 0 ] && printf 'OK (threat-obligation: 11 legs (+1 skip-safe drift check); all %s surface globs probed both through the wrapper and alone, the regulated-data half proved absent from the pre-HITL-5 surface, the four measured phi/ssn decoys held N/A, a fingerprinted fixture is denied on an adopter-shaped tree and still passes on a kit-shaped one)\n' \
+  [ "$rc" = 0 ] && printf 'OK (threat-obligation: 13 legs (+2 drift checks: 11b on the kit'\''s own tree only, 11c skip-safe); all %s surface globs probed both through the wrapper and alone, the regulated-data half proved absent from the pre-HITL-5 surface, the four measured phi/ssn decoys held N/A, a fingerprinted fixture is denied on an adopter-shaped tree and still passes on a kit-shaped one)\n' \
     "$THREAT_SURFACE_GLOB_COUNT"
   return $rc
 }

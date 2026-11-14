@@ -33,6 +33,7 @@ docs/architecture/            # ADRs (incl. ADR-000)
 pyproject.toml · uv.lock · .env.example · .gitignore · ruff.toml · mypy.ini
 ```
 Baselines: `pyproject.toml` with ruff + mypy config; `[tool.coverage]` fail_under = 80; `mypy` strict = true.
+Every test folder carries an `__init__.py` (`tests/`, `tests/unit/`, ...), so two test files may share a name; without one, pytest and mypy treat `tests/test_x.py` and `tests/unit/test_x.py` as one module.
 
 ## 3. Standard commands
 ```

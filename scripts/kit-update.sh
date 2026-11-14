@@ -733,6 +733,7 @@ build_effective_base() {
   BEHIND_N=$(n "$TMP/behind.tsv")
   _eb_tab=$(printf '\t')
   : > "$TMP/behind.tipblob"
+  ensure_workbench   # SWAS-84: the tip's own blob of a behind path is WRITTEN into the workbench (below), so the region class can read it back
   while IFS="$_eb_tab" read -r _eb_c _eb_p; do
     [ -n "$_eb_p" ] || continue
     chain_dir "$_eb_c"
@@ -740,7 +741,7 @@ build_effective_base() {
     safe_parents "$CD" "$_eb_p" "the incept of chain commit $(short12 "$_eb_c")" "$_eb_c"
     # what the TIP's own incept has at this path (R-2: a behind path HEAD already equals is worth a note)
     _eb_tb=ABSENT
-    if [ -L "$1/$_eb_p" ]; then _eb_tb=-; elif [ -f "$1/$_eb_p" ]; then _eb_tb=$(git hash-object -- "$1/$_eb_p"); fi
+    if [ -L "$1/$_eb_p" ]; then _eb_tb=-; elif [ -f "$1/$_eb_p" ]; then _eb_tb=$(git -C "$W" hash-object -w -- "$1/$_eb_p"); fi
     printf '%s\t%s\n' "$_eb_p" "$_eb_tb" >> "$TMP/behind.tipblob"
     rm -rf -- "${1:?}/$_eb_p"
     if [ -e "$CD/$_eb_p" ] || [ -L "$CD/$_eb_p" ]; then
@@ -1721,6 +1722,10 @@ stale_base_gate
   || die "'$FROM' has no scripts/adopter-export.sh + scripts/incept.sh — it is not a Sparkwright kit. Refusing to diff your project against something that is not the kit it was adopted from."
 
 NEWVER=$(cat "$TMP/new/VERSION" 2>/dev/null || echo unknown)
+# NEWVER names scratch files and is printed in 'git apply' lines: only version characters may pass.
+case "$NEWVER" in
+  ''|*[!0-9A-Za-z._+-]*) die "the release's VERSION file holds '$(printf '%s' "$NEWVER" | strip_ctl)', which is not a version: only letters, digits and . _ + - are allowed. Refusing to name files after it." ;;
+esac
 BASEVER=$(git -C "$REPO" show kit-base:VERSION 2>/dev/null || echo unknown)
 NEWSHA=$(git -C "$TMP/new" rev-parse HEAD 2>/dev/null) || die "could not read the HEAD of --from."
 
@@ -2067,6 +2072,123 @@ if [ "$N_OFF" -gt 0 ]; then
   diff_offered > "$PATCH" || die "could not write the patch"
 fi
 
+# ── THE REGION CLASS (SWAS-84) — a CONFLICT path that carries the kit's entry contract names which part is whose ──────
+# The files at issue are the `contextFile` values THEIRS's adapter manifests declare (CLAUDE.md, AGENTS.md): each holds the kit's
+# entry contract in its FIRST `## ` section (up to the line before the next `## `), locked byte-identical by
+# conformance/agents-brief.sh. A release that changes it makes an edited CLAUDE.md a CONFLICT, and the person used to get the bare path.
+#   C   your section already equals the release's: no note, the conflict is elsewhere in the file.
+#   R1  your section is the kit's own from an earlier release (BASE, a chain release already rebuilt above, or the tip's own copy
+#       of a BEHIND path): a regions patch carries that section and nothing else.
+#   R2  anything else: the section is yours; the release's text goes in a file to paste. Never overwritten.
+# A file absent from OURS, BASE or THEIRS, or with no `## ` section, stays a plain CONFLICT. The set is NARROWER than agents-brief's
+# (no pre-images, no swept carriers): no note, never a wrong one. Every path stays under CONFLICT; nothing is resolved here.
+ECFILE=''; REGIONS_PATCH=''
+ecr_region() { awk '/^## /{n++; if (n == 2) exit} n == 1'; }   # stdin -> the first '## ' section, every line
+ecr_have() { git -C "$W" cat-file -e "$1:$2" >/dev/null 2>&1; }   # <commit> <path>
+ecr_dump() { git -C "$W" show "$1:$2" 2>/dev/null | ecr_region > "$3"; }   # <commit> <path> <out>: that blob's section
+ecr_scratch() { [ -n "${_pd:-}" ] || { _pd=$(mktemp -d) || die "mktemp failed"; }; }   # the scratch dir the main patch uses
+ecr_set() {  # $TMP/ecr.set = the contextFile paths THEIRS's manifests declare; an unsafe value is skipped with a line in $TMP/ecr.msgs
+  : > "$TMP/ecr.set"
+  git -C "$W" -c core.quotepath=false ls-tree -r --name-only "$C_THEIRS" | grep '^adapters/[^/]*/adapter\.json$' > "$TMP/ecr.manifests" || :
+  while IFS= read -r _es_m; do
+    [ -n "$_es_m" ] || continue
+    _es_c=$(git -C "$W" show "$C_THEIRS:$_es_m" 2>/dev/null | jq -r '.contextFile // empty' 2>/dev/null) || _es_c=''
+    [ -n "$_es_c" ] || continue
+    case "$_es_c" in
+      /*|*..*|*[[:cntrl:]]*) printf 'region notes: skipped a contextFile outside the tree (%s) declared by %s\n' "$(printf '%s' "$_es_c" | tr '\n' ' ')" "$_es_m" >> "$TMP/ecr.msgs" ;;
+      *) printf '%s\n' "$_es_c" >> "$TMP/ecr.set" ;;
+    esac
+  done < "$TMP/ecr.manifests"
+  LC_ALL=C sort -u "$TMP/ecr.set" -o "$TMP/ecr.set"
+}
+ecr_cands() {  # $TMP/ecr.cands = the commits whose incepted tree is a release the kit shipped to you: BASE, the adoption release, every older one rebuilt to decide "pristine"
+  { printf '%s\n' "$C_BASE" "$C_ROOT"
+    for _ec_f in "$TMP"/cb.*; do if [ -f "$_ec_f" ]; then cat "$_ec_f"; fi; done
+  } | LC_ALL=C sort -u > "$TMP/ecr.cands"
+}
+ecr_kit_older() {  # <path> — is your section ($TMP/ecr.o) one a release of the kit shipped: a candidate commit's, or the tip's own blob of a BEHIND path?
+  while IFS= read -r _ek_c; do
+    [ -n "$_ek_c" ] || continue
+    ecr_have "$_ek_c" "$1" || continue
+    ecr_dump "$_ek_c" "$1" "$TMP/ecr.k"
+    if cmp -s "$TMP/ecr.o" "$TMP/ecr.k"; then return 0; fi
+  done < "$TMP/ecr.cands"
+  _ek_b=$(EP=$1 awk -F "$(printf '\t')" '$1 == ENVIRON["EP"] { print $2; exit }' "$TMP/behind.tipblob" 2>/dev/null) || _ek_b=''
+  case "$_ek_b" in ''|*[!0-9a-f]*) return 1 ;; esac   # ABSENT, a symlink (-) or no record: not a blob to compare
+  git -C "$W" cat-file -e "$_ek_b" >/dev/null 2>&1 || return 1
+  git -C "$W" show "$_ek_b" 2>/dev/null | ecr_region > "$TMP/ecr.k"
+  [ -s "$TMP/ecr.k" ] && cmp -s "$TMP/ecr.o" "$TMP/ecr.k"
+}
+ecr_class() {  # <path> -> C | R1 | R2 | none, in that order (the first match wins)
+  for _ec_c in "$C_OURS" "$C_BASE" "$C_THEIRS"; do ecr_have "$_ec_c" "$1" || { echo none; return 0; }; done
+  ecr_dump "$C_OURS" "$1" "$TMP/ecr.o"; ecr_dump "$C_THEIRS" "$1" "$TMP/ecr.t"
+  [ -s "$TMP/ecr.o" ] && [ -s "$TMP/ecr.t" ] || { echo none; return 0; }
+  if cmp -s "$TMP/ecr.o" "$TMP/ecr.t"; then echo C; return 0; fi
+  if ecr_kit_older "$1"; then echo R1; else echo R2; fi
+}
+ecr_splice() {  # <path> -> stdout: OURS with its first '## ' section swapped for THEIRS's, by line number: every byte outside it is yours
+  git -C "$W" show "$C_OURS:$1" > "$TMP/ecr.ours" || return 1
+  git -C "$W" show "$C_THEIRS:$1" | ecr_region > "$TMP/ecr.theirs" || return 1
+  [ -s "$TMP/ecr.theirs" ] || return 1
+  _sp_l=$(awk '/^## /{n++; if (n == 1) a = NR; if (n == 2) {b = NR; exit}} END{print a + 0, b + 0}' "$TMP/ecr.ours") || return 1
+  _sp_a=${_sp_l% *}; _sp_z=${_sp_l#* }
+  # fail closed (set -e is off here): the head and the tail go to temp files, each write checked, then the splice is proved
+  : > "$TMP/ecr.head" && : > "$TMP/ecr.tail" || return 1
+  if [ "$_sp_a" -gt 1 ]; then head -n "$((_sp_a - 1))" "$TMP/ecr.ours" > "$TMP/ecr.head" || return 1; fi
+  if [ "$_sp_z" -gt 0 ]; then tail -n +"$_sp_z" "$TMP/ecr.ours" > "$TMP/ecr.tail" || return 1; fi
+  cat "$TMP/ecr.head" "$TMP/ecr.theirs" "$TMP/ecr.tail" > "$TMP/ecr.spliced" || return 1
+  # the invariant: every line above the region and from the next '## ' on is OURS's, byte for byte
+  if [ "$_sp_a" -gt 1 ]; then head -n "$((_sp_a - 1))" "$TMP/ecr.spliced" > "$TMP/ecr.chk" || return 1; else : > "$TMP/ecr.chk" || return 1; fi
+  cmp -s "$TMP/ecr.chk" "$TMP/ecr.head" || return 1
+  if [ "$_sp_z" -gt 0 ]; then tail -c "$(wc -c < "$TMP/ecr.tail" | tr -d ' ')" "$TMP/ecr.spliced" > "$TMP/ecr.chk" || return 1; else : > "$TMP/ecr.chk" || return 1; fi
+  cmp -s "$TMP/ecr.chk" "$TMP/ecr.tail" || return 1
+  cat "$TMP/ecr.spliced"
+}
+ecr_regions_patch() {  # <file of R1 paths> — one tree, OURS with those sections swapped; the patch is the diff from OURS to it
+  ecr_scratch
+  REGIONS_PATCH="$_pd/kit-update-v${NEWVER}-regions.patch"
+  _rp_idx="$TMP/ecr.idx"; rm -f "$_rp_idx"
+  GIT_INDEX_FILE=$_rp_idx git -C "$W" read-tree "$C_OURS" || die "could not read your tree for the regions patch"
+  while IFS= read -r _rp_p; do
+    [ -n "$_rp_p" ] || continue
+    ecr_splice "$_rp_p" > "$TMP/ecr.blob" || die "could not compose the regions patch for $(printf '%s' "$_rp_p" | strip_ctl)"
+    _rp_o=$(git -C "$W" hash-object -w -- "$TMP/ecr.blob") || die "could not store a spliced file for the regions patch"
+    _rp_m=$(git -C "$W" ls-tree "$C_OURS" -- "$_rp_p" | sed -n '1s/ .*//p')
+    [ -n "$_rp_m" ] || die "could not read the mode of a path in your tree for the regions patch"
+    GIT_INDEX_FILE=$_rp_idx git -C "$W" update-index --add --cacheinfo "$_rp_m,$_rp_o,$_rp_p" || die "could not stage a spliced file for the regions patch"
+  done < "$1"
+  _rp_t=$(GIT_INDEX_FILE=$_rp_idx git -C "$W" write-tree) || die "could not write the tree for the regions patch"
+  git -C "$W" diff --binary --no-renames "$C_OURS" "$_rp_t" -- > "$REGIONS_PATCH" || die "could not write the regions patch"
+}
+ecr_entry_file() {  # <path> — THEIRS's section, byte for byte, for a path whose section is yours (the first such path names it)
+  ecr_scratch
+  ECFILE="$_pd/kit-update-v${NEWVER}-entry-contract.md"
+  git -C "$W" show "$C_THEIRS:$1" | ecr_region > "$ECFILE" || die "could not write the entry-contract file"
+  [ -s "$ECFILE" ] || die "could not write the entry-contract file"
+}
+ecr_run() {
+  : > "$TMP/ecr.kinds"; : > "$TMP/ecr.msgs"
+  [ -s "$TMP/conflict" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then echo 'region notes skipped: jq is not installed' >> "$TMP/ecr.msgs"; return 0; fi
+  ecr_set
+  comm -12 "$TMP/conflict" "$TMP/ecr.set" > "$TMP/ecr.hit"
+  [ -s "$TMP/ecr.hit" ] || return 0
+  ecr_cands
+  : > "$TMP/ecr.r1"
+  while IFS= read -r _er_p; do
+    [ -n "$_er_p" ] || continue
+    _er_k=$(ecr_class "$_er_p") || die "could not classify the entry contract of $(printf '%s' "$_er_p" | strip_ctl)"
+    case "$_er_k" in
+      R1) printf '%s\n' "$_er_p" >> "$TMP/ecr.r1" ;;
+      R2) [ -n "$ECFILE" ] || ecr_entry_file "$_er_p" ;;
+      *) continue ;;
+    esac
+    printf '%s\t%s\n' "$_er_p" "$_er_k" >> "$TMP/ecr.kinds"
+  done < "$TMP/ecr.hit"
+  [ ! -s "$TMP/ecr.r1" ] || ecr_regions_patch "$TMP/ecr.r1"
+}
+ecr_run
+
 # ── THE REPORT ────────────────────────────────────────────────────────────────────────────────────────
 # The labels carry the COMMIT: VERSION alone cannot tell two pre-release commits apart (it stays the same
 # across every `main` between releases). A legacy base records no commit, and says so.
@@ -2161,13 +2283,23 @@ offered_section() {
 }
 offered_section
 sect current   "$N_CUR" "the kit changed these since your base and you already HAVE the new content — nothing to do" current
+# ecr_note <path> — the region note under a CONFLICT path (SWAS-84): R1 names the kit's own older section, R2 your edited one
+ecr_note() {
+  _en_k=$(EP=$1 awk -F "$(printf '\t')" '$1 == ENVIRON["EP"] { print $2; exit }' "$TMP/ecr.kinds") || _en_k=''
+  case "$_en_k" in
+    R1) echo "      (the kit's entry contract, the first '## ' section, changed in this release; yours is the kit's own from an earlier release. Take it with the regions patch below; the rest of your file stays yours)" ;;
+    R2) echo "      (your entry contract, the first '## ' section, differs from every kit release; agents-brief.sh refuses a changed one. The release's version is in $(basename "$ECFILE") below: paste it over that section)" ;;
+  esac
+}
 conflict_section() {
   echo "== CONFLICT ($N_CON) — changed BOTH upstream and by you — yours to decide, NEVER resolved silently =="
+  if [ -s "$TMP/ecr.msgs" ]; then strip_ctl < "$TMP/ecr.msgs" | sed 's/^/  /'; fi
   while IFS= read -r _cs_p; do
     [ -n "$_cs_p" ] || continue
     printf '  - %s\n' "$_cs_p" | strip_ctl
     if grep -qxF -- "$_cs_p" "$TMP/rm.held"; then echo "      (the kit removed this; not proven the kit's — see the removed block)"
     elif grep -qxF -- "$_cs_p" "$TMP/rm.con"; then echo "      (the kit removed this; you changed it)"; fi
+    ecr_note "$_cs_p"
   done < "$TMP/conflict"
   echo ""
 }
@@ -2525,6 +2657,12 @@ if [ -n "$PATCH" ]; then
 else
   echo "patch: (none — nothing is offered)"
 fi
+if [ -n "$REGIONS_PATCH" ]; then
+  echo "regions patch: $REGIONS_PATCH — the kit's entry contract (the first '## ' section) for the CONFLICT paths marked above, and nothing else:  git apply '$REGIONS_PATCH'"
+fi
+if [ -n "$ECFILE" ]; then
+  echo "entry-contract file: $ECFILE — the release's entry contract for the CONFLICT paths marked 'your entry contract' above: paste it over that section"
+fi
 echo ""
 
 # ── THE HONEST CEILING — printed, every run, in the tool's own output ────────────────────────────────
@@ -2569,8 +2707,10 @@ echo "    detection, directory/file collisions) merge-ort and merge-recursive ca
 echo "    Neither writes to your repo, and neither of them applies anything."
 echo "  * EXPECT CLAUDE.md. incept STAMPS the kit version into your project doc, so a version bump changes"
 echo "    it on the kit's side EVERY release: offered while you have not touched it, a CONFLICT the moment"
-echo "    you have. That is the design working (it is YOUR doc), not a fault — usually you want only the"
-echo "    '**Kit version adopted:**' line."
+echo "    you have. That is the design working (it is YOUR doc), not a fault. Two parts of it are the kit's:"
+echo "    the '**Kit version adopted:**' line moves every release, and the entry contract (its first '## '"
+echo "    section) moves sometimes. A regions patch, when the report prints one, carries only that section;"
+echo "    usually you want only those two."
 if [ "$HOOK_MODE" = tracked ]; then
   echo "  * GIT HOOKS: this repo runs TRACKED-HOOKS mode (core.hooksPath -> its own hooks/), so the live"
   echo "    hook IS the tracked hooks/pre-push and the delta above covers it in full — there is no"

@@ -27,7 +27,11 @@ set -eu
 # ladder here rather than a second mechanism — with the 90-day maximum and the renew-by-new-row
 # rule unchanged, which is the honest cadence for a control that does not exist yet
 # (`TRACKER-BACKED-GOVERNANCE` closes it). The non-negotiable pair below is untouched.
-WAIVABLE="coverage sbom provenance dependency-vuln a11y container-image board-governance"
+# `branch-protection-plan` (SWAS-814) names ONE CAUSE, not the gate: "this GitHub plan cannot enforce
+# branch protection on a private repository". `branch-protection` itself stays in NONNEGOTIABLE and is
+# still refused by exact match, so this id waives nothing else; inception-done.sh reads it through
+# `--active` and only on the plan-limit path.
+WAIVABLE="coverage sbom provenance dependency-vuln a11y container-image board-governance branch-protection-plan"
 NONNEGOTIABLE="secret-scan branch-protection"
 MAX_DAYS=90
 
@@ -340,6 +344,97 @@ secret-scan | smuggled | @jdoe | $D0 | $D60 | y | @sec |"
   if active_waiver secret-scan "$d/bg_ss" >/dev/null 2>&1; then
     echo "selftest FAIL: --active resolved a NON-NEGOTIABLE gate that IS present in the register"; st=1
   else echo "selftest PASS: --active: a PRESENT secret-scan row is still refused (non-vacuous)"; fi
+
+  # --- SWAS-814: `branch-protection-plan`, ONE cause of the branch-protection gap -----------------
+  # inception-done reads this id (and only on the plan-limit path) so a free private repository can enter
+  # the loop with the gap recorded. The id waives a CAUSE, never the gate: `branch-protection` itself must
+  # stay refused, by exact match, and no spelling near it may become waivable.
+  mk bpp_ok "| branch-protection-plan | free private repository: this plan cannot enforce protection | @jdoe | $D0 | $D60 | make the repository public or move to a paid plan | @sec |"
+  expect bpp_ok 0 "branch-protection-plan: a filled, unexpired row is valid -> OK"
+  expect_active bpp_ok branch-protection-plan 0 "--active branch-protection-plan: a valid unexpired row -> rc 0"
+  _ea=$(active_waiver branch-protection-plan "$d/bpp_ok" 2>&1) || true
+  case "$_ea" in
+    "@jdoe$(printf '\t')$D60") echo "selftest PASS: --active branch-protection-plan emits exactly '<owner>TAB<expires>'" ;;
+    *) echo "selftest FAIL: --active branch-protection-plan must print '<owner>TAB<expires>', got <$_ea>"; st=1 ;;
+  esac
+  expect_active bpp_ok branch-protection 1 "--active branch-protection: only a branch-protection-plan row -> rc 1 (the plan id is not the gate)"
+  mk bpp_ph "| branch-protection-plan | x | [owner] | $D0 | $D60 | y | [security-owner] |"
+  expect_active bpp_ph branch-protection-plan 1 "--active branch-protection-plan: a [placeholder] owner/ratifier -> rc 1"
+  mk bpp_exp "| branch-protection-plan | x | @jdoe | $DP100 | $DP10 | y | @sec |"
+  expect_active bpp_exp branch-protection-plan 1 "--active branch-protection-plan: an EXPIRED row -> rc 1"
+  mk bpp_nn "| branch-protection | x | @jdoe | $D0 | $D60 | y | @sec |"
+  expect bpp_nn 1 "branch-protection row stays NON-NEGOTIABLE -> FAIL"
+  expect_active bpp_nn branch-protection 1 "--active branch-protection with a branch-protection row present -> rc 1 (never waivable)"
+  expect_active bpp_nn branch-protection-plan 1 "--active branch-protection-plan: a branch-protection row is not a plan row -> rc 1"
+  mk bpp_x "| branch-protection-x | x | @jdoe | $D0 | $D60 | y | @sec |"
+  expect bpp_x 1 "branch-protection-x is not waivable -> FAIL"
+  expect_active bpp_x branch-protection-x 1 "--active branch-protection-x -> rc 1"
+  mk bpp_xp "| x-branch-protection | x | @jdoe | $D0 | $D60 | y | @sec |"
+  expect bpp_xp 1 "x-branch-protection is not waivable -> FAIL"
+  expect_active bpp_xp x-branch-protection 1 "--active x-branch-protection -> rc 1"
+
+  # The register template pins the new id and its ceiling, so a reword cannot drop the honest text.
+  # N/A where the template does not ship (a tree without templates/), as inception-done's mirror lock is
+  # when the file it reads is absent.
+  _tpl="$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)/templates/WAIVER-REGISTER.md"
+  if [ ! -f "$_tpl" ]; then
+    echo "selftest N/A: template pin — templates/WAIVER-REGISTER.md is not on this tree"
+  else
+    for _pin in \
+      '**`branch-protection-plan`** is the free-private-repository gap' \
+      '`board-governance`, `branch-protection-plan`.' \
+      'not a way to waive `branch-protection` itself' \
+      'not that a second person agreed' \
+      '- **`branch-protection`** — segregation of duties is day-one.'; do
+      if grep -qF -- "$_pin" "$_tpl"; then echo "selftest PASS: template pins [$_pin]"
+      else echo "selftest FAIL: templates/WAIVER-REGISTER.md no longer carries [$_pin]"; st=1; fi
+    done
+  fi
+
+  # MUTANTS: a copy of THIS script with one marked line changed is run as the real entry (a register path
+  # as its argument runs the full check; `--active <gate> <register>` runs the read arm), and each must
+  # print the FLIPPED verdict, not merely a different rc.
+  _wv_mut() { # <name> <sed args...> -> $d/<name>.sh, or st=1 when the edit matched nothing or does not parse
+    _wmn=$1; shift
+    sed "$@" "$0" > "$d/$_wmn.sh"
+    if cmp -s "$0" "$d/$_wmn.sh"; then echo "selftest FAIL: the $_wmn mutant did not apply (the sed matched nothing)"; st=1; return 1; fi
+    if ! sh -n "$d/$_wmn.sh" 2>/dev/null; then echo "selftest FAIL: the $_wmn mutant does not parse"; st=1; return 1; fi
+    return 0
+  }
+  # M1: the new id dropped from WAIVABLE -> the valid-row cells flip to "not a waivable gate" / rc 1.
+  if _wv_mut mut_drop -e '/^WAIVABLE=/s/ branch-protection-plan//'; then
+    _mo=$(sh "$d/mut_drop.sh" "$d/bpp_ok" 2>&1) && _mr=0 || _mr=$?
+    sh "$d/mut_drop.sh" --active branch-protection-plan "$d/bpp_ok" >/dev/null 2>&1 && _ar=0 || _ar=$?
+    case "$_mr:$_ar:$_mo" in
+      1:1:*"is not a waivable gate"*) echo "selftest PASS: mutant (id dropped from WAIVABLE) flips the valid-row cells: full run rc 1 'not a waivable gate', --active rc 1" ;;
+      *) echo "selftest FAIL: the drop-from-WAIVABLE mutant survived or died another way (full rc $_mr, --active rc $_ar, out=<$_mo>)"; st=1 ;;
+    esac
+  fi
+  # M2: BOTH defences of branch-protection broken together -> the non-negotiable cells flip to accepted.
+  if _wv_mut mut_both -e '/^WAIVABLE=/s/"$/ branch-protection"/' -e '/^NONNEGOTIABLE=/s/ branch-protection//'; then
+    _mo=$(sh "$d/mut_both.sh" "$d/bpp_nn" 2>&1) && _mr=0 || _mr=$?
+    sh "$d/mut_both.sh" --active branch-protection "$d/bpp_nn" >/dev/null 2>&1 && _ar=0 || _ar=$?
+    case "$_mr:$_ar:$_mo" in
+      0:0:*"waivers-valid: OK"*) echo "selftest PASS: mutant (branch-protection out of NONNEGOTIABLE and into WAIVABLE) flips the non-negotiable cells: row accepted, --active rc 0" ;;
+      *) echo "selftest FAIL: the both-defences mutant survived or died another way (full rc $_mr, --active rc $_ar, out=<$_mo>)"; st=1 ;;
+    esac
+  fi
+  # M3/M4: each defence ALONE is redundant by design, so a mutant that breaks only one must still refuse
+  # (that is why M2 has to break both). The refusal names the defence that is still standing.
+  if _wv_mut mut_nn_only -e '/^NONNEGOTIABLE=/s/ branch-protection//'; then
+    _mo=$(sh "$d/mut_nn_only.sh" "$d/bpp_nn" 2>&1) && _mr=0 || _mr=$?
+    case "$_mr:$_mo" in
+      1:*"is not a waivable gate"*) echo "selftest PASS: with only NONNEGOTIABLE broken, the allow-list still refuses branch-protection" ;;
+      *) echo "selftest FAIL: the allow-list alone no longer refuses branch-protection (rc $_mr, out=<$_mo>)"; st=1 ;;
+    esac
+  fi
+  if _wv_mut mut_wv_only -e '/^WAIVABLE=/s/"$/ branch-protection"/'; then
+    _mo=$(sh "$d/mut_wv_only.sh" "$d/bpp_nn" 2>&1) && _mr=0 || _mr=$?
+    case "$_mr:$_mo" in
+      1:*"NON-NEGOTIABLE"*) echo "selftest PASS: with only WAIVABLE widened, NONNEGOTIABLE still refuses branch-protection" ;;
+      *) echo "selftest FAIL: NONNEGOTIABLE alone no longer refuses branch-protection (rc $_mr, out=<$_mo>)"; st=1 ;;
+    esac
+  fi
   [ "$st" = "0" ] && echo "waivers-valid --selftest: OK"
   return "$st"
 }

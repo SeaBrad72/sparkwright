@@ -38,6 +38,7 @@ docs/architecture/            # ADRs (incl. ADR-000)
 pyproject.toml · uv.lock · .env.example · .gitignore · ruff.toml · mypy.ini
 ```
 Baselines: ruff + mypy config; coverage fail_under = 80; pandera schemas for datasets; `nbstripout` installed as a git filter.
+Every test folder carries an `__init__.py` (`tests/`, `tests/unit/`, ...), so two test files may share a name.
 
 ## 3. Standard commands
 ```

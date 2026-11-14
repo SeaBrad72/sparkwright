@@ -87,13 +87,25 @@
 #        sh conformance/prepush-lane.sh --derive | --census [--ci-file <path>] | --selftest | --help
 #        sh conformance/prepush-lane.sh --plan [--base <ref>]                      # the touched-readers selection; executes nothing
 #        sh conformance/prepush-lane.sh --refresh-times [--ci-file <path>]         # pull CI step/job times and 30-day reds with gh (read-only)
+#        sh conformance/prepush-lane.sh --log-report [--base <ref>]                # read-only: the run log's wall times and the merged-PR share; executes nothing, no network
+# THE RUN LOG (SWAS-568, docs/plans/2026-11-12-prepush-run-log-568-plan.md): every run appends a start and an end record to $HOME/.local/state/sparkwright/prepush/<root-commit>/runs.log
+#   (the live log plus three rotated files of about 1 MB each), so the wall time, the units and their peak RSS can be measured. A per-user measurement cache, never evidence: no switch turns it
+#   off, it records no free text and no absolute path (core-selftest units carry their repo-relative target; floor_mb is a digits-only env bound), a write failure is dropped (never a verdict change), and the run never reads it. See the section `THE RUN LOG` below.
 # THE TOUCHED-READERS ARM (SWAS-468 and its delta) closes the DEFAULT run: it fills PREPUSH_READERS_BUDGET_S (raise-only, default 300 s) with the
 #   CI-derived checks, red-history checks first, then by measured time, and prints the rest as a `CI-ONLY (paste into the PR):` block with each
-#   line's red cost and any TIMEOUT-RISK. See the section `TOUCHED READERS` below for the tiers, the time table and its sources.
+#   line's red cost and any TIMEOUT-RISK. SWAS-840 adds the NAMED readers (a derived check whose own script text, comment-stripped, names a touched path literally: it starts regardless of the fill
+#   while it fits the cap) and the printed readers cap (TR_CAP, 600 s; the arm never runs past it). See the section `TOUCHED READERS` below for the tiers, the time table and its sources.
+# THE TOUCHED SELFTESTS (SWAS-811, docs/architecture/2026-11-10-prepush-names-every-selftest-811-design.md): every listed top-level conformance/*.sh, scripts/*.sh or
+#   hooks/pre-push whose comment-stripped text names --selftest is run by ONE call per target (`sh conformance/selftest-hermetic.sh <path>`, both faces): unmeasured targets first, then by
+#   ascending measured time. SWAS-840 (docs/plans/2026-11-12-prepush-selftest-budget-840-plan.md): no budget cuts a target. PREPUSH_SELFTEST_BUDGET_S (raise-only, default 300 s) is only a printed
+#   label (`over the 300 s budget: run anyway`); a call is bounded by ST_CEIL (3600 s, a plain constant), and a kill at it reads UNVERIFIED, never OK and never CI-bound. A target already killed
+#   at the ceiling on these bytes (a censored row of ST_CEIL + 1 s or more) is named UNVERIFIED with no call. The `# touched-selftest roster: N (run: K, CI-bound: M, named: X, unmeasured: U)`
+#   line counts them. Measured face seconds are kept per BLOB sha in the times state (a cache, never evidence): edited bytes are unmeasured again. On an adopter tree a touched scripts/ or
+#   hooks/pre-push selftest is named, not run (kit tree only).
 # THE DEFAULT RUN (no --warranted; PREPUSH-CORE-DEFAULT) proves the change's OWN surface, in this order:
 #   the scoped lint of the listing's shell files (shellcheck.sh --listed; the full lock stays in CI) ->
 #   the secret scan of <merge-base>..HEAD (`core-secretscan`: secret-scan-wired.sh --range, the PR-range scan
-#   CI runs; gitleaks absent is UNVERIFIED and blocks, never a skip) -> the touched selftests (selftest-hermetic --touched) -> the board gates (when BACKLOG.md is touched) ->
+#   CI runs; gitleaks absent is UNVERIFIED and blocks, never a skip) -> the touched selftests (selftest-hermetic, one call per touched target) -> the board gates (when BACKLOG.md is touched) ->
 #   the twins. It does NOT run the ~80 CI-derived core-live checks: it counts them in one `core-live: N …
 #   NOT run` note. CI runs every one of them; `--warranted` runs them locally. Bucket derivation
 #   (--derive, --census, the `buckets:` line) is unchanged — only which buckets EXECUTE differs. The OK
@@ -163,6 +175,8 @@ WORK=""
 cleanup() {
   trap '' INT TERM HUP   # a second signal (a TERM storm) must not re-enter this body and abandon the kill half-done
   arm_trap_kill
+  pool_interrupt_u       # SWAS-868: units finished but not yet printed are listed UNV
+  rl_end INTERRUPTED -   # SWAS-568: a run that ends here without a verdict is logged INTERRUPTED (rc unknown); a no-op once the end record is written
   hl_release; [ -n "$WORK" ] && rm -rf "$WORK" 2>/dev/null; return 0   # best-effort: a trap that
 }                                                                      # FAILS would override exit 0
 trap 'cleanup' EXIT
@@ -630,11 +644,14 @@ subst_argv() {
 # derived, and nothing else: serially, under a dash PATH shim, in a scrubbed environment,
 # inside one work root, a per-invocation wall-clock ceiling and a free-memory floor (design §3.3/§3.4/
 # §3.7). The `selftest` bucket the SCANNER prints is a run-time question, so it is SPLIT HERE by the
-# touched set and the merged label never appears in a run report: `core-selftest` (one call to
-# selftest-hermetic.sh --touched — both faces, never re-implemented) and `untouched-selftest` (listed,
+# touched set and the merged label never appears in a run report: `core-selftest` (one call per touched target to
+# selftest-hermetic.sh, SWAS-811 — both faces, never re-implemented) and `untouched-selftest` (listed,
 # not run). The ONLY `&`s in this file are in run_bg (the scrubbed subshell, backgrounded so a trapped INT/TERM
-# interrupts the `wait` at once) and inside run_timed (the arm, in its own process group, and its watchdog).
-# Each `wait` keeps execution strictly serial; selftest_no_fanout proves it by OBSERVATION.
+# interrupts the `wait` at once) and inside run_timed (the arm, in its own process group, and its watchdog), plus, at J >= 2 only, in pool_start (a pooled unit's subshell, SWAS-868).
+# Each `wait` keeps execution strictly serial at J = 1; selftest_bounded_fanout proves it by OBSERVATION.
+# SWAS-868 (THE POOL, docs/plans/2026-11-13-prepush-parallel-pool-868-plan.md): at J >= 2 (J is DERIVED from this machine, never set; see pool_j) the core-selftest candidates and, under --warranted, the core-live checks run
+#   at most J at a time, each in its own scratch dirs and control dir, from the `( ... ) &` in pool_start; each unit is decided at its reap and recorded in queue order; every rc FAIL and every ceiling kill that passes the
+#   half-ceiling rule runs once more, serially, and a serial pass reads RACE, never a silent OK. The touched readers, the board gates, the twins and the heavy arms stay serial. J = 1 (cores, memory or perl unreadable) is today's lane.
 # THE CEILING KILL (SWAS-428, docs/architecture/2026-10-28-prepush-orphan-428-design.md): an arm runs in a process group of its own (a
 #   perl setpgrp wrapper), and a ceiling hit snapshots the descendants, TERMs and CONTs the group, waits up to 5 s, re-snapshots, KILLs the
 #   group and the pids still in the lineage, and CONFIRMS. A kill it cannot confirm reads UNVERIFIED. A terminal Ctrl-C or a TERM to the
@@ -645,7 +662,12 @@ subst_argv() {
 #   it in a group of its own would need a second wrapper per arm: judged too heavy for a case a person has to type), and the arm then runs on;
 #   (4b) the kill state lives in $WORK/ctl and an arm's TMPDIR is $WORK/tmp, so an arm cannot forge it by convention, not by a sandbox;
 #   (4c) the trap re-entry mutant is not graded; SWAS-467 owns it (K10 stays: a TERM storm still ends in the KILL);
-#   (4d) a pgid is signalled only if it is not the lane's own group or its PARENT's group; a pgid read from a file only if its pid is a descendant of the lane; (5) an arm that opens /dev/tty itself is a background-group member and would stop on SIGTTIN: the kill sends
+#   (4d) a pgid is signalled only if it is not the lane's own group or its PARENT's group; a pgid read from a file only if its pid is a descendant of the lane;
+#   (4e) SWAS-868: a co-running arm can write to another pooled unit's output and control files while that unit runs, up to its reap (for example append `TARGET: <path> (both faces)` or rewrite a kill note). The pool reads everything at the
+#   unit's reap, which closes the window AFTER the reap, not before it. The rc value is read by the parent; what produces it is not contained: a co-runner can also reach another unit's scratch dirs (u<n>/tmp, empty, gh) and so
+#   influence its exit status, and can plant a symlink at the next u<n> before pool_dirs makes it. A co-runner can also strip another core-live unit's SKIP line, so a skipped check is cached as a pass under --warranted. The local lane is a
+#   fast pre-check; CI's per-job runners are the binding grade. Also disclosed: pid reuse is narrowed by the poll bound, not closed; in a Linux container /proc/meminfo and getconf
+#   report the host, not the cgroup limit, so an OOM kill (rc 137 with no wd.fired) reads as an rc FAIL and goes to the serial confirm; U (POOL_U_MB) is an [estimate]; the lane's own selftest as a pooled unit nests its J = 2 cells under the outer pool; (5) an arm that opens /dev/tty itself is a background-group member and would stop on SIGTTIN: the kill sends
 #   CONT right after TERM, so it wakes and dies, and a prompt never reaches the user; (6) with no /usr/bin/perl the arms are NOT
 #   process-grouped: today's direct-child kill runs, the lane says so once per run, and every ceiling FAIL line reads "tree NOT
 #   contained". The dash claims were probed on one machine's /bin/dash; CI grades the ubuntu dash.
@@ -663,9 +685,24 @@ BASE_SHA=""; DOCS_ONLY=false; DASH=""; SHIMDIR=""; CEIL=120; FLOOR=6144; FREE=""
 ARM_PERL=/usr/bin/perl
 ARM_GRACE_S=5; ARM_CONFIRM_S=5; LANE_PGID=""; LANE_PPGID=""; SR_PID=""; ARM_NOTE=""; ARM_CEIL_TXT=""
 ARGVLOG=""; UNV=""; MB=""; FAILS=0; RAN=0; HCEIL=3600; SELFCEIL=3600
+# SWAS-868 (P2, the bounded pool): POOL_J is the final fan-out (1 = today's serial lane). It is DERIVED by pool_j from this machine and never set: no environment or argv name feeds it. POOL_IN is 1 while the pool phase
+# decides and records; POOL_LATE is 1 for a unit reaped under the blocking wait (its clock is not trusted). U_CTL, U_OUT, U_CRASH and UNIT_DIR name one unit's own control dir, output, crash-hit file and scratch dirs
+# (empty = the single-unit defaults under $WORK); only the pool and its serial tail set them.
+POOL_JF=1; POOL_J=1; POOL_C=""; POOL_F=""; POOL_WHY=""; POOL_IN=0; POOL_ON=0; POOL_LATE=0; POOL_USE=0; PQ=""; PQ_M=0; PQ_U=0; CL_Q=""; RACE_N=0; RI_OKV=OK; ST_KIND=""; ST_SS=""
+U_CTL=""; U_OUT=""; U_CRASH=""; UNIT_DIR=""; CL_FEED=""
+_st_lab=""; RI_KIND=""; RI_C=1; RI_NM=""; RI_RX=""; RI_CX=""; _st_tl=0   # read by the pool's save/restore before every decision has set them (set -u)
+# POOL_U_MB: the memory one pooled unit is assumed to take [estimate]. A committed constant, never derived from the run log.
+POOL_U_MB=1536
+# SWAS-811: the touched-selftest budget (PREPUSH_SELFTEST_BUDGET_S may only raise it) and the counts the roster line prints.
+# SWAS-840 (P1 of SWAS-858): the budget no longer selects. It is printed, and a target whose prior time passes it is run anyway and labelled. What bounds a call is ST_CEIL, the runaway ceiling per
+# target: a plain assignment (no environment or argv name; a selftest scales it in a lane COPY), not coupled to SELFCEIL. A kill at it reads UNVERIFIED, never OK and never named CI-bound.
+ST_BUDGET_DEFAULT=300
+ST_CEIL=3600
+STBUD=300; ST_N=0; ST_K=0; ST_U=0; ST_NM=0; ST_EX=0; ST_SC=""; ST_OB=0; ST_H=0
 CRASH=0; CRASH_LIST=""; CRASH_EV=""; CRASH_TXT=""; CRASH_LINE=""; CRASH_BYLINE=0   # SWAS-600: the crashed-unit counter, its names, and the evidence of the unit just run
-# SELFCEIL (reviewer I-1): the core-selftest face is ONE call to selftest-hermetic.sh --touched running
-# BOTH hermeticity faces over the whole touched set, so it is not bounded by the 120 s per-check core
+# SELFCEIL (reviewer I-1): the ceiling of the core arms that are not one hermetic call per target (shellcheck, parse-lint, secret-scan, the board gates). Since SWAS-811 each
+# core-selftest call has its own ceiling (ST_CEIL since SWAS-840), not this one. The reasoning below is the original one: a face that runs BOTH hermeticity
+# faces is not bounded by the 120 s per-check core
 # ceiling; "add a heavy row" is the wrong remedy (it is the core, not a heavy invocation), so its overrun
 # names PREPUSH_CEILING_S instead. It is the HEAVY default (3600 s) because its cost is not a constant:
 # selftest-hermetic derives its OWN target set from its roster, and on this branch that was 4 targets /
@@ -778,9 +815,48 @@ shim_init() {
   note "shell: dash $DASH (PATH shim $SHIMDIR, holding exactly \`sh\`)"
 }
 
+# ---- SWAS-868: J, the pool's fan-out, derived from this machine alone (cores and free memory by absolute path; no environment, argv or PATH feed) ----
+pool_cores() { /usr/bin/getconf _NPROCESSORS_ONLN 2>/dev/null || :; }
+pool_free_mb() {
+  if [ -r /proc/meminfo ]; then
+    LC_ALL=C /usr/bin/awk '/^MemAvailable:/ { print int($2/1024); exit }' /proc/meminfo
+  elif [ -x /usr/bin/vm_stat ]; then
+    /usr/bin/vm_stat 2>/dev/null | LC_ALL=C /usr/bin/awk '
+      NR == 1 { if (match($0, /page size of [0-9]+ bytes/)) s = substr($0, RSTART + 13, RLENGTH - 19) + 0 }
+      /^Pages (free|inactive|speculative)/ { v = $NF; gsub(/[.,]/, "", v); f += v }
+      END { if (s == 0) s = 4096; print int(f * s / 1048576) }'
+  fi
+}
+# pool_j — sets POOL_J (>= 1): J = min(C - 1, floor((F - FLOOR) / U)). J is 1, with a stated reason, when cores or free memory are unreadable or there is no perl (the arms are then not process-grouped).
+pool_j() {
+  _pj_j=1; POOL_WHY=""; POOL_C=""; POOL_F=""
+  if ! arm_perl_ok; then POOL_WHY="no $ARM_PERL, so the arms are not process-grouped"   # PLPERL
+  else
+    POOL_C=$(pool_cores 2>/dev/null) || POOL_C=""
+    POOL_F=$(pool_free_mb 2>/dev/null) || POOL_F=""
+    case $POOL_C in ''|*[!0-9]*|0*) POOL_WHY="cores unreadable" ;; esac
+    case $POOL_F in ''|*[!0-9]*|0[0-9]*) POOL_WHY="${POOL_WHY:+$POOL_WHY; }free memory unreadable" ;; esac
+  fi
+  if [ -z "$POOL_WHY" ]; then
+    _pj_j=$((POOL_C - 1))   # PLJCLAMP
+    _pj_m=$(( (POOL_F - FLOOR) / POOL_U_MB ))
+    [ "$_pj_m" -ge "$_pj_j" ] || _pj_j=$_pj_m   # PLJMIN
+    [ "$_pj_j" -ge 1 ] || _pj_j=1   # PLJONE
+  fi
+  POOL_J=$_pj_j   # PLJSET
+}
+pool_note() {
+  if [ -n "$POOL_WHY" ]; then note "pool: J=$POOL_J ($POOL_WHY; derived, never set)"; return 0; fi
+  note "pool: J=$POOL_J (cores $POOL_C, free $POOL_F MB, floor $FLOOR MB, U $POOL_U_MB MB [estimate]; derived, never set)"
+}
+
 bounds_init() {
   CEIL=$(raise_only "${PREPUSH_CEILING_S-}" 120 PREPUSH_CEILING_S)
   FLOOR=$(raise_only "${PREPUSH_MEM_FLOOR_MB-}" 6144 PREPUSH_MEM_FLOOR_MB)
+  case ${PREPUSH_SELFTEST_BUDGET_S-} in
+    0[0-9]*) printf 'prepush-lane: IGNORED: PREPUSH_SELFTEST_BUDGET_S has a leading zero: [%s] — using %s\n' "$PREPUSH_SELFTEST_BUDGET_S" "$ST_BUDGET_DEFAULT" >&2; STBUD=$ST_BUDGET_DEFAULT ;;   # STZERO
+    *) STBUD=$(raise_only "${PREPUSH_SELFTEST_BUDGET_S-}" "$ST_BUDGET_DEFAULT" PREPUSH_SELFTEST_BUDGET_S) ;;   # STDIAL
+  esac
   command -v sleep >/dev/null 2>&1 || unv "no timeout facility"
   LANE_PGID=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ') || LANE_PGID=""
   LANE_PPGID=$(ps -o pgid= -p "$PPID" 2>/dev/null | tr -d ' ') || LANE_PPGID=""   # the group of whoever launched the lane: never ours to signal
@@ -791,9 +867,10 @@ bounds_init() {
   fi
   FREE=$(mem_free_mb 2>/dev/null) || FREE=""
   [ "$CEIL" -le "$SELFCEIL" ] || SELFCEIL=$CEIL     # raise-only, and never BELOW the core ceiling
-  note "ceiling: ${CEIL}s/invocation (core-selftest ${SELFCEIL}s · heavy arms ${HCEIL}s or their budget-s) · memory floor: ${FLOOR} MB · free: ${FREE:-unreadable} MB · ceiling kill: ${_bi_mode}"
+  note "ceiling: ${CEIL}s/invocation (core-selftest: budget ${STBUD} s, printed, not a cutoff; runaway ceiling ${ST_CEIL} s per target · other core arms ${SELFCEIL}s · heavy arms ${HCEIL}s or their budget-s) · memory floor: ${FLOOR} MB · free: ${FREE:-unreadable} MB · ceiling kill: ${_bi_mode}"
   mem_guard "${FREE-}" "$FLOOR" ||
     note "WARNING: free memory is not above the floor — the core is cheap and still runs; a heavy arm would be refused"
+  pool_j; pool_note   # SWAS-868: the provisional J (no lock yet); the start record logs it
 }
 # heavy_allowed <arm> — the floor is re-read before EVERY heavy arm (§3.7); unreadable REFUSES.
 heavy_allowed() {
@@ -897,6 +974,8 @@ hl_note_write() {
   else rm -f "$_hnt" 2>/dev/null || :; fi
   return 0
 }
+# hl_waited — the seconds since hl_acquire began, for the run log's lock_wait_s (SWAS-568); called only after _hat is set.
+hl_waited() { HL_WAIT_S=$(( $(date +%s) - _hat )); return 0; }
 hl_fail() {
   HL_STATE=failed; exec 9>&-
   note "UNVERIFIED: heavy-arm lock — $1; the heavy units are not run"
@@ -912,9 +991,9 @@ hl_acquire() {
   while :; do
     _har=0; hl_try || _har=$?
     [ "$_har" -ne 0 ] || break
-    if [ "$_har" -ne 1 ]; then hl_fail "the lock helper failed (rc ${HL_TRC:-$_har})"; return 1; fi
+    if [ "$_har" -ne 1 ]; then hl_waited; hl_fail "the lock helper failed (rc ${HL_TRC:-$_har})"; return 1; fi
     if [ $(( $(date +%s) - _hat )) -ge "$HL_BUDGET" ]; then
-      hl_fail "the lock stayed busy for the ${HL_BUDGET}s run budget (holder: $(hl_holder_text))"; return 1
+      hl_waited; hl_fail "the lock stayed busy for the ${HL_BUDGET}s run budget (holder: $(hl_holder_text))"; return 1
     fi
     if [ "$_hafirst" -eq 1 ] || [ $(( $(date +%s) - _hatn )) -ge "$HL_NOTE_S" ]; then
       note "heavy-arm lock: busy (held by $(hl_holder_text)) — waiting for the $1 unit, polling every ${HL_POLL}s, run budget ${HL_BUDGET}s"
@@ -922,6 +1001,7 @@ hl_acquire() {
     fi
     _hawaited=1; sleep "$HL_POLL"
   done
+  hl_waited
   HL_STATE=held
   if [ "$_hawaited" -eq 1 ]; then
     note "heavy-arm lock: acquired after $(( $(date +%s) - _hat ))s for the $1 unit"
@@ -946,6 +1026,434 @@ hl_release() {
   rm -f "$HL_HOLDER" 2>/dev/null || :
   exec 9>&-
   HL_STATE=released
+  return 0
+}
+
+# ====================================================================== THE RUN LOG (SWAS-568)
+# Plan: docs/plans/2026-11-12-prepush-run-log-568-plan.md; design 2026-11-12-ci-local-parity-nightly-design.md (P0, section 3.6, errata C1). A per-user MEASUREMENT CACHE, never evidence:
+# one runs.log beside the times table, in $HOME/.local/state/sparkwright/prepush/<root-commit>/, two records per run (start, end), one per line, ASCII, space-separated key=value. The keys
+# are literal text in two fixed printf formats. NO free text: each value is a closed enum, a digit string, a sha or a capped token that passed rl_val (floor_mb is a digits-only env bound, the
+# raise-only PREPUSH_MEM_FLOOR_MB), and the free-text sources the lane holds (UNV reasons, paths, the branch, the --base text, the ci-file path, output) have no field. There is NO switch:
+# PREPUSH_NO_CACHE does not reach it (a selftest isolates it by HOME). It is written by ONE printf per record (rl_emit), a failure of which is dropped and never a verdict change, and the run
+# path never reads it (only --log-report does). Rotation keeps the live log plus three rotated files of about 1 MB each (the card's own cap: the one place data is dropped, by mv overwrite).
+# The 16 KB cap applies to the u= list only (units past it are counted in trunc=). A SIGKILLed run leaves a start with no end: --log-report counts it as incomplete.
+# Grammar v1:
+#   v1 start run=<R> ts=<E> head=<H40> base=<H40|-> row=<ROW|-> mode=<M> ci=<default|other> lane=<T> os=<darwin|linux|other> j=<N: the provisional J> free_mb=<N|-> floor_mb=<N> listing=<N|-> brule=<C>
+#   v1 end   run=<R> ts=<E> verdict=<OK|FAIL|UNVERIFIED|PLAN|INTERRUPTED> rc=<N|-> wall_s=<N> lock=<held|failed|none> lock_wait_s=<N|-> ran=<N> fails=<N> crash=<N> u=<U>[,<U>...] [trunc=<N>] jf=<N: the final J> race=<N>
+#   (SWAS-868: verdict RACE in U = a unit that failed in the pool and passed serially; jf= and race= are additive.)
+#   R = <epoch>-<pid>; mode = default|warranted|green-on-clone|exports|slow|non-vacuity|plan; lane = a checksum of the checkout path, not the path itself (tells clones apart); row = HEAD's Kit-Row
+#   trailer; brule = the clauses of the design's rule (3.3) that would fire (battery_rule): none, or a,b-partial,c,d,e joined; U = <bucket>:<name>:<verdict>:<secs>:<rss_kb> (a repeated name
+#   gets #2, #3; verdict OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE; no unit argv; rss_kb is `-` when unavailable); rc is `-` for INTERRUPTED (a trap does not know it).
+# HONEST LABEL for rss_kb [measured, sampled]: the arm group's summed RSS (ps -o rss, KB), sampled once a second by the watchdog; it misses spikes shorter than a tick and descendants that left
+# the group; the arm can forge it (ctl is reachable), which is acceptable for a measurement. With no /usr/bin/perl there is no group, so `-`.
+RL_ON=0; RL_FILE=""; RL_RUN=""; RL_T0=0; RL_U=""; RL_TRUNC=0; RL_ENDED=0; RL_SEEN=""; RL_UMAX=16384
+# the card's 1 MB cap: a plain assignment (no knob); a selftest scales it in a lane COPY
+RL_CAP=1048576
+RUN_RSS="-"; HL_WAIT_S="-"
+# rl_val <class> <value> — the value when it holds only its class's bytes and fits the class's cap, else `-` (the basename_ok idiom: whole-string tr -cd, newline-safe).
+rl_val() {
+  case $1 in
+    num) _rv_cs='0-9'; _rv_n=12 ;;
+    sha) _rv_cs='0-9a-f'; _rv_n=40 ;;
+    row) _rv_cs='A-Z0-9-'; _rv_n=32 ;;
+    brule) _rv_cs='a-z,-'; _rv_n=40 ;;
+    base) _rv_cs='a-z0-9.-'; _rv_n=64 ;;
+    path) _rv_cs='A-Za-z0-9._/-'; _rv_n=128 ;;
+    *) printf '%s' -; return 0 ;;
+  esac
+  if [ -z "$2" ] || [ "${#2}" -gt "$_rv_n" ]; then printf '%s' -; return 0; fi
+  if [ "$1" = row ]; then   # a row id starts with a letter or a digit, never `-`
+    case $2 in
+      -*) printf '%s' -; return 0 ;;
+    esac
+  fi
+  if [ "$(printf '%s' "$2" | LC_ALL=C tr -cd "$_rv_cs")" = "$2" ]; then printf '%s' "$2"; else printf '%s' -; fi
+  return 0
+}
+# rl_name <bucket> <name> — a unit name: a repo-relative path for core-selftest, else a basename; anything else (a leading slash, a `..`) is `-`.
+rl_name() {
+  case $1 in
+    core-selftest) _rn_v=$(rl_val path "$2") ;;
+    *) _rn_v=$(rl_val base "$2") ;;
+  esac
+  case $_rn_v in
+    /*|*..*) _rn_v=- ;;
+  esac
+  printf '%s' "$_rn_v"
+}
+# rl_bucket <bucket> — the unit's bucket, from a closed list.
+rl_bucket() {
+  case $1 in
+    core-live|core-selftest|core-shellcheck|core-parselint|core-secretscan|core-board|twin|heavy|touched-readers) printf '%s' "$1" ;;
+    *) printf '%s' other ;;
+  esac
+}
+rl_off() { RL_ON=0; note "run log: off — $1"; return 0; }
+# rl_file_ok <path> — rc 0 when the path is absent, or is a regular, non-symlink file owned by the current user (numeric uid, as the lock's own check).
+rl_file_ok() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  [ ! -L "$1" ] && [ -f "$1" ] && hl_owner_ok "$1"
+}
+# rl_init — find and check the state dir with the leaf rules of tr_state (HOME absolute, a plain dir, not group/world-writable, owned by the numeric uid, rwx), and the log and its three
+# rotated files if present (regular, no symlink, ours). Anything else turns the log off with ONE note: unlike tr_refuse it NEVER calls unv.
+rl_init() {
+  RL_ON=0; RL_FILE=""
+  case ${HOME-} in
+    /?*) ;;
+    *) rl_off "HOME is unset or not absolute"; return 0 ;;
+  esac
+  _ri_r=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p) || _ri_r=""
+  case $_ri_r in
+    ''|*[!0-9a-f]*) rl_off "no root commit"; return 0 ;;
+  esac
+  _ri_d=$HOME/.local/state/sparkwright/prepush/$_ri_r
+  if [ ! -e "$_ri_d" ] && [ ! -L "$_ri_d" ]; then
+    ( umask 077; mkdir -p "$_ri_d" ) 2>/dev/null || { rl_off "the state dir cannot be created"; return 0; }
+  fi
+  _ri_l=$(ls -ld "$_ri_d" 2>/dev/null) || { rl_off "the state dir cannot be inspected"; return 0; }
+  case ${_ri_l%% *} in
+    d????[!w]??[!w]*) ;;
+    *) rl_off "the state dir is not a plain directory, or is group/world-writable"; return 0 ;;
+  esac
+  hl_owner_ok "$_ri_d" || { rl_off "the state dir is not owned by the current user"; return 0; }
+  if [ ! -r "$_ri_d" ] || [ ! -w "$_ri_d" ] || [ ! -x "$_ri_d" ]; then rl_off "the state dir is unreadable"; return 0; fi
+  for _ri_s in "" .1 .2 .3; do
+    rl_file_ok "$_ri_d/runs.log$_ri_s" || { rl_off "runs.log$_ri_s is not a regular file of the current user"; return 0; }
+  done
+  RL_FILE=$_ri_d/runs.log; RL_ON=1
+  return 0
+}
+# rl_emit <line> — ONE printf per record; a failure is dropped, never a verdict change (no unv: the log is a measurement, not evidence). The file is re-checked first (a link planted since rl_init).
+rl_emit() {
+  [ "$RL_ON" -eq 1 ] || return 0
+  rl_file_ok "$RL_FILE" || return 0
+  ( umask 077; printf '%s\n' "$1" >> "$RL_FILE" ) 2>/dev/null || :   # RLWRITE
+  return 0
+}
+# rl_rotate — at the cap, runs.log.2 -> .3, .1 -> .2, runs.log -> .1: three files are kept and the oldest is dropped by mv overwrite (the card's own 1 MB cap; every mv best-effort).
+rl_rotate() {
+  [ -f "$RL_FILE" ] || return 0
+  _rr_sz=$(wc -c < "$RL_FILE" 2>/dev/null | tr -d ' ') || _rr_sz=0
+  case $_rr_sz in
+    ''|*[!0-9]*) _rr_sz=0 ;;
+  esac
+  [ "$_rr_sz" -ge "$RL_CAP" ] || return 0
+  mv -f "$RL_FILE.2" "$RL_FILE.3" 2>/dev/null || :   # RLROT
+  mv -f "$RL_FILE.1" "$RL_FILE.2" 2>/dev/null || :   # RLROT
+  mv -f "$RL_FILE" "$RL_FILE.1" 2>/dev/null || :   # RLROT
+  return 0
+}
+# rl_mode — the mode from the parsed flags, never their operands.
+rl_mode() {
+  if [ "$PLAN" -eq 1 ]; then printf '%s' plan; return 0; fi
+  if [ "$WARRANTED" -eq 1 ]; then printf '%s' warranted; return 0; fi
+  case $HEAVY in
+    green-on-clone|exports|slow|non-vacuity) printf '%s' "$HEAVY" ;;
+    *) printf '%s' default ;;
+  esac
+}
+rl_os() {
+  case $(uname -s 2>/dev/null) in
+    Darwin) printf '%s' darwin ;;
+    Linux) printf '%s' linux ;;
+    *) printf '%s' other ;;
+  esac
+}
+# br_norm — stdin: `git diff --raw -z` with its NULs turned into \001 (callers: tr '\0' '\001'), so a newline inside a record stays INSIDE it. The records are read BY POSITION, strictly in
+# pairs (an odd one is the header `:mode mode sha sha S`, an even one the path), never by a leading `:`. Prints `<A|D|M|T><TAB><path>` (a mode change on M reads T). Anything it cannot
+# trust (a record holding a newline, a header of another shape, an odd count) prints `E<TAB>-`, which battery_rule reads as clause e: unknown fires.
+br_norm() {
+  LC_ALL=C awk '
+    BEGIN { RS = "\001" }
+    index($0, "\n") { bad = 1; next }   # RLNL
+    NR % 2 == 1 { if ($0 !~ /^:[0-7]+ [0-7]+ [0-9a-f]+ [0-9a-f]+ [A-Z]$/) { bad = 1; next }
+                  split($0, f, " "); st = f[5]; if (st == "M" && substr(f[1], 2) != f[2]) st = "T"; next }
+    { print st "\t" $0 }
+    END { if (bad || NR % 2) print "E\t-" }'
+}
+# battery_rule — stdin: one `<A|D|M|T><TAB><path>` per line. Prints the clauses of the design's rule (section 3.3, as errata C1 gives it) that would fire, comma-joined in a fixed order, or
+# `none`: (a) .claude/ or hooks/ touched; (b) conformance/agent-autonomy*.sh, labelled partial until P4 names the sourced and fixture paths; (c) an added, deleted or re-moded path under
+# scripts/, conformance/, hooks/ or .claude/; (d) .github/workflows/ or .kit/; (e) an empty listing. It only RECORDS: P0 runs no battery. P4 reuses this one function.
+battery_rule() {
+  LC_ALL=C awk -F'\t' '
+    { n++; st = $1; p = $2
+      if (st == "E") e = 1
+      if (p ~ /^(\.claude|hooks)\//) a = 1
+      if (p ~ /^conformance\/agent-autonomy[a-z0-9._-]*\.sh$/) b = 1
+      if ((st == "A" || st == "D" || st == "T") && p ~ /^(scripts|conformance|hooks|\.claude)\//) c = 1   # RLCC
+      if (p ~ /^(\.github\/workflows|\.kit)\//) d = 1 }
+    END {
+      if (n == 0) e = 1
+      o = ""
+      if (a) o = o ",a"
+      if (b) o = o ",b-partial"
+      if (c) o = o ",c"
+      if (d) o = o ",d"
+      if (e) o = o ",e"
+      print (o == "" ? "none" : substr(o, 2)) }'
+}
+# rl_brule — battery_rule over the run's own listing: the committed delta against the merge-base plus the untracked files (counted as added). No merge-base or listing is clause e.
+rl_brule() {
+  if [ -z "$MB" ] || [ ! -f "$WORK/listing" ]; then printf '%s' e; return 0; fi
+  {
+    git diff -z --raw --no-renames "$MB" HEAD 2>/dev/null | tr '\0' '\001' | br_norm
+    git ls-files -z --others --exclude-standard 2>/dev/null | tr '\0' '\001' |
+      LC_ALL=C awk 'BEGIN { RS = "\001" } index($0, "\n") { e = 1; next } { print "A\t" $0 } END { if (e) print "E\t-" }'
+  } | battery_rule
+}
+# rl_start <ci-file> — the start record, once, after the listing is known. Every value passes rl_val or is a closed enum.
+rl_start() {
+  rl_init
+  [ "$RL_ON" -eq 1 ] || return 0
+  RL_T0=$(date +%s); RL_RUN=$(rl_val num "$RL_T0")-$(rl_val num "$$")
+  RL_U=""; RL_TRUNC=0; RL_ENDED=0; RL_SEEN=""
+  rl_rotate
+  _rl_head=$(rl_val sha "$(git rev-parse HEAD 2>/dev/null || :)")
+  _rl_base=$(rl_val sha "$BASE_SHA")   # RLBASE
+  _rl_row0=$(git log -1 --format='%(trailers:key=Kit-Row,valueonly)' HEAD 2>/dev/null | sed -n 1p) || _rl_row0=""
+  _rl_row=$(rl_val row "$_rl_row0")   # RLROW
+  _rl_lane=$(rl_val num "$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)")   # RLLANE
+  _rl_ci=other; [ "$1" != "$CI_DEFAULT" ] || _rl_ci=default
+  _rl_n=$(rl_val num "$(grep -c '' "$WORK/listing" 2>/dev/null || :)")
+  _rl_j=$(rl_val num "$POOL_J")   # RLJ
+  rl_emit "$(printf 'v1 start run=%s ts=%s head=%s base=%s row=%s mode=%s ci=%s lane=%s os=%s j=%s free_mb=%s floor_mb=%s listing=%s brule=%s' \
+    "$RL_RUN" "$(rl_val num "$RL_T0")" "$_rl_head" "$_rl_base" "$_rl_row" "$(rl_mode)" "$_rl_ci" "$_rl_lane" "$(rl_os)" "$_rl_j" "$(rl_val num "$FREE")" "$(rl_val num "$FLOOR")" "$_rl_n" "$(rl_val brule "$(rl_brule)")")"
+  return 0
+}
+# rl_u <bucket> <name> <verdict> [run] — one unit, called wherever a verdict row is printed. With `run` its secs and sampled RSS are the unit just run's (RUN_S, RUN_RSS), else 0 and `-`.
+# The units pile up in a shell VARIABLE (never a $WORK file: an arm can reach $WORK). A unit past the 16 KB cap is counted in trunc=, not written.
+rl_u() {
+  [ "$RL_ON" -eq 1 ] || return 0
+  _ru_b=$(rl_bucket "$1"); _ru_n=$(rl_name "$1" "$2")
+  case $3 in
+    OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE) _ru_v=$3 ;;
+    *) _ru_v=- ;;
+  esac
+  _ru_s=0; _ru_r=-
+  if [ "${4-}" = run ]; then _ru_s=$(rl_val num "$RUN_S"); _ru_r=$(rl_val num "$RUN_RSS"); fi
+  _ru_k=$_ru_b:$_ru_n
+  _ru_c=$(printf '%s' "$RL_SEEN" | grep -cxF -e "$_ru_k" || :)
+  RL_SEEN="$RL_SEEN$_ru_k$NL"
+  [ "${_ru_c:-0}" -eq 0 ] || _ru_n="$_ru_n#$((_ru_c + 1))"
+  _ru_e=$_ru_b:$_ru_n:$_ru_v:$_ru_s:$_ru_r
+  if [ $(( ${#RL_U} + ${#_ru_e} + 1 )) -gt "$RL_UMAX" ]; then RL_TRUNC=$((RL_TRUNC + 1)); return 0; fi
+  RL_U=${RL_U:+$RL_U,}$_ru_e
+  return 0
+}
+# rl_end <verdict> <rc|-> — the end record, once. verdict() writes it with the word and rc it prints and returns; cleanup writes INTERRUPTED.
+rl_end() {
+  [ "$RL_ON" -eq 1 ] && [ "$RL_ENDED" -eq 0 ] || return 0
+  RL_ENDED=1
+  case $1 in
+    OK|FAIL|UNVERIFIED|PLAN|INTERRUPTED) _re_v=$1 ;;
+    *) _re_v=UNVERIFIED ;;
+  esac
+  case $HL_STATE in
+    held|released) _re_l=held ;;
+    failed) _re_l=failed ;;
+    *) _re_l=none ;;
+  esac
+  _re_now=$(date +%s)
+  _re_t=""; [ "$RL_TRUNC" -eq 0 ] || _re_t=" trunc=$RL_TRUNC"
+  _re_jf=$(rl_val num "$POOL_JF")   # RLJF: the J the run actually used (1 unless the pool ran); POOL_J stays what ri_wd reads
+  rl_emit "$(printf 'v1 end run=%s ts=%s verdict=%s rc=%s wall_s=%s lock=%s lock_wait_s=%s ran=%s fails=%s crash=%s u=%s%s jf=%s race=%s' \
+    "$RL_RUN" "$(rl_val num "$_re_now")" "$_re_v" "$(rl_val num "$2")" "$(rl_val num "$((_re_now - RL_T0))")" "$_re_l" "$(rl_val num "$HL_WAIT_S")" \
+    "$(rl_val num "$RAN")" "$(rl_val num "$FAILS")" "$(rl_val num "$CRASH")" "${RL_U:--}" "$_re_t" "$_re_jf" "$(rl_val num "$RACE_N")")"
+  return 0
+}
+# rl_rss_tick <pgid> — ONE sample of the arm group's summed RSS (`ps -o rss`, KB); the largest is kept in $WORK/ctl/rss.peak. Called by the watchdog's once-a-second tick; best-effort.
+rl_rss_tick() {
+  _rk_c=${U_CTL:-$WORK/ctl}   # SWAS-868: a pooled unit samples into its own control dir
+  [ ! -L "$_rk_c/rss.peak" ] || return 0   # an arm that planted a link here is never read or written through
+  _rk_t=$(ps -A -o pgid= -o rss= 2>/dev/null | LC_ALL=C awk -v g="$1" '$1 == g { s += $2 } END { print s + 0 }') || return 0
+  case $_rk_t in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  _rk_p=0
+  [ ! -f "$_rk_c/rss.peak" ] || _rk_p=$(cat "$_rk_c/rss.peak" 2>/dev/null) || _rk_p=0
+  case $_rk_p in
+    ''|*[!0-9]*) _rk_p=0 ;;
+  esac
+  [ "$_rk_t" -le "$_rk_p" ] || printf '%s\n' "$_rk_t" > "$_rk_c/rss.peak" 2>/dev/null || :
+  return 0
+}
+# rl_rss_read — sets RUN_RSS from the unit's sample file (digits only, at most 12), else `-` (no process group, no sample, or a unit shorter than one tick).
+rl_rss_read() {
+  RUN_RSS=-
+  _rd_c=${U_CTL:-$WORK/ctl}
+  [ -f "$_rd_c/rss.peak" ] && [ ! -L "$_rd_c/rss.peak" ] || return 0
+  _rd_v=$(sed -n 1p "$_rd_c/rss.peak" 2>/dev/null) || _rd_v=""
+  RUN_RSS=$(rl_val num "$_rd_v")
+  return 0
+}
+# ---- --log-report: read-only; executes nothing and makes no network call (no gh, no fetch: local refs only; its git calls run with GIT_NO_LAZY_FETCH=1, which an older git ignores). It never
+# prints a zero for missing data: it prints `unavailable: <why>`. It reads a log only from a state dir that passes rl_init's folder check, and accepts a record only if every value matches the v1 grammar.
+# shellcheck disable=SC2016  # the awk program is DATA: nothing in it may expand in the shell.
+LRPROG='
+function kv(line, a,  n, i, p, t) {
+  split("", a); n = split(line, t, " ")
+  for (i = 3; i <= n; i++) { p = index(t[i], "="); if (p > 1) a[substr(t[i], 1, p - 1)] = substr(t[i], p + 1) }
+  return n }
+function sortn(v, n,  i, j, x) {
+  for (i = 2; i <= n; i++) { x = v[i]; for (j = i - 1; j >= 1 && v[j] > x; j--) v[j + 1] = v[j]; v[j + 1] = x } }
+function pct(v, n, p) { return v[int((p * n + 99) / 100)] }
+function gk(r, kind) { return (kind == 1 ? M[r] : B[r]) }
+function okf(k, re) { return ((k in f) && f[k] ~ re) }
+function oku(s,  m, j, y) {
+  if (s == "-") return 1
+  m = split(s, y, ",")
+  for (j = 1; j <= m; j++) if (y[j] !~ "^[a-z-]+:[-A-Za-z0-9._/#]+:(OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE):[0-9]+:([0-9]+|-)$") return 0
+  return 1 }
+function okstart(n) {
+  return (n == 16 && okf("run", "^[0-9]+-[0-9]+$") && okf("ts", "^[0-9]+$") && okf("head", "^[0-9a-f]+$") && length(f["head"]) == 40 \
+    && okf("base", "^([0-9a-f]+|-)$") && (f["base"] == "-" || length(f["base"]) == 40) && okf("row", "^([A-Z0-9][-A-Z0-9]*|-)$") \
+    && okf("mode", "^(default|warranted|green-on-clone|exports|slow|non-vacuity|plan)$") && okf("ci", "^(default|other)$") && okf("lane", "^[0-9]+$") \
+    && okf("os", "^(darwin|linux|other)$") && okf("j", "^[0-9]+$") && okf("free_mb", "^([0-9]+|-)$") && okf("floor_mb", "^[0-9]+$") \
+    && okf("listing", "^([0-9]+|-)$") && okf("brule", "^[a-z,-]+$")) }
+function okend(n,  e) {
+  e = 13 + (("trunc" in f) ? 1 : 0) + (("race" in f) ? 1 : 0) + (("jf" in f) ? 1 : 0)   # RLOKEND
+  return (n == e && (!("trunc" in f) || okf("trunc", "^[0-9]+$")) && (!("race" in f) || okf("race", "^[0-9]+$")) && (!("jf" in f) || okf("jf", "^[0-9]+$")) && okf("run", "^[0-9]+-[0-9]+$") && okf("ts", "^[0-9]+$") \
+    && okf("verdict", "^(OK|FAIL|UNVERIFIED|PLAN|INTERRUPTED)$") && okf("rc", "^([0-9]+|-)$") && okf("wall_s", "^([0-9]+|-)$") \
+    && okf("lock", "^(held|failed|none)$") && okf("lock_wait_s", "^([0-9]+|-)$") && okf("ran", "^[0-9]+$") && okf("fails", "^[0-9]+$") \
+    && okf("crash", "^[0-9]+$") && ("u" in f) && oku(f["u"])) }
+function grp(label, kind,  r, g, n, G, tmp, any) {
+  split("", G)
+  for (r in E) if ((r in S) && (r in W)) G[gk(r, kind)] = 1
+  any = 0
+  for (g in G) { n = 0; split("", tmp)
+    for (r in E) if ((r in S) && (r in W) && gk(r, kind) == g) tmp[++n] = W[r]
+    sortn(tmp, n); any = 1
+    printf "# wall_s by %s %s: n=%d p50=%d p90=%d [M]\n", label, (g == "" ? "?" : g), n, pct(tmp, n, 50), pct(tmp, n, 90) }
+  if (!any) printf "# wall_s by %s: unavailable: no run has both a start and an end record\n", label }
+{ if ($1 != "v1" || ($2 != "start" && $2 != "end")) { bad++; next }
+  nt = kv($0, f); r = f["run"]
+  if (($2 == "start" && !okstart(nt)) || ($2 == "end" && !okend(nt))) { bad++; next }
+  if ($2 == "start") {
+    if (r in S) { bad++; next }
+    S[r] = 1; starts++; M[r] = f["mode"]; B[r] = (f["brule"] == "none" ? "none" : "any"); next }
+  if (r in E) { bad++; next }
+  E[r] = 1; ends++; V[f["verdict"]]++
+  if (f["wall_s"] ~ /^[0-9]+$/) W[r] = f["wall_s"] + 0
+  if (f["lock_wait_s"] ~ /^[0-9]+$/) { lw += f["lock_wait_s"]; lwn++ }
+  if (f["lock"] == "failed") lf++
+  if (("jf" in f) && f["jf"] + 0 >= 2) pj++
+  if ("race" in f) rcn += f["race"] + 0
+  nu = split(f["u"], U, ",")
+  for (i = 1; i <= nu; i++) {
+    if (split(U[i], x, ":") != 5) continue
+    nm = x[2]; sub("#[0-9]+$", "", nm); k = x[1] ":" nm
+    if (x[5] ~ /^[0-9]+$/ && (!(k in RM) || x[5] + 0 > RM[k])) RM[k] = x[5] + 0 } }
+END {
+  if (starts == 0) { printf "# run log: unavailable: no start record could be read (%d malformed line(s) skipped)\n", bad + 0; exit }
+  inc = 0; for (r in S) if (!(r in E)) inc++
+  printf "# runs: %d started, %d ended, %d incomplete (no end record: killed, or still running); %d malformed line(s) skipped [M]\n", starts, ends + 0, inc, bad + 0
+  vs = ""; for (v in V) vs = vs " " v "=" V[v]
+  if (vs == "") print "# verdicts: unavailable: no run has ended"; else printf "# verdicts:%s\n", vs
+  grp("mode", 1); grp("battery rule", 2)
+  printf "# pool runs [M]: jf >= 2 in %d of %d ended run(s); RACE units %d (a unit that failed in parallel and passed serially)\n", pj + 0, ends + 0, rcn + 0
+  if (lwn == 0) print "# lock wait: unavailable: no run took the heavy-arm lock"
+  else printf "# lock wait: %d s in total over %d run(s) that took the lock; the lock failed in %d run(s) [M]\n", lw, lwn, lf + 0
+  mx = 0; mk = ""; nk = 0
+  for (k in RM) { nk++; if (RM[k] > mx) { mx = RM[k]; mk = k } }
+  if (nk == 0) print "# unit peak RSS: unavailable: no unit carried a sample (a - means no process group, or a unit shorter than one tick)"
+  else {
+    printf "# unit peak RSS [M, sampled]: the arm group summed RSS, sampled once a second; it misses spikes shorter than a tick and descendants that left the group. U = %d KB (%s) over %d unit(s)\n", mx, mk, nk
+    for (t = 1; t <= 5; t++) { bk = ""; bv = -1
+      for (k in RM) if (!(k in P) && RM[k] > bv) { bv = RM[k]; bk = k }
+      if (bk == "") break
+      P[bk] = 1; printf "#   %s %d KB\n", bk, bv } } }'
+# shellcheck disable=SC2016
+LSPROG='
+{ n++
+  if ($0 != "none") any++
+  m = split($0, t, ",")
+  for (i = 1; i <= m; i++) c[t[i]]++ }
+END {
+  printf "# merged-PR share as of local %s %s (n=%d first-parent commit(s) in the last 30 days; a squash merge is assumed to be one PR) [M]:\n", ref, sha, n
+  printf "# guard-touching share (clause a: .claude/ or hooks/ changed): %d/%d [M]\n", c["a"] + 0, n
+  printf "# battery-rule share (any of a-e; clause b is partial until P4 names the sourced and fixture paths): %d/%d [M]\n", any + 0, n
+  printf "# per clause: a=%d b-partial=%d c=%d d=%d e=%d\n", c["a"] + 0, c["b-partial"] + 0, c["c"] + 0, c["d"] + 0, c["e"] + 0 }'
+# lr_runs — the log's own numbers, from runs.log and its rotated files (oldest first). A malformed or repeated line is skipped and counted, never trusted.
+lr_runs() {
+  case ${HOME-} in
+    /?*) ;;
+    *) note "run log: unavailable: HOME is unset or not absolute"; return 0 ;;
+  esac
+  _lr_r=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p) || _lr_r=""
+  case $_lr_r in
+    ''|*[!0-9a-f]*) note "run log: unavailable: no root commit"; return 0 ;;
+  esac
+  _lr_d=$HOME/.local/state/sparkwright/prepush/$_lr_r
+  if [ -L "$_lr_d" ] || [ ! -d "$_lr_d" ] || ! hl_owner_ok "$_lr_d"; then
+    note "run log: unavailable: no run log yet for this repository (each pre-push run writes one)"; return 0
+  fi
+  _lr_l=$(ls -ld "$_lr_d" 2>/dev/null) || _lr_l=""
+  case ${_lr_l%% *} in
+    d????[!w]??[!w]*) ;;
+    *) note "run log: unavailable: the state dir is not a plain directory, or is group/world-writable"; return 0 ;;
+  esac
+  set --
+  for _lr_s in .3 .2 .1 ""; do
+    if [ -f "$_lr_d/runs.log$_lr_s" ] && rl_file_ok "$_lr_d/runs.log$_lr_s"; then
+      [ -r "$_lr_d/runs.log$_lr_s" ] || { note "run log: unavailable: a log file cannot be read"; return 0; }
+      set -- "$@" "$_lr_d/runs.log$_lr_s"
+    fi
+  done
+  if [ "$#" -eq 0 ]; then note "run log: unavailable: no readable runs.log in the state dir"; return 0; fi
+  LC_ALL=C awk "$LRPROG" "$@"
+}
+# lr_poolk — SWAS-868: `@pool-k units: <N>`, the @pool-k rows in the times table (the units the pool has sent back to serial). Read only by --log-report, never by a run. A missing table, or one that fails tr_state's safety check, is
+# `unavailable: <why>`, never 0; an existing table with no @pool-k row is 0. A row whose blob is not 40 or 64 hex digits is skipped, and a key counts once.
+lr_poolk() {
+  case ${HOME-} in
+    /?*) ;;
+    *) note "@pool-k units: unavailable: HOME is unset or not absolute"; return 0 ;;
+  esac
+  _lp_r=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p) || _lp_r=""
+  case $_lp_r in
+    ''|*[!0-9a-f]*) note "@pool-k units: unavailable: no root commit"; return 0 ;;
+  esac
+  _lp_d=$HOME/.local/state/sparkwright/prepush/$_lp_r
+  if [ -L "$_lp_d" ] || [ ! -d "$_lp_d" ] || ! hl_owner_ok "$_lp_d"; then note "@pool-k units: unavailable: no state dir for this repository yet"; return 0; fi
+  _lp_l=$(ls -ld "$_lp_d" 2>/dev/null) || _lp_l=""
+  case ${_lp_l%% *} in
+    d????[!w]??[!w]*) ;;
+    *) note "@pool-k units: unavailable: the state dir is not a plain directory, or is group/world-writable"; return 0 ;;
+  esac
+  if [ ! -e "$_lp_d/times.tsv" ] && [ ! -L "$_lp_d/times.tsv" ]; then note "@pool-k units: unavailable: no times table yet"; return 0; fi
+  if [ ! -f "$_lp_d/times.tsv" ] || [ -L "$_lp_d/times.tsv" ] || [ ! -r "$_lp_d/times.tsv" ]; then note "@pool-k units: unavailable: times.tsv is not a readable regular file"; return 0; fi
+  _lp_n=$(LC_ALL=C awk -F'\t' '$1 == "@pool-k" && $2 != "" && $3 ~ /^[0-9a-f]+$/ && (length($3) == 40 || length($3) == 64) { k[$2] = 1 } END { n = 0; for (x in k) n++; print n }' "$_lp_d/times.tsv" 2>/dev/null) || _lp_n=""   # RLPKN
+  case $_lp_n in
+    ''|*[!0-9]*) note "@pool-k units: unavailable: the times table cannot be read"; return 0 ;;
+  esac
+  note "@pool-k units: $_lp_n"   # RLPK
+}
+# lr_share — the guard-touching and battery-rule shares over the first-parent history of the local base ref for the last 30 days (one squash merge is assumed to be one PR).
+lr_share() {
+  # no lazy fetch from a partial clone's promisor remote: this report makes no network call (an older git ignores GIT_NO_LAZY_FETCH, so there the guarantee is the report's own commands only)
+  GIT_NO_LAZY_FETCH=1; export GIT_NO_LAZY_FETCH
+  _ls_s=$(git rev-parse --verify --end-of-options "$BASE^{commit}" 2>/dev/null) || {
+    note "merged-PR share: unavailable: $BASE does not resolve to a commit locally (this report fetches nothing)"
+    return 0
+  }
+  _ls_l=$(git rev-list --first-parent --since='30 days ago' "$_ls_s" 2>/dev/null) || _ls_l=""
+  if [ -z "$_ls_l" ]; then
+    note "merged-PR share: unavailable: no first-parent commit in the last 30 days at local $BASE"
+    return 0
+  fi
+  printf '%s\n' "$_ls_l" | while IFS= read -r _ls_c; do
+    git diff-tree -r --raw --no-renames --no-commit-id --root -z -m "$_ls_c" 2>/dev/null | tr '\0' '\001' | br_norm | battery_rule
+  done | LC_ALL=C awk -v ref="$BASE" -v sha="$(printf '%s' "$_ls_s" | cut -c1-12)" "$LSPROG"
+}
+log_report() {
+  case $BASE in
+    -*|*..*) die2 "--base may not start with a dash or contain '..': $BASE" ;;
+  esac
+  base_ok "$BASE" || die2 "--base outside the closed charset [A-Za-z0-9._/-]+: $BASE"
+  note "prepush run log: a measurement cache, declared by the lane, never evidence (per-user and forgeable; a record proves nothing ran). This report executes nothing and makes no network call."
+  lr_runs
+  lr_poolk
+  lr_share
   return 0
 }
 
@@ -1060,11 +1568,11 @@ arm_kill() {
   return 1
 }
 # arm_group_alive <pgid> — a group with live members, after the leader has been reaped and no ceiling kill ran.
-arm_group_alive() { [ ! -e "$WORK/ctl/wd.fired" ] && kill -s 0 -- "-$1" 2>/dev/null; }
+arm_group_alive() { [ ! -e "${U_CTL:-$WORK/ctl}/wd.fired" ] && kill -s 0 -- "-$1" 2>/dev/null; }
 # arm_note_apply <ceiling|left> <label> — print and apply the note file run_timed wrote: a NOTE line, UNV on a refusal or an unconfirmed kill,
 # and (ceiling) the text report_inv appends to the FAIL line in ARM_CEIL_TXT.
 arm_note_apply() {
-  _an_f=$WORK/ctl/kill.note; [ "$1" != left ] || _an_f=$WORK/ctl/left.note
+  _an_f=${U_CTL:-$WORK/ctl}/kill.note; [ "$1" != left ] || _an_f=${U_CTL:-$WORK/ctl}/left.note
   _an_lb=$2
   if [ -L "$_an_f" ]; then   # a state file that is a symlink is never read
     note "NOTE: $_an_lb: a kill-state file is a symlink and was not read; the arm's tree is NOT contained"
@@ -1112,6 +1620,7 @@ arm_trap_kill() {
   fi
   arm_pid_term "$(arm_read_pgid "$WORK/ctl/wd.pid" 2>/dev/null)"   # the watchdog, by the pid run_timed recorded
   arm_pid_term "$SR_PID"
+  pool_trap_kill   # PLTRAP
   return 0
 }
 # arm_descends <pid> — rc 0 iff the pid is a descendant of the lane ($$) in the CURRENT process table (ppid chain, bounded).
@@ -1123,38 +1632,42 @@ arm_descends() {
 arm_pid_term() { case ${1-} in ''|*[!0-9]*) return 0 ;; esac; [ "$1" -gt 1 ] || return 0; kill -s TERM "$1" 2>/dev/null || :; }
 # run_timed <ceiling> <argv…> — runs the argv as an ARM in its own process group (perl setpgrp, then exec) under a watchdog. Two background jobs
 # live here, and the header's "the only `&`" claim names them (reviewer M-1): the arm, and the watchdog. The `wait` keeps execution strictly serial.
-# On expiry the watchdog writes $WORK/wd.fired and runs arm_kill (TERM+CONT, grace, re-snapshot, KILL, confirm); the parent then WAITS for it
+# On expiry the watchdog writes $WORK/ctl/wd.fired and runs arm_kill (TERM+CONT, grace, re-snapshot, KILL, confirm); the parent then WAITS for it
 # (a parent that cut the grace short would never let the KILL fire). After a NORMAL exit a group that still has members is killed the same way.
 # No perl: today's direct-child watchdog (TERM, 5 s, KILL), the group acts disabled, and the FAIL line says "tree NOT contained".
 run_timed() {
   _tc=$1; shift
-  rm -f "$WORK/ctl/wd.fired" "$WORK/ctl/kill.note" "$WORK/ctl/left.note" "$WORK/ctl/arm.pgid" "$WORK/ctl/wd.pid"
+  _rtc=${U_CTL:-$WORK/ctl}   # PLCTL
+  rm -f "$_rtc/wd.fired" "$_rtc/kill.note" "$_rtc/left.note" "$_rtc/arm.pgid" "$_rtc/wd.pid"
+  rm -f "$_rtc/rss.peak"
   _grp=0; ! arm_perl_ok || _grp=1; _lpid=$$
   # The program resets INT and QUIT (a background job starts with them IGNORED, and exec keeps that), then makes the group and execs the argv.
   if [ "$_grp" -eq 1 ]; then
     "$ARM_PERL" -e '$SIG{INT}=$SIG{QUIT}="DEFAULT"; setpgrp(0,0) or exit 125; exec {$ARGV[0]} @ARGV or exit 126' -- "$@" & _pid=$!
-    printf '%s\n' "$_pid" > "$WORK/ctl/arm.pgid"
+    printf '%s\n' "$_pid" > "$_rtc/arm.pgid"
   else "$@" & _pid=$!; fi
   ( _i=0
     while [ "$_i" -lt "$_tc" ]; do
       sleep 1; kill -0 "$_pid" 2>/dev/null || exit 0
       kill -0 "$_lpid" 2>/dev/null || { arm_orphaned "$_grp" "$_pid"; exit 0; }
+      # SWAS-568: the ceiling counts loop passes, not wall time, so each sample (one ps) stretches every ceiling by about 1-5% [E]; the loop is not changed for it.
+      [ "$_grp" -ne 1 ] || rl_rss_tick "$_pid"   # RLRSS
       _i=$((_i+1))
     done
-    : > "$WORK/ctl/wd.fired"
-    if [ "$_grp" -eq 1 ]; then ARM_NOTE=$WORK/ctl/kill.note arm_kill "$_pid" leader || :
-    else printf 'NOGROUP\n' > "$WORK/ctl/kill.note"; kill -TERM "$_pid" 2>/dev/null || :; sleep 5; kill -KILL "$_pid" 2>/dev/null || :; fi ) & _wd=$!
-  printf '%s\n' "$_wd" > "$WORK/ctl/wd.pid"
+    : > "$_rtc/wd.fired"
+    if [ "$_grp" -eq 1 ]; then ARM_NOTE=$_rtc/kill.note arm_kill "$_pid" leader || :
+    else printf 'NOGROUP\n' > "$_rtc/kill.note"; kill -TERM "$_pid" 2>/dev/null || :; sleep 5; kill -KILL "$_pid" 2>/dev/null || :; fi ) & _wd=$!
+  printf '%s\n' "$_wd" > "$_rtc/wd.pid"
   _rc=0; wait "$_pid" || _rc=$?
-  if [ -e "$WORK/ctl/wd.fired" ]; then wait "$_wd" || :
+  if [ -e "$_rtc/wd.fired" ]; then wait "$_wd" || :
   else kill -TERM "$_wd" 2>/dev/null || :; wait "$_wd" 2>/dev/null || :; fi   # reaped here: bash would otherwise print "Terminated" into the arm's output
-  if [ "$_grp" -eq 1 ] && arm_group_alive "$_pid"; then ARM_NOTE=$WORK/ctl/left.note arm_kill "$_pid" || :; fi
-  rm -f "$WORK/ctl/arm.pgid" "$WORK/ctl/wd.pid"
+  if [ "$_grp" -eq 1 ] && arm_group_alive "$_pid"; then ARM_NOTE=$_rtc/left.note arm_kill "$_pid" || :; fi
+  rm -f "$_rtc/arm.pgid" "$_rtc/wd.pid"
   return "$_rc"
 }
 # arm_orphaned <grouped 0|1> <arm pid> — the lane died (SIGKILL cannot be trapped) while the arm ran: the watchdog, still alive, kills the arm.
 arm_orphaned() {
-  if [ "$1" -eq 1 ]; then ARM_NOTE=$WORK/ctl/kill.note arm_kill "$2" leader || :; else kill -TERM "$2" 2>/dev/null || :; fi
+  if [ "$1" -eq 1 ]; then ARM_NOTE=${U_CTL:-$WORK/ctl}/kill.note arm_kill "$2" leader || :; else kill -TERM "$2" 2>/dev/null || :; fi
 }
 # qtok <token> — the executed-argv log is an EVIDENCE artifact, so it must stay unambiguous even if
 # the grammar's charset ever widens (reviewer M-6): a token outside the closed charset is printed in
@@ -1167,14 +1680,23 @@ qtok() { case $1 in *[!A-Za-z0-9._/=-]*|'') printf "'%s'" "$(printf '%s' "$1" | 
 # subshell with the shim first on PATH and stdin closed. Sets RUN_RC / RUN_S; output in $WORK/out.
 run_inv() {
   _cl=$1; shift
-  _al=""; for _t in "$@"; do _al="$_al $(qtok "$_t")"; done
-  printf '%s\n' "${_al# }" >> "$ARGVLOG"
+  inv_log "$@"
   _t0=$(date +%s); RUN_RC=0; ARM_CEIL_TXT=""
   if [ "$RUN_SPLIT" -eq 1 ]; then   # SWAS-163: a board-bound twin keeps stderr apart (hooks/pre-push's discriminant reads stderr alone)
-    run_bg "$_cl" "$@" > "$WORK/out" 2> "$WORK/err" < /dev/null || RUN_RC=$?
-    cat "$WORK/err" >> "$WORK/out"   # CRSPLIT
-  else run_bg "$_cl" "$@" > "$WORK/out" 2>&1 < /dev/null || RUN_RC=$?; fi
+    run_bg "$_cl" "$@" > "${U_OUT:-$WORK/out}" 2> "$WORK/err" < /dev/null || RUN_RC=$?
+    cat "$WORK/err" >> "${U_OUT:-$WORK/out}"   # CRSPLIT
+  else run_bg "$_cl" "$@" > "${U_OUT:-$WORK/out}" 2>&1 < /dev/null || RUN_RC=$?; fi
   RUN_S=$(( $(date +%s) - _t0 ))
+  inv_finish
+}
+# inv_log <argv...> — sets _al (the argv, one quoted token each) and appends it to the executed-argv log (SWAS-868: split out of run_inv, the pool logs at dispatch).
+inv_log() {
+  _al=""; for _t in "$@"; do _al="$_al $(qtok "$_t")"; done
+  printf '%s\n' "${_al# }" >> "$ARGVLOG"
+}
+# inv_finish — what follows a run: the sampled RSS and the kill notes (the pool calls it at the unit's reap, with _al, RUN_RC and RUN_S set).
+inv_finish() {
+  rl_rss_read   # SWAS-568: the sampled peak RSS of this unit's arm group, for the run log
   arm_note_apply ceiling "${_al# }"; arm_note_apply left "${_al# }"
 }
 # run_bg — scrubbed_run as the lane's one background job, and a `wait` on it (SWAS-428, design item B1): a shell runs a trap only BETWEEN foreground
@@ -1194,10 +1716,10 @@ scrubbed_run() {
     unset_pfx JIRA_   # SWAS-186: the tracker-contract twin's legacy credential pair (JIRA_EMAIL/JIRA_TOKEN); nothing else needs a JIRA_ name
     unset SSH_AUTH_SOCK SSH_ASKPASS BASH_ENV ENV CDPATH NODE_OPTIONS PYTHONPATH PERL5OPT PERL5LIB PERLLIB PERL_USE_UNSAFE_INC RUBYOPT \
           HERMETIC_BASE IFS 2>/dev/null || :
-    HOME=$WORK/empty; GH_CONFIG_DIR=$WORK/gh; TMPDIR=$WORK/tmp; LC_ALL=C   # SWAS-428: an arm's TMPDIR is NOT the work root, so it never sees $WORK/ctl
-    GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null
+    HOME=${UNIT_DIR:-$WORK}/empty; GH_CONFIG_DIR=${UNIT_DIR:-$WORK}/gh; TMPDIR=${UNIT_DIR:-$WORK}/tmp; LC_ALL=C   # SWAS-428: an arm's TMPDIR is not the work root itself; `$TMPDIR/..` still reaches `$WORK/ctl`, so nothing there is trusted alone (see STCEIL). SWAS-868: a pooled unit's dirs are its own
+    GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null; GIT_OPTIONAL_LOCKS=0   # PL4: after unset_pfx GIT_, so it survives it; an optional index refresh never writes under a co-runner
     [ -z "$SHIMDIR" ] || PATH=$SHIMDIR:$PATH
-    export HOME GH_CONFIG_DIR TMPDIR LC_ALL GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM PATH
+    export HOME GH_CONFIG_DIR TMPDIR LC_ALL GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_OPTIONAL_LOCKS PATH
     [ -z "$_kgl" ] || { KIT_GUARD_LOG=$_kgl; export KIT_GUARD_LOG; }
     [ -z "$_hb" ] || { HERMETIC_BASE=$_hb; export HERMETIC_BASE; }
     run_timed "$_cl" "$@"
@@ -1227,15 +1749,15 @@ crash_line_in() {
   _cl_d='^[[:space:]]*'$_cl_s'(: [0-9]+)?( \(core dumped\))?[[:space:]]*$'
   _cl_b='^'$_cl_pre': line [0-9]+: +[0-9]+ '$_cl_s'(: [0-9]+)?( +\(core dumped\))?( .*)?$'   # CRBASH
   # a failed redirect must never read as "no hit" (bash 3.2 gives rc 1 for it)
-  ( : > "$WORK/crash.hit" ) 2>/dev/null || return 2   # CRHIT
+  ( : > "${U_CRASH:-$WORK/crash.hit}" ) 2>/dev/null || return 2   # CRHIT
   _cl_r=0
-  LC_ALL=C grep -E -e "$_cl_d" -e "$_cl_b" "$1" > "$WORK/crash.hit" 2>/dev/null || _cl_r=$?   # CRLINE
+  LC_ALL=C grep -E -e "$_cl_d" -e "$_cl_b" "$1" > "${U_CRASH:-$WORK/crash.hit}" 2>/dev/null || _cl_r=$?   # CRLINE
   case $_cl_r in
     0) ;;
     1) return 1 ;;
     *) return 2 ;;   # CRFAIL
   esac
-  CRASH_LINE=$(sed -n 1p "$WORK/crash.hit") || return 2
+  CRASH_LINE=$(sed -n 1p "${U_CRASH:-$WORK/crash.hit}") || return 2
   for _cl_n in 'Segmentation fault' 'Bus error' 'Illegal instruction' 'Abort trap' 'Aborted' 'Floating point exception' 'Bad system call' 'Trace/BPT trap' 'Trace/breakpoint trap'; do
     case $CRASH_LINE in
       *"$_cl_n"*) CRASH_TXT=$_cl_n; break ;;
@@ -1247,7 +1769,7 @@ crash_line_in() {
 crash_ev_run() {
   CRASH_EV=""; CRASH_BYLINE=0
   if _ce_s=$(crash_sig_of "$RUN_RC"); then CRASH_EV="$_ce_s, rc $RUN_RC"; return 0; fi   # CRRC
-  _ce_r=0; crash_line_in "$WORK/out" || _ce_r=$?   # CRLINE2
+  _ce_r=0; crash_line_in "${U_OUT:-$WORK/out}" || _ce_r=$?   # CRLINE2
   case $_ce_r in
     0) CRASH_EV="$CRASH_TXT line"; CRASH_BYLINE=1; return 0 ;;
     1) return 1 ;;
@@ -1256,50 +1778,74 @@ crash_ev_run() {
 }
 # report_inv <bucket> <label> <expect-rc> <ceiling> — one line per invocation; a failing invocation's
 # output is printed IN FULL (never tail'd), indented so it can never be mistaken for a report line.
-report_inv() {
-  RAN=$((RAN+1))
+report_inv() { ri_decide "$@"; ri_record "$@"; }
+# SWAS-868: report_inv is split into the DECISION (ri_decide: no output, no counter, no log) and the RECORD (ri_record). The pool decides a unit at its reap and records in queue order; the serial paths call both in a row.
+# ri_wd — at J >= 2 a ceiling reading also needs the watchdog's own marker (P-1): a fast rc 124 under a late clock is no kill. At J = 1 nothing is added.
+ri_wd() { [ "$POOL_J" -lt 2 ] || { [ "$POOL_LATE" -eq 0 ] && [ -e "${U_CTL:-$WORK/ctl}/wd.fired" ]; }; }   # PLWD
+# ri_decide <bucket> <label> <expect-rc> <ceiling> — sets RI_KIND (crash|ok|unvsec|ceil|fail) and what the row needs (RI_C, RI_NM, RI_RX, RI_CX, CRASH_EV, CRASH_BYLINE).
+ri_decide() {
+  RI_KIND=""; RI_C=1; RI_NM=${2% }; RI_RX=""; RI_CX=""
   # SWAS-600: a crashed process is not a verdict. The ceiling test is computed first (its row stays a FAIL); otherwise the crash branch runs BEFORE the early OK return and before FAILS++.
   _ri_ceil=0
   case $RUN_RC in
-    124|137|143) [ "$RUN_S" -lt "$4" ] || _ri_ceil=1 ;;
+    124|137|143) [ "$RUN_S" -lt "$4" ] || ! ri_wd || _ri_ceil=1 ;;
   esac
   if [ "$_ri_ceil" -eq 0 ]; then
-    _ri_c=0; crash_ev_run || _ri_c=$?
-    if [ "$_ri_c" -ne 1 ]; then
-      _ri_nm=${2% }; _ri_rx=""
+    RI_C=0; crash_ev_run || RI_C=$?
+    if [ "$RI_C" -ne 1 ]; then
+      RI_KIND=crash
       # line-only evidence does not name the unit's own exit status, so a status that is not the expected one is named beside it
-      if [ "$_ri_c" -eq 0 ] && [ "$CRASH_BYLINE" -eq 1 ] && [ "$RUN_RC" -ne "$3" ]; then _ri_rx="; unit rc=$RUN_RC, expected $3"; _ri_nm="$_ri_nm [rc $RUN_RC]"; fi   # CRRCX
-      if [ "$_ri_c" -eq 0 ]; then
-        printf '  UNVERIFIED  %-12s %-46s crashed (%s): a crashed process is not a verdict%s\n' "$1" "$2" "$CRASH_EV" "$_ri_rx"   # CRROW
-      else
-        printf '  UNVERIFIED  %-12s %-46s crash scan could not run: no verdict is claimed\n' "$1" "$2"
-        _ri_nm="$_ri_nm [scan failed]"
-      fi
-      CRASH=$((CRASH+1)); CRASH_LIST="${CRASH_LIST:+$CRASH_LIST, }$_ri_nm"   # CRCOUNT
-      LC_ALL=C sed 's/^/        | /' "$WORK/out" 2>/dev/null || cat "$WORK/out" || :
+      if [ "$RI_C" -eq 0 ] && [ "$CRASH_BYLINE" -eq 1 ] && [ "$RUN_RC" -ne "$3" ]; then RI_RX="; unit rc=$RUN_RC, expected $3"; RI_NM="$RI_NM [rc $RUN_RC]"; fi   # CRRCX
+      [ "$RI_C" -eq 0 ] || RI_NM="$RI_NM [scan failed]"
       return 0
     fi
   fi
-  if [ "$RUN_RC" -eq "$3" ]; then printf '  OK    %-18s %-46s %4ss\n' "$1" "$2" "$RUN_S"; return 0; fi
+  if [ "$RUN_RC" -eq "$3" ]; then RI_KIND=ok; return 0; fi
   # UNVERIFIED (rc 2 from the secret-scan range arm = gitleaks absent): the scan did NOT run, which is not a
   # FAIL and never an OK. It sets the lane's UNV, so the verdict is UNVERIFIED and the rc non-zero.
-  if [ "$RUN_RC" -eq 2 ] && [ "$1" = core-secretscan ]; then
-    printf '  UNVERIFIED  %-12s %-46s\n' "$1" "$2"; unv "secret-scan did not run: gitleaks absent or the scan could not run (UNVERIFIED; install gitleaks, CI runs the pinned scan)"
-    LC_ALL=C sed 's/^/        | /' "$WORK/out" 2>/dev/null || :; return 0
+  if [ "$RUN_RC" -eq 2 ] && [ "$1" = core-secretscan ]; then RI_KIND=unvsec; return 0; fi
+  RI_KIND=fail
+  if [ "$_ri_ceil" -eq 1 ]; then
+    RI_KIND=ceil; _ri_cr=0; crash_line_in "${U_OUT:-$WORK/out}" || _ri_cr=$?
+    [ "$_ri_cr" -ne 0 ] || RI_CX="; crash line also present ($CRASH_TXT)"   # SWAS-600: the row stays a FAIL (FAILS, not CRASH) and names the crash beside it
   fi
-  FAILS=$((FAILS+1))
-  case $RUN_RC in
-    124|137|143) [ "$RUN_S" -lt "$4" ] || {
-        _rm='raise PREPUSH_CEILING_S'; [ "$1" != heavy ] || _rm='add a heavy row with the measured budget or raise the ceiling'
-        _ri_cx=""; _ri_cr=0; crash_line_in "$WORK/out" || _ri_cr=$?
-        [ "$_ri_cr" -ne 0 ] || _ri_cx="; crash line also present ($CRASH_TXT)"   # SWAS-600: the row stays a FAIL (FAILS, not CRASH) and names the crash beside it
-        printf '  FAIL  %-18s %-46s %4ss  exceeded ceiling — %s%s%s\n' "$1" "$2" "$RUN_S" "$_rm" "${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}" "$_ri_cx"; return 0; } ;;
+  return 0
+}
+# ri_record <bucket> <label> <expect-rc> <ceiling> — the row, the counters and the log line for the decision ri_decide just made (or the pool restored).
+ri_record() {
+  RAN=$((RAN+1))
+  case $RI_KIND in
+    crash)
+      if [ "$RI_C" -eq 0 ]; then
+        printf '  UNVERIFIED  %-12s %-46s crashed (%s): a crashed process is not a verdict%s\n' "$1" "$2" "$CRASH_EV" "$RI_RX"   # CRROW
+      else
+        printf '  UNVERIFIED  %-12s %-46s crash scan could not run: no verdict is claimed\n' "$1" "$2"
+      fi
+      CRASH=$((CRASH+1)); CRASH_LIST="${CRASH_LIST:+$CRASH_LIST, }$RI_NM"   # CRCOUNT
+      rl_u "$1" "${2%% *}" CRASH run   # RLRI
+      LC_ALL=C sed 's/^/        | /' "${U_OUT:-$WORK/out}" 2>/dev/null || cat "${U_OUT:-$WORK/out}" || :
+      return 0 ;;
+    ok)
+      printf '  OK    %-18s %-46s %4ss\n' "$1" "$2" "$RUN_S"
+      rl_u "$1" "${2%% *}" "$RI_OKV" run   # RLRI
+      return 0 ;;
+    unvsec)
+      printf '  UNVERIFIED  %-12s %-46s\n' "$1" "$2"; unv "secret-scan did not run: gitleaks absent or the scan could not run (UNVERIFIED; install gitleaks, CI runs the pinned scan)"
+      rl_u "$1" "${2%% *}" UNV run   # RLRI
+      LC_ALL=C sed 's/^/        | /' "${U_OUT:-$WORK/out}" 2>/dev/null || :; return 0 ;;
+    ceil)
+      FAILS=$((FAILS+1))
+      _rm='raise PREPUSH_CEILING_S'; [ "$1" != heavy ] || _rm='add a heavy row with the measured budget or raise the ceiling'
+      rl_u "$1" "${2%% *}" FAIL run   # RLRI
+      printf '  FAIL  %-18s %-46s %4ss  exceeded ceiling — %s%s%s\n' "$1" "$2" "$RUN_S" "$_rm" "${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}" "$RI_CX"; return 0 ;;
   esac
+  FAILS=$((FAILS+1))
   printf '  FAIL  %-18s %-46s %4ss  rc=%s (expected %s)\n' "$1" "$2" "$RUN_S" "$RUN_RC" "$3"
+  rl_u "$1" "${2%% *}" FAIL run   # RLRI
   # A check's output is ARBITRARY BYTES. Under a UTF-8 locale `sed` refuses (or, on macOS, ABORTS) on
   # an illegal sequence — found by the first live run, which died before its verdict. Byte semantics,
   # and a raw fallback: no report FORMATTING failure may ever cost the run its verdict line.
-  LC_ALL=C sed 's/^/        | /' "$WORK/out" 2>/dev/null || cat "$WORK/out" || :
+  LC_ALL=C sed 's/^/        | /' "${U_OUT:-$WORK/out}" 2>/dev/null || cat "${U_OUT:-$WORK/out}" || :
 }
 # exec_check <bucket> <basename> <argv-string> <expect-rc> <ceiling> — the ONE path that turns a
 # derived line into an argv: word-split under `set -f` into POSITIONAL PARAMETERS, never a string.
@@ -1313,31 +1859,38 @@ exec_check() {
   report_inv "$_bk" "$_b $_as" "$_x" "$_cl"
 }
 
-# local_defer_scan — sets SELF_NE/SELF_NE_LIST from the LISTING (exact whole-line match per listed entry), and writes the OTHER touched
-# hermetic-roster targets (selftest-hermetic's own roster rule: conformance/*.sh scripts/*.sh hooks/pre-push whose comment-stripped text
-# names --selftest; a closed path charset so they can become argv) to $WORK/herm.targets. Empty unless a listed target is touched.
-local_defer_scan() {
-  SELF_NE=0; SELF_NE_LIST=""; : > "$WORK/herm.targets"
-  for _e in $LOCAL_DEFER_SELFTESTS; do
-    grep -qxF -e "$_e" "$WORK/listing" 2>/dev/null || continue
-    SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="${SELF_NE_LIST:+$SELF_NE_LIST, }$_e"
-  done
-  [ "$SELF_NE" -gt 0 ] || return 0
-  while IFS= read -r _f; do
-    case $_f in
-      */*/*) continue ;;
+# touched_roster — the ONE roster rule within the lane (SWAS-811): selftest-hermetic's own (conformance/*.sh scripts/*.sh hooks/pre-push whose comment-stripped text
+# names --selftest), applied to the LISTING and written to $WORK/q.troster, one path per line. A name that cannot become argv is kept: local_defer_scan names it.
+touched_roster() {
+  : > "$WORK/q.troster"
+  while IFS= read -r _st_f; do
+    case $_st_f in
+      */*/*) continue ;;   # STNEST
       */.*) continue ;;   # the roster's own glob never matches a dot-file
       conformance/*.sh|scripts/*.sh|hooks/pre-push) ;;
       *) continue ;;
     esac
-    case " $LOCAL_DEFER_SELFTESTS " in *" $_f "*) continue ;; esac
-    [ -f "$_f" ] || continue
-    sed 's/#.*//' "$_f" | grep -q -e '--selftest' || continue
-    # a roster target whose name cannot become argv is NOT dropped silently: the clause names it as CI-bound (never claimed as run)
-    case $_f in *[!A-Za-z0-9._/-]*)
-      SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="$SELF_NE_LIST, $_f (name outside the argv charset; CI binds it)"; continue ;; esac
-    printf '%s\n' "$_f" >> "$WORK/herm.targets"
+    [ -f "$_st_f" ] || continue
+    sed 's/#.*//' "$_st_f" | grep -q -e '--selftest' || continue   # STCOMM
+    printf '%s\n' "$_st_f" >> "$WORK/q.troster"
   done < "$WORK/listing"
+}
+# local_defer_scan — sets SELF_NE/SELF_NE_LIST from the LISTING (exact whole-line match per listed entry), and writes the OTHER touched roster targets (a closed path
+# charset, so they can become argv) to $WORK/herm.targets.
+local_defer_scan() {
+  SELF_NE=0; SELF_NE_LIST=""; : > "$WORK/herm.targets"
+  for _e in $LOCAL_DEFER_SELFTESTS; do
+    grep -qxF -e "$_e" "$WORK/listing" 2>/dev/null || continue
+    SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="${SELF_NE_LIST:+$SELF_NE_LIST, }$_e"; rl_u core-selftest "$_e" CIB
+  done
+  touched_roster
+  while IFS= read -r _st_f; do
+    case " $LOCAL_DEFER_SELFTESTS " in *" $_st_f "*) continue ;; esac   # STDEFER
+    # a roster target whose name cannot become argv is NOT dropped silently: the clause names it as CI-bound (never claimed as run)
+    case $_st_f in *[!A-Za-z0-9._/-]*)   # STCHARSET
+      SELF_NE=$((SELF_NE+1)); SELF_NE_LIST="${SELF_NE_LIST:+$SELF_NE_LIST, }$(printf '%s' "$_st_f" | LC_ALL=C tr -c '[:print:]' '?') (name outside the argv charset; CI binds it)"; rl_u core-selftest "$_st_f" CIB; continue ;; esac
+    printf '%s\n' "$_st_f" >> "$WORK/herm.targets"
+  done < "$WORK/q.troster"
 }
 
 # excl_check — selftest-hermetic validates conformance/hermetic-exclusions.txt on every call (reviewer 3: an exclusions-only diff must not
@@ -1352,9 +1905,567 @@ excl_check() {
     if [ "$_xr" = "$_xl" ] || [ -z "$_xr" ]; then
       RAN=$((RAN+1)); FAILS=$((FAILS+1))
       printf '  FAIL  %-18s %s\n' core-selftest "conformance/hermetic-exclusions.txt entry '$_xl' carries no <TAB>reason — an unreasoned exclusion is a silent bypass"
+      rl_u core-selftest conformance/hermetic-exclusions.txt FAIL
       return 0
     fi
   done < conformance/hermetic-exclusions.txt
+}
+
+# ---- SWAS-811: the touched selftests, one hermetic call per target, bounded by the runaway ceiling (ST_CEIL, SWAS-840), never silent -----------------------------------------------------------
+# st_blob <path> — the blob sha of the target's bytes AS HEAD HAS THEM (face (b) grades HEAD): the key of its recorded time, never its path (an edited script is unmeasured
+# again). Empty when HEAD has no such blob; the caller then treats the target as unmeasured and records nothing.
+st_blob() { git rev-parse --verify -q "HEAD:$1" 2>/dev/null || :; }   # STBLOB
+# st_okn <n> — rc 0 iff <n> is a plain number a time row may hold: 0, or 1-7 digits with no leading zero. Anything else is no time at all.
+st_okn() { printf '%s\n' "$1" | grep -qxE '0|[1-9][0-9]{0,6}'; }   # STOKN
+# st_look <blob> — sets _st_ms/_st_s/_st_kc from the times state: a measured row (`@selftest`) or a censored one (`@selftest-k`, a kill at the runaway ceiling (ST_CEIL): the time is a floor),
+# whichever is the larger; a value that is no plain number is no time (unmeasured).
+st_look() {
+  _st_ms=0; _st_s=0; _st_kc=0
+  tr_look @selftest "$1"; _st_m=$L_SEC; tr_look @selftest-k "$1"; _st_k=$L_SEC
+  st_okn "$_st_m" || _st_m=""
+  st_okn "$_st_k" || _st_k=""
+  if [ -n "$_st_k" ] && { [ -z "$_st_m" ] || [ "$_st_k" -ge "$_st_m" ]; }; then _st_ms=1; _st_s=$_st_k; _st_kc=1
+  elif [ -n "$_st_m" ]; then _st_ms=1; _st_s=$_st_m; fi
+}
+# st_secs <out-file> — the face seconds of a clean run, read from hermetic's own PASS lines, `(<n> s)`; the sum, or nothing unless exactly two faces printed one.
+st_secs() {
+  LC_ALL=C sed -n 's/^  PASS: face ([ab]) .* (\([0-9][0-9]*\) s) battery: .*$/\1/p' "$1" |
+    LC_ALL=C awk '{ s += $1; n++ } END { if (n == 2) print s }'
+}
+# st_named <path> — rc 0 iff the run's OWN output names the target: its anchored TARGET line, or an anchored EXCLUDED disposition (ST_EX=1). A target's output reaches
+# the lane only indented, on a red, so an anchored line is hermetic's own.
+st_named() {
+  grep -qxF -e "TARGET: $1 (both faces)" "${U_OUT:-$WORK/out}" 2>/dev/null && return 0   # STTARGET
+  P="  EXCLUDED: ${1##*/} — " LC_ALL=C awk 'index($0, ENVIRON["P"]) == 1 { f = 1 } END { exit !f }' "${U_OUT:-$WORK/out}" 2>/dev/null && { ST_EX=1; return 0; }   # STEXCL
+  return 1
+}
+# st_scan — classify the roster targets that can become argv; sets ST_SC to the candidates (`measured<TAB>seconds<TAB>path<TAB>blob<TAB>censored`: unmeasured first, then
+# ascending seconds; censored is 1 when the time is a floor from a kill at the runaway ceiling (ST_CEIL), and the blob field may be empty, which `fld` keeps), ST_U and ST_NM (the entries
+# named but neither run nor CI-bound). On an adopter tree a scripts/ or hooks/ target is named, not run; a target git cannot show in <merge-base>..HEAD is a FAIL (face (b) grades HEAD).
+st_scan() {
+  ST_SC=""; ST_U=0; ST_NM=0; _st_tl=0
+  git diff --name-only --no-renames "$MB" HEAD > "$WORK/q.committed" 2>/dev/null || : > "$WORK/q.committed"
+  while IFS= read -r _st_t; do
+    if off_kit; then   # STOFF
+      case $_st_t in
+        scripts/*|hooks/*)
+          note "core-selftest: $_st_t — NOT run locally (kit tree only); your CI grades it only if you wire selftest-hermetic --touched"; ST_NM=$((ST_NM+1)); continue ;;
+      esac
+      _st_b=${_st_t#conformance/}
+      if ! grep -qxF -e "${_st_b%.sh}" "$WORK/q.sel" 2>/dev/null; then   # an adopter keeps today's set (the derived, listed conformance/ selftests), and NAMES the rest
+        note "core-selftest: $_st_t — NOT run locally (not derived from your ci.yml)"; ST_NM=$((ST_NM+1)); continue   # STNOTDER
+      fi
+    fi
+    if ! grep -qxF -e "$_st_t" "$WORK/q.committed"; then   # STCOMMIT
+      RAN=$((RAN+1)); FAILS=$((FAILS+1)); ST_NM=$((ST_NM+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_t: uncommitted — commit before the lane"; rl_u core-selftest "$_st_t" FAIL; continue
+    fi
+    [ "$_st_tl" -eq 1 ] || { tr_times_init || TR_TAB=""; _st_tl=1; }
+    _st_bl=$(st_blob "$_st_t"); _st_ms=0; _st_s=0; _st_kc=0
+    [ -z "$_st_bl" ] || st_look "$_st_bl"
+    [ "$_st_ms" -eq 1 ] || ST_U=$((ST_U+1))
+    ST_SC="$ST_SC$_st_ms$TAB$_st_s$TAB$_st_t$TAB$_st_bl$TAB$_st_kc$NL"
+  done < "$WORK/herm.targets"
+  ST_SC=$(printf '%s' "$ST_SC" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3)   # STSORT
+}
+# st_one <candidate line> — run ONE target (both faces) and reconcile what came back: a clean run that neither printed its TARGET line nor an EXCLUDED disposition is a FAIL.
+# SWAS-840: nothing is cut by a budget. Before each call the lane prints the target's prior time ([measured], a [measured floor: killed] row, or unmeasured), and when that time passes
+# the 300 s budget it says `over the 300 s budget: run anyway` (a label, counted in ST_OB). What bounds a call is ST_CEIL. A kill at it is read from the watchdog's own evidence and reads
+# UNVERIFIED (never OK, never named CI-bound, never a FAIL); its time is recorded as a censored row (`@selftest-k`, max(ceiling + 1 s, the prior time)). A censored row of at least
+# ST_CEIL + 1 s names the target UNVERIFIED on the same bytes with no call; a lower floor (every row the old 300 s budget left) is printed and the target runs. The heavy-arm lock is
+# taken lazily, just before the first real call.
+st_one() {
+  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1")
+  _st_b12=$(printf '%s' "$_st_bl" | cut -c1-12)
+  if [ "$_st_kc" -eq 1 ] && [ "$_st_s" -ge $((ST_CEIL + 1)) ]; then   # STHUNG
+    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
+    unv "core-selftest $_st_p: killed at >=$_st_s s on these bytes"   # STHUNGUNV
+    rl_u core-selftest "$_st_p" UNV
+    return 0
+  fi
+  if [ "$_st_lk" -eq 0 ]; then
+    _st_lk=1; hl_need core-selftest || _st_lk=2   # STLOCK
+    [ "$_st_lk" -eq 1 ] || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"; rl_u core-selftest "$_st_p" UNV; }
+  fi
+  if [ "$_st_lk" -ne 1 ]; then ST_NM=$((ST_NM+1)); note "core-selftest: $_st_p — NOT run (the heavy-arm lock is not held)"; return 0; fi
+  _st_ov=""
+  if [ "$_st_ms" -eq 1 ] && [ "$_st_s" -gt "$STBUD" ]; then _st_ov="; over the ${STBUD} s budget: run anyway"; ST_OB=$((ST_OB+1)); fi   # STOVER
+  if [ "$_st_ms" -eq 0 ]; then _st_pr="unmeasured (no recorded time at $_st_b12)"
+  elif [ "$_st_kc" -eq 1 ]; then _st_pr="prior $_st_s s at $_st_b12 [measured floor: killed]"
+  else _st_pr="prior $_st_s s at $_st_b12 [measured]"; fi
+  note "core-selftest: $_st_p — $_st_pr$_st_ov"
+  _st_cl=$ST_CEIL
+  RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""
+  ST_EX=0
+  # The kill is read from the WATCHDOG's own evidence (run_timed leaves $WORK/ctl/wd.fired when the ceiling fired), not from an exit status: the hermetic harness traps TERM
+  # and INT and exits 130 itself, so an rc test (124, 137, 143) misses the very run this exists for. The marker is reachable from a target (`$TMPDIR/../ctl`), so it is not
+  # trusted alone: the run must also have lasted the whole ceiling, which the watchdog guarantees and which makes forging the marker pointless (a forger spends the ceiling).
+  # twin: st_decide's PSCEIL line is the pool's copy of this decision (and PSNAMED of STNAMED below); change both together
+  if [ "$RUN_RC" -ne 0 ] && [ -e "${U_CTL:-$WORK/ctl}/wd.fired" ] && [ "$RUN_S" -ge "$_st_cl" ]; then   # STCEIL
+    _st_n=$((_st_cl + 1)); [ "$_st_ms" -eq 0 ] || [ "$_st_s" -le "$_st_n" ] || _st_n=$_st_s
+    [ -z "$_st_bl" ] || tr_record @selftest-k "$_st_bl" "$_st_n"   # STREC
+    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+    unv "core-selftest $_st_p: killed at the ${ST_CEIL} s runaway ceiling"   # STUNV
+    rl_u core-selftest "$_st_p" UNV run   # RLUNV
+    return 0
+  fi
+  if [ "$RUN_RC" -eq 0 ] && ! st_named "$_st_p"; then   # STNAMED
+    ST_K=$((ST_K+1)); RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_p: neither run nor named"; rl_u core-selftest "$_st_p" FAIL; return 0
+  fi
+  if [ "$ST_EX" -eq 0 ]; then ST_K=$((ST_K+1)); else ST_NM=$((ST_NM+1)); fi
+  _st_f0=$FAILS; _st_c0=$CRASH; _st_lab="$_st_p (both faces)"
+  [ "$ST_EX" -eq 0 ] || _st_lab="$_st_p (excluded with a reason: not run)"
+  report_inv core-selftest "$_st_lab" 0 "$_st_cl"
+  { [ "$RUN_RC" -eq 0 ] && [ "$FAILS" -eq "$_st_f0" ] && [ "$CRASH" -eq "$_st_c0" ]; } || return 0
+  _st_ss=$(st_secs "${U_OUT:-$WORK/out}"); { [ -z "$_st_ss" ] || [ -z "$_st_bl" ]; } || tr_record @selftest "$_st_bl" "$_st_ss"
+  note "core-selftest: $_st_p took $RUN_S s [measured, this run]"
+  return 0
+}
+# selftest_arm — the touched selftests of the default run: scan, run each candidate (the heavy-arm lock is taken lazily by the first), validate a touched exclusions file when
+# no call completed, then print the roster line, the over-budget line and the CI-bound note. Every roster entry ends in one of three counts: run (K), CI-bound (M) or named (X: kit-tree-only,
+# not derived from the adopter's ci.yml, excluded, uncommitted, a target UNVERIFIED at the runaway ceiling, or not run because the lock was not held). EDGE: a verify.sh listed without --selftest text is in M but not in N.
+selftest_arm() {
+  ST_N=$(grep -c '' < "$WORK/q.troster" || :); ST_K=0; ST_OB=0; ST_H=0
+  st_scan
+  _st_lk=0
+  # SWAS-868: the pool site (J >= 2 only; pool_arm leaves ST_SC empty when it ran the queue)
+  [ "$POOL_J" -lt 2 ] || pool_arm   # PLSITE
+  while [ -n "$ST_SC" ]; do   # popped from a VARIABLE: no file or descriptor a child could reach
+    _st_l=${ST_SC%%"$NL"*}
+    case $ST_SC in
+      *"$NL"*) ST_SC=${ST_SC#*"$NL"} ;;
+      *) ST_SC="" ;;
+    esac
+    st_one "$_st_l"
+  done
+  [ "$ST_K" -ne 0 ] || excl_check   # STEXCL2
+  note "touched-selftest roster: $ST_N (run: $ST_K, CI-bound: $SELF_NE, named: $ST_NM, unmeasured: $ST_U)"
+  note "touched-selftest over budget: $ST_OB run, $ST_H UNVERIFIED at the ceiling"
+  _st_tail="CI's H2 lane grades the faces"; ! off_kit || _st_tail="your CI step that runs it grades them"
+  [ "$SELF_NE" -eq 0 ] || note "core-selftest: $SELF_NE touched selftest(s) NOT ENFORCED locally — CI binds them: $SELF_NE_LIST ($_st_tail; this run never claims they ran; the other touched targets are graded explicitly, so an untracked touched selftest script fails here — commit before running the lane)"
+}
+
+# ================================================================================ SWAS-868: THE BOUNDED POOL (P2 of the local-parity design, PR 1)
+# One pool at the selftest_arm site: the core-selftest candidates and, under --warranted, the core-live checks run at most POOL_J at a time, each in its own scratch dirs and control dir (u<n>); the lock is taken once
+# (only when J >= 2 and at least two units are runnable) and J is recomputed after it. A unit is decided at its REAP (read into parent variables), recorded in QUEUE order. After the pool drains, each rc FAIL, each
+# ceiling kill that passes the half-ceiling test, and each unit held by a live @pool-k row runs ONCE more, serially, with fresh dirs (t<n>): a serial pass after a pool FAIL reads RACE, a serial FAIL stays FAIL.
+# The touched readers, the board gates, the twins and the heavy arms stay serial and untouched. J = 1 never enters this section (selftest_arm calls pool_arm only when POOL_J >= 2).
+# Per-unit state lives in shell variables PV_<name>_<n> (pv_set/pv_get; n and name are lane constants, never input).
+pv_set() { eval "PV_$2_$1=\$3"; }
+pv_get() { eval "printf '%s' \"\${PV_$2_$1-}\""; }
+# the globals a unit's decision sets, saved at its reap and restored at its record: short name and global
+POOL_VARS='rc:RUN_RC s:RUN_S rss:RUN_RSS ctx:ARM_CEIL_TXT rik:RI_KIND ric:RI_C rinm:RI_NM rirx:RI_RX ricx:RI_CX cev:CRASH_EV cby:CRASH_BYLINE ctxt:CRASH_TXT stk:ST_KIND stex:ST_EX stss:ST_SS stlab:_st_lab'
+pool_save() { for _pv in $POOL_VARS; do eval "pv_set \"\$1\" \"\${_pv%%:*}\" \"\${${_pv#*:}-}\""; done; }   # `-`: a global the unit's decision never set (a cl unit has no _st_lab, CRASH_EV may be unset) saves as empty, never a set -u death
+pool_load() { for _pv in $POOL_VARS; do eval "${_pv#*:}=\$(pv_get \"\$1\" \"\${_pv%%:*}\")"; done; }
+pool_t1() { date +%s; }   # PLT1
+pool_half() { [ -n "$1" ] && [ $(( $1 * 2 )) -lt "$2" ]; }   # the half-ceiling rule: a MEASURED time (never a pool row) under half the ceiling
+st_hungp() { [ "$_st_kc" -eq 1 ] && [ "$_st_s" -ge $((ST_CEIL + 1)) ]; }
+pq_line() { printf '%s\n' "$PQ" | sed -n "${1}p"; }
+pq_f() { fld "$2" "$(pq_line "$1")"; }
+cl_key() { printf '%s' "$1${2:+ $2}"; }
+pool_key() { _pk_l=$(pq_line "$1"); if [ "$(fld 5 "$_pk_l")" = st ]; then fld 6 "$_pk_l"; else cl_key "$(fld 6 "$_pk_l")" "$(fld 8 "$_pk_l")"; fi; }
+pool_dirs() { ( umask 077; mkdir -p "$WORK/$1/tmp" "$WORK/$1/empty" "$WORK/$1/gh" "$WORK/ctl/$1" ); }   # <tag>: a unit's own scratch dirs and control dir (0700)
+# pool_unit_row — appends the unit described by _pu_* to _pq_raw: ms os label kind target blob argv kc hsec held stale nms ns (the first three are the sort keys). A live @pool-k row for the SAME blob holds the unit for the tail;
+# a row for another blob is stale (the unit was edited): the run retires it unless it kills the unit in the pool again.
+pool_unit_row() {
+  _pu_held=0; _pu_stale=0; _pu_key=$_pu_tgt; [ "$_pu_kind" = st ] || _pu_key=$(cl_key "$_pu_tgt" "$_pu_arg")
+  _pu_pk=$(tr_pk_blob "$_pu_key")   # PLPKLOOK
+  if [ -n "$_pu_pk" ]; then
+    if [ -n "$_pu_bl" ] && [ "$_pu_pk" = "$_pu_bl" ]; then _pu_held=1; else _pu_stale=1; fi
+  fi
+  _pq_raw="$_pq_raw$_pu_ms$TAB$_pu_os$TAB$_pu_lab$TAB$_pu_kind$TAB$_pu_tgt$TAB$_pu_bl$TAB$_pu_arg$TAB$_pu_kc$TAB$_pu_h$TAB$_pu_held$TAB$_pu_stale$TAB$_pu_nms$TAB$_pu_ns$NL"
+}
+pool_unit_st() {   # <ST_SC candidate line>
+  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1")
+  if st_hungp; then return 0; fi
+  _pu_kind=st; _pu_lab=$_st_p; _pu_tgt=$_st_p; _pu_bl=$_st_bl; _pu_arg=""; _pu_kc=$_st_kc; _pu_nms=$_st_ms; _pu_ns=$_st_s
+  _pu_ms=$_st_ms; _pu_os=0; _pu_h=""
+  if [ "$_st_ms" -eq 1 ]; then _pu_os=$_st_s; [ "$_st_kc" -ne 0 ] || _pu_h=$_st_s
+  elif [ -n "$_st_bl" ]; then tr_look @pool "$_st_bl"; [ -z "$L_SEC" ] || { _pu_ms=1; _pu_os=$L_SEC; }; fi
+  pool_unit_row
+}
+pool_unit_cl() {   # <basename> <argv>
+  _pu_key=$(cl_key "$1" "$2"); _pu_ms=0; _pu_os=0
+  tr_look "$1" "$2"; _pu_h=$L_SEC
+  tr_look @pool "$_pu_key"; _pu_pl=$L_SEC
+  [ -z "$_pu_h$_pu_pl" ] || { _pu_ms=1; _pu_os=${_pu_h:-$_pu_pl}; }
+  _pu_bl=$(st_blob "conformance/$1.sh")   # PLCLBLOB
+  _pu_kind=cl; _pu_lab="$1 $2"; _pu_tgt=$1; _pu_arg=$2; _pu_kc=0; _pu_nms=0; _pu_ns=0
+  pool_unit_row
+}
+# pool_queue — PQ (numbered lines: the unmeasured units first, then descending seconds, ties by label), PQ_M, PQ_U (the units not held for the tail) and CL_Q (the core-live units left after the --warranted cache skips, in q.order order).
+pool_queue() {
+  PQ=""; PQ_M=0; PQ_U=0; CL_Q=""; _pq_raw=""
+  if [ "$_st_tl" -ne 1 ]; then _pq_u=$UNV; tr_times_init || TR_TAB=""; UNV=$_pq_u; _st_tl=1; fi   # a refused state dir stays what it is at J = 1: no UNV from a time table the serial core-live loop never reads
+  if [ "$WARRANTED" -eq 1 ]; then
+    while IFS= read -r _r <&3; do
+      _rb=${_r%%"$TAB"*}; _ra=${_r#*"$TAB"}
+      if cache_skip core-live "$_rb" "$_ra"; then continue; fi
+      CL_Q="$CL_Q$_rb$TAB$_ra$NL"
+      pool_unit_cl "$_rb" "$_ra"
+    done 3< "$WORK/q.order"
+  fi
+  _pq_s=$ST_SC
+  while [ -n "$_pq_s" ]; do
+    _pq_l=${_pq_s%%"$NL"*}
+    case $_pq_s in *"$NL"*) _pq_s=${_pq_s#*"$NL"} ;; *) _pq_s="" ;; esac
+    pool_unit_st "$_pq_l"
+  done
+  PQ=$(printf '%s' "$_pq_raw" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2nr -k3,3 | LC_ALL=C awk '{ print NR "\t" $0 }')   # PLSORT
+  PQ_M=$(printf '%s\n' "$PQ" | grep -c . || :)
+  PQ_U=$(printf '%s\n' "$PQ" | LC_ALL=C awk -F'\t' 'NF >= 11 && $11 == 0 { n++ } END { print n + 0 }')
+}
+pool_arm() {
+  pool_queue
+  POOL_USE=0
+  if [ "$POOL_J" -ge 2 ] && [ "$PQ_U" -ge 2 ]; then   # PLUSE
+    if hl_need core-pool; then
+      pool_j; POOL_USE=1; [ "$POOL_J" -ge 2 ] || POOL_USE=0   # PLUSE2
+      pool_note
+    fi
+  fi
+  if [ "$POOL_USE" -eq 1 ]; then POOL_JF=$POOL_J; pool_go; ST_SC=""; return 0; fi
+  pool_serial
+}
+# pool_serial — the lane did not take the queue (fewer than two runnable units, a failed lock, or J = 1 after the lock): the core-live checks run serially here, as run_core's loop would have run them; the selftests stay in ST_SC for selftest_arm's own loop.
+pool_serial() {
+  [ "$WARRANTED" -eq 1 ] || return 0
+  printf '%s' "$CL_Q" > "$WORK/cl.q"   # read from a file, as run_core's loop reads q.order (a heredoc-fed loop with break broke CI's semgrep parse)
+  while IFS= read -r _r <&3; do
+    [ -n "$_r" ] || continue
+    _rb=${_r%%"$TAB"*}; _ra=${_r#*"$TAB"}
+    hl_need core-live || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-live "the heavy-arm lock is not held: the remaining core-live checks are not run"; rl_u core-live lock UNV; break; }
+    exec_cached core-live "$_rb" "$_ra" 0 "$CEIL"
+  done 3< "$WORK/cl.q"
+}
+pool_go() {
+  POOL_ON=1
+  pool_hung_rows
+  pool_loop
+  pool_tail   # PLTAIL
+  pool_times_end
+}
+pool_hung_rows() {   # the targets already killed at the ceiling on these bytes: named UNVERIFIED with no call (st_one's STHUNG rule), before the pool starts
+  _ph_s=$ST_SC
+  while [ -n "$_ph_s" ]; do
+    _ph_l=${_ph_s%%"$NL"*}
+    case $_ph_s in *"$NL"*) _ph_s=${_ph_s#*"$NL"} ;; *) _ph_s="" ;; esac
+    _st_ms=$(fld 1 "$_ph_l"); _st_s=$(fld 2 "$_ph_l"); _st_p=$(fld 3 "$_ph_l"); _st_bl=$(fld 4 "$_ph_l"); _st_kc=$(fld 5 "$_ph_l")
+    st_hungp || continue
+    _st_b12=$(printf '%s' "$_st_bl" | cut -c1-12)
+    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
+    unv "core-selftest $_st_p: killed at >=$_st_s s on these bytes"
+    rl_u core-selftest "$_st_p" UNV
+  done
+}
+pool_loop() {
+  POOL_IN=1; _pl_next=1; _pl_run=""; _pl_nrun=0; _pl_pr=1; _pl_done=0; _pl_note=$(date +%s)
+  while [ "$_pl_pr" -le "$PQ_M" ]; do   # PLLAST
+    while [ "$_pl_next" -le "$PQ_M" ] && [ "$_pl_nrun" -lt "$POOL_J" ]; do   # PLGUARD
+      if [ "$(pq_f "$_pl_next" 11)" = 1 ]; then pv_set "$_pl_next" state held
+      else pool_start "$_pl_next"; _pl_run="$_pl_run $_pl_next"; _pl_nrun=$((_pl_nrun+1)); fi
+      _pl_next=$((_pl_next+1))
+    done
+    if [ -n "$_pl_run" ]; then
+      sleep 1; _pl_left=""; _pl_now=$(date +%s)
+      for _pl_n in $_pl_run; do
+        if pool_done "$_pl_n" "$_pl_now"; then pool_reap "$_pl_n"; _pl_nrun=$((_pl_nrun-1)); _pl_done=$((_pl_done+1))
+        else _pl_left="$_pl_left $_pl_n"; fi
+      done
+      _pl_run=$_pl_left
+    fi
+    pool_flush
+    if [ $(( $(date +%s) - _pl_note )) -ge 60 ]; then note "pool: $_pl_done of $PQ_M done"; _pl_note=$(date +%s); fi
+  done
+}
+pool_flush() {   # record, in queue order, every unit up to the first one still running
+  while [ "$_pl_pr" -le "$PQ_M" ]; do   # PLLAST
+    case $(pv_get "$_pl_pr" state) in
+      rec) pool_record "$_pl_pr" ;;
+      defer|held) : ;;
+      *) return 0 ;;
+    esac
+    _pl_pr=$((_pl_pr+1))
+  done
+}
+pool_start() {   # <n> — dispatch queue unit n in its own dirs, descriptor 9 closed
+  _ps_n=$1; _ps_l=$(pq_line "$_ps_n"); _ps_k=$(fld 5 "$_ps_l"); _ps_t=$(fld 6 "$_ps_l"); _ps_a=$(fld 8 "$_ps_l")
+  pool_dirs "u$_ps_n"
+  if [ "$_ps_k" = st ]; then
+    set -- sh conformance/selftest-hermetic.sh "$_ps_t"; _ps_cl=$ST_CEIL; _ps_hb=$BASE
+  else
+    # the closed-charset argv, single-spaced, becomes ARGV one word at a time (no IFS assignment, no eval)
+    set --; _ps_x=$_ps_a
+    while [ -n "$_ps_x" ]; do
+      _ps_w=${_ps_x%% *}; [ -z "$_ps_w" ] || set -- "$@" "$_ps_w"
+      case $_ps_x in *" "*) _ps_x=${_ps_x#* } ;; *) _ps_x="" ;; esac
+    done
+    set -- sh "conformance/$_ps_t.sh" "$@"; _ps_cl=$CEIL; _ps_hb=""
+  fi
+  inv_log "$@"; pv_set "$_ps_n" al "${_al# }"; pv_set "$_ps_n" ceil "$_ps_cl"
+  pv_set "$_ps_n" bound "$(( _ps_cl + _ps_cl / 10 + 30 ))"   # the poll bound: ceiling x 1.1 + 30 s (the watchdog counts passes, and its ps stretches wall time)
+  pv_set "$_ps_n" t0 "$(date +%s)"
+  ( U_CTL=$WORK/ctl/u$_ps_n
+    U_OUT=$WORK/u$_ps_n/out
+    U_CRASH=$WORK/ctl/u$_ps_n/crash.hit
+    UNIT_DIR=$WORK/u$_ps_n   # PLUDIR
+    RUN_HB=$_ps_hb
+    scrubbed_run "$_ps_cl" "$@" ) 9>&- > "$WORK/u$_ps_n/out" 2>&1 < /dev/null &
+  pv_set "$_ps_n" pid "$!"
+  pv_set "$_ps_n" state run
+}
+# pool_done <n> <now> — rc 0 when the unit's worker has exited: kill -0 fails, or ps shows a zombie (dash does not reap before `wait`, so kill -0 keeps succeeding on an exited child). Past the poll bound the unit is
+# taken by a blocking wait and its clock is not trusted (late): its rc 124/137/143 then reads FAIL, never a ceiling kill. Disclosed: pid reuse is narrowed by the bound, not closed.
+pool_done() {
+  _pd_pid=$(pv_get "$1" pid)
+  kill -0 "$_pd_pid" 2>/dev/null || return 0
+  _pd_st=$(ps -o stat= -p "$_pd_pid" 2>/dev/null | tr -d ' ')
+  case $_pd_st in
+    Z*) return 0 ;;   # PLZ
+  esac
+  [ $(( $2 - $(pv_get "$1" t0) )) -gt "$(pv_get "$1" bound)" ] || return 1
+  pv_set "$1" late 1; return 0
+}
+pool_reap() {   # <n> — take the worker's rc, read what it left into parent variables and decide, now (Q-3), then mark it reaped
+  _pr_n=$1; _pr_rc=0; _pr_pid=$(pv_get "$_pr_n" pid)
+  case $_pr_pid in ''|*[!0-9]*) return 0 ;; esac
+  [ "$(pv_get "$_pr_n" late)" = 1 ] || pv_set "$_pr_n" t1 "$(pool_t1)"
+  wait "$_pr_pid" || _pr_rc=$?
+  [ "$(pv_get "$_pr_n" late)" != 1 ] || pv_set "$_pr_n" t1 "$(pool_t1)"
+  pool_decide "$_pr_n" "$_pr_rc"
+  : > "$WORK/ctl/u$_pr_n/reaped"
+}
+# pool_decide <n> <rc> — everything that reads the unit's own files happens here, against its own OUT, CTL and CRASH_HIT, into parent variables; only the print, unv, the counters and rl_u wait for queue order.
+pool_decide() {
+  _pd_n=$1; _pd_l=$(pq_line "$_pd_n")
+  _pd_k=$(fld 5 "$_pd_l"); _pd_t=$(fld 6 "$_pd_l"); _pd_a=$(fld 8 "$_pd_l"); _pd_b=$(fld 7 "$_pd_l"); _pd_h=$(fld 10 "$_pd_l"); _pd_lab=$(fld 4 "$_pd_l")
+  _pd_c=$(pv_get "$_pd_n" ceil)
+  U_CTL=$WORK/ctl/u$_pd_n; U_OUT=$WORK/u$_pd_n/out; U_CRASH=$U_CTL/crash.hit; UNIT_DIR=$WORK/u$_pd_n
+  POOL_LATE=$(pv_get "$_pd_n" late); POOL_LATE=${POOL_LATE:-0}
+  RUN_RC=$2; ARM_CEIL_TXT=""; RUN_S=$(( $(pv_get "$_pd_n" t1) - $(pv_get "$_pd_n" t0) ))
+  _al=$(pv_get "$_pd_n" al); _pd_u=$UNV; UNV=""
+  inv_finish > "$UNIT_DIR/fin.out"
+  pv_set "$_pd_n" unvn "$UNV"; UNV=$_pd_u
+  pv_set "$_pd_n" fin "$(cat "$UNIT_DIR/fin.out")"
+  RI_KIND=""; ST_KIND=""; ST_EX=0; ST_SS=""; _pd_s=rec
+  if [ "$_pd_k" = st ]; then
+    _st_p=$_pd_t; _st_bl=$_pd_b; _st_cl=$_pd_c
+    st_decide "$_pd_t" "$_pd_c" "$_pd_t"
+    case $ST_KIND in
+      neither) _pd_s=defer ;;
+      ceil) _pd_s=rec; pool_half "$_pd_h" "$_pd_c" && _pd_s=defer ;;   # PLHALF
+      *) case $RI_KIND in fail) _pd_s=defer ;; esac ;;   # PLDEFER
+    esac
+  else
+    ri_decide core-live "$_pd_lab" 0 "$_pd_c"
+    case $RI_KIND in
+      fail) _pd_s=defer ;;   # PLDEFER
+      ceil) _pd_s=rec; pool_half "$_pd_h" "$_pd_c" && _pd_s=defer ;;   # PLHALF
+    esac
+    pv_set "$_pd_n" cskip 0; ! grep -q '^SKIP' "$U_OUT" 2>/dev/null || pv_set "$_pd_n" cskip 1
+  fi
+  # times at J >= 2: a clean run only orders the next queue (@pool); a kill the half test does not re-run leaves @pool-k. No @selftest-k and no @selftest row from the pool (P-6).
+  if [ "$_pd_s" = rec ]; then
+    if [ "$ST_KIND" = ceil ] || [ "$RI_KIND" = ceil ]; then pool_pk_write "$_pd_n"; fi
+  fi
+  if [ "$RI_KIND" = ok ] && [ "$ST_KIND" != ceil ] && [ "$ST_KIND" != neither ]; then
+    _pd_pk=$_pd_b; [ "$_pd_k" = st ] || _pd_pk=$(cl_key "$_pd_t" "$_pd_a")
+    [ -z "$_pd_pk" ] || tr_record @pool "$_pd_pk" "$RUN_S"
+  fi
+  pv_set "$_pd_n" state "$_pd_s"   # PLSTATE
+  pool_save "$_pd_n"
+  U_CTL=""; U_OUT=""; U_CRASH=""; UNIT_DIR=""; POOL_LATE=0
+}
+# st_decide <path> <ceiling> <label> — the DECISION half of a target's tail (st_one's, for the pool and PL14b): no output, no counter, no record. Sets ST_KIND (ceil | neither | run), ST_EX, ST_SS and, for run, ri_decide's answer.
+st_decide() {
+  ST_KIND=""; ST_EX=0; ST_SS=""; _st_cl=$2
+  # twin: st_one's STCEIL and STNAMED lines are the serial copy of these two decisions; change both together
+  if [ "$RUN_RC" -ne 0 ] && [ -e "${U_CTL:-$WORK/ctl}/wd.fired" ] && [ "$POOL_LATE" -eq 0 ] && [ "$RUN_S" -ge "$_st_cl" ]; then ST_KIND=ceil; return 0; fi   # PSCEIL
+  if [ "$RUN_RC" -eq 0 ] && ! st_named "$1"; then ST_KIND=neither; return 0; fi   # PSNAMED
+  ST_KIND=run; _st_lab="$1 (both faces)"
+  [ "$ST_EX" -eq 0 ] || _st_lab="$1 (excluded with a reason: not run)"
+  ri_decide core-selftest "$_st_lab" 0 "$_st_cl"
+  [ "$RI_KIND" != ok ] || ST_SS=$(st_secs "${U_OUT:-$WORK/out}")
+  return 0
+}
+pool_st_prior() {   # the prior-time note a target prints before its row (st_one's note, in queue order)
+  _st_b12=$(printf '%s' "$_st_bl" | cut -c1-12)
+  _st_ov=""
+  if [ "$_st_ms" -eq 1 ] && [ "$_st_s" -gt "$STBUD" ]; then _st_ov="; over the ${STBUD} s budget: run anyway"; ST_OB=$((ST_OB+1)); fi   # PSOVER
+  if [ "$_st_ms" -eq 0 ]; then _st_pr="unmeasured (no recorded time at $_st_b12)"
+  elif [ "$_st_kc" -eq 1 ]; then _st_pr="prior $_st_s s at $_st_b12 [measured floor: killed]"
+  else _st_pr="prior $_st_s s at $_st_b12 [measured]"; fi
+  note "core-selftest: $_st_p — $_st_pr$_st_ov"
+}
+# st_apply — the effects of st_decide's verdict (the row, the counters, the log, the times): the pool's twin of st_one's tail. POOL_IN is 1 for the pool's own records (no time rows), 0 for the serial tail (today's rows).
+st_apply() {
+  case $ST_KIND in
+    ceil)
+      _st_n=$((_st_cl + 1)); [ "$_st_ms" -eq 0 ] || [ "$_st_s" -le "$_st_n" ] || _st_n=$_st_s
+      [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest-k "$_st_bl" "$_st_n"   # PSREC
+      RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
+      printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+      unv "core-selftest $_st_p: killed at the ${ST_CEIL} s runaway ceiling"   # PSUNV
+      rl_u core-selftest "$_st_p" UNV run   # PSRLUNV
+      return 0 ;;
+    neither)
+      ST_K=$((ST_K+1)); RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_p: neither run nor named"; rl_u core-selftest "$_st_p" FAIL; return 0 ;;
+  esac
+  if [ "$ST_EX" -eq 0 ]; then ST_K=$((ST_K+1)); else ST_NM=$((ST_NM+1)); fi
+  ri_record core-selftest "$_st_lab" 0 "$_st_cl"
+  [ "$RI_KIND" = ok ] || return 0
+  [ -z "$ST_SS" ] || [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest "$_st_bl" "$ST_SS"
+  note "core-selftest: $_st_p took $RUN_S s [measured, this run]"
+  return 0
+}
+pool_cl_cache() {   # <basename> <argv> <skip-like 0|1> — exec_cached's tail: a PASS (not a tool-absent SKIP) is recorded in the --warranted cache
+  [ "$CACHE_OK" -eq 1 ] && [ "$RI_KIND" = ok ] && [ "$3" != 1 ] || return 0
+  cache_record core-live "core-live $1 $2"
+  return 0
+}
+pool_record() {   # <n> — the unit's decision, in queue order: notes, UNV, row, counters, log
+  _pc_n=$1; _pc_l=$(pq_line "$_pc_n")
+  _pc_k=$(fld 5 "$_pc_l"); _pc_t=$(fld 6 "$_pc_l"); _pc_a=$(fld 8 "$_pc_l"); _pc_lab=$(fld 4 "$_pc_l"); _pc_c=$(pv_get "$_pc_n" ceil)
+  pool_load "$_pc_n"
+  U_CTL=$WORK/ctl/u$_pc_n; U_OUT=$WORK/u$_pc_n/out; U_CRASH=$U_CTL/crash.hit; UNIT_DIR=$WORK/u$_pc_n
+  _pc_f=$(pv_get "$_pc_n" fin); [ -z "$_pc_f" ] || printf '%s\n' "$_pc_f"
+  _pc_u=$(pv_get "$_pc_n" unvn); [ -z "$_pc_u" ] || unv "$_pc_u"
+  if [ "$_pc_k" = st ]; then
+    _st_p=$_pc_t; _st_bl=$(fld 7 "$_pc_l"); _st_kc=$(fld 9 "$_pc_l"); _st_ms=$(fld 13 "$_pc_l"); _st_s=$(fld 14 "$_pc_l"); _st_cl=$_pc_c
+    pool_st_prior; st_apply   # PLREC
+  else
+    ri_record core-live "$_pc_lab" 0 "$_pc_c"
+    pool_cl_cache "$_pc_t" "$_pc_a" "$(pv_get "$_pc_n" cskip)"
+  fi
+  pv_set "$_pc_n" pr 1
+  U_CTL=""; U_OUT=""; U_CRASH=""; UNIT_DIR=""
+}
+pool_pk_write() {   # <n> — a pooled kill with no half-test re-run: @pool-k <key> <blob> (replacing that key's one row), so the next run holds the unit for the serial tail
+  _pw_b=$(pq_f "$1" 7); [ -n "$_pw_b" ] || return 0
+  tr_rewrite @pool-k "$(pool_key "$1")" "$_pw_b"; pv_set "$1" pkw 1
+}
+pool_tail() {   # after the pool drains: each deferred or held unit runs ONCE at J = 1, in queue order, with fresh dirs
+  POOL_IN=0; _pt_i=0
+  while [ "$_pt_i" -lt "$PQ_M" ]; do
+    _pt_i=$((_pt_i+1))
+    case $(pv_get "$_pt_i" state) in defer|held) pool_tail_one "$_pt_i" ;; esac
+  done
+}
+pool_tail_one() {
+  _pt_n=$1; _pt_l=$(pq_line "$_pt_n"); _pt_was=$(pv_get "$_pt_n" state)
+  _pt_k=$(fld 5 "$_pt_l"); _pt_t=$(fld 6 "$_pt_l"); _pt_a=$(fld 8 "$_pt_l"); _pt_lab=$(fld 4 "$_pt_l")
+  pool_dirs "t$_pt_n"
+  U_CTL=$WORK/ctl/t$_pt_n; U_OUT=$WORK/t$_pt_n/out; U_CRASH=$U_CTL/crash.hit; UNIT_DIR=$WORK/t$_pt_n
+  POOL_IN=0; POOL_LATE=0; ST_KIND=""; ST_EX=0; ST_SS=""; RI_KIND=""
+  if [ "$_pt_k" = st ]; then
+    _st_p=$_pt_t; _st_bl=$(fld 7 "$_pt_l"); _st_kc=$(fld 9 "$_pt_l"); _st_ms=$(fld 13 "$_pt_l"); _st_s=$(fld 14 "$_pt_l"); _st_cl=$ST_CEIL
+    RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""
+    st_decide "$_st_p" "$_st_cl" "$_st_p"
+  else
+    set --; _pt_x=$_pt_a   # the same word-by-word split as pool_start (no IFS assignment)
+    while [ -n "$_pt_x" ]; do
+      _pt_w=${_pt_x%% *}; [ -z "$_pt_w" ] || set -- "$@" "$_pt_w"
+      case $_pt_x in *" "*) _pt_x=${_pt_x#* } ;; *) _pt_x="" ;; esac
+    done
+    run_inv "$CEIL" sh "conformance/$_pt_t.sh" "$@"
+    ST_KIND=run; ri_decide core-live "$_pt_lab" 0 "$CEIL"
+  fi
+  _pt_pass=0; [ "$ST_KIND" = run ] && [ "$RI_KIND" = ok ] && _pt_pass=1   # PLRACE
+  if [ "$_pt_was" = defer ] && [ "$_pt_pass" -eq 1 ]; then
+    RI_OKV=RACE; RACE_N=$((RACE_N+1)); note "RACE: ${_pt_lab% } failed in parallel, passed serially"
+  fi
+  _pt_kill=0; [ "$ST_KIND" = ceil ] && _pt_kill=1; [ "$ST_KIND" = run ] && [ "$RI_KIND" = ceil ] && _pt_kill=1
+  if [ "$_pt_k" = st ]; then
+    pool_st_prior; st_apply
+  else
+    _pt_sk=0; ! grep -q '^SKIP' "$U_OUT" 2>/dev/null || _pt_sk=1
+    ri_record core-live "$_pt_lab" 0 "$CEIL"; pool_cl_cache "$_pt_t" "$_pt_a" "$_pt_sk"
+  fi
+  RI_OKV=OK
+  [ "$_pt_kill" -eq 0 ] || pool_pk_write "$_pt_n"   # a unit killed by the serial run too is held for the tail next time
+  _pt_key=$(pool_key "$_pt_n"); pv_set "$_pt_n" pr 1   # PLTAILREC
+  U_CTL=""; U_OUT=""; U_CRASH=""; UNIT_DIR=""
+}
+pool_times_end() {   # an edited unit's stale @pool-k row is retired unless this run killed the unit again (it was rewritten); rows of units this run did not touch are never swept
+  _pe_i=0
+  while [ "$_pe_i" -lt "$PQ_M" ]; do
+    _pe_i=$((_pe_i+1))
+    [ "$(pq_f "$_pe_i" 12)" = 1 ] && [ "$(pv_get "$_pe_i" pkw)" != 1 ] || continue
+    tr_rewrite @pool-k "$(pool_key "$_pe_i")" -
+  done
+}
+pool_interrupt_u() {   # called by cleanup before rl_end INTERRUPTED: a unit finished but not yet printed is listed UNV
+  [ "$POOL_ON" -eq 1 ] || return 0
+  _pi_n=0
+  while [ "$_pi_n" -lt "$PQ_M" ]; do
+    _pi_n=$((_pi_n+1))
+    case $(pv_get "$_pi_n" state) in rec|defer) ;; *) continue ;; esac
+    [ "$(pv_get "$_pi_n" pr)" != 1 ] || continue
+    _pi_l=$(pq_line "$_pi_n"); RUN_S=$(pv_get "$_pi_n" s); RUN_RSS=$(pv_get "$_pi_n" rss); RUN_S=${RUN_S:-0}; RUN_RSS=${RUN_RSS:--}
+    if [ "$(fld 5 "$_pi_l")" = st ]; then rl_u core-selftest "$(fld 6 "$_pi_l")" UNV run; else rl_u core-live "$(fld 6 "$_pi_l")" UNV run; fi
+  done
+}
+# ---- the interrupt (P-17): every pooled unit's group, watchdog and worker, one shared grace and one confirm ----
+pool_pgids() {   # one validated, proven-descendant arm pgid per line, for every pool and tail control dir that still holds one
+  for _pg_d in "$WORK"/ctl/u* "$WORK"/ctl/t*; do
+    [ -d "$_pg_d" ] || continue
+    _pg_g=$(arm_read_pgid "$_pg_d/arm.pgid" 2>/dev/null) || continue
+    arm_descends "$_pg_g" || continue
+    ARM_NOTE=$_pg_d/trap.note arm_pgid_ok "$_pg_g" || continue
+    printf '%s\n' "$_pg_g"
+  done
+}
+pool_kill_all() {   # _pk_all (pool_pgids' answer, taken BEFORE any worker is signalled: a unit whose worker is gone is re-parented and no longer proves to descend from the lane)
+  [ -n "$_pk_all" ] || return 0
+  _pk_t=$(arm_ps first)
+  for _pk_g in $_pk_all; do
+    pv_set "$_pk_g" s1 "$(printf '%s\n' "$_pk_t" | arm_desc "$_pk_g")"
+    pv_set "$_pk_g" pl "$(pv_get "$_pk_g" s1 | LC_ALL=C awk -v g="$_pk_g" 'NF && $2 != g { print $1 }')"
+    arm_sig TERM "$_pk_g"; arm_sigp TERM "$_pk_g"
+    for _pk_p in $(pv_get "$_pk_g" pl); do arm_sigp TERM "$_pk_p"; done
+    arm_sig CONT "$_pk_g"; arm_sigp CONT "$_pk_g"
+    for _pk_p in $(pv_get "$_pk_g" pl); do arm_sigp CONT "$_pk_p"; done
+  done
+  _pk_dl=$(( $(date +%s) + ARM_GRACE_S ))   # PLGRACE
+  while :; do
+    arm_nap; _pk_left=0
+    # shellcheck disable=SC2046  # deliberate: the saved pid list is split into one argument per pid (digits only, from arm_desc)
+    for _pk_g in $_pk_all; do [ -z "$(arm_survivors "$_pk_g" "$_pk_g" $(pv_get "$_pk_g" pl))" ] || _pk_left=1; done
+    [ "$_pk_left" -eq 1 ] || break
+    [ "$(date +%s)" -lt "$_pk_dl" ] || break
+  done
+  [ "$_pk_left" -eq 1 ] || return 0
+  _pk_t=$(arm_ps second)
+  for _pk_g in $_pk_all; do
+    pv_set "$_pk_g" ks "$(arm_killset "$_pk_g" "$(pv_get "$_pk_g" s1)" "$_pk_t")"
+    arm_sig KILL "$_pk_g"; arm_sigp KILL "$_pk_g"
+    for _pk_p in $(pv_get "$_pk_g" ks); do arm_sigp KILL "$_pk_p"; done
+  done
+  _pk_dl=$(( $(date +%s) + ARM_CONFIRM_S ))
+  while :; do
+    arm_nap; _pk_left=0
+    # shellcheck disable=SC2046  # deliberate: the saved pid list is split into one argument per pid (digits only, from arm_killset)
+    for _pk_g in $_pk_all; do [ -z "$(arm_survivors "$_pk_g" "$_pk_g" $(pv_get "$_pk_g" ks))" ] || _pk_left=1; done
+    [ "$_pk_left" -eq 1 ] || break
+    [ "$(date +%s)" -lt "$_pk_dl" ] || break
+  done
+  return 0
+}
+pool_trap_kill() {
+  [ "$POOL_ON" -eq 1 ] || return 0
+  _pk_all=$(pool_pgids)
+  for _pk_d in "$WORK"/ctl/u* "$WORK"/ctl/t*; do
+    [ -d "$_pk_d" ] || continue
+    _pk_w=$(arm_read_pgid "$_pk_d/wd.pid" 2>/dev/null) || continue   # the watchdog, by the pid run_timed recorded
+    arm_descends "$_pk_w" || continue   # S-3: a pid read from a file is signalled only if it is a proven descendant of the lane, as pool_pgids does
+    arm_pid_term "$_pk_w"
+  done
+  _pk_n=0
+  while [ "$_pk_n" -lt "$PQ_M" ]; do _pk_n=$((_pk_n+1)); arm_pid_term "$(pv_get "$_pk_n" pid)"; done   # each unit's worker
+  pool_kill_all   # PLKILL
+  return 0
 }
 
 # -------------------------------------------------------------------------------- the bucket split
@@ -1433,11 +2544,11 @@ run_parselint_scoped() {
 run_secretscan_scoped() {
   if [ -z "$MB" ]; then
     RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-secretscan "no merge-base: the PR range is underivable, no scan ran"
-    unv "secret-scan range underivable (no merge-base)"; return 0
+    unv "secret-scan range underivable (no merge-base)"; rl_u core-secretscan gitleaks UNV; return 0
   fi
   if ! grep -qxF 'conformance/secret-scan-wired.sh' "$WORK/scripts" 2>/dev/null; then
     RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-secretscan "conformance/secret-scan-wired.sh is not a regular file in this tree: the scan cannot run"
-    unv "secret-scan checker absent (conformance/secret-scan-wired.sh)"; return 0
+    unv "secret-scan checker absent (conformance/secret-scan-wired.sh)"; rl_u core-secretscan gitleaks UNV; return 0
   fi
   run_inv "$SELFCEIL" sh conformance/secret-scan-wired.sh --range "$MB"
   report_inv core-secretscan "gitleaks range scan ($MB..HEAD)" 0 "$SELFCEIL"
@@ -1566,6 +2677,7 @@ cache_skip() {
   case $_cs_s in ''|*[!0-9a-f]*) return 1 ;; esac
   _cs_x=""; [ "$1" = core-live ] || _cs_x=" (bookkeeping paths not compared; CI grades them)"
   printf '  SKIP  %-18s %-46s — passed at %s on this tree (producer %s)%s\n' "$1" "$2${3:+ $3}" "$_cs_s" "$ROOT" "$_cs_x"
+  rl_u "$1" "$2" SKIP
   CACHE_SKIPS=$((CACHE_SKIPS+1))
   return 0
 }
@@ -1589,7 +2701,7 @@ exec_cached() {
   _ec_f=$FAILS; _ec_c=$CRASH
   exec_check "$@"
   [ "$CACHE_OK" -eq 1 ] && [ "$FAILS" -eq "$_ec_f" ] && [ "$CRASH" -eq "$_ec_c" ] || return 0   # CRCACHE
-  if grep -q '^SKIP' "$WORK/out" 2>/dev/null; then return 0; fi
+  if grep -q '^SKIP' "${U_OUT:-$WORK/out}" 2>/dev/null; then return 0; fi
   cache_record "$1" "$1 $2 $3"
   return 0
 }
@@ -1600,12 +2712,13 @@ run_core() {
   CORE_N=$(grep -c '' < "$WORK/q.order" || :)    # read BEFORE any child runs: the verdict's scope text uses it
   if [ "$WARRANTED" -eq 1 ]; then
     cache_init
+    [ "$POOL_J" -lt 2 ] || { : > "$WORK/q.none"; CL_FEED=$WORK/q.none; }   # SWAS-868: at J >= 2 the core-live checks join the pool at the selftest_arm site (pool_arm reads q.order itself)
     while IFS= read -r _r <&3; do
       _rb=${_r%%"$TAB"*}; _ra=${_r#*"$TAB"}
       if cache_skip core-live "$_rb" "$_ra"; then continue; fi
-      hl_need core-live || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-live "the heavy-arm lock is not held: the remaining core-live checks are not run"; break; }
+      hl_need core-live || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-live "the heavy-arm lock is not held: the remaining core-live checks are not run"; rl_u core-live lock UNV; break; }
       exec_cached core-live "$_rb" "$_ra" 0 "$CEIL"
-    done 3< "$WORK/q.order"
+    done 3< "${CL_FEED:-$WORK/q.order}"
   else
     note "core-live: $CORE_N CI-derived checks NOT run by default — --warranted runs them; CI runs every one"
     run_shellcheck_scoped
@@ -1613,27 +2726,7 @@ run_core() {
   run_parselint_scoped
   run_secretscan_scoped
   local_defer_scan
-  [ "$SELF_NE" -eq 0 ] || note "core-selftest: $SELF_NE touched selftest(s) NOT ENFORCED locally — CI binds them: $SELF_NE_LIST (CI's H2 lane grades the faces; this run never claims they ran; the other touched targets are graded explicitly, so an untracked touched selftest script fails face (b) here — commit before running the lane)"
-  if [ "$SELF_NE" -gt 0 ] && [ -s "$WORK/herm.targets" ] && ! hl_need core-selftest; then
-    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"
-  elif [ "$SELF_NE" -gt 0 ] && [ -s "$WORK/herm.targets" ]; then
-    # a listed target is touched: the hermetic lane gets the OTHER touched roster targets explicitly (--touched would re-derive the listed one)
-    # The file is ONE PATH PER LINE: argv is built by a read loop, one argument per line (a word-split of the file would join two paths).
-    set -f; set --
-    while IFS= read -r _ht; do set -- "$@" "$_ht"; done < "$WORK/herm.targets"
-    set +f
-    RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh "$@"; RUN_HB=""
-    report_inv core-selftest "selftest-hermetic $(LC_ALL=C grep -c '^TARGET: ' "$WORK/out" || :) explicit targets ($SELF_NE_LIST not run, CI binds it; both faces)" 0 "$SELFCEIL"
-  elif [ "$SELF_NE" -gt 0 ]; then
-    excl_check   # the listed target(s) were the only touched selftests: nothing to run locally (the note above says so), but a touched exclusions file is still validated
-  elif [ -s "$WORK/q.sel" ] && ! hl_need core-selftest; then
-    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"
-  elif [ -s "$WORK/q.sel" ]; then
-    RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh --touched; RUN_HB=""
-    # The count is the HERMETIC LANE'S OWN (its `TARGET:` lines), not this lane's q.sel: it re-derives
-    # the set from its roster, so q.sel would misdescribe the subject that was actually run.
-    report_inv core-selftest "selftest-hermetic --touched ($(LC_ALL=C grep -c '^TARGET: ' "$WORK/out" || :) targets by its own derivation, both faces)" 0 "$SELFCEIL"
-  fi
+  selftest_arm   # STARM
   if [ -s "$WORK/q.unt" ]; then
     note "untouched-selftest: $(grep -c '' < "$WORK/q.unt" || :) derived --selftest invocations NOT run (--all is the scheduled sweep)"
     [ "$VERBOSE" -eq 0 ] || sed 's/^/#   /' "$WORK/q.unt"
@@ -1689,22 +2782,26 @@ run_board() {
   if [ ! -s "$WORK/board.rows" ]; then
     RAN=$((RAN+1)); FAILS=$((FAILS+1))
     printf '  FAIL  %-18s %s\n' core-board "no board gate derived from conformance/verify.sh although BACKLOG.md is in the diff"
+    rl_u core-board board-gates FAIL
     return 0
   fi
   while IFS="$TAB" read -r _bn _bb _ba <&3; do
     if [ "$_bn" = '(underived-registry-row)' ]; then
       RAN=$((RAN+1)); FAILS=$((FAILS+1))
       printf '  FAIL  %-18s %s\n' core-board "$_bn a board-gate registry row was not derived — check its shape"
+      rl_u core-board underived-registry-row FAIL
       continue
     fi
     if [ "$_bb" = '!' ]; then
       RAN=$((RAN+1)); FAILS=$((FAILS+1))
       printf '  FAIL  %-18s %s\n' core-board "$_bn REFUSED: script or argv outside the closed charset (never executed)"
+      rl_u core-board "$_bn" FAIL
       continue
     fi
     if ! grep -qxF "conformance/$_bb.sh" "$WORK/scripts" 2>/dev/null; then
       RAN=$((RAN+1)); FAILS=$((FAILS+1))
       printf '  FAIL  %-18s %s\n' core-board "$_bn ($_bb.sh) not a regular file in conformance/ (never executed)"
+      rl_u core-board "$_bn" FAIL
       continue
     fi
     _oi=$IFS; set -f; IFS=' '
@@ -1769,7 +2866,7 @@ TWEOF
     # SWAS-600: a crash is never read as the NOT ENFORCED N/A
     _tw_c=0; crash_ev_run || _tw_c=$?   # CRTWIN
     if [ "$_tw_c" -eq 1 ] && twin_na "$_tb" "$RUN_RC"; then
-      RAN=$((RAN+1)); TN=$((TN+1)); basename_ok "$TWIN_BE" || TWIN_BE='(unsafe-name)'
+      RAN=$((RAN+1)); TN=$((TN+1)); rl_u twin "$_tb" NA; basename_ok "$TWIN_BE" || TWIN_BE='(unsafe-name)'
       printf "  N/A   %s  NOT ENFORCED only (backend '%s') — CI binds the row leg through tracker-board-gates where that context is required on the base; not verifiable locally\n" "$_tb" "$TWIN_BE"
     else report_inv twin "$_tb $(fld 4 "$_row")" "${_tx:-0}" "$CEIL"; fi
     note "  twin reason: $(fld 7 "$_row")"
@@ -2070,7 +3167,11 @@ TR_BUDGET_DEFAULT=300
 TR_CEIL_MIN=120
 TR_UNKNOWN_S=30
 TR_RED_S=2592000
-TR_TIMES=""; TR_BUDGET=300; TR_TAB=""; TR_ORD=""; TR_HV=""; TR_CX=""; TR_CXJ=""; TR_TJ=""; TR_CIL=""
+# SWAS-840 (errata C1 of the local-parity design): a higher, printed cap on the arm. TR_CAP is a plain assignment (no environment or argv name; a selftest scales it in a lane COPY). The arm's effective
+# cap (TR_CAPE) is max(TR_CAP, the fill budget), so a raised fill is never clipped. A NAMED reader (a derived check whose own script text, comment-stripped, names a listed path literally) starts
+# regardless of the fill and of its measured time while its prediction fits the cap left; every unit is charged against the cap with the measured wall, and no unit starts past it.
+TR_CAP=600
+TR_TIMES=""; TR_BUDGET=300; TR_CAPE=600; TR_TAB=""; TR_ORD=""; TR_HV=""; TR_CX=""; TR_CXJ=""; TR_TJ=""; TR_CIL=""
 TS_T=0; TR_RUNN=0; TR_USED=0; TR_CIN=0
 L_SEC=""; L_RED=0; L_SRC=""
 PLAN=0
@@ -2081,7 +3182,7 @@ NL='
 TRTAB='
 BEGIN { OFS = "\t" }
 FILENAME == SEEDF { k = $1 SUBSEP $2; keys[k] = 1; kb[k] = $1; ka[k] = $2; ssec[k] = $3; sred[k] = $4; next }
-$1 ~ /^@/ { mk = $1 SUBSEP $2; mrow[mk] = $3 OFS $4 OFS $5; mb[mk] = $1; mn[mk] = $2; next }
+$1 ~ /^@/ { if ($1 == "@reader-k" && NOW - $6 > REDS) next; mk = $1 SUBSEP $2; mrow[mk] = $3 OFS $4 OFS $5; mb[mk] = $1; mn[mk] = $2; next }
 { k = $1 SUBSEP $2; keys[k] = 1; kb[k] = $1; ka[k] = $2
   if ($5 == "local") { if (!(k in lsec) || $3 + 0 > lsec[k]) lsec[k] = $3 + 0; if ($4 + 0 > lred[k]) lred[k] = $4 + 0 }
   else if ($5 == "ci") { csec[k] = $3 + 0; cred[k] = $4 + 0 }
@@ -2177,6 +3278,27 @@ tr_record() {
   if [ -s "$_rt" ] && mv -f "$_rt" "$TR_TIMES" 2>/dev/null; then :; else rm -f "$_rt" 2>/dev/null; fi
   return 0
 }
+# tr_rewrite <tag> <key> <blob|-> — SWAS-868: replace (blob) or remove (`-`) the ONE local row for a tag and key; every other row is kept (mktemp + mv, as tr_record). The @pool-k lifecycle needs it: tr_record only appends.
+tr_rewrite() {
+  [ -n "$TR_TIMES" ] || return 0
+  _rw=$(mktemp "$TR_TIMES.XXXXXX") || return 0
+  if ! { if [ -f "$TR_TIMES" ]; then cat "$TR_TIMES"; fi; } | T=$1 K=$2 LC_ALL=C awk -F'\t' '!($1 == ENVIRON["T"] && $2 == ENVIRON["K"])' > "$_rw" 2>/dev/null; then rm -f "$_rw" 2>/dev/null; return 0; fi
+  [ "$3" = - ] || printf '%s\t%s\t%s\t0\tlocal\t%s\n' "$1" "$2" "$3" "$(date +%s)" >> "$_rw"
+  if mv -f "$_rw" "$TR_TIMES" 2>/dev/null; then :; else rm -f "$_rw" 2>/dev/null; fi
+  return 0
+}
+# tr_pk_blob <key> — the blob of the @pool-k row for a key, from the merged table; a value that is not 40 or 64 hex digits (the blob sits in the seconds field, which tr_look would drop as a non-number) reads as no row.
+tr_pk_blob() {
+  _pk=$(K=$1 LC_ALL=C awk -F'\t' '$1 == "@pool-k" && $2 == ENVIRON["K"] { print $3; exit }' <<EOF
+$TR_TAB
+EOF
+  ) || _pk=""
+  case $_pk in
+    *[!0-9a-f]*) _pk="" ;;
+  esac
+  case ${#_pk} in 40|64) ;; *) _pk="" ;; esac
+  printf '%s' "$_pk"
+}
 # tr_cost <job> — the red cost, from the table: the job's measured wall until it reds and the job-minutes of the last green full PR run.
 tr_cost() {
   _cs=""; tr_look @job "$1"; _jw=$L_SEC; tr_look @green all; _gs=$L_SEC
@@ -2189,11 +3311,20 @@ tr_ci() {   # tr_ci <label> <job> <why> — one CI-GRADED line for the paste blo
 }
 
 # ---- selection, order, run -------------------------------------------------------------------------
-# tr_select <listing> — walk $WORK/derive.out: the runnable candidates become TR_ORD (9 tab fields: tier · key · label · basename · argv · job ·
-# seconds · reds · source, sorted), the heavy ones TR_HV, one row per context job TR_CX, every candidate's job TR_TJ. All variables: see the section header.
+# tr_select <listing> — walk $WORK/derive.out: the runnable candidates become TR_ORD (11 tab fields: tier · key · label · basename · argv · job ·
+# seconds · reds · source · named-reader flag · floor flag, sorted), the heavy ones TR_HV, one row per context job TR_CX, every candidate's job TR_TJ. All variables: see the section header.
 tr_select() {
   _sl=$1; _rec=""; TR_HV=""; TR_CX=""; TR_CXJ=""; TR_TJ=""; _seen=$NL
   TS_T=0
+  # the literal names a NAMED reader may mention (SWAS-840): each listed path, and the basename of a listed conformance/ or scripts/ path. Kept in a shell VARIABLE and matched through the
+  # environment (the st_named idiom): nothing read after the first child lives in $WORK. DISCLOSED ceilings of the rule: a name reached through a variable is not found, and a name that sits
+  # after a `#` inside an expansion or a string (`${x#…}`, "a # b") is comment-stripped and under-matches; CI grades both.
+  _pat=""
+  while IFS= read -r _tp; do
+    [ -n "$_tp" ] || continue
+    _pat="$_pat$_tp$NL"
+    case $_tp in conformance/*|scripts/*) _pat="$_pat${_tp##*/}$NL" ;; esac
+  done < "$_sl"
   while IFS= read -r _l <&8; do
     case $_l in '#'*|'') continue ;; esac
     _bk=${_l%%"$TAB"*}; _job=$(fld 2 "$_l")
@@ -2206,46 +3337,73 @@ tr_select() {
     case $_seen in *"$NL$_lab$NL"*) continue ;; esac
     _seen="$_seen$_lab$NL"
     tr_look "$_b" "$_a"
+    # a named reader killed at the cap leaves a floor (`@reader-k`, clamped to the cap, dropped by tr_times_init after 30 days): when it is above the time on record the next run predicts from it
+    # and prints it as a floor (>=N s)
+    _fl=0; _xs=$L_SEC; _xr=$L_RED; _xo=$L_SRC; tr_look @reader-k "$_lab"
+    if [ -n "$L_SEC" ] && { [ -z "$_xs" ] || [ "$L_SEC" -gt "$_xs" ]; }; then _xs=$L_SEC; _fl=1; _xo=local; fi
+    L_SEC=$_xs; L_RED=$_xr; L_SRC=$_xo
     # a basename-wide heavy twin row prices the bare battery, not this invocation: an EXACT-invocation time row within the budget lifts it (S7, design 3a)
     _hv=0; if [ "$_bk" = heavy ]; then _hv=1; elif is_heavy_row "$_b" && { [ -z "$L_SEC" ] || [ "$L_SEC" -gt "$TR_BUDGET" ]; }; then _hv=1; fi
     if [ "$_hv" -eq 1 ]; then TR_HV="$TR_HV$_lab$TAB$_job$NL"; continue; fi
     if [ "$_bk" = selftest ] && grep -qxF -e "conformance/$_b.sh" "$_sl"; then continue; fi
-    if [ "$_b" = prepush-lane ] && [ "$_a" = --selftest ]; then tr_ci "$_lab" "$_job" "the lane's own selftest: CI binds it"; continue; fi
+    if [ "$_b" = prepush-lane ] && [ "$_a" = --selftest ]; then tr_ci "$_lab" "$_job" "the lane's own selftest is long; it runs here when the lane is touched"; continue; fi
     [ -s "$_sl" ] || continue     # nothing listed: nothing to push, nothing to run
     TR_TJ="$TR_TJ$_job$NL"
+    _nm=0
+    if [ -f "conformance/$_b.sh" ] && sed 's/#.*//' "conformance/$_b.sh" | PAT=$_pat LC_ALL=C awk 'BEGIN { n = split(ENVIRON["PAT"], p, "\n") } { for (i = 1; i <= n; i++) if (p[i] != "" && index($0, p[i])) { f = 1; exit } } END { exit !f }'; then _nm=1; fi   # TRNAMED
     if [ "$L_RED" -ge 1 ]; then _tier=1; _key=$((100000 - L_RED))
     else _tier=2; _key=${L_SEC:-$TR_UNKNOWN_S}; fi
     TS_T=$((TS_T+1))
-    _rec="$_rec$_tier$TAB$_key$TAB$_lab$TAB$_b$TAB$_a$TAB$_job$TAB$L_SEC$TAB$L_RED$TAB$L_SRC$NL"
+    _rec="$_rec$_tier$TAB$_key$TAB$_lab$TAB$_b$TAB$_a$TAB$_job$TAB$L_SEC$TAB$L_RED$TAB$L_SRC$TAB$_nm$TAB$_fl$NL"
   done 8< "$WORK/derive.out"
   TR_ORD=$(printf '%s' "$_rec" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3)
 }
+# tr_srcw <source> — the source of a time, in the words the over-cap line prints: measured (local, CI or a red row), seed or unmeasured.
+tr_srcw() { case ${1-} in local|ci|red) printf measured ;; seed) printf seed ;; *) printf unmeasured ;; esac; }
 # tr_exec — walk the order under the budget. A tier-1 (red history) check starts whatever its recorded time says (a forged row cannot push it out);
 # any other starts only if its prediction fits what is left. The budget is charged with MEASURED wall, never with predictions.
+# SWAS-840: every NAMED reader (field 10; not a red-history one, which keeps the tier-1 rule) takes the CAP path, never the fill: it starts while its prediction fits the cap left, its ceiling is cut to the
+# cap left, and it is charged against the cap and not the fill, so it only ADDS units. Named readers keep their tier-2 ORDER (there is no tier ahead of red history). Tier 1 is exempt from the
+# cap's prediction test (a forged time row must not push a red check out) and is cut only by its ceiling. Every unit is charged against the cap with the measured wall, no unit starts past it
+# (or with a 0 s ceiling), and a unit's ceiling is cut to the cap left: the arm never runs past the cap.
+# P2 WARNING: a longest-first reorder or a pool must not let named readers drain the cap ahead of the fill units; charge them in a separate pass or keep the named share bounded.
+# A named reader killed at its ceiling leaves a floor (`@reader-k`: ceiling + 1 s, clamped to the cap + 1 s so a reader killed at the full cap is listed over it next time, expiring after 30 days), so the next run predicts from it and lists it over the cap as `measured >=N s`.
 tr_exec() {
-  _rem=$TR_BUDGET; _lk=0; _ordl=$TR_ORD     # popped line by line from a VARIABLE: no descriptor or file a child could reach
+  _rem=$TR_BUDGET; _caprem=$TR_CAPE; _lk=0; _ordl=$TR_ORD     # popped line by line from a VARIABLE: no descriptor or file a child could reach
   while [ -n "$_ordl" ]; do
     _l=${_ordl%%"$NL"*}
     case $_ordl in *"$NL"*) _ordl=${_ordl#*"$NL"} ;; *) _ordl="" ;; esac
     _tier=$(fld 1 "$_l"); _lab=$(fld 3 "$_l"); _b=$(fld 4 "$_l"); _a=$(fld 5 "$_l"); _job=$(fld 6 "$_l")
-    _sec=$(fld 7 "$_l"); _src=$(fld 9 "$_l")
+    _sec=$(fld 7 "$_l"); _src=$(fld 9 "$_l"); _nm=$(fld 10 "$_l"); _fl=$(fld 11 "$_l")
+    _pf=""; _pw=""; if [ "$_fl" = 1 ]; then _pf='>='; _pw="; a kill left this floor: re-run with PREPUSH_NO_CACHE=1 for one run, or delete the @reader-k row for it in times.tsv"; fi
     case $_tier in 1) _tn=red-history ;; *) _tn=measured ;; esac
+    if [ "$_tier" != 1 ] && [ "$_nm" = 1 ]; then _tn='named reader'; fi   # TRTAG
     _pred=${_sec:-$TR_UNKNOWN_S}
-    _go=0
+    _go=0; _ncf=0
     if [ "$_tier" = 1 ]; then _go=0; [ "$_rem" -le 0 ] || _go=1
-    else [ "$_pred" -gt "$_rem" ] || _go=1; fi
+    else [ "$_rem" -le 0 ] || [ "$_pred" -gt "$_rem" ] || _go=1; fi
+    if [ "$_nm" = 1 ] && [ "$_tier" != 1 ]; then   # TRNAMEGO
+      if [ "$_caprem" -gt 0 ] && [ "$_pred" -le "$_caprem" ]; then _go=1; _ncf=1   # TRCAP
+      else tr_ci "$_lab" "$_job" "over the ${TR_CAPE} s readers cap: measured ${_pf}${_pred} s, ${_caprem} s left [$(tr_srcw "$_src")]$_pw"; continue; fi
+    fi
     if [ "$_go" -eq 0 ]; then tr_ci "$_lab" "$_job" "budget spent: predicted ${_pred} s [${_src:-unknown}]"; continue; fi
+    if [ "$_ncf" -eq 0 ] && { [ "$_caprem" -le 0 ] || { [ "$_tier" != 1 ] && [ "$_pred" -gt "$_caprem" ]; }; }; then
+      tr_ci "$_lab" "$_job" "over the ${TR_CAPE} s readers cap: measured ${_pf}${_pred} s, ${_caprem} s left [$(tr_srcw "$_src")]$_pw"; continue
+    fi
     _cl=$TR_CEIL_MIN
     if [ -n "$_sec" ] && [ $((_sec * 3 / 2)) -gt "$_cl" ]; then _cl=$((_sec * 3 / 2)); fi
-    _cap=0; if [ "$_cl" -gt "$_rem" ]; then _cl=$_rem; _cap=1; fi
+    _lim=$_rem; if [ "$_ncf" -eq 1 ] || [ "$_caprem" -lt "$_lim" ]; then _lim=$_caprem; fi
+    _cap=0; if [ "$_cl" -gt "$_lim" ]; then _cl=$_lim; _cap=1; fi
     if [ "$PLAN" -eq 1 ]; then
-      _cut=""; if [ "$_rem" -lt "$_pred" ]; then _cut=" CUT: only ${_rem} s of the budget is left"; fi
+      _cut=""; if [ "$_ncf" -eq 0 ] && [ "$_rem" -lt "$_pred" ]; then _cut=" CUT: only ${_rem} s of the budget is left"; fi
       printf '  PLAN  %-18s %-46s ~%4ss  [%s]%s%s\n' touched-readers "$_lab" "$_pred" "$_tn" "" "$_cut"
-      TR_RUNN=$((TR_RUNN+1)); TR_USED=$((TR_USED + _pred)); _rem=$((_rem - _pred)); if [ "$_rem" -lt 0 ]; then _rem=0; fi
+      TR_RUNN=$((TR_RUNN+1)); TR_USED=$((TR_USED + _pred))
+      if [ "$_ncf" -eq 0 ]; then _rem=$((_rem - _pred)); if [ "$_rem" -lt 0 ]; then _rem=0; fi; fi
+      _caprem=$((_caprem - _pred)); if [ "$_caprem" -lt 0 ]; then _caprem=0; fi
       continue
     fi
     if [ "$_lk" -eq 0 ]; then
-      hl_need touched-readers || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' touched-readers "the heavy-arm lock is not held: the touched readers are not run"; return 0; }
+      hl_need touched-readers || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' touched-readers "the heavy-arm lock is not held: the touched readers are not run"; rl_u touched-readers lock UNV; return 0; }
       _lk=1
     fi
     _oi=$IFS; set -f; IFS=' '
@@ -2253,15 +3411,16 @@ tr_exec() {
     set -- $_a
     IFS=$_oi; set +f
     run_inv "$_cl" sh "conformance/$_b.sh" "$@"
-    _rem=$((_rem - RUN_S)); if [ "$_rem" -lt 0 ]; then _rem=0; fi
+    if [ "$_ncf" -eq 0 ]; then _rem=$((_rem - RUN_S)); if [ "$_rem" -lt 0 ]; then _rem=0; fi; fi
+    _caprem=$((_caprem - RUN_S)); if [ "$_caprem" -lt 0 ]; then _caprem=0; fi
     TR_USED=$((TR_USED + RUN_S)); TR_RUNN=$((TR_RUNN+1))
     case $RUN_RC in
       0) _tr_c=0; crash_ev_run || _tr_c=$?
          if [ "$_tr_c" -ne 1 ]; then report_inv touched-readers "$_lab" 0 "$_cl"   # SWAS-600: a crash-demoted reader reads UNVERIFIED, takes no OK row and seeds no time
-         else RAN=$((RAN+1)); printf '  OK    %-18s %-46s %4ss  [%s]\n' touched-readers "$_lab" "$RUN_S" "$_tn"; tr_record "$_b" "$_a" "$RUN_S"; fi ;;
+         else RAN=$((RAN+1)); printf '  OK    %-18s %-46s %4ss  [%s]\n' touched-readers "$_lab" "$RUN_S" "$_tn"; rl_u touched-readers "$_b" OK run; tr_record "$_b" "$_a" "$RUN_S"; fi ;;
       124|137|143)
-        if [ "$_cap" -eq 1 ]; then tr_ci "$_lab" "$_job" "budget spent: only ${_cl} s of the budget was left (killed at ${RUN_S} s)"
-        elif [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "local ceiling hit at ${RUN_S} s${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+        if [ "$_cap" -eq 1 ] && [ "$_ncf" -eq 0 ] && [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "budget spent: only ${_cl} s of the budget was left (killed at ${RUN_S} s)"   # TRBS
+        elif [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "local ceiling hit at ${RUN_S} s${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"; [ "$_ncf" -eq 0 ] || { _fv=$((_cl + 1)); [ "$_fv" -le $((TR_CAPE + 1)) ] || _fv=$((TR_CAPE + 1)); tr_record @reader-k "$_lab" "$_fv"; }   # TRREC
         else report_inv touched-readers "$_lab" 0 "$_cl"; fi ;;
       *) report_inv touched-readers "$_lab" 0 "$_cl" ;;
     esac
@@ -2300,9 +3459,10 @@ tr_arm() {
   fi
   tr_times_init || return 0
   TR_BUDGET=$(raise_only "${PREPUSH_READERS_BUDGET_S-}" "$TR_BUDGET_DEFAULT" PREPUSH_READERS_BUDGET_S)
+  TR_CAPE=$TR_CAP; [ "$TR_BUDGET" -le "$TR_CAPE" ] || TR_CAPE=$TR_BUDGET   # the cap is never below the fill: a raised fill is not clipped
   TR_CIL=""; TR_RUNN=0; TR_USED=0; TR_CIN=0
   tr_select "$WORK/listing"
-  note "touched-readers: $TS_T candidate(s), red history first, then by measured time · budget ${TR_BUDGET}s$([ "$PLAN" -eq 0 ] || printf ' · PLAN, nothing is executed')"
+  note "touched-readers: $TS_T candidate(s), red history first, then by measured time · budget ${TR_BUDGET}s (the fill) · cap ${TR_CAPE}s [printed]$([ "$PLAN" -eq 0 ] || printf ' · PLAN, nothing is executed')"
   tr_exec
   tr_list_rest
   _trl=$(tr_timeout_risk)
@@ -2400,6 +3560,7 @@ reco() {
 ok_verdict() {
   _tnc=""; [ "$TN" -eq 0 ] || _tnc="$TN board-bound twin(s) NOT ENFORCED locally — CI binds them"   # SWAS-163
   [ "$SELF_NE" -eq 0 ] || _tnc="${_tnc:+$_tnc; }$SELF_NE touched selftest(s) NOT ENFORCED locally — CI binds them: $SELF_NE_LIST"   # SWAS-442
+  [ "$RACE_N" -eq 0 ] || _tnc="${_tnc:+$_tnc; }$RACE_N RACE"   # SWAS-868 S-4: a unit that failed in parallel and passed serially is named on the OK line (RACE_N is 0 at J = 1)
   if [ "$WARRANTED" -eq 0 ] && [ "$CORE_N" -gt 0 ]; then
     printf 'PARITY-CORE: OK (own surface — %s CI-derived core-live check(s) not run; --warranted and CI run them%s)\n' "$CORE_N" "${_tnc:+; $_tnc}"
   elif [ "$WARRANTED" -eq 1 ] && [ "$CACHE_SKIPS" -gt 0 ]; then
@@ -2412,16 +3573,20 @@ verdict() {
   [ "$VERBOSE" -eq 0 ] || { note "executed argv ($RAN invocation(s), log $ARGVLOG):"
                             sed 's/^/#   /' "$ARGVLOG"; }
   note "work root: $WORK (removed best-effort at exit)"
-  _rc=0
+  # SWAS-784: the git toplevel this run grades (the lane refuses nothing, but the tree it read is now visible)
+  _tr=${ROOT:-unknown}; case $_tr in *[[:cntrl:]]*) _tr='<unprintable path>' ;; esac   # a control character in the path would forge a line
+  note "tree: $_tr"   # TREELINE
+  _rc=0; _vw=OK
   # SWAS-600: the printed order is UNV, then CRASH, then FAILS
   if [ "$CRASH" -gt 0 ]; then   # CRVERD
     _vx=""; [ "$FAILS" -eq 0 ] || _vx="; plus $FAILS failing unit(s)"
-    _v="PARITY-CORE: UNVERIFIED (${UNV:+$UNV; plus }$CRASH unit(s) crashed: $CRASH_LIST$_vx)"; _rc=1
-  elif [ -n "$UNV" ]; then _v="PARITY-CORE: UNVERIFIED ($UNV)"; _rc=1
-  elif [ "$FAILS" -gt 0 ]; then _v="PARITY-CORE: FAIL"; _rc=1
+    _v="PARITY-CORE: UNVERIFIED (${UNV:+$UNV; plus }$CRASH unit(s) crashed: $CRASH_LIST$_vx)"; _rc=1; _vw=UNVERIFIED
+  elif [ -n "$UNV" ]; then _v="PARITY-CORE: UNVERIFIED ($UNV)"; _rc=1; _vw=UNVERIFIED
+  elif [ "$FAILS" -gt 0 ]; then _v="PARITY-CORE: FAIL"; _rc=1; _vw=FAIL
   else _v=$(ok_verdict); fi
   printf '%s\n' "$_v"                       # THE LAST LINE, always, and never `RESULT:`
   [ "$BEST" -eq 0 ] || _rc=0                # --best-effort moves the rc, never the verdict line
+  rl_end "$_vw" "$_rc"                      # SWAS-568: the end record carries the word and rc just printed and returned
   return "$_rc"
 }
 
@@ -2435,6 +3600,7 @@ run_lane() {
   # the lane does NOT run (an UNVERIFIED precondition stops execution, exactly like a missing dash).
   [ "$_ci" = "$CI_DEFAULT" ] || unv "derived from a non-CI file: $_ci"
   work_init; bounds_init; base_check; listing_derive; docs_classify; shim_init
+  rl_start "$_ci"   # RLSTART
   derive "$_ci" > "$WORK/derive.out" 2>&1 || { sed -n '/^#/p' "$WORK/derive.out"
                                                unv "unparseable ci.yml"; verdict; return $?; }
   sed -n '/^#/p' "$WORK/derive.out"
@@ -2444,7 +3610,7 @@ run_lane() {
   split_buckets
   if [ -n "$UNV" ]; then note "NOT RUN: $UNV"; verdict; return $?; fi
   if [ "$PLAN" -eq 1 ]; then          # SWAS-468: the plan prints the touched-readers selection and executes nothing
-    tr_arm "$_ci"; printf 'PLAN: nothing was executed\n'; [ -z "$UNV" ] || { note "UNVERIFIED: $UNV"; return 1; }; return 0
+    tr_arm "$_ci"; printf 'PLAN: nothing was executed\n'; [ -z "$UNV" ] || { note "UNVERIFIED: $UNV"; rl_end PLAN 1; return 1; }; rl_end PLAN 0; return 0
   fi
   run_core; run_board; run_twins; run_heavy; run_warranted; tr_arm "$_ci"; hl_release; reco
   verdict
@@ -2458,7 +3624,7 @@ main() {
   [ -z "${KIT_CI_FILE:-}" ] || _ci_given=1
   while [ $# -gt 0 ]; do
     case $1 in
-      --derive|--census|--selftest|--refresh-times) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
+      --derive|--census|--selftest|--refresh-times|--log-report) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
       --plan) PLAN=1 ;;                           # SWAS-468: print the touched-readers selection, execute nothing
       --ci-file) [ $# -ge 2 ] || die2 "--ci-file needs a path"; _ci=$2; _ci_given=1; shift ;;
       --base) [ $# -ge 2 ] || die2 "--base needs a ref"; BASE=$2; shift ;;
@@ -2502,6 +3668,8 @@ main() {
                 census "$_ci" ;;
     --refresh-times) root_or_die; cd "$ROOT"
                 tr_refresh "$_ci" ;;
+    --log-report) root_or_die; cd "$ROOT"
+                log_report ;;
     # NOTE: resolve_ci runs in a command substitution, so its `exit 2` ends only that SUBSHELL —
     # the rc must be propagated explicitly here or a rejected --ci-file would fall through as rc 1.
     --derive)   root_or_die; cd "$ROOT"
@@ -2528,12 +3696,19 @@ selftest() {
   # Both scopes are closed here for every fixture. The one cell that wants a system-like key supplies its own file (GIT_CONFIG_SYSTEM)
   # and unsets NOSYSTEM for that run only.
   GIT_CONFIG_NOSYSTEM=1; GIT_CONFIG_GLOBAL=/dev/null; export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL
+  # SWAS-868 (P-7): J is derived from the machine (pool_j), so a leg that runs the lane must not depend on the host. LANE_J1 and LANE_J2 are COPIES of the lane with two function overrides
+  # (pool_cores and pool_free_mb, never an environment knob): J is 1 in the first and 2 in the second. LANE is LANE_J1 from here on, so every older leg (rn, rnl, rnh, cr, trmut, lane_mut, k5_run and the
+  # lane copies they make) runs at J = 1 and never nests a pool. LANE_REAL is the lane itself, for the legs that read its text; the pool legs pass LANE_J2 (or TRSRC=$LANE_J2) explicitly.
+  LANE_REAL=$LANE; LANE_J1=$WORK/lane-j1.sh; LANE_J2=$WORK/lane-j2.sh
+  lane_mut "$LANE_J1" '' 'pool_cores() { echo 1; }; pool_free_mb() { echo 99999; }' > /dev/null
+  lane_mut "$LANE_J2" '' 'pool_cores() { echo 3; }; pool_free_mb() { echo 99999; }' > /dev/null
+  LANE=$LANE_J1
   # THE ROSTER, in order; each name is a leg's function name verbatim (a missing one is a `not found`).
   for _leg in grammar continuation block_scalar disqualifiers env_not_applied doc_level ci_file \
               census_unbucketed census_denominator census_negative twin_stale twin_cishape \
               heavy_rows twin_grammar injection scrub docs_only rename newline newline_charset base \
               ceiling budget \
-              floor argv core_selftest local_defer heavy_needs_flag dash verdict shim no_fanout no_write \
+              floor argv core_selftest local_defer troster tname tbudget heavy_needs_flag dash verdict shim bounded_fanout no_write \
               no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced twin_carve \
               cache_skip_same_tree cache_code_change cache_bookkeeping cache_heavy_bookkeeping \
               cache_dirty_bypass cache_skip_output_never \
@@ -2559,8 +3734,10 @@ selftest() {
               tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv \
               orphan_ceiling orphan_unconfirmed orphan_trap orphan_leftover orphan_noperl orphan_guard orphan_parent orphan_leader orphan_reuse orphan_perl_env \
               touched_failclosed tr8_gate tr8_gitlab touched_replay touched_budget touched_output touched_refresh \
-              preflight_case_variant crash
-  do "selftest_$_leg"; done
+              preflight_case_variant crash tree \
+              runlog_lines runlog_fields runlog_complete runlog_secret runlog_rotate runlog_unsafe runlog_interrupt runlog_rss runlog_brule runlog_report runlog_unread \
+              pool_unsettable pool_dirs pool_order pool_race pool_ceiling pool_equal pool_log pool_fd pool_late pool_records pool_pk pool_forge pool_half pool_noperl pool_reap pool_readers pool_report
+  do _leg_t0=$(date +%s); "selftest_$_leg"; echo "# leg $_leg $(( $(date +%s) - _leg_t0 ))"; done
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
   echo "prepush-lane --selftest: FAIL"; return 1
 }
@@ -3028,12 +4205,16 @@ selftest_scrub() {
   # Every BLANKET unset_pfx is probed by a name NOTHING else in the lane assigns (reviewer I-2): GIT_*
   # through GIT_SSH_COMMAND/GIT_DIR, never through GIT_CONFIG_GLOBAL — the scrub ASSIGNS that one two
   # lines later, so it survives the prefix-unset being deleted outright and proves nothing.
-  one_step; mkchk alpha 'printf "gh=[%s] ssh=[%s] kit=[%s] gsc=[%s] gdir=[%s] bc=[%s] pp=[%s] jira=[%s%s] gcg=[%s] lc=[%s] home=[%s] tmp=[%s]\n" "${GH_TOKEN-}" "${SSH_AUTH_SOCK-}" "${KIT_NOSE-}" "${GIT_SSH_COMMAND-}" "${GIT_DIR-}" "${BOARD_CLAIM_X-}" "${PREPUSH_X-}" "${JIRA_EMAIL-}" "${JIRA_TOKEN-}" "${GIT_CONFIG_GLOBAL-}" "${LC_ALL-}" "$HOME" "$TMPDIR" > "$PWD/env.out"'
+  one_step; mkchk alpha 'printf "gh=[%s] ssh=[%s] kit=[%s] gsc=[%s] gdir=[%s] bc=[%s] pp=[%s] jira=[%s%s] gcg=[%s] lc=[%s] home=[%s] tmp=[%s] gol=[%s]\n" "${GH_TOKEN-}" "${SSH_AUTH_SOCK-}" "${KIT_NOSE-}" "${GIT_SSH_COMMAND-}" "${GIT_DIR-}" "${BOARD_CLAIM_X-}" "${PREPUSH_X-}" "${JIRA_EMAIL-}" "${JIRA_TOKEN-}" "${GIT_CONFIG_GLOBAL-}" "${LC_ALL-}" "$HOME" "$TMPDIR" "${GIT_OPTIONAL_LOCKS-}" > "$PWD/env.out"'
   commit_fx
   # GIT_DIR is paired with GIT_WORK_TREE so the LANE's own git still works: unpaired, it points the lane itself at another repo — a different question (rc 2, "not a git repository").
   DVOUT=$( cd "$d" && GH_TOKEN=tok SSH_AUTH_SOCK=/tmp/s KIT_NOSE=1 GIT_SSH_COMMAND='ssh -i /k' GIT_DIR=$d/.git GIT_WORK_TREE=$d BOARD_CLAIM_X=1 PREPUSH_X=1 JIRA_EMAIL=e@x JIRA_TOKEN=jt sh "$LANE" --base HEAD --warranted 2>&1 )  # --warranted: the probe is a core-live check
   _wr=$(workroot); _env=$(cat "$d/env.out" 2>/dev/null || echo MISSING)
-  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] jira=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr/tmp]" "$_env"
+  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C, and GIT_OPTIONAL_LOCKS is 0 (PL4: set after the GIT_ prefix is unset, so it survives it)" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] jira=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr/tmp] gol=[0]" "$_env"
+  # PL4 mutant: the assignment deleted (the export then marks an unset name: the arm sees nothing)
+  trmut pl4 -e '/^    GIT_CONFIG_GLOBAL=\/dev\/null; /s/; GIT_OPTIONAL_LOCKS=0//'
+  [ -z "$TRM" ] || { rm -f "$d/env.out"; DVOUT=$( cd "$d" && sh "$TRM" --base HEAD --warranted 2>&1 ) || :
+    sfx "PL4 mutant: with the assignment gone the arm reads gol=[] (the cell is RED)" "yes" "$(grep -q 'gol=\[\]$' "$d/env.out" 2>/dev/null && echo yes || echo no)"; }
 }
 
 selftest_docs_only() {
@@ -3126,8 +4307,8 @@ selftest_floor() {
   # touched-selftest face (a stub hermetic, as in selftest_core_selftest).
   mkcin 'sh conformance/gamma.sh --selftest'
   mkchk selftest-hermetic 'echo "TARGET: conformance/gamma.sh (both faces)"'
-  commit_fx; mkchk gamma 'exit 0'
-  env_rn "$d" PREPUSH_MEM_FLOOR_MB 99999999 --green-on-clone
+  commit_fx; _flb=$(git -C "$d" rev-parse HEAD); mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx   # SWAS-811: committed and capable, so it is a roster target
+  env_rn "$d" PREPUSH_MEM_FLOOR_MB 99999999 --base "$_flb" --green-on-clone
   want "floor: the arm is still refused on this fixture"      "the green-on-clone arm is refused"
   want "floor: and the rest of the default still runs (core-selftest)" "^  OK    core-selftest "
 }
@@ -3148,15 +4329,16 @@ selftest_argv() {
 # AFTER commit_fx, so it is UNTRACKED and in the listing = touched; `beta` is committed and untouched.
 selftest_core_selftest() {
   mkcin 'sh conformance/gamma.sh --selftest' 'sh conformance/beta.sh --selftest'
-  mkchk selftest-hermetic 'printf "base=[%s] argv=[%s]\n" "${HERMETIC_BASE-}" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
-  commit_fx; mkchk gamma 'exit 0'; rn "$d" --verbose; sfx "core-selftest: rc 0" 0 "$DVRC"
-  want "core-selftest: the touched face RUNS and is labelled core-selftest" "^  OK    core-selftest *selftest-hermetic --touched (1 targets by its own derivation, both faces)"
+  mkchk selftest-hermetic 'printf "base=[%s] argv=[%s]\n" "${HERMETIC_BASE-}" "$*" > "$PWD/herm.out"; echo "TARGET: $1 (both faces)"'
+  commit_fx; _csb=$(git -C "$d" rev-parse HEAD); mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx   # SWAS-811: the roster needs the touched script committed and capable
+  rn "$d" --base "$_csb" --verbose; sfx "core-selftest: rc 0" 0 "$DVRC"
+  want "core-selftest: the touched face RUNS and is labelled core-selftest" "^  OK    core-selftest *conformance/gamma\.sh (both faces)"
   want "core-selftest: the untouched invocations are LISTED, not run" "^# untouched-selftest: 1 derived --selftest invocations NOT run"
   wantnot "core-selftest: the MERGED scanner label never appears in a run report" "^  OK    selftest "
   wantnot "core-selftest: and the core-selftest face does not run the untouched one (only the touched-readers arm may, by its measured budget; SWAS-468)" "^  OK    core-selftest .*beta"
   want "core-selftest: beta appears only under touched-readers (the arm's budget, not the core-selftest face)" "^  OK    touched-readers  *beta --selftest "
-  sfx "core-selftest: the hermetic call got --touched under HERMETIC_BASE=the base" "base=[HEAD] argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
-  want "core-selftest: its ceiling is the named SELFCEIL, not the 120s core ceiling" "^# ceiling: 120s/invocation (core-selftest 3600s · heavy arms 3600s"
+  sfx "core-selftest: the hermetic call got the ONE touched path under HERMETIC_BASE=the base" "base=[$_csb] argv=[conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  want "core-selftest: the ceiling line prints the selftest budget (a label, not a cutoff, SWAS-840) and the runaway ceiling, not SELFCEIL" "^# ceiling: 120s/invocation (core-selftest: budget 300 s, printed, not a cutoff; runaway ceiling 3600 s per target · other core arms 3600s · heavy arms 3600s"
 }
 
 # SWAS-442 (C6): verify.sh's hermetic faces are CI-bound locally, and the verdict never claims they ran. The hermetic script is again a
@@ -3179,28 +4361,28 @@ selftest_local_defer() {
   sfx "local-defer: the non-listed target's faces RUN, as the only explicit target" "argv=[conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
   want "local-defer: that run is labelled core-selftest" "^  OK    core-selftest "
   sfx "local-defer: and the clause is still printed" "yes" "$(lastline | grep -qF -e "$_ldclause" && echo yes || echo no)"
-  # LD4b (fix round I-1): TWO other touched targets reach the hermetic lane as TWO arguments, one per path, sorted — never one joined string
+  # LD4b (fix round I-1; SWAS-811: one call per target): TWO other touched targets reach the hermetic lane as TWO calls, one path each, sorted — never one joined string
   mkcin 'sh conformance/verify.sh --selftest' 'sh conformance/gamma.sh --selftest' 'sh conformance/delta.sh --selftest'
-  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
+  mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" >> "$PWD/herm.out"; echo "TARGET: $1 (both faces)"'
   commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk verify 'case ${1-} in --selftest) exit 0 ;; esac'
   mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; mkchk delta 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
-  sfx "local-defer: two other touched targets arrive as two arguments" "argv=[conformance/delta.sh conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: two other touched targets arrive as two calls, one path each" "argv=[conformance/delta.sh] argv=[conformance/gamma.sh]" "$(tr '\n' ' ' < "$d/herm.out" 2>/dev/null | sed 's/ $//' || echo MISSING)"
   # LD4c: the argv is counted, not just printed (a joined string would be ONE argument)
-  mkchk selftest-hermetic 'printf "n=%s\n" "$#" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
-  rn "$d" --base "$_ldb"
-  sfx "local-defer: and the hermetic lane counts exactly 2 arguments" "n=2" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
-  # LD6: only a non-listed target touched -> the unchanged --touched call and no clause
+  mkchk selftest-hermetic 'printf "n=%s\n" "$#" >> "$PWD/herm.out"; echo "TARGET: $1 (both faces)"'
+  rm -f "$d/herm.out"; rn "$d" --base "$_ldb"
+  sfx "local-defer: and each call counts exactly 1 argument" "n=1 n=1" "$(tr '\n' ' ' < "$d/herm.out" 2>/dev/null | sed 's/ $//' || echo MISSING)"
+  # LD6: only a non-listed target touched -> one call for it, by its own path, and no clause
   mkcin 'sh conformance/gamma.sh --selftest'
   mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
   commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
-  sfx "local-defer: a non-listed target alone keeps the unchanged --touched call" "argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: a non-listed target alone is called by its own path" "argv=[conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
   sfx "local-defer: and prints no clause" "no" "$(lastline | grep -qF -e 'NOT ENFORCED locally' && echo yes || echo no)"
-  # LD8 (L2): a path that merely CONTAINS the listed name (a nested copy, a backup) is not the listed target: the --touched call stays, no clause
+  # LD8 (L2): a path that merely CONTAINS the listed name (a nested copy, a backup) is not the listed target: the other target is still called by its path, no clause
   mkcin 'sh conformance/gamma.sh --selftest'
   mkchk selftest-hermetic 'printf "argv=[%s]\n" "$*" > "$PWD/herm.out"; echo "TARGET: conformance/gamma.sh (both faces)"'
   commit_fx; _ldb=$(git -C "$d" rev-parse HEAD); mkdir -p "$d/docs/conformance"; printf '#!/bin/sh\n' > "$d/docs/conformance/verify.sh"
   printf '#!/bin/sh\n' > "$d/conformance/verify.sh.bak"; mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx; rn "$d" --base "$_ldb"
-  sfx "local-defer: a nested or suffixed verify.sh keeps the unchanged --touched call" "argv=[--touched]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
+  sfx "local-defer: a nested or suffixed verify.sh is not the listed target: the other target is still called by its path" "argv=[conformance/gamma.sh]" "$(cat "$d/herm.out" 2>/dev/null || echo MISSING)"
   sfx "local-defer: and prints no clause (the match is the whole line)" "no" "$(lastline | grep -qF -e 'NOT ENFORCED locally' && echo yes || echo no)"
   # LD9 (L1): an other touched target whose name cannot be argv is NAMED in the clause, never silently dropped
   mkcin 'sh conformance/verify.sh --selftest'
@@ -3221,6 +4403,325 @@ selftest_local_defer() {
   # LD7: the exemption is a literal one-entry list, never a pattern
   _ldn=$(grep -c -e "^LOCAL_DEFER_SELFTESTS='conformance/verify\.sh'" "$LANE" || :)
   sfx "local-defer: the exemption is the literal one-entry list" 1 "$_ldn"
+}
+
+# SWAS-811 (design docs/architecture/2026-11-10-prepush-names-every-selftest-811-design.md, controls R1-R6 and R8-R19): the touched selftests are run one call per target, inside a wall
+# budget, or named — never silent. Every cell drives a kit-tree fixture whose hermetic script is a recording STUB (the real one is far too heavy) and carries ONE named mutant: a sed on a
+# COPY of the lane (trmut) that must turn the same scenario RED. The mutation targets are the `# ST…` tags in the lane's own text. A budget small enough to test is a SCALED lane copy
+# (the touched-budget cells' idiom: a sed on ST_BUDGET_DEFAULT), never an environment or argv knob.
+# stfx <stub-body> [path…] -> $d, _stb: the stub runs <stub-body>; each capable <path> (its own bytes, so its own blob sha) is COMMITTED after the base commit _stb, so the listing is
+# the delta against _stb and every path is committed.
+stfx() {
+  _sb=$1; shift
+  one_step; mkchk selftest-hermetic "$_sb"; commit_fx; _stb=$(git -C "$d" rev-parse HEAD)
+  for _sp in "$@"; do
+    mkdir -p "$d/${_sp%/*}"; printf '#!/bin/sh\n# %s\ncase ${1-} in --selftest) exit 0 ;; esac\n' "$_sp" > "$d/$_sp"
+  done
+  # with no path there is nothing to commit, and `git commit` then exits 1: under `set -e` that ended the whole selftest silently (R8 and R19 call stfx with no path)
+  [ "$#" -eq 0 ] || commit_fx
+}
+# hm — what the recording stub saw, one `argv=[…]` per call, or MISSING when it was never called.
+hm() { if [ -f "$d/herm.out" ]; then tr '\n' ' ' < "$d/herm.out" | sed 's/ $//'; else echo MISSING; fi; }
+# strun <home> <lane> [VAR=value…] — a RUN of $d against the delta _stb with the cache ON in <home> (the recorded times live there) -> DVOUT/DVRC.
+strun() { _sh=$1; _sl=$2; shift 2; DVOUT=$( cd "$d" && env HOME="$_sh" PREPUSH_NO_CACHE=0 "$@" sh "$_sl" --base "$_stb" 2>&1 ) && DVRC=0 || DVRC=$?; }
+# stt <home> <blob>=<seconds>… — the times state of <home>: one `@selftest` row per blob (or key) -> where the lane under test looks.
+stt() {
+  _sth=$1; shift; : > "$WORK/trtab.rows"
+  for _stk in "$@"; do printf '@selftest\t%s\t%s\t0\tlocal\t%s\n' "${_stk%%=*}" "${_stk#*=}" "$(date +%s)" >> "$WORK/trtab.rows"; done
+  trtab "$_sth"
+}
+STREC='printf "argv=[%s]\n" "$*" >> "$PWD/herm.out"; echo "TARGET: $1 (both faces)"'
+STSLEEP='printf "argv=[%s]\n" "$*" >> "$PWD/herm.out"; sleep 6'
+STTRAP='trap "exit 130" TERM INT; printf "argv=[%s]\n" "$*" >> "$PWD/herm.out"; sleep 6 & wait $!'
+STFORGE=': > "$TMPDIR/../ctl/wd.fired"; exit 1'
+# R1-R4, R6, R8, R11, R15: what is on the roster, and what happens to each entry.
+selftest_troster() {
+  # R1 — a scripts-only diff (the 192a shape): ONE core-selftest row, ONE call for the script, a roster line
+  stfx "$STREC" scripts/x.sh; rn "$d" --base "$_stb"
+  sfx "roster/R1: rc 0" 0 "$DVRC"
+  want "roster/R1: a scripts-only diff gets ONE core-selftest row for the script" "^  OK    core-selftest *scripts/x\.sh (both faces)"
+  sfx "roster/R1: the hermetic lane got the one path, as one call" "argv=[scripts/x.sh]" "$(hm)"
+  want "roster/R1: the roster line counts it" "^# touched-selftest roster: 1 (run: 1, CI-bound: 0, named: 0, unmeasured: 1)"
+  trmut r1 -e '/^  selftest_arm   # STARM$/s/.*/  if [ -s "$WORK\/q.sel" ]; then selftest_arm; fi/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; rnl "$TRM" "$d" --base "$_stb"
+    sfx "roster/R1 mutant: gated on q.sel again, the script's selftest is neither run nor named (the cell is RED)" MISSING "$(hm)"; }
+  # R2 — hooks/pre-push is on the roster too
+  stfx "$STREC" hooks/pre-push; rn "$d" --base "$_stb"
+  want "roster/R2: a hooks/pre-push selftest gets its own core-selftest row" "^  OK    core-selftest *hooks/pre-push (both faces)"
+  sfx "roster/R2: and its own call" "argv=[hooks/pre-push]" "$(hm)"
+  trmut r2 -e 's/|hooks\/pre-push) ;;$/) ;;/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; rnl "$TRM" "$d" --base "$_stb"
+    sfx "roster/R2 mutant: with hooks/pre-push off the roster its selftest is neither run nor named (the cell is RED)" MISSING "$(hm)"; }
+  # R3 — a --selftest named only in a comment is not a roster entry
+  stfx "$STREC" scripts/y.sh; printf '#!/bin/sh\n# supports --selftest\nexit 0\n' > "$d/scripts/y.sh"; commit_fx; rn "$d" --base "$_stb"
+  want "roster/R3: a comment-only --selftest is not on the roster" "^# touched-selftest roster: 0 (run: 0, CI-bound: 0, named: 0, unmeasured: 0)"
+  sfx "roster/R3: and no call is made" MISSING "$(hm)"
+  trmut r3 -e '/# STCOMM$/s|sed [^ ]* |cat |'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R3 mutant: without the comment-strip the script is on the roster (the cell is RED)" "^# touched-selftest roster: 0 "; }
+  # R4 — only the top level: scripts/sub/z.sh is off the roster
+  stfx "$STREC" scripts/sub/z.sh; rn "$d" --base "$_stb"
+  want "roster/R4: a nested script is not on the roster" "^# touched-selftest roster: 0 (run: 0"
+  sfx "roster/R4: and no call is made" MISSING "$(hm)"
+  trmut r4 -e '/^      \*\/\*\/\*) continue ;;   # STNEST$/d'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R4 mutant: with the nesting arm gone the nested script is on the roster (the cell is RED)" "^# touched-selftest roster: 0 "; }
+  # R6 — verify.sh is named CI-bound with its job and never called; the other target is run
+  stfx "$STREC" scripts/x.sh conformance/verify.sh; rn "$d" --base "$_stb"
+  want "roster/R6: verify.sh is named CI-bound, with its job" "^# core-selftest: .*NOT ENFORCED locally.*conformance/verify\.sh.*H2 lane"
+  sfx "roster/R6: only the other target is called" "argv=[scripts/x.sh]" "$(hm)"
+  want "roster/R6: the roster line counts both" "^# touched-selftest roster: 2 (run: 1, CI-bound: 1, named: 0, unmeasured: 1)"
+  trmut r6 -e '/# STDEFER$/d'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; rnl "$TRM" "$d" --base "$_stb"
+    sfx "roster/R6 mutant: without the defer exclusion verify.sh is called too (the cell is RED)" differs "$([ "$(hm)" = 'argv=[scripts/x.sh]' ] && echo same || echo differs)"; }
+  # R8 — an untracked capable script is a FAIL, not a call (face (b) grades HEAD)
+  stfx "$STREC"; mkdir -p "$d/scripts"; printf '#!/bin/sh\ncase ${1-} in --selftest) exit 0 ;; esac\n' > "$d/scripts/u.sh"
+  rn "$d" --base "$_stb"
+  sfx "roster/R8: an uncommitted target is rc 1" 1 "$DVRC"
+  want "roster/R8: the row says commit before the lane" "^  FAIL  core-selftest *scripts/u\.sh: uncommitted — commit before the lane"
+  sfx "roster/R8: and the stub was never called" MISSING "$(hm)"
+  trmut r8 -e '/# STCOMMIT$/s/if .*; then/if false; then/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R8 mutant: every listed path read as committed, the untracked script is called (the cell is RED)" "uncommitted — commit before the lane"; }
+  # R11 — a capable path outside the argv charset is named CI-bound, never run, never a FAIL
+  stfx "$STREC" 'conformance/odd name.sh'; rn "$d" --base "$_stb"
+  sfx "roster/R11: rc 0" 0 "$DVRC"
+  want "roster/R11: the path is named CI-bound" "^# core-selftest: .*conformance/odd name\.sh (name outside the argv charset; CI binds it)"
+  sfx "roster/R11: and never called" MISSING "$(hm)"
+  wantnot "roster/R11: and no FAIL" "^  FAIL  "
+  trmut r11 -e '/# STCHARSET$/s/\*\[!A-Za-z0-9._\/-]\*/__never__/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; rnl "$TRM" "$d" --base "$_stb"
+    sfx "roster/R11 mutant: without the charset arm the odd path reaches the hermetic call (the cell is RED)" differs "$([ "$(hm)" = MISSING ] && echo same || echo differs)"; }
+  # R15 — an adopter tree (no kit marker): a touched scripts/ selftest is named, not run
+  stfx "$STREC" scripts/x.sh; ( cd "$d" && git rm -q docs/ROADMAP-KIT.md ); commit_fx; rn "$d" --base "$_stb"
+  sfx "roster/R15: rc 0" 0 "$DVRC"
+  want "roster/R15: the script is named as kit-tree-only" "^# core-selftest: scripts/x\.sh — NOT run locally (kit tree only); your CI grades it only if you wire selftest-hermetic --touched"
+  sfx "roster/R15: and not run" MISSING "$(hm)"
+  want "roster/R15: the roster line counts it as named (N = run + CI-bound + named)" "^# touched-selftest roster: 1 (run: 0, CI-bound: 0, named: 1, unmeasured: 0)"
+  trmut r15 -e '/# STOFF$/s/if .*; then/if false; then/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; rnl "$TRM" "$d" --base "$_stb"
+    sfx "roster/R15 mutant: without the off_kit gate an adopter run calls the script (the cell is RED)" differs "$([ "$(hm)" = MISSING ] && echo same || echo differs)"; }
+  # R15b — an adopter tree: a touched, capable conformance/*.sh that ci.yml does not derive is NAMED, never dropped
+  stfx "$STREC" conformance/foo.sh; ( cd "$d" && git rm -q docs/ROADMAP-KIT.md ); commit_fx; rn "$d" --base "$_stb"
+  sfx "roster/R15b: rc 0" 0 "$DVRC"
+  want "roster/R15b: the script is named as not derived from the adopter's ci.yml" "^# core-selftest: conformance/foo\.sh — NOT run locally (not derived from your ci.yml)"
+  sfx "roster/R15b: and not run" MISSING "$(hm)"
+  want "roster/R15b: the roster line counts it as named" "^# touched-selftest roster: 1 (run: 0, CI-bound: 0, named: 1, unmeasured: 0)"
+  trmut r15b -e '/# STNOTDER$/s/^.*$/        continue/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R15b mutant: the bare continue drops it silently (the cell is RED)" "not derived from your ci.yml"; }
+}
+# R5, R9, R10, R12, R19: what comes back from a call, and the cases that make no call.
+selftest_tname() {
+  # R5 — a stub that exits 0 and prints no TARGET line: neither run nor named
+  stfx 'exit 0' scripts/x.sh; rn "$d" --base "$_stb"
+  sfx "roster/R5: a clean exit with no TARGET line is rc 1" 1 "$DVRC"
+  want "roster/R5: and the row says neither run nor named" "^  FAIL  core-selftest *scripts/x\.sh: neither run nor named"
+  trmut r5 -e '/# STNAMED$/s/if .*; then/if false; then/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R5 mutant: without the reconciliation the silent run reads OK (the cell is RED)" "neither run nor named"; }
+  # R10 — an EXCLUDED disposition is accepted
+  stfx 'printf "  EXCLUDED: x.sh — fixture\n"' scripts/x.sh; rn "$d" --base "$_stb"
+  sfx "roster/R10: an excluded target is rc 0" 0 "$DVRC"
+  want "roster/R10: the row says it was excluded, not run" "^  OK    core-selftest *scripts/x\.sh (excluded with a reason: not run)"
+  wantnot "roster/R10: and it is no FAIL" "neither run nor named"
+  trmut r10 -e '/# STEXCL$/d'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    want "roster/R10 mutant: accepting TARGET alone fails the excluded target (the cell is RED)" "^  FAIL  core-selftest *scripts/x\.sh: neither run nor named"; }
+  # R12 — a TARGET line indented (as a target's own output reaches the lane) does not count
+  stfx 'echo "    TARGET: scripts/x.sh (both faces)"' scripts/x.sh; rn "$d" --base "$_stb"
+  want "roster/R12: an indented TARGET line is not counted" "^  FAIL  core-selftest *scripts/x\.sh: neither run nor named"
+  trmut r12 -e '/# STTARGET$/s/-qxF/-qF/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R12 mutant: an unanchored match counts the indented line (the cell is RED)" "neither run nor named"; }
+  # R12b — an EXCLUDED line indented (a target's own output) does not count either
+  stfx 'echo "    EXCLUDED: x.sh — r"' scripts/x.sh; rn "$d" --base "$_stb"
+  want "roster/R12b: an indented EXCLUDED line is not counted" "^  FAIL  core-selftest *scripts/x\.sh: neither run nor named"
+  trmut r12b -e '/# STEXCL$/s/== 1/> 0/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R12b mutant: index(...) > 0 counts the indented line (the cell is RED)" "neither run nor named"; }
+  # R9 — the lock is not held: UNVERIFIED, and the stub is never called
+  hlfx; chmod 777 "$_ld"; stfx "$STREC" scripts/x.sh; rnh "$_lh" "$d" --base "$_stb"
+  sfx "roster/R9: an unheld lock is rc 1" 1 "$DVRC"
+  want "roster/R9: the row is UNVERIFIED, naming the lock" "^  UNVERIFIED  core-selftest .*lock is not held"
+  want "roster/R9: and the unrun target's path is listed" "^# core-selftest: scripts/x\.sh — NOT run (the heavy-arm lock is not held)"
+  sfx "roster/R9: and the stub was never called" MISSING "$(hm)"
+  want "roster/R9: the unrun target is counted as named" "^# touched-selftest roster: 1 (run: 0, CI-bound: 0, named: 1, unmeasured: 1)"
+  trmut r9 -e '/# STLOCK$/s/hl_need core-selftest/true/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; DVOUT=$( cd "$d" && HOME=$_lh sh "$TRM" --base "$_stb" 2>&1 ) || :
+    wantnot "roster/R9 mutant: with the lock never asked the unheld lock goes unnoticed (the cell is RED)" "^  UNVERIFIED  core-selftest "; }
+  # R19 — a reasonless exclusions entry with no capable script: the lane's own validation still runs, and no call is made
+  stfx "$STREC"; printf 'anything.sh\n' > "$d/conformance/hermetic-exclusions.txt"; commit_fx; rn "$d" --base "$_stb"
+  sfx "roster/R19: a reasonless exclusions entry is rc 1" 1 "$DVRC"
+  want "roster/R19: the FAIL names the entry" "^  FAIL  core-selftest .*hermetic-exclusions.txt entry 'anything.sh'"
+  sfx "roster/R19: with no call made" MISSING "$(hm)"
+  trmut r19 -e '/# STEXCL2$/d'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --base "$_stb"
+    wantnot "roster/R19 mutant: with zero targets the exclusions file goes unvalidated (the cell is RED)" "hermetic-exclusions.txt entry"; }
+}
+# SWAS-840 (P1 of SWAS-858): the touched-selftest wall budget no longer selects. R13 to R18 are rewritten as B1 to B7 and B10 (B8, B9, B11 and B12, the readers half, are in selftest_touched_budget).
+# Every admitted target RUNS: a prior time over the 300 s budget only adds a printed label. A hang is bounded by ST_CEIL (3600 s, a plain constant: a cell scales it in a lane COPY, never through an
+# environment or argv knob) and reads UNVERIFIED, never OK and never named CI-bound. The time state is keyed by blob (R13b, R16).
+# sttk <home> <blob>=<seconds>… — like stt, but one censored `@selftest-k` row per blob (the floor a kill leaves).
+sttk() {
+  _sth=$1; shift; : > "$WORK/trtab.rows"
+  for _stk in "$@"; do printf '@selftest-k\t%s\t%s\t0\tlocal\t%s\n' "${_stk%%=*}" "${_stk#*=}" "$(date +%s)" >> "$WORK/trtab.rows"; done
+  trtab "$_sth"
+}
+selftest_tbudget() {
+  # B1 (rewrites R13) — a measured time over the budget RUNS: the three card targets are all called, each line carrying its prior time and the over-budget label
+  stfx "$STREC" conformance/inception-done.sh scripts/preflight.sh conformance/incept-first-run-green.sh
+  _b1=$(git -C "$d" rev-parse HEAD:conformance/inception-done.sh); _b2=$(git -C "$d" rev-parse HEAD:scripts/preflight.sh); _b3=$(git -C "$d" rev-parse HEAD:conformance/incept-first-run-green.sh)
+  _h=$WORK/st-h1; stt "$_h" "$_b1=400" "$_b2=400" "$_b3=400"; strun "$_h" "$LANE"
+  sfx "B1: rc 0" 0 "$DVRC"
+  sfx "B1: all three targets were called (measured time, then path)" "argv=[conformance/incept-first-run-green.sh] argv=[conformance/inception-done.sh] argv=[scripts/preflight.sh]" "$(hm)"
+  want "B1: inception-done says its prior time and that it runs over the budget" "^# core-selftest: conformance/inception-done\.sh — prior 400 s at [0-9a-f]\{12\} \[measured\]; over the 300 s budget: run anyway"
+  want "B1: so does preflight" "^# core-selftest: scripts/preflight\.sh — prior 400 s at [0-9a-f]\{12\} \[measured\]; over the 300 s budget: run anyway"
+  want "B1: so does incept-first-run-green" "^# core-selftest: conformance/incept-first-run-green\.sh — prior 400 s at [0-9a-f]\{12\} \[measured\]; over the 300 s budget: run anyway"
+  wantnot "B1: and nothing is named CI-bound for the budget" "budget reached"
+  want "B1: the roster counts all three as run" "^# touched-selftest roster: 3 (run: 3, CI-bound: 0, named: 0, unmeasured: 0)"
+  want "B1: and the over-budget line counts them" "^# touched-selftest over budget: 3 run, 0 UNVERIFIED at the ceiling"
+  want "B1: each clean run prints the seconds it took" "^# core-selftest: scripts/preflight\.sh took [0-9]* s \[measured, this run\]"
+  # B2 — the budget and the runaway ceiling are printed, and the over-budget label is the only thing the budget does
+  want "B2: the ceiling note prints the budget (not a cutoff) and the runaway ceiling" "^# ceiling: 120s/invocation (core-selftest: budget 300 s, printed, not a cutoff; runaway ceiling 3600 s per target"
+  trmut b1 -e '/# STOVER$/s/.*/  if [ "$_st_ms" -eq 1 ] \&\& [ "$_st_s" -gt "$STBUD" ]; then note "core-selftest: $_st_p named, not run (over budget)"; return 0; fi   # STOVER/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_b1=400" "$_b2=400" "$_b3=400"; strun "$_h" "$TRM"
+    sfx "B1 mutant: with the budget skip restored the 400 s targets are named, not run (the cell is RED)" MISSING "$(hm)"; }
+  trmut b2 -e '/# STOVER$/d'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_b1=400" "$_b2=400" "$_b3=400"; strun "$_h" "$TRM"
+    wantnot "B2 mutant: with the over-budget line dropped the label is gone (the cell is RED)" "over the 300 s budget"; }
+  # R13b — a time row that is no plain number (a leading zero) is no time: the script is unmeasured (and runs)
+  stfx "$STREC" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _h=$WORK/st-h13; stt "$_h" "$_bx=0400"; strun "$_h" "$LANE"
+  sfx "roster/R13b: a 0400 row is unmeasured, so the script runs" "argv=[scripts/x.sh]" "$(hm)"
+  want "roster/R13b: and the prior line says it is unmeasured" "^# core-selftest: scripts/x\.sh — unmeasured"
+  trmut r13b -e '/^  st_okn "\$_st_m" || _st_m=""$/d'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_bx=0400"; strun "$_h" "$TRM"
+    wantnot "roster/R13b mutant: without the number check 0400 reads as a measured time (the cell is RED)" "scripts/x\.sh — unmeasured"; }
+  # B6 (rewrites R14) — a budget below the default is ignored, with one note, and a 280 s target carries no over-budget label (the budget only labels)
+  rm -f "$d/herm.out"; stt "$_h" "$_bx=280"; strun "$_h" "$LANE" PREPUSH_SELFTEST_BUDGET_S=10
+  want "B6: a lower budget is ignored loudly, and the default stands" "IGNORED: PREPUSH_SELFTEST_BUDGET_S may only RAISE (10 <= 300) — using 300"
+  sfx "B6: one note" 1 "$(printf '%s\n' "$DVOUT" | grep -c 'IGNORED: PREPUSH_SELFTEST_BUDGET_S' || :)"
+  sfx "B6: and the 280 s target ran" "argv=[scripts/x.sh]" "$(hm)"
+  wantnot "B6: and it carries no over-budget label" "over the [0-9]* s budget"
+  trmut b6 -e '/# STDIAL$/s/\$(raise_only .*)/${PREPUSH_SELFTEST_BUDGET_S:-300}/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_bx=280"; strun "$_h" "$TRM" PREPUSH_SELFTEST_BUDGET_S=10
+    want "B6 mutant: accepting the lower budget labels the 280 s target over a 10 s budget (the cell is RED)" "over the 10 s budget: run anyway"; }
+  # B6b (rewrites R14b) — a leading-zero budget is refused loudly too (the default applies): 0400 must not read as 400 here and as octal there
+  rm -f "$d/herm.out"; stt "$_h" "$_bx=350"; strun "$_h" "$LANE" PREPUSH_SELFTEST_BUDGET_S=0400
+  want "B6b: a leading-zero budget is ignored loudly" "IGNORED: PREPUSH_SELFTEST_BUDGET_S has a leading zero: \[0400\] — using 300"
+  want "B6b: the default applies, so the 350 s target is labelled over the 300 s budget" "scripts/x\.sh — prior 350 s at [0-9a-f]\{12\} \[measured\]; over the 300 s budget: run anyway"
+  sfx "B6b: and it ran" "argv=[scripts/x.sh]" "$(hm)"
+  trmut b6b -e '/# STZERO$/d'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_bx=350"; strun "$_h" "$TRM" PREPUSH_SELFTEST_BUDGET_S=0400
+    wantnot "B6b mutant: without the leading-zero arm 0400 is taken as 400 and the 350 s target carries no label (the cell is RED)" "over the [0-9]* s budget: run anyway"; }
+  # R16 — a time recorded for another blob is ignored: an edited script is unmeasured again
+  stfx "$STREC" scripts/x.sh; _ob=$(git -C "$d" rev-parse HEAD:scripts/x.sh); printf '# edit\n' >> "$d/scripts/x.sh"; commit_fx
+  _h=$WORK/st-h16; stt "$_h" "$_ob=400" "scripts/x.sh=400"; strun "$_h" "$LANE"
+  sfx "roster/R16: the stale time is ignored: the edited script runs" "argv=[scripts/x.sh]" "$(hm)"
+  want "roster/R16: and it reads as unmeasured" "^# core-selftest: scripts/x\.sh — unmeasured"
+  wantnot "roster/R16: and no stale time is shown" "prior 400 s"
+  trmut r16 -e '/# STBLOB$/s|git rev-parse --verify -q "HEAD:$1"|printf %s "$1"|'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_ob=400" "scripts/x.sh=400"; strun "$_h" "$TRM"
+    want "roster/R16 mutant: keyed by path alone the stale time applies (the cell is RED)" "^# core-selftest: scripts/x\.sh — prior 400 s"; }
+  # B3 (rewrites R17) — a target killed at the runaway ceiling reads UNVERIFIED: never OK, never a FAIL, never named CI-bound, a censored time recorded against its blob, and the next target is still called
+  # (a lane copy with ST_CEIL=2; the stub logs each call, then sleeps past it)
+  _sc=$WORK/lane-st-ceil2.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=2/' "$LANE" > "$_sc"
+  sfx "B3: the ST_CEIL=2 lane copy differs" differs "$(cmp -s "$LANE" "$_sc" && echo same || echo differs)"
+  stfx "$STSLEEP" scripts/x.sh scripts/y.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _by=$(git -C "$d" rev-parse HEAD:scripts/y.sh)
+  _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
+  _h=$WORK/st-h3; stt "$_h"; strun "$_h" "$_sc"; _tt=$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  sfx "B3: rc 1" 1 "$DVRC"
+  want "B3: the killed target reads UNVERIFIED, naming the runaway ceiling and the seconds it ran" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling, not proven locally \[measured [0-9]* s\]"
+  wantnot "B3: and it is no FAIL" "^  FAIL  "
+  wantnot "B3: and it is not named CI-bound" "budget reached"
+  sfx "B3: the verdict is UNVERIFIED" "PARITY-CORE: UNVERIFIED" "$(lastline | cut -c1-23)"
+  sfx "B3: the second target is still called (a kill spends nothing)" "argv=[scripts/x.sh] argv=[scripts/y.sh]" "$(hm)"
+  want "B3: the roster counts both as named" "^# touched-selftest roster: 2 (run: 0, CI-bound: 0, named: 2, unmeasured: 2)"
+  want "B3: and the over-budget line counts them as UNVERIFIED at the ceiling" "^# touched-selftest over budget: 0 run, 2 UNVERIFIED at the ceiling"
+  sfx "B3: a censored time of at least ceiling + 1 s is recorded against the killed blob" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_tt" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
+  TRSRC=$_sc trmut b3a -e '/# STUNV$/d'
+  [ -z "$TRM" ] || { _h=$WORK/st-h3a; stt "$_h"; strun "$_h" "$TRM"
+    sfx "B3 mutant: with the kill read as no UNVERIFIED the run is rc 0 (the cell is RED)" 0 "$DVRC"; }
+  TRSRC=$_sc trmut b3b -e '/# STUNV$/s/   # STUNV$/; _st_lk=2   # STUNV/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; _h=$WORK/st-h3b; stt "$_h"; strun "$_h" "$TRM"
+    sfx "B3 mutant: with a kill spending the run the second target is not called (the cell is RED)" "argv=[scripts/x.sh]" "$(hm)"; }
+  TRSRC=$_sc trmut b3c -e '/# STREC$/d'
+  [ -z "$TRM" ] || { _h=$WORK/st-h3c; stt "$_h"; strun "$_h" "$TRM"
+    sfx "B3 mutant: skipping the record leaves no time against the blob (the cell is RED)" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
+  # B3m (rewrites R17d) — a MEASURED target killed at the ceiling reads the same way, never a FAIL whose remedy names PREPUSH_CEILING_S
+  stfx "$STSLEEP" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
+  _h=$WORK/st-h3m; stt "$_h" "$_bx=1"; strun "$_h" "$_sc"
+  want "B3m: a measured target killed at the ceiling reads UNVERIFIED" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
+  wantnot "B3m: and it is no FAIL" "^  FAIL  "
+  sfx "B3m: the censored row is at least ceiling + 1 s" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
+  TRSRC=$_sc trmut b3m -e '/# STCEIL$/s/if \[ "\$RUN_RC" -ne 0 \]/if [ "$_st_ms" -eq 0 ] \&\& [ "$RUN_RC" -ne 0 ]/'
+  [ -z "$TRM" ] || { _h=$WORK/st-h3n; stt "$_h" "$_bx=1"; strun "$_h" "$TRM"
+    want "B3m mutant: unmeasured-only handling turns the measured kill into a FAIL (the cell is RED)" "^  FAIL  core-selftest "; }
+  # B3e (rewrites R17e) — the real harness traps TERM and INT and exits 130 itself: the kill is still read from the watchdog's own evidence, not from an exit status
+  stfx "$STTRAP" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
+  _h=$WORK/st-h3e; stt "$_h"; strun "$_h" "$_sc"
+  want "B3e: a target that traps TERM and exits 130 reads UNVERIFIED at the ceiling" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
+  wantnot "B3e: and it is no FAIL" "^  FAIL  "
+  sfx "B3e: and a censored time is recorded against its blob" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
+  TRSRC=$_sc trmut b3e -e '/# STCEIL$/s/if .*; then/if [ "$RUN_RC" -eq 143 ]; then/'
+  [ -z "$TRM" ] || { _h=$WORK/st-h3f; stt "$_h"; strun "$_h" "$TRM"
+    want "B3e mutant: keyed on rc 143 the exit-130 kill reads as a FAIL (the cell is RED)" "^  FAIL  core-selftest "; }
+  # R17f — a target that forges the watchdog's marker at once (it can reach $TMPDIR/../ctl) and fails is still a FAIL, with no censored row: the run did not last the ceiling
+  # (a 5 s lane copy: the forger waits for the watchdog's first one-second tick, so its wall time can read 2 s, which would equal a 2 s ceiling)
+  _s5=$WORK/lane-st-ceil5.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=5/' "$LANE" > "$_s5"
+  sfx "roster/R17f: the 5 s lane copy differs" differs "$(cmp -s "$LANE" "$_s5" && echo same || echo differs)"
+  stfx "$STFORGE" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
+  _h=$WORK/st-h17h; stt "$_h"; strun "$_h" "$_s5"
+  want "roster/R17f: a forged marker on a fast failure still reads FAIL" "^  FAIL  core-selftest "
+  sfx "roster/R17f: and no censored row is recorded" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
+  TRSRC=$_s5 trmut r17f -e '/# STCEIL$/s/ \&\& \[ "\$RUN_S" -ge "\$_st_cl" \]//'
+  [ -z "$TRM" ] || { _h=$WORK/st-h17i; stt "$_h"; strun "$_h" "$TRM"
+    want "roster/R17f mutant: without the time conjunct the forged marker reads UNVERIFIED at the ceiling (the cell is RED)" "scripts/x\.sh: killed at the 5 s runaway ceiling"; }
+  # B4 — a target already hung on these bytes (a censored row of at least ST_CEIL + 1 s for its blob) is named UNVERIFIED with no call; a lower floor (every row today's 300 s budget left) runs
+  stfx "$STREC" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh)
+  _h=$WORK/st-h4; sttk "$_h" "$_bx=3601"; strun "$_h" "$LANE"
+  sfx "B4: a 3601 s floor is rc 1" 1 "$DVRC"
+  want "B4: the target is named UNVERIFIED, killed at a floor on these bytes, with the cure" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at >=3601 s at [0-9a-f]\{12\} on these bytes \[measured floor\]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
+  sfx "B4: and it was not called" MISSING "$(hm)"
+  sfx "B4: the verdict is UNVERIFIED" "PARITY-CORE: UNVERIFIED" "$(lastline | cut -c1-23)"
+  rm -f "$d/herm.out"; sttk "$_h" "$_bx=301"; strun "$_h" "$LANE"
+  sfx "B4: a 301 s floor (today's budget kill) is printed as a floor and the target runs" "argv=[scripts/x.sh]" "$(hm)"
+  want "B4: the prior line says it is a floor" "^# core-selftest: scripts/x\.sh — prior 301 s at [0-9a-f]\{12\} \[measured floor: killed\]"
+  sfx "B4: and the run is rc 0" 0 "$DVRC"
+  trmut b4a -e '/# STHUNG$/s/ && \[ "\$_st_s" -ge \$((ST_CEIL + 1)) \]//'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; sttk "$_h" "$_bx=301"; strun "$_h" "$TRM"
+    sfx "B4 mutant: with the threshold compare dropped the 301 s floor skips the target (the cell is RED)" MISSING "$(hm)"; }
+  trmut b4b -e '/# STHUNGUNV$/d'
+  [ -z "$TRM" ] || { sttk "$_h" "$_bx=3601"; strun "$_h" "$TRM"
+    sfx "B4 mutant: with the skip read as no UNVERIFIED the run is rc 0 (the cell is RED)" 0 "$DVRC"; }
+  # B7 — the run log is fed: the hung unit is an UNV unit with its seconds, and RL3's completeness holds (one unit per verdict row)
+  stfx "$STSLEEP" scripts/preflight.sh; _h=$WORK/st-h7; stt "$_h"; strun "$_h" "$_sc"
+  _rl=$(rlf "$_h" "$d")/runs.log; _e=$(grep '^v1 end ' "$_rl" | sed -n 1p); _rows=$(printf '%s\n' "$DVOUT" | grep -Ec '^  (OK|FAIL|UNVERIFIED|SKIP|N/A) ' || :)
+  sfx "B7: the hung unit is in the log as an UNV unit with its seconds" 1 "$(rlk "$_e" u | tr ',' '\n' | grep -c '^core-selftest:scripts/preflight\.sh:UNV:[0-9]*:' || :)"
+  sfx "B7: and the units listed equal the verdict rows printed" "$_rows" "$(rlk "$_e" u | tr ',' '\n' | grep -c . || :)"
+  TRSRC=$_sc trmut b7 -e '/# RLUNV$/d'
+  [ -z "$TRM" ] || { _h2=$WORK/st-h7m; stt "$_h2"; strun "$_h2" "$TRM"
+    _e2=$(grep '^v1 end ' "$(rlf "$_h2" "$d")/runs.log" | sed -n 1p)
+    sfx "B7 mutant: with rl_u gone from the hang branch the unit is not logged (the cell is RED)" 0 "$(rlk "$_e2" u | tr ',' '\n' | grep -c '^core-selftest:scripts/preflight\.sh:UNV:' || :)"; }
+  # B5 (rewrites F1 and R18) — no sum cut: a 280 s and a 50 s target are both called, the quicker first
+  stfx "$STREC" scripts/a.sh scripts/b.sh; _ba=$(git -C "$d" rev-parse HEAD:scripts/a.sh); _bb=$(git -C "$d" rev-parse HEAD:scripts/b.sh)
+  _h=$WORK/st-h18; stt "$_h" "$_ba=280" "$_bb=50"; strun "$_h" "$LANE"
+  sfx "B5: both targets are called, the quicker first (the 280 s one is no longer cut by the 250 s left)" "argv=[scripts/b.sh] argv=[scripts/a.sh]" "$(hm)"
+  wantnot "B5: and nothing is named against a budget left" "s left"
+  trmut b5 -e '/# STSORT$/s/-k1,1n -k2,2n -k3,3/-k3,3/'
+  [ -z "$TRM" ] || { rm -f "$d/herm.out"; stt "$_h" "$_ba=280" "$_bb=50"; strun "$_h" "$TRM"
+    sfx "B5 mutant: admitted in listing order, a.sh runs first (the cell is RED)" "argv=[scripts/a.sh] argv=[scripts/b.sh]" "$(hm)"; }
+  # B10 — the two new bounds are plain constants: exactly one literal line each, and neither reads the environment (the LD7 idiom: a grep over this file)
+  sfx "B10: exactly one ST_CEIL=3600 line" 1 "$(grep -c -e '^ST_CEIL=3600$' "$LANE" || :)"
+  sfx "B10: exactly one TR_CAP=600 line" 1 "$(grep -c -e '^TR_CAP=600$' "$LANE" || :)"
+  sfx "B10: and neither line reads a PREPUSH_ name" 0 "$(grep -c -e '^ST_CEIL=.*PREPUSH_' -e '^TR_CAP=.*PREPUSH_' "$LANE" || :)"
+  sfx "B10: ST_CEIL is assigned on exactly one line start (it counts every line-start assignment, at any indent; one inside a longer line is not seen)" 1 "$(grep -cE '^[[:space:]]*ST_CEIL=' "$LANE" || :)"
+  sfx "B10: TR_CAP is assigned on exactly one line start (the same count)" 1 "$(grep -cE '^[[:space:]]*TR_CAP=' "$LANE" || :)"
+  trmut b10b -e 's/^  TR_CAPE=\$TR_CAP; /  TR_CAP=$TR_CAPE; /'
+  [ -z "$TRM" ] || sfx "B10 mutant: a second assignment of TR_CAP is counted (the cell is RED)" 2 "$(grep -cE '^[[:space:]]*TR_CAP=' "$TRM" || :)"
+  trmut b10 -e 's/^TR_CAP=600$/TR_CAP=${PREPUSH_READERS_CAP_S:-600}/'
+  [ -z "$TRM" ] || { sfx "B10 mutant: with an env read there is no literal TR_CAP=600 line (the cell is RED)" 0 "$(grep -c -e '^TR_CAP=600$' "$TRM" || :)"
+    sfx "B10 mutant: and the env read is found" 1 "$(grep -c -e '^TR_CAP=.*PREPUSH_' "$TRM" || :)"; }
 }
 
 # M-3, the NEGATIVE half of "heavy is never run without its flag": both routes into the bucket (cf-* job placement AND a twin-table `heavy` row) yield no OK line and no executed-argv entry.
@@ -3428,13 +4929,29 @@ selftest_shim() {
   want "shim: the shim dir is 0700" "^drwx------"; want "shim: and its sh execs the resolved dash" "^exec .*dash "
 }
 
-# SERIAL by OBSERVATION, not by grep: two invocations that log their own start and end must not interleave. (M-1: run_timed backgrounds the invocation itself AND a watchdog, then `wait`s — the `wait` is the serialization, so only an observation can prove it.)
-selftest_no_fanout() {
+# SERIAL at J = 1, BOUNDED at J >= 2, by OBSERVATION, not by grep: two invocations that log their own start and end must not interleave at J = 1. (M-1: run_timed backgrounds the invocation itself AND a watchdog, then `wait`s — the `wait` is the serialization, so only an observation can prove it.)
+selftest_bounded_fanout() {
   mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
   mkchk alpha 'echo a-start >> "$PWD/ser.out"; sleep 2; echo a-end >> "$PWD/ser.out"'
   mkchk beta  'echo b-start >> "$PWD/ser.out"; sleep 1; echo b-end >> "$PWD/ser.out"'
-  commit_fx; rn "$d" --warranted   # the two probes are core-live checks: only --warranted runs them
-  sfx "no-fanout: the invocations never overlap" "a-start a-end b-start b-end" "$(tr '\n' ' ' < "$d/ser.out" | sed 's/ $//')"
+  commit_fx; rn "$d" --warranted   # the two probes are core-live checks: only --warranted runs them; rn is LANE_J1
+  sfx "no-fanout: at J = 1 the invocations never overlap" "a-start a-end b-start b-end" "$(tr '\n' ' ' < "$d/ser.out" | sed 's/ $//')"
+  # PL1 (SWAS-868): four probes each create live.<n>, hold 3 s, append the count of live.* to cnt, hold again, then remove the marker. 2 <= max(cnt) <= J on LANE_J2, and 1 on LANE_J1.
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh' 'sh conformance/gamma.sh'
+  for _n in alpha beta gamma; do mkchk "$_n" 'touch "$PWD/live.$$"; sleep 2; ls "$PWD" | grep -c "^live\." >> "$PWD/cnt"; sleep 2; rm -f "$PWD/live.$$"'; done
+  commit_fx
+  pl_mx() { sort -n "$d/cnt" 2>/dev/null | tail -n 1; }
+  rnl "$LANE_J1" "$d" --warranted
+  sfx "PL1: at J = 1 the three probes never overlap (the highest live count is 1)" 1 "$(pl_mx)"
+  rm -f "$d/cnt"; rnl "$LANE_J2" "$d" --warranted
+  want "PL1: the J = 2 lane says so" "^# pool: J=2 "
+  sfx "PL1: at J = 2 the probes overlap and never exceed J (2 <= the highest live count <= 2)" ok "$([ "$(pl_mx)" -ge 2 ] 2>/dev/null && [ "$(pl_mx)" -le 2 ] 2>/dev/null && echo ok || echo "highest=$(pl_mx)")"
+  TRSRC=$LANE_J2 trmut pl1a -e '/# PLJCLAMP$/s/POOL_C - 1/POOL_C + 1/'
+  [ -z "$TRM" ] || { rm -f "$d/cnt"; rnl "$TRM" "$d" --warranted
+    sfx "PL1 mutant: with the cores clamp + 1 the lane runs more than J at once (the cell is RED)" yes "$([ "$(pl_mx)" -gt 2 ] 2>/dev/null && echo yes || echo no)"; }
+  TRSRC=$LANE_J2 trmut pl1b -e '/# PLGUARD$/s/-lt "\$POOL_J"/-le "$POOL_J"/'
+  [ -z "$TRM" ] || { rm -f "$d/cnt"; rnl "$TRM" "$d" --warranted
+    sfx "PL1 mutant: with the dispatch guard -lt read as -le the lane runs J + 1 at once (the cell is RED)" yes "$([ "$(pl_mx)" -gt 2 ] 2>/dev/null && echo yes || echo no)"; }
 }
 
 selftest_no_write() {
@@ -3450,6 +4967,12 @@ selftest_no_write() {
   sfx "no-write: and across a --warranted run with the cache ON (core-live executed, a pass recorded)" "$_s1" "$_s3"
   _pf=$(ls "$_h"/.local/state/sparkwright/prepush/*/passed 2>/dev/null | sed -n 1p)
   sfx "no-write: the record landed under the temp HOME, not in the repo" yes "$([ -n "$_pf" ] && [ -f "$_pf" ] && echo yes || echo no)"
+  # SWAS-568 (RL11): the run log and the report write nothing in the repo either
+  _rf=$(ls "$_h"/.local/state/sparkwright/prepush/*/runs.log 2>/dev/null | sed -n 1p)
+  sfx "no-write: the run log landed under the temp HOME too" yes "$([ -n "$_rf" ] && [ -f "$_rf" ] && echo yes || echo no)"
+  DVOUT=$( cd "$d" && HOME=$_h sh "$LANE" --log-report --base HEAD 2>&1 ) || :
+  _s4=$( cd "$d" && git status --porcelain && git for-each-ref refs/ )
+  sfx "no-write: and across a --log-report run (status and refs byte-identical)" "$_s1" "$_s4"
 }
 
 selftest_no_exec_of_context() {
@@ -3733,8 +5256,10 @@ selftest_cache_opt_out() {
   cfx; CRNC=1; cr; cr; CRNC=0
   sfx "cache/opt-out: with PREPUSH_NO_CACHE=1 both runs execute the check" 2 "$(nruns)"
   want "cache/opt-out: with one note" "^# cache: off — PREPUSH_NO_CACHE=1"
-  # (the heavy-arm lock legitimately creates $HOME/.local/state/sparkwright/; the cache's own state dir must be absent)
-  sfx "cache/opt-out: and no cache state was written under HOME" no "$([ -e "$_h/.local/state/sparkwright/prepush" ] && echo yes || echo no)"
+  # (the heavy-arm lock legitimately creates $HOME/.local/state/sparkwright/, and the run log (SWAS-568, no switch) the prepush/<root> dir; the cache's own `passed` file must be absent)
+  sfx "cache/opt-out: and no cache state was written under HOME" no "$(ls "$_h"/.local/state/sparkwright/prepush/*/passed >/dev/null 2>&1 && echo yes || echo no)"
+  _rc1=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p )
+  sfx "cache/opt-out: the root dir holds exactly the run log (no passed, no times.tsv)" "runs.log" "$(ls -A "$_h/.local/state/sparkwright/prepush/$_rc1" | tr '\n' ' ' | sed 's/ $//')"
 }
 
 # --- PREPUSH-BATTERY-CHANGE-SCOPED (T1: the derivation + skip lines) -------------------------
@@ -4242,11 +5767,12 @@ nopath() {
   for _f in /bin/* /usr/bin/*; do case ${_f##*/} in "$1") ;; *) ln -s "$_f" "$_np/${_f##*/}" 2>/dev/null || : ;; esac; done
   printf '%s\n' "$_np"
 }
-# lkfx <stub-body> — a one-selftest fixture whose core-selftest stub runs <stub-body>; `gamma` is untracked, so it is TOUCHED.
+# lkfx <stub-body> — a one-selftest fixture whose core-selftest stub runs <stub-body>; `gamma` is capable and committed after the base commit _lkb, so it is TOUCHED
+# (SWAS-811: the roster grades committed paths; a run uses `--base "$_lkb"`).
 lkfx() {
   mkcin 'sh conformance/gamma.sh --selftest'
   mkchk selftest-hermetic "$1; echo \"TARGET: conformance/gamma.sh (both faces)\""
-  commit_fx; mkchk gamma 'exit 0'
+  commit_fx; _lkb=$(git -C "$d" rev-parse HEAD); mkchk gamma 'case ${1-} in --selftest) exit 0 ;; esac'; commit_fx
 }
 # rnh <home> <repo> [args…] — a RUN with an explicit HOME -> DVOUT/DVRC.
 rnh() { _hh=$1; _r=$2; shift 2; DVOUT=$( cd "$_r" && HOME=$_hh sh "$LANE" --base HEAD "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
@@ -4274,13 +5800,14 @@ selftest_lock_acquire_release() {
 selftest_lock_acquire_e2e() {
   hlfx
   lkfx 'cat "'"$_ld"'/heavy-arm.holder" > "$PWD/holder.seen" 2>&1; if ( : >&9 ) 2>/dev/null; then echo open > "$PWD/fd9.seen"; else echo closed > "$PWD/fd9.seen"; fi'
-  rnh "$_lh" "$d"; sfx "lock/e2e: rc 0" 0 "$DVRC"
+  rnh "$_lh" "$d" --base "$_lkb"; sfx "lock/e2e: rc 0" 0 "$DVRC"
   want "lock/e2e: the run says it took the lock" "^# heavy-arm lock: acquired for the core-selftest unit"
   sfx "lock/e2e: the holder note named the unit during the run" "core-selftest" "$(sed -n 3p "$d/holder.seen" 2>/dev/null || echo MISSING)"
   sfx "lock/e2e: the unit ran with descriptor 9 closed" closed "$(cat "$d/fd9.seen" 2>/dev/null || echo MISSING)"
   sfx "lock/e2e: the holder note is gone after the run" no "$([ -e "$_ld/heavy-arm.holder" ] && echo yes || echo no)"
   _r=0; hl_free "$_lh" || _r=$?; sfx "lock/e2e: and the lock is free after the run" 0 "$_r"
-  sfx "lock/e2e: the state dir holds nothing but the lock file (the lane's own writes stay in its work root)" "heavy-arm.lock" "$(ls -A "$_ld" | tr '\n' ' ' | sed 's/ $//')"
+  sfx "lock/e2e: the state dir holds nothing but the lock file and the prepush dir (the run log lives there, SWAS-568; the lane's own other writes stay in its work root)" "heavy-arm.lock prepush" "$(ls -A "$_ld" | tr '\n' ' ' | sed 's/ $//')"
+  sfx "lock/e2e: and the prepush root dir holds exactly the run log" "runs.log" "$(ls -A "$_ld/prepush/$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)" | tr '\n' ' ' | sed 's/ $//')"
   sfx "lock/e2e: the lock file is kept (never deleted)" yes "$([ -f "$_ll" ] && echo yes || echo no)"
 }
 # One acquisition per run, held across core-live and the Tier-2 arms.
@@ -4317,7 +5844,7 @@ selftest_lock_wait() {
 selftest_lock_wait_e2e() {
   hlfx; lkfx 'date +%s > "$PWD/ran.at"'
   _t0=$(now_s); hl_holder "$_lh" 12
-  rnh "$_lh" "$d"; hl_holder_stop
+  rnh "$_lh" "$d" --base "$_lkb"; hl_holder_stop
   sfx "lock/wait-e2e: rc 0" 0 "$DVRC"
   want "lock/wait-e2e: the run said it was waiting, naming the holder" "heavy-arm lock: busy (held by pid 4242"
   _ra=$(cat "$d/ran.at" 2>/dev/null || echo 0)
@@ -4367,7 +5894,7 @@ selftest_lock_dir_unsafe() {
   _o=$( hl_owner() { echo some-other-user; }; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
   want "lock/dir: a foreign-owned state dir is UNVERIFIED" "^rc=1 .*not owned by the current user"
   hlfx; chmod 777 "$_ld"; lkfx 'touch "$PWD/unit-ran"'
-  rnh "$_lh" "$d"
+  rnh "$_lh" "$d" --base "$_lkb"
   sfx "lock/dir-e2e: the run is rc 1" 1 "$DVRC"
   want "lock/dir-e2e: the verdict is UNVERIFIED naming the lock" "^PARITY-CORE: UNVERIFIED (heavy-arm lock: "
   sfx "lock/dir-e2e: and the heavy unit did not run" no "$([ -e "$d/unit-ran" ] && echo yes || echo no)"
@@ -4394,7 +5921,7 @@ selftest_lock_symlink() {
   sfx "lock/symlink: the link is still there" yes "$([ -L "$_ll" ] && echo yes || echo no)"
   sfx "lock/symlink: and its target is untouched" keep "$(cat "$_tg/target")"
   lkfx 'touch "$PWD/unit-ran"'
-  rnh "$_lh" "$d"
+  rnh "$_lh" "$d" --base "$_lkb"
   sfx "lock/symlink-e2e: the run is rc 1" 1 "$DVRC"
   want "lock/symlink-e2e: UNVERIFIED naming the lock" "^PARITY-CORE: UNVERIFIED (heavy-arm lock: "
   sfx "lock/symlink-e2e: the unit did not run" no "$([ -e "$d/unit-ran" ] && echo yes || echo no)"
@@ -4480,7 +6007,7 @@ selftest_lock_race() {
 # K19
 selftest_lock_child_fd() {
   hlfx; lkfx 'sleep 25 & echo $! > "$PWD/daemon.pid"'
-  rnh "$_lh" "$d"; sfx "lock/child-fd: rc 0" 0 "$DVRC"
+  rnh "$_lh" "$d" --base "$_lkb"; sfx "lock/child-fd: rc 0" 0 "$DVRC"
   _r=0; hl_free "$_lh" || _r=$?
   sfx "lock/child-fd: a child left running by a unit does not keep the lock held" 0 "$_r"
   hl_kill "$(cat "$d/daemon.pid" 2>/dev/null || :)" || :
@@ -4897,9 +6424,10 @@ selftest_touched_replay() {
   want "TR8 (b) under the #914 table: the census runs, in the red-history tier"     '^  PLAN  touched-readers  *prepush-lane --census .*\[red-history\]'
   want "TR8 (c) under the #914 table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
   wantnot "TR8 (a): and S7 is not cut short of its time (the budget is not spent on 100 cheap checks first)" '^  PLAN  touched-readers  *agent-autonomy --selftest .*CUT:'
+  sfx "TR8 (a): and S7, in the red-history tier, is the first plan line" same "$(printf '%s\n' "$DVOUT" | grep '^  PLAN  touched-readers' | sed -n 1p | grep -q 'agent-autonomy --selftest' && echo same || echo differs)"
   trmut tr8a -e 's/-k1,1n -k2,2n -k3,3/-k2,2n -k3,3/'
   [ -z "$TRM" ] || { DVOUT=$( cd "$KROOT" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
-    want "TR8 mutant: fastest-first ordering -> S7 is left behind the cheap checks and cut short (the cell is RED)" '^  PLAN  touched-readers  *agent-autonomy --selftest .*CUT:'; }
+    sfx "TR8 mutant: fastest-first ordering -> S7 is left behind the cheap checks, no longer the first plan line (the cell is RED)" differs "$(printf '%s\n' "$DVOUT" | grep '^  PLAN  touched-readers' | sed -n 1p | grep -q 'agent-autonomy --selftest' && echo same || echo differs)"; }
 }
 
 trtab() {   # trtab <home> <printf-rows-file-content already written to $WORK/trtab.rows> — put the rows where the lane under test looks
@@ -4958,6 +6486,110 @@ selftest_touched_budget() {
   DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
   chmod 700 "$_sd"
   want "TR9b: a group/world-writable state dir makes the arm UNVERIFIED" '^PARITY-CORE: UNVERIFIED (touched-readers: the state dir is refused'
+  # B8 (SWAS-840, P1 of SWAS-858) — a NAMED reader: a derived check whose own script text, comment-stripped, names a listed path literally runs regardless of the 300 s fill (and of its measured time),
+  # while it fits the readers cap; a check with the same 400 s row that does not name it, or names it only in a comment, is CI-graded as before
+  mkci <<'YAML'
+jobs:
+  j1:
+    steps:
+      - run: sh conformance/rdr.sh --selftest
+      - run: sh conformance/plain.sh
+      - run: sh conformance/rdc.sh
+YAML
+  mkchk rdr ': scripts/preflight.sh'; mkchk plain 'exit 0'; mkchk rdc '# only a comment names scripts/preflight.sh
+exit 0'
+  commit_fx; mkdir -p "$d/scripts"; printf '#!/bin/sh\nexit 0\n' > "$d/scripts/preflight.sh"
+  _now=$(date +%s); _h=$WORK/trb8
+  { printf 'rdr\t--selftest\t400\t0\tlocal\t%s\n' "$_now"; printf 'plain\t\t400\t0\tlocal\t%s\n' "$_now"; printf 'rdc\t\t400\t0\tlocal\t%s\n' "$_now"; } > "$WORK/trtab.rows"; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "B8: rc 0" 0 "$DVRC"
+  want "B8: a check naming the touched path runs over the 300 s fill, tagged a named reader" '^  OK    touched-readers  *rdr --selftest .*\[named reader\]'
+  want "B8: a non-naming check with the same 400 s row is CI-graded, budget spent" '^CI-GRADED: plain (budget spent: predicted 400 s'
+  want "B8: a check that names the path only in a comment is not a named reader" '^CI-GRADED: rdc (budget spent: predicted 400 s'
+  trmut b8a -e '/# TRNAMED$/s/then _nm=1;/then _nm=0;/'
+  [ -z "$TRM" ] || { _h=$WORK/trb8a; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    want "B8 mutant: with the named-reader test off the naming check is CI-graded (the cell is RED)" '^CI-GRADED: rdr --selftest (budget spent'; }
+  trmut b8b -e '/# TRNAMED$/s|sed [^ ]* |cat |'
+  [ -z "$TRM" ] || { _h=$WORK/trb8b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    want "B8 mutant: with the comment-strip gone the comment-only check runs (the cell is RED)" '^  OK    touched-readers  *rdc '; }
+  # B12 — --plan prints the fill and the cap, and tags the named reader
+  _h=$WORK/trb12; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD --plan 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B12: the readers note prints the fill and the cap" '^# touched-readers: .* · budget 300s (the fill) · cap 600s \[printed\]'
+  want "B12: --plan tags the named reader" '^  PLAN  touched-readers  *rdr --selftest .*\[named reader\]'
+  trmut b12 -e '/# TRTAG$/d'
+  [ -z "$TRM" ] || { _h=$WORK/trb12m; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD --plan 2>&1 ) || :
+    wantnot "B12 mutant: with the tag dropped the plan no longer names the reader (the cell is RED)" '\[named reader\]'; }
+  # B9 (errata C1) — the readers cap: a lane copy with TR_CAP=5 and a 2 s fill; two named readers recorded at 4 s each: the first runs, the second does not fit the cap left and is CI-graded
+  _s9=$WORK/lane-cap5.sh; sed -e 's/^TR_CAP=600$/TR_CAP=5/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=2/' "$LANE" > "$_s9"
+  sfx "B9: the cap-scaled lane copy differs" differs "$(cmp -s "$LANE" "$_s9" && echo same || echo differs)"
+  mkcin 'sh conformance/rd1.sh' 'sh conformance/rd2.sh'; mkchk rd1 'sleep 2; : scripts/preflight.sh'; mkchk rd2 'sleep 2; : scripts/preflight.sh'
+  commit_fx; mkdir -p "$d/scripts"; printf '#!/bin/sh\nexit 0\n' > "$d/scripts/preflight.sh"
+  { printf 'rd1\t\t4\t0\tlocal\t%s\n' "$_now"; printf 'rd2\t\t4\t0\tlocal\t%s\n' "$_now"; } > "$WORK/trtab.rows"; _h=$WORK/trb9; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s9" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B9: the first named reader runs inside the cap" '^  OK    touched-readers  *rd1 .*\[named reader\]'
+  want "B9: the second does not fit the cap left and is CI-graded over the cap" '^CI-GRADED: rd2 (over the 5 s readers cap: measured 4 s, [0-9]* s left \[measured\]'
+  _u=$(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: [0-9]* run (\([0-9]*\) s.*$/\1/p')
+  sfx "B9: the seconds the arm charged stay within the cap" yes "$([ "${_u:-99}" -le 5 ] && echo yes || echo no)"
+  TRSRC=$_s9 trmut b9 -e '/# TRCAP$/s/if .*; then/if true; then/'
+  [ -z "$TRM" ] || { _h=$WORK/trb9m; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    wantnot "B9 mutant: with the cap check removed the second reader is not held to the cap (the cell is RED)" 'over the 5 s readers cap'; }
+  # B13 (review M1) — EVERY named reader takes the cap path, never the fill: a copy with a 2 s fill and a 10 s cap; a named reader recorded at 1 s that runs 3 s reads OK, tagged a named reader
+  _s1=$WORK/lane-cap10.sh; sed -e 's/^TR_CAP=600$/TR_CAP=10/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=2/' "$LANE" > "$_s1"
+  sfx "B13: the cap-scaled lane copy differs" differs "$(cmp -s "$LANE" "$_s1" && echo same || echo differs)"
+  mkcin 'sh conformance/rdk.sh'; mkchk rdk 'sleep 3; : scripts/preflight.sh'
+  commit_fx; mkdir -p "$d/scripts"; printf '#!/bin/sh\nexit 0\n' > "$d/scripts/preflight.sh"
+  printf 'rdk\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trb13; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s1" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B13: the named reader runs past the 2 s fill under the cap and reads OK, tagged a named reader" '^  OK    touched-readers  *rdk .*\[named reader\]'
+  wantnot "B13: and it is never read as budget spent" 'budget spent: only'
+  TRSRC=$_s1 trmut b13 -e '/# TRNAMEGO$/s/if .*; then/if [ "$_go" -eq 0 ] \&\& [ "$_nm" = 1 ]; then/'
+  [ -z "$TRM" ] || { _h=$WORK/trb13m; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    want "B13 mutant: with the old branch the fill cuts the named reader's ceiling (the cell is RED)" '^CI-GRADED: rdk (budget spent: only'; }
+  # B14 (review m1) — a named reader killed at its ceiling leaves a floor: the next run predicts it and lists it over the cap as a floor (a copy with a 2 s fill and a 4 s cap)
+  _s2=$WORK/lane-cap4.sh; sed -e 's/^TR_CAP=600$/TR_CAP=4/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=2/' "$LANE" > "$_s2"
+  sfx "B14: the 4 s cap copy differs" differs "$(cmp -s "$LANE" "$_s2" && echo same || echo differs)"
+  mkcin 'sh conformance/rdf.sh'; mkchk rdf 'sleep 10; : scripts/preflight.sh'
+  commit_fx; mkdir -p "$d/scripts"; printf '#!/bin/sh\nexit 0\n' > "$d/scripts/preflight.sh"
+  printf 'rdf\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trb14; trtab "$_h"
+  _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B14: the first run kills it at the cap and lists it as a ceiling hit" '^CI-GRADED: rdf (local ceiling hit at'
+  sfx "B14: the kill leaves a floor row of ceiling + 1 s = 5, which the clamp to cap + 1 s keeps (the full cap is 4)" 5 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"
+  TRSRC=$_s2 trmut b14a -e '/# TRREC$/s/\[ "\$_ncf" -eq 0 \] || { _fv=/[ 1 -eq 1 ] || { _fv=/'
+  [ -z "$TRM" ] || { _h2=$WORK/trb14a; trtab "$_h2"; DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    sfx "B14 mutant: with the recording off no floor row is left (the cell is RED)" "" "$(awk -F'\t' '$1 == "@reader-k" { print $3 }' "$_h2/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
+  TRSRC=$_s2 trmut b14b -e '/# TRREC$/s/-le \$((TR_CAPE + 1)) \] || _fv=\$((TR_CAPE + 1));/-le 0 ] || _fv=$TR_CAPE;/'
+  [ -z "$TRM" ] || { _h2=$WORK/trb14b; trtab "$_h2"; DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    sfx "B14 mutant: with the old clamp to the full cap the floor is 4 and the reader would run and be killed again (the cell is RED)" 4 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h2/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"; }
+  # the next runs: a fast stub (uncommitted, so the listing is unchanged), the floor the first run actually wrote (home $_h), then a floor 31 days old
+  mkchk rdf ': scripts/preflight.sh'
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B14: the floor the kill wrote lists the reader over the cap next time, as a local floor, naming the way out" '^CI-GRADED: rdf (over the 4 s readers cap: measured >=5 s, 4 s left \[measured\]; a kill left this floor: re-run with PREPUSH_NO_CACHE=1 for one run, or delete the @reader-k row for it in times.tsv'
+  { printf 'rdf\t\t1\t0\tlocal\t%s\n' "$_now"; printf '@reader-k\trdf\t5\t0\tlocal\t%s\n' "$((_now - 31 * 86400))"; } > "$WORK/trtab.rows"; _h=$WORK/trb14d; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  wantnot "B14: a floor 31 days old no longer lists the reader over the cap" 'over the 4 s readers cap'
+  want "B14: and the reader runs again" '^  OK    touched-readers  *rdf '
+  TRSRC=$_s2 trmut b14c -e 's/if (\$1 == "@reader-k" && NOW - \$6 > REDS) next; //'
+  [ -z "$TRM" ] || { _h2=$WORK/trb14e; trtab "$_h2"; DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    want "B14 mutant: with no expiry the 31-day-old floor still lists the reader over the cap (the cell is RED)" 'over the 4 s readers cap'; }
+  # B15 (security) — a clipped, non-named reader that exits 143 by itself, early, is a FAIL, never "budget spent" (the kill is read from the time, as for the ceiling)
+  mkcin 'sh conformance/ex.sh'; mkchk ex 'exit 143'; commit_fx; : > "$d/x.md"
+  printf 'ex\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trb15; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "B15: an early exit 143 under a clipped ceiling reads FAIL" '^  FAIL  touched-readers'
+  wantnot "B15: and it is not named budget spent" 'budget spent: only'
+  TRSRC=$_sb trmut b15 -e '/# TRBS$/s/ \&\& \[ "\$RUN_S" -ge "\$_cl" \]//'
+  [ -z "$TRM" ] || { _h=$WORK/trb15m; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
+    want "B15 mutant: without the time conjunct the early exit reads budget spent (the cell is RED)" '^CI-GRADED: ex (budget spent: only'; }
+  # B11 — the lane's own selftest as an UNTOUCHED reader stays CI-graded, and its reason says it is long
+  mkcin 'sh conformance/prepush-lane.sh --selftest'; mkchk prepush-lane 'exit 0'; commit_fx; : > "$d/x.md"
+  rn "$d"
+  want "B11: the lane's own selftest stays CI-graded and its reason says it is long and runs when the lane is touched" "^CI-GRADED: prepush-lane --selftest (the lane.s own selftest is long; it runs here when the lane is touched"
+  wantnot "B11: and no kit timing reaches the output" "852 s"
+  wantnot "B11: and no CI run id reaches the output" "43228653287"
+  trmut b11 -e 's/the lane.s own selftest is long; it runs here when the lane is touched/CI binds it/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d"; wantnot "B11 mutant: with the reason text gone the line is the old reason (the cell is RED)" 'selftest is long'; }
 }
 
 selftest_touched_output() {
@@ -5094,8 +6726,9 @@ YAML
 # function below runs in that copy in place of main. A mutant is the same copy with ONE sed edit; it must turn its cell RED, for its named cause.
 # lane_mut <out> <sed-script|''> [override-text] — writes the copy; prints `differs` if the sed edit changed the lane, else `same`.
 lane_mut() {
-  if [ -n "$2" ]; then sed -e "$2" "$LANE" > "$1.tmp"; else cp "$LANE" "$1.tmp"; fi
-  if cmp -s "$LANE" "$1.tmp"; then _lm_r=same; else _lm_r=differs; fi
+  _lm_s=${LM_SRC:-$LANE}   # SWAS-868: the source is LANE (LANE_J1 inside the selftest); a pool cell sets LM_SRC=$LANE_J2 for one call, in a command substitution
+  if [ -n "$2" ]; then sed -e "$2" "$_lm_s" > "$1.tmp"; else cp "$_lm_s" "$1.tmp"; fi
+  if cmp -s "$_lm_s" "$1.tmp"; then _lm_r=same; else _lm_r=differs; fi
   sed '$d' "$1.tmp" > "$1"; rm -f "$1.tmp"
   [ -z "${3-}" ] || printf '%s\n' "$3" >> "$1"
   printf 'main "$@"\n' >> "$1"
@@ -5154,7 +6787,7 @@ selftest_orphan_ceiling() {
   sfx "orphan/M-428b1: the mutation (no KILL step) changed the lane" differs "$(lane_mut "$_m" 's#^    arm_sig KILL "\$_ak_g"$#    :#;s#^    for _ak_p in \$_ak_set \$_ak_ld; do arm_sigp KILL "\$_ak_p"; done$#    :#')"
   orph_fx "$K_BODY_IGN" 2; rnl "$_m" "$d" --slow
   sfx "orphan/M-428b1: with no KILL the TERM-ignorer lives, so K2 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
-  sfx "orphan/M-428b2: the mutation (the parent does not wait for a fired watchdog) changed the lane" differs "$(lane_mut "$_m" 's#^  if \[ -e "\$WORK/ctl/wd.fired" \]; then wait "\$_wd" || :$#  if false; then :#')"
+  sfx "orphan/M-428b2: the mutation (the parent does not wait for a fired watchdog) changed the lane" differs "$(lane_mut "$_m" 's#^  if \[ -e "\$_rtc/wd.fired" \]; then wait "\$_wd" || :$#  if false; then :#')"
   orph_fx "$K_BODY_IGN" 2; rnl "$_m" "$d" --slow
   sfx "orphan/M-428b2: the parent kills the watchdog mid-grace, so the TERM-ignorer lives and K2 is RED" yes "$([ "$(k_alive "$d/k.pids")" -gt 0 ] && echo yes || echo no)"; k_reap "$d/k.pids"
   # K3: a grandchild that made its OWN group (a nested lane does exactly this) is reached by the ppid snapshot
@@ -5481,7 +7114,7 @@ selftest_preflight_case_variant() {
 # Fixture crash lines are built with printf from parts (no whole-line literal in this file), and every crash cell runs inside crash_cells so the group's OWN printed output can be
 # rescanned for a crash line (control 7). A mutant is a lane copy (lane_mut) with ONE tagged line rewritten; its crash functions are extracted to <copy>.fn and sourced in a subshell.
 crash_fns() {   # <lane copy> — its crash functions (and the two that call them) to <copy>.fn
-  sed -n -e '/^crash_sig_of() {/,/^}/p' -e '/^crash_line_in() {/,/^}/p' -e '/^crash_ev_run() {/,/^}/p' -e '/^report_inv() {/,/^}/p' "$1" > "$1.fn"
+  sed -n -e '/^crash_sig_of() {/,/^}/p' -e '/^crash_line_in() {/,/^}/p' -e '/^crash_ev_run() {/,/^}/p' -e '/^report_inv() /p' -e '/^ri_wd() /p' -e '/^ri_decide() {/,/^}/p' -e '/^ri_record() {/,/^}/p' "$1" > "$1.fn"
 }
 crash_scan_with() {   # <fn-file> <data-file> — that copy's crash_line_in over the data file, in a subshell; prints its rc
   # shellcheck disable=SC1090  # sources a mutant copy's extracted crash functions (the path is built at run time)
@@ -5662,6 +7295,722 @@ selftest_crash() {   # control 7 (errata E3): the crash cells run into a file, t
   ( eval "$_fn"; crash_c345 ) > "$WORK/crash.cells.m" 2>&1 || :
   _r=0; crash_line_in "$WORK/crash.cells.m" || _r=$?
   sfx "crash/7m: with one cell printing its crash line the rescan finds it, so crash/7 has teeth" 0 "$_r"
+}
+
+# SWAS-784: the run prints `# tree: <root>` after `# work root:`, naming the git toplevel it grades (it refuses nothing: grading another repo's ci.yml is its job in an adopter's own repo).
+selftest_tree() {
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  rn "$d" --warranted
+  want "tree/1: the run prints the tree it grades (the fixture's physical root)" "^# tree: $(cd "$d" && pwd -P)\$"
+  _m=$WORK/lane-784.sh
+  sfx "tree/1m: the mutation (the tree line dropped) changed the lane" differs "$(lane_mut "$_m" '/# TREELINE$/d')"
+  rnl "$_m" "$d" --warranted
+  wantnot "tree/1m: without the line no tree is named, so tree/1 has teeth" "^# tree: "
+}
+
+# ===================================================================================================
+# SWAS-568 - the pre-push run log (plan docs/plans/2026-11-12-prepush-run-log-568-plan.md section 5, cells RL1-RL12; design 2026-11-12-ci-local-parity-nightly-design.md P0, errata C1).
+# Every cell drives a FIXTURE repo under a PRIVATE HOME (the log has no switch: a selftest isolates it by HOME, as every leg does) and every cell is bound to a MUTANT: a sed on a COPY of the
+# lane (trmut) on the `# RL...` tags in the lane's own text, which must turn the same scenario RED. The log is a measurement cache, never evidence: no cell reads it as proof of a run.
+RLS_RE='^v1 start run=[0-9]+-[0-9]+ ts=[0-9]+ head=[0-9a-f]{40} base=([0-9a-f]{40}|-) row=([A-Z0-9][A-Z0-9-]{0,31}|-) mode=(default|warranted|green-on-clone|exports|slow|non-vacuity|plan) ci=(default|other) lane=[0-9]+ os=(darwin|linux|other) j=[0-9]+ free_mb=([0-9]+|-) floor_mb=[0-9]+ listing=([0-9]+|-) brule=[a-z,-]+$'
+RLE_RE='^v1 end run=[0-9]+-[0-9]+ ts=[0-9]+ verdict=(OK|FAIL|UNVERIFIED|PLAN|INTERRUPTED) rc=([0-9]+|-) wall_s=([0-9]+|-) lock=(held|failed|none) lock_wait_s=([0-9]+|-) ran=[0-9]+ fails=[0-9]+ crash=[0-9]+ u=[^ ]+( trunc=[0-9]+)? jf=[0-9]+ race=[0-9]+$'
+rlh() { _rlh_d=$(mktemp -d "${TMPDIR:-/tmp}/fx-rlh-XXXXXX"); printf '%s\n' "$_rlh_d"; }   # a private HOME
+rlf() { _rlf_r=$(git -C "$2" rev-list --max-parents=0 HEAD | sed -n 1p); printf '%s\n' "$1/.local/state/sparkwright/prepush/$_rlf_r"; }   # <home> <repo> -> the state dir of that repo
+rlc() { _rlc_n=$(grep -Ec -e "$2" "$1" 2>/dev/null || :); printf '%s\n' "${_rlc_n:-0}"; }   # <file> <ERE> -> how many lines match (0 when the file is absent)
+rlk() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | sed -n 1p; }   # <record line> <key> -> its value
+rlw() { printf '%s\n' "$(lastline)" | sed -n 's/^PARITY-CORE: \([A-Z]*\).*$/\1/p'; }   # the verdict word of the last stdout line
+# rnlh <home> <lane> <repo> [args...] -> DVOUT/DVRC, a RUN through <lane> under <home>
+rnlh() { _rn_h=$1; _rn_l=$2; _rn_r=$3; shift 3; DVOUT=$( cd "$_rn_r" && HOME=$_rn_h sh "$_rn_l" --base HEAD "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
+# RL1 - exactly one start and one end record per run, matching the v1 grammar, sharing one run id.
+selftest_runlog_lines() {
+  one_step; mkchk alpha 'exit 0'; commit_fx; _h=$(rlh); rnh "$_h" "$d" --warranted; _lg=$(rlf "$_h" "$d")/runs.log
+  sfx "runlog/RL1: a run writes exactly one start record" 1 "$(rlc "$_lg" '^v1 start ')"
+  sfx "runlog/RL1: and exactly one end record" 1 "$(rlc "$_lg" '^v1 end ')"
+  sfx "runlog/RL1: the start record matches the v1 grammar" 1 "$(rlc "$_lg" "$RLS_RE")"
+  sfx "runlog/RL1: and the end record does" 1 "$(rlc "$_lg" "$RLE_RE")"
+  sfx "runlog/RL1: both carry the same run id" 1 "$(sed -n 's/^v1 [a-z]* run=\([^ ]*\) .*$/\1/p' "$_lg" | sort -u | grep -c . || :)"
+  trmut rl1 -e '/# RLSTART$/d'
+  [ -z "$TRM" ] || { _h=$(rlh); rnlh "$_h" "$TRM" "$d" --warranted
+    sfx "runlog/RL1 mutant: with the start call gone no record is written (the cell is RED)" 0 "$(rlc "$(rlf "$_h" "$d")/runs.log" '^v1 ')"; }
+}
+# RL2 - the fields: head, row, mode, the resolved base sha (never the --base text), the verdict and rc the run printed and returned.
+selftest_runlog_fields() {
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  ( cd "$d" && git -c user.email=f@x -c user.name=f commit -q --allow-empty -m rl -m 'Kit-Row: SWAS-568' && git branch rlbase HEAD ) >/dev/null
+  _hd=$(git -C "$d" rev-parse HEAD); _h=$(rlh); rnh "$_h" "$d" --warranted --base rlbase; _lg=$(rlf "$_h" "$d")/runs.log
+  _s=$(grep '^v1 start ' "$_lg" | sed -n 1p); _e=$(grep '^v1 end ' "$_lg" | sed -n 1p)
+  sfx "runlog/RL2: head is the fixture's HEAD" "$_hd" "$(rlk "$_s" head)"
+  sfx "runlog/RL2: row is HEAD's Kit-Row trailer" SWAS-568 "$(rlk "$_s" row)"
+  sfx "runlog/RL2: mode is warranted under --warranted" warranted "$(rlk "$_s" mode)"
+  sfx "runlog/RL2: base is the resolved sha even when --base names a branch" "$_hd" "$(rlk "$_s" base)"
+  sfx "runlog/RL2: verdict and rc equal the last stdout line and the exit status" "$(rlw)|$DVRC" "$(rlk "$_e" verdict)|$(rlk "$_e" rc)"
+  trmut rl2 -e '/# RLBASE$/s/^\( *_rl_base=\).*$/\1$BASE/'
+  [ -z "$TRM" ] || { _h2=$(rlh); rnlh "$_h2" "$TRM" "$d" --warranted --base rlbase
+    sfx "runlog/RL2 mutant: base= taken from the --base text is not the sha (the cell is RED)" differs "$([ "$(rlk "$(grep '^v1 start ' "$(rlf "$_h2" "$d")/runs.log" | sed -n 1p)" base)" = "$_hd" ] && echo same || echo differs)"; }
+  mkchk alpha 'exit 3'; commit_fx; _h=$(rlh); rnh "$_h" "$d" --warranted; _e=$(grep '^v1 end ' "$(rlf "$_h" "$d")/runs.log" | sed -n 1p)
+  sfx "runlog/RL2: a failing run logs FAIL, rc 1 and one failing unit" "FAIL|1|1" "$(rlk "$_e" verdict)|$(rlk "$_e" rc)|$(rlk "$_e" fails)"
+  sfx "runlog/RL2: and the verdict word is the one the run printed" "FAIL" "$(rlw)"
+}
+# RL3 - one unit per verdict row, and `ran` counts them.
+selftest_runlog_complete() {
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'; mkchk alpha 'exit 0'; mkchk beta 'exit 3'; commit_fx
+  _h=$(rlh); rnh "$_h" "$d" --warranted; _lg=$(rlf "$_h" "$d")/runs.log; _e=$(grep '^v1 end ' "$_lg" | sed -n 1p)
+  _rows=$(printf '%s\n' "$DVOUT" | grep -Ec '^  (OK|FAIL|UNVERIFIED|SKIP|N/A) ' || :)
+  sfx "runlog/RL3: the units listed equal the verdict rows printed" "$_rows" "$(rlk "$_e" u | tr ',' '\n' | grep -c . || :)"
+  sfx "runlog/RL3: and ran counts the same invocations" "$_rows" "$(rlk "$_e" ran)"
+  trmut rl3 -e '/# RLRI$/d'
+  [ -z "$TRM" ] || { _h2=$(rlh); rnlh "$_h2" "$TRM" "$d" --warranted
+    _e2=$(grep '^v1 end ' "$(rlf "$_h2" "$d")/runs.log" | sed -n 1p)
+    sfx "runlog/RL3 mutant: with rl_u gone from report_inv the units no longer match the rows (the cell is RED)" differs "$([ "$(rlk "$_e2" u | tr ',' '\n' | grep -c . || :)" = "$_rows" ] && echo same || echo differs)"; }
+}
+# RL4 - a planted secret (one [a-z0-9] token, so it passes every charset) in an env var, GH_TOKEN, KIT_CI_FILE, the --base branch, HOME, the root path and a Kit-Row is never in the log.
+selftest_runlog_secret() {
+  _pl=zq7x3k9plantv
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  ( cd "$d" && git -c user.email=f@x -c user.name=f commit -q --allow-empty -m rl -m "Kit-Row: $_pl" && git branch "br-$_pl" HEAD ) >/dev/null
+  mv "$d" "$WORK/root-$_pl"; d=$WORK/root-$_pl; cp "$d/.github/workflows/ci.yml" "$d/.github/workflows/ci-$_pl.yml"
+  _h=$WORK/h-$_pl; mkdir -p "$_h"
+  DVOUT=$( cd "$d" && RLPLANT_X=$_pl GH_TOKEN=$_pl HOME=$_h sh "$LANE" --base "br-$_pl" --warranted 2>&1 ) && DVRC=0 || DVRC=$?
+  want "runlog/RL4 control: the plant is on stdout (the base and tree lines)" "^# base: br-$_pl "
+  want "runlog/RL4 control: and the tree line" "^# tree: .*root-$_pl\$"
+  DVOUT=$( cd "$d" && RLPLANT_X=$_pl GH_TOKEN=$_pl KIT_CI_FILE=.github/workflows/ci-$_pl.yml HOME=$_h sh "$LANE" --base "br-$_pl" 2>&1 ) && DVRC=0 || DVRC=$?
+  want "runlog/RL4 control: and the ci-file line" "^# ci-file: .github/workflows/ci-$_pl.yml\$"
+  _sd=$(rlf "$_h" "$d")
+  sfx "runlog/RL4 control: both runs wrote their records (the log exists)" 4 "$(rlc "$_sd/runs.log" '^v1 ')"
+  sfx "runlog/RL4: the plant is nowhere in the log" 0 "$(cat "$_sd"/runs.log* 2>/dev/null | grep -cF -e "$_pl" || :)"
+  trmut rl4a -e '/# RLLANE$/s/^.*$/  _rl_lane=$ROOT/'
+  [ -z "$TRM" ] || { _h2=$WORK/h2-$_pl; mkdir -p "$_h2"; rnlh "$_h2" "$TRM" "$d"
+    sfx "runlog/RL4 mutant: lane= taken from the root path leaks the plant (the cell is RED)" yes "$([ "$(cat "$(rlf "$_h2" "$d")"/runs.log* 2>/dev/null | grep -cF -e "$_pl" || :)" -gt 0 ] && echo yes || echo no)"; }
+  trmut rl4b -e '/# RLROW$/s/^.*$/  _rl_row=$_rl_row0/'
+  [ -z "$TRM" ] || { _h3=$WORK/h3-$_pl; mkdir -p "$_h3"; rnlh "$_h3" "$TRM" "$d"
+    sfx "runlog/RL4 mutant: row= without its charset check leaks a lowercase Kit-Row (the cell is RED)" yes "$([ "$(cat "$(rlf "$_h3" "$d")"/runs.log* 2>/dev/null | grep -cF -e "$_pl" || :)" -gt 0 ] && echo yes || echo no)"; }
+}
+# RL5 - rotation keeps three files (the card's own 1 MB cap, scaled in a lane COPY, never a knob).
+selftest_runlog_rotate() {
+  _sc=$WORK/lane-rl5.sh; sed 's/^RL_CAP=1048576$/RL_CAP=300/' "$LANE" > "$_sc"
+  sfx "runlog/RL5: the scaled lane copy differs" differs "$(cmp -s "$LANE" "$_sc" && echo same || echo differs)"
+  one_step; mkchk alpha 'exit 0'; commit_fx; _h=$(rlh); _i=0
+  while [ "$_i" -lt 4 ]; do rnlh "$_h" "$_sc" "$d"; _i=$((_i+1)); done
+  _sd=$(rlf "$_h" "$d")
+  sfx "runlog/RL5: the first rotated file exists" yes "$([ -f "$_sd/runs.log.1" ] && echo yes || echo no)"
+  sfx "runlog/RL5: and the third" yes "$([ -f "$_sd/runs.log.3" ] && echo yes || echo no)"
+  sfx "runlog/RL5: no fourth is ever made" no "$([ -e "$_sd/runs.log.4" ] && echo yes || echo no)"
+  sfx "runlog/RL5: the live log stays under twice the cap" yes "$([ "$(wc -c < "$_sd/runs.log" | tr -d ' ')" -lt 600 ] && echo yes || echo no)"
+  TRSRC=$_sc trmut rl5 -e '/# RLROT$/d'
+  [ -z "$TRM" ] || { _h2=$(rlh); _i=0; while [ "$_i" -lt 4 ]; do rnlh "$_h2" "$TRM" "$d"; _i=$((_i+1)); done
+    sfx "runlog/RL5 mutant: with the rotation gone the live log grows past twice the cap (the cell is RED)" yes "$([ "$(wc -c < "$(rlf "$_h2" "$d")/runs.log" | tr -d ' ')" -ge 600 ] && echo yes || echo no)"; }
+}
+# RL6 - an unsafe state dir or log turns the log off with ONE note, writes nothing through a link, and never moves the verdict or the rc; a write failure is dropped, never an unv.
+selftest_runlog_unsafe() {
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  _h0=$(rlh); rnh "$_h0" "$d"; _cl=$(lastline); _cr=$DVRC
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd"; chmod 777 "$_sd"; rnh "$_h" "$d"
+  sfx "runlog/RL6: a group/world-writable state dir leaves the verdict and the rc as they were" "$_cl|$_cr" "$(lastline)|$DVRC"
+  sfx "runlog/RL6: and says so once" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^# run log: off' || :)"
+  sfx "runlog/RL6: and writes nothing into it" 0 "$(ls -A "$_sd" | wc -l | tr -d ' ')"
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd"; chmod 700 "$_sd"; _tg=$WORK/rl6-target; printf 'keep\n' > "$_tg"; ln -s "$_tg" "$_sd/runs.log"; rnh "$_h" "$d"
+  sfx "runlog/RL6: a symlinked log leaves the verdict and the rc as they were" "$_cl|$_cr" "$(lastline)|$DVRC"
+  sfx "runlog/RL6: and nothing is written through the link" keep "$(cat "$_tg")"
+  sfx "runlog/RL6: with one note" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^# run log: off' || :)"
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd/runs.log"; chmod 700 "$_sd"; rnh "$_h" "$d"
+  sfx "runlog/RL6: a log that is a directory leaves the verdict and the rc as they were" "$_cl|$_cr" "$(lastline)|$DVRC"
+  sfx "runlog/RL6: with one note" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^# run log: off' || :)"
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd"; chmod 700 "$_sd"
+  _o=$( cd "$d"; hl_owner() { echo some-other-user; }; HOME=$_h; RL_ON=1; rl_init; printf 'on=%s\n' "$RL_ON" ) || :; DVOUT=$_o
+  want "runlog/RL6: a foreign-owned state dir turns the log off" "^on=0$"
+  want "runlog/RL6: with the note naming the owner" "^# run log: off — the state dir is not owned by the current user"
+  if [ "$(id -u)" = 0 ]; then echo "SKIP: runlog/RL6: running as root - mode 444 does not stop root, so the write-failure cell was NOT exercised"; return 0; fi
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd"; chmod 700 "$_sd"; : > "$_sd/runs.log"; chmod 444 "$_sd/runs.log"; rnh "$_h" "$d"
+  sfx "runlog/RL6: a log that cannot be written leaves the verdict and the rc as they were" "$_cl|$_cr" "$(lastline)|$DVRC"
+  trmut rl6 -e '/# RLWRITE$/s/|| :/|| unv "run log write failed"/'
+  [ -z "$TRM" ] || { rnlh "$_h" "$TRM" "$d"
+    sfx "runlog/RL6 mutant: a write failure that calls unv moves the verdict (the cell is RED)" differs "$([ "$(lastline)|$DVRC" = "$_cl|$_cr" ] && echo same || echo differs)"; }
+}
+# RL7 - a TERM mid-unit ends the log with INTERRUPTED; a KILL to the lane alone leaves a start with no end, which --log-report counts as incomplete.
+selftest_runlog_interrupt() {
+  _oh=$HOME; _h=$(rlh); HOME=$_h; export HOME; k5_run "$LANE"; HOME=$_oh; export HOME
+  sfx "runlog/RL7: a TERM to the lane ends it as the orphan cell expects" ok "$K5R"
+  _lg=$(rlf "$_h" "$d")/runs.log
+  sfx "runlog/RL7: the interrupted run left an end record with verdict INTERRUPTED" 1 "$(rlc "$_lg" '^v1 end .* verdict=INTERRUPTED ')"
+  sfx "runlog/RL7: and the record matches the grammar" 1 "$(rlc "$_lg" "$RLE_RE")"
+  _h2=$(rlh); HOME=$_h2; export HOME; k5_run "$LANE" kill; HOME=$_oh; export HOME
+  DVOUT=$( cd "$d" && HOME=$_h2 sh "$LANE" --log-report --base HEAD 2>&1 ) || :
+  want "runlog/RL7: a KILL to the lane alone is counted by --log-report as one incomplete run" "^# runs: 1 started, 0 ended, 1 incomplete"
+}
+# RL8 - the sampled peak RSS: a unit holding about 64 MB reads at least 40000 KB; no process group reads `-`; the sampler line deleted reads `-`.
+selftest_runlog_rss() {
+  [ -x /usr/bin/perl ] || { echo "SKIP: runlog/RL8: /usr/bin/perl is absent - there is no process group, so the sampler was NOT exercised here"; return 0; }
+  one_step; mkchk alpha "/usr/bin/perl -e 'my \$x = q(a) x 67108864; sleep 3'"; commit_fx
+  _h=$(rlh); rnh "$_h" "$d" --warranted; _e=$(grep '^v1 end ' "$(rlf "$_h" "$d")/runs.log" | sed -n 1p)
+  _kb=$(rlk "$_e" u | tr ',' '\n' | sed -n 's/^core-live:alpha:OK:[0-9]*:\([0-9-]*\)$/\1/p')
+  sfx "runlog/RL8: a unit holding about 64 MB reads at least 40000 KB" yes "$([ "${_kb:--}" != - ] && [ "${_kb:-0}" -ge 40000 ] && echo yes || echo no)"
+  trmut rl8 -e '/# RLRSS$/d'
+  [ -z "$TRM" ] || { _h2=$(rlh); rnlh "$_h2" "$TRM" "$d" --warranted; _e2=$(grep '^v1 end ' "$(rlf "$_h2" "$d")/runs.log" | sed -n 1p)
+    _kb2=$(rlk "$_e2" u | tr ',' '\n' | sed -n 's/^core-live:alpha:OK:[0-9]*:\([0-9-]*\)$/\1/p')
+    sfx "runlog/RL8 mutant: with the sampler line gone the unit reads - (the cell is RED)" no "$([ "${_kb2:--}" != - ] && [ "${_kb2:-0}" -ge 40000 ] && echo yes || echo no)"; }
+  trmut rl8n -e 's|^ARM_PERL=.*$|ARM_PERL=/nonexistent/perl|'
+  [ -z "$TRM" ] || { _h3=$(rlh); rnlh "$_h3" "$TRM" "$d" --warranted; _e3=$(grep '^v1 end ' "$(rlf "$_h3" "$d")/runs.log" | sed -n 1p)
+    sfx "runlog/RL8: with no process group the unit reads - (unavailable: no process group)" "-" "$(rlk "$_e3" u | tr ',' '\n' | sed -n 's/^core-live:alpha:OK:[0-9]*:\([0-9-]*\)$/\1/p')"; }
+}
+# RL9 - the battery-rule probe: one listing per clause gives its letter, docs-only gives none; clause (b) is labelled partial until P4 names the sourced and fixture paths; a run logs it from the real listing.
+selftest_runlog_brule() {
+  brl() { printf '%b' "$1" | battery_rule; }
+  sfx "runlog/RL9: .claude/ is clause a" a "$(brl 'M\t.claude/settings.json\n')"
+  sfx "runlog/RL9: hooks/ is clause a" a "$(brl 'M\thooks/pre-push\n')"
+  sfx "runlog/RL9: the battery's own script is clause b, labelled partial" b-partial "$(brl 'M\tconformance/agent-autonomy.sh\n')"
+  sfx "runlog/RL9: an added scripts/ file is clause c" c "$(brl 'A\tscripts/new.sh\n')"
+  sfx "runlog/RL9: a deleted conformance/ file is clause c" c "$(brl 'D\tconformance/old.sh\n')"
+  sfx "runlog/RL9: a mode change under scripts/ is clause c" c "$(brl 'T\tscripts/x.sh\n')"
+  sfx "runlog/RL9: an edit to an existing scripts/ file is none" none "$(brl 'M\tscripts/x.sh\n')"
+  sfx "runlog/RL9: .github/workflows/ is clause d" d "$(brl 'M\t.github/workflows/ci.yml\n')"
+  sfx "runlog/RL9: .kit/ is clause d" d "$(brl 'M\t.kit/tracker.conf\n')"
+  sfx "runlog/RL9: an empty listing is clause e" e "$(brl '')"
+  sfx "runlog/RL9: a docs-only listing is none" none "$(brl 'M\tdocs/x.md\n')"
+  sfx "runlog/RL9: clauses join in a fixed order" "a,c" "$(brl 'A\thooks/x\n')"
+  trmut rl9 -e '/# RLCC$/s/^.*$/    # RLCC/'
+  [ -z "$TRM" ] || { sed -n '/^battery_rule() {$/,/^}$/p' "$TRM" > "$WORK/rl9.fn"
+    _r=$( . "$WORK/rl9.fn"; printf 'A\tscripts/new.sh\n' | battery_rule )
+    sfx "runlog/RL9 mutant: with clause c dropped an added scripts/ file reads none (the cell is RED)" differs "$([ "$_r" = c ] && echo same || echo differs)"; }
+  # a path holding a newline and a fake header must not drop the next real path, and must fire e (unknown fires)
+  _nlr=$( printf ':100644 100644 aaa bbb M\000x\n:100644 100644 aaa bbb D\000:000000 100644 aaa bbb A\000scripts/y.sh\000' | tr '\000' '\001' | br_norm | battery_rule )
+  sfx "runlog/RL9: a newline in a path fires e and the next real path is still read (c)" "c,e" "$_nlr"
+  trmut rl9n -e '/# RLNL$/d'
+  [ -z "$TRM" ] || { sed -n '/^br_norm() {$/,/^}$/p' "$TRM" > "$WORK/rl9n.fn"; sed -n '/^battery_rule() {$/,/^}$/p' "$TRM" >> "$WORK/rl9n.fn"
+    _r=$( . "$WORK/rl9n.fn"; printf ':100644 100644 aaa bbb M\000x\n:100644 100644 aaa bbb D\000:000000 100644 aaa bbb A\000scripts/y.sh\000' | tr '\000' '\001' | br_norm | battery_rule )
+    sfx "runlog/RL9 mutant: with the newline test gone the newline path no longer fires e (the cell is RED)" differs "$([ "$_r" = "c,e" ] && echo same || echo differs)"; }
+  one_step; mkchk alpha 'exit 0'; commit_fx; mkdir -p "$d/hooks"; : > "$d/hooks/x"
+  _h=$(rlh); rnh "$_h" "$d"; _s=$(grep '^v1 start ' "$(rlf "$_h" "$d")/runs.log" | sed -n 1p)
+  sfx "runlog/RL9: a run logs the clauses of its own listing (an untracked hooks/ file is a and c)" "a,c" "$(rlk "$_s" brule)"
+}
+# RL10 - --log-report: the guard-touching share over the first-parent history (here 3 of 10), from local refs only (a gh stub is never called), and an empty log prints unavailable.
+selftest_runlog_report() {
+  d=$(mkrepo); printf 'r\n' > "$d/README"
+  ( cd "$d" && git add README && git -c user.email=f@x -c user.name=f commit -qm root ) >/dev/null
+  _n=0
+  for _k in docs hooks docs docs hooks docs docs hooks docs; do
+    _n=$((_n+1))
+    case $_k in
+      hooks) mkdir -p "$d/hooks"; printf '%s\n' "$_n" > "$d/hooks/pre-push"; _f=hooks/pre-push ;;
+      *) mkdir -p "$d/docs"; printf '%s\n' "$_n" > "$d/docs/n$_n.md"; _f=docs/n$_n.md ;;
+    esac
+    ( cd "$d" && git add "$_f" && git -c user.email=f@x -c user.name=f commit -qm "c$_n" ) >/dev/null
+  done
+  _h=$(rlh); _gd=$WORK/gh-stub; mkdir -p "$_gd"; printf '#!/bin/sh\n: > "%s/called"\nexit 1\n' "$_gd" > "$_gd/gh"; chmod +x "$_gd/gh"
+  DVOUT=$( cd "$d" && PATH="$_gd:$PATH" HOME=$_h sh "$LANE" --log-report --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "runlog/RL10: the report is rc 0" 0 "$DVRC"
+  want "runlog/RL10: the guard-touching share is 3 of 10" "^# guard-touching share .*: 3/10 "
+  want "runlog/RL10: the battery-rule share is 3 of 10 too (every hooks/ change fires clause a)" "^# battery-rule share .*: 3/10 "
+  want "runlog/RL10: it says as of which local ref and commit" "as of local HEAD [0-9a-f]\{12\}"
+  want "runlog/RL10: an empty log prints unavailable, never a zero" "^# run log: unavailable"
+  sfx "runlog/RL10: and no gh call was made" no "$([ -e "$_gd/called" ] && echo yes || echo no)"
+  DVOUT=$( cd "$d" && HOME=$_h sh "$LANE" --log-report 2>&1 ) && DVRC=0 || DVRC=$?
+  want "runlog/RL10: a base that does not resolve locally is unavailable, with no fetch" "^# merged-PR share: unavailable: origin/main does not resolve"
+}
+# RL11 (selftest_no_write, above, carries the repo-untouched assertions) and RL12 - the run path never reads runs.log: a garbage log changes neither the verdict nor the rc, and --log-report skips and counts what is malformed.
+selftest_runlog_unread() {
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  _h0=$(rlh); rnh "$_h0" "$d"; _cl=$(lastline); _cr=$DVRC
+  _h=$(rlh); _sd=$(rlf "$_h" "$d"); mkdir -p "$_sd"; chmod 700 "$_sd"
+  { printf 'v1 start run=1-1 verdict=OK \001 $(touch %s/pwned) ; PARITY-CORE: OK\n' "$WORK"; printf '%0100d\n' 0; printf 'v1 end run=zz u=\n'; } > "$_sd/runs.log"
+  rnh "$_h" "$d"
+  sfx "runlog/RL12: a garbage log changes neither the verdict nor the rc" "$_cl|$_cr" "$(lastline)|$DVRC"
+  sfx "runlog/RL12: and nothing in it was run" no "$([ -e "$WORK/pwned" ] && echo yes || echo no)"
+  DVOUT=$( cd "$d" && HOME=$_h sh "$LANE" --log-report --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "runlog/RL12: --log-report skips and counts the malformed lines" "; 3 malformed line(s) skipped"
+}
+
+# ===================================================================================================
+# SWAS-868 (P2 of the local-parity design, PR 1) - the bounded pool. Plan docs/plans/2026-11-13-prepush-parallel-pool-868-plan.md section 2/T1: cells PL1 (selftest_bounded_fanout, above), PL2-PL21, PLR, RL13.
+# Every pool cell runs a fixture through LANE_J2 (J is 2) and carries a MUTANT: a sed on a COPY of the lane (trmut with TRSRC=$LANE_J2, or lane_mut with LM_SRC) on the `# PL...` / `# PS...` tags in the lane's own text.
+# plr <home> <lane> [args...] — a RUN of $d against the delta _stb with the cache ON in <home> -> DVOUT/DVRC.
+plr() { _plh=$1; _pll=$2; shift 2; DVOUT=$( cd "$d" && env HOME="$_plh" PREPUSH_NO_CACHE=0 sh "$_pll" --base "$_stb" "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
+pl_end() { grep '^v1 end ' "$(rlf "$1" "$d")/runs.log" | sed -n 1p; }   # <home> -> its first end record
+pl_units() { rlk "$1" u | tr ',' '\n' | awk -F: '{ print $1 ":" $2 ":" $3 }' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }   # <end record> -> sorted bucket:name:verdict
+pl_times() { printf '%s\n' "$1/.local/state/sparkwright/prepush/$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)/times.tsv"; }   # <home> -> its times table
+pl_pkrows() { awk -F'\t' '$1 == "@pool-k" { print $2 " " $3 }' "$(pl_times "$1")" 2>/dev/null || :; }   # <home> -> one "key blob" per @pool-k row
+pl_ncount() { grep -c -e "$2" "$1" 2>/dev/null || :; }
+pl_racefx() {   # alpha holds `busy` until beta has checked it; beta fails if it sees `busy`: in parallel beta fails, alone it passes
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
+  mkchk alpha ': > "$PWD/busy"; : > "$PWD/a.started"; _i=0; while [ ! -e "$PWD/b.checked" ] && [ "$_i" -lt 100 ]; do sleep 0.1 2>/dev/null || sleep 1; _i=$((_i+1)); done; rm -f "$PWD/busy"'
+  mkchk beta '_i=0; while [ ! -e "$PWD/a.started" ] && [ "$_i" -lt 100 ]; do sleep 0.1 2>/dev/null || sleep 1; _i=$((_i+1)); done; : > "$PWD/b.checked"; [ ! -e "$PWD/busy" ] || exit 1'
+  commit_fx
+}
+pl_racerm() { rm -f "$d/busy" "$d/a.started" "$d/b.checked"; }
+# pl_eqrun <label> <lane-a> <lane-b> [args...] — the same fixture through two lanes under their own HOMEs: verdict line, rc and sorted units must be equal
+pl_eqrun() {
+  _pel=$1; _pla=$2; _plb=$3; shift 3
+  _pha=$(rlh); plr "$_pha" "$_pla" "$@"; PL_DVA=$DVOUT; _pva=$(lastline); _pra=$DVRC; _pua=$(pl_units "$(pl_end "$_pha")")
+  _phb=$(rlh); plr "$_phb" "$_plb" "$@"; _pvb=$(lastline); _prb=$DVRC; _pub=$(pl_units "$(pl_end "$_phb")")
+  sfx "$_pel: the verdict line is the same at J = 1 and J = 2" "$_pva" "$_pvb"
+  sfx "$_pel: and the rc" "$_pra" "$_prb"
+  sfx "$_pel: and the sorted units" "$_pua" "$_pub"
+  PL_EQU=$_pub
+}
+# PL2 - J is never settable
+selftest_pool_unsettable() {
+  one_step; mkchk alpha 'exit 0'; commit_fx; _pp=PREPUSH_
+  DVOUT=$( cd "$d" && env POOL_J=9 KIT_POOL_J=9 "${_pp}J=9" "${_pp}POOL_J=9" "${_pp}POOL_U_MB=1" sh "$LANE_J2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "PL2a: J-shaped environment names leave the derived J alone" "^# pool: J=2 "
+  DVOUT=$( cd "$d" && sh "$LANE_J2" --base HEAD --j 9 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "PL2a: --j 9 is a usage error, rc 2" 2 "$DVRC"
+  _sub="  POOL_J=\${${_pp}J:-\$_pj_j}   # PLJSET"
+  TRSRC=$LANE_J2 trmut pl2a -e "/# PLJSET\$/s/.*/$_sub/"
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && env "${_pp}J=9" sh "$TRM" --base HEAD 2>&1 ) || :
+    wantnot "PL2a mutant: with J read from the environment the name moves it (the cell is RED)" "^# pool: J=2 "; }
+  if [ "$(uname -s)" = Darwin ]; then
+    _pb2=$WORK/pl2b-bin; mkdir -p "$_pb2"
+    printf '#!/bin/sh\nprintf "Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 99999999999.\\n"\n' > "$_pb2/vm_stat"
+    printf '#!/bin/sh\necho 99999999999\n' > "$_pb2/awk"; chmod +x "$_pb2/vm_stat" "$_pb2/awk"
+    _jr=$( PATH="$_pb2:$PATH"; pool_cores() { echo 64; }; pool_j; echo "$POOL_J" ) || _jr=err
+    sfx "PL2b: with 64 cores and a planted vm_stat/awk the J stays under 63 (the absolute-path memory read decides)" yes "$([ "$_jr" -lt 63 ] 2>/dev/null && echo yes || echo "J=$_jr")"
+    _jm=$( PATH="$_pb2:$PATH"; pool_cores() { echo 64; }; pool_free_mb() { mem_free_mb; }; pool_j; echo "$POOL_J" ) || _jm=err
+    sfx "PL2b mutant: with pool_free_mb reading through PATH the planted memory gives J = 63 (the cell is RED)" 63 "$_jm"
+  else echo "PL2b: not graded on Linux (reads /proc/meminfo)"; fi
+  sfx "PL2c: exactly one POOL_U_MB=1536 line" 1 "$(grep -c '^POOL_U_MB=1536$' "$LANE_REAL" || :)"
+  _pf=$(sed -n '/^pool_cores() {/,/^}/p;/^pool_free_mb() {/,/^}/p' "$LANE_REAL")
+  sfx "PL2c: getconf, vm_stat and awk are called by absolute path" yes "$([ "$(printf '%s\n' "$_pf" | grep -c '/usr/bin/getconf' || :)" -ge 1 ] && [ "$(printf '%s\n' "$_pf" | grep -c '/usr/bin/vm_stat' || :)" -ge 1 ] && [ "$(printf '%s\n' "$_pf" | grep -c '/usr/bin/awk' || :)" -ge 1 ] && echo yes || echo no)"
+  sfx "PL2c: pool_j reads no environment name" 0 "$(sed -n '/^pool_j() {/,/^}/p' "$LANE_REAL" | grep -c -e 'PREPUSH_' -e 'KIT_' -e 'ENVIRON' || :)"
+  trmut pl2c -e "s/^POOL_U_MB=1536\$/POOL_U_MB=\${${_pp}POOL_U_MB:-1536}/"
+  [ -z "$TRM" ] || sfx "PL2c mutant: with an environment read there is no literal POOL_U_MB=1536 line (the cell is RED)" 0 "$(grep -c '^POOL_U_MB=1536$' "$TRM" || :)"
+  echo "PASS: PL2d: the review read (J has no environment, argv or PATH feed) is the reviewer's, not a cell's"
+}
+# PL3 - per-unit dirs
+selftest_pool_dirs() {
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
+  for _n in alpha beta; do mkchk "$_n" 'printf "%s\n%s\n%s\n" "$TMPDIR" "$HOME" "$GH_CONFIG_DIR" > "$PWD/dirs.'"$_n"'"; sleep 1'; done
+  commit_fx; rnl "$LANE_J2" "$d" --warranted
+  sfx "PL3: two pooled probes see six distinct dirs (TMPDIR, HOME, GH_CONFIG_DIR each)" 6 "$(cat "$d/dirs.alpha" "$d/dirs.beta" 2>/dev/null | sort -u | grep -c . || :)"
+  TRSRC=$LANE_J2 trmut pl3 -e '/# PLUDIR$/d'
+  [ -z "$TRM" ] || { rm -f "$d/dirs.alpha" "$d/dirs.beta"; rnl "$TRM" "$d" --warranted
+    sfx "PL3 mutant: with the unit dir not handed over both probes share the work root's dirs (the cell is RED)" 3 "$(cat "$d/dirs.alpha" "$d/dirs.beta" 2>/dev/null | sort -u | grep -c . || :)"; }
+}
+# PL5 - longest first
+selftest_pool_order() {
+  stfx "$STREC" scripts/u.sh scripts/s5.sh scripts/s3.sh scripts/s1.sh
+  _b5=$(git -C "$d" rev-parse HEAD:scripts/s5.sh); _b3=$(git -C "$d" rev-parse HEAD:scripts/s3.sh); _b1=$(git -C "$d" rev-parse HEAD:scripts/s1.sh)
+  _h=$WORK/pl5-h
+  pl_ord() { printf '%s\n' "$DVOUT" | sed -n 's/^#   sh conformance\/selftest-hermetic\.sh scripts\/\([a-z0-9]*\)\.sh$/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
+  stt "$_h" "$_b5=5" "$_b3=3" "$_b1=1"; plr "$_h" "$LANE_J2" --verbose
+  sfx "PL5: the queue is the unmeasured unit first, then descending seconds" "u s5 s3 s1" "$(pl_ord)"
+  TRSRC=$LANE_J2 trmut pl5a -e '/# PLSORT$/s/-k2,2nr/-k2,2n/'
+  [ -z "$TRM" ] || { stt "$_h" "$_b5=5" "$_b3=3" "$_b1=1"; plr "$_h" "$TRM" --verbose; sfx "PL5 mutant: ascending seconds (the cell is RED)" differs "$([ "$(pl_ord)" = 'u s5 s3 s1' ] && echo same || echo differs)"; }
+  TRSRC=$LANE_J2 trmut pl5b -e '/# PLSORT$/s/-k1,1n/-k1,1nr/'
+  [ -z "$TRM" ] || { stt "$_h" "$_b5=5" "$_b3=3" "$_b1=1"; plr "$_h" "$TRM" --verbose; sfx "PL5 mutant: unmeasured last (the cell is RED)" differs "$([ "$(pl_ord)" = 'u s5 s3 s1' ] && echo same || echo differs)"; }
+}
+# PL6, PL7 - RACE never masks a real FAIL; a race reads RACE
+selftest_pool_race() {
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'; mkchk alpha 'sleep 1; exit 1'; mkchk beta 'sleep 1; exit 0'; commit_fx
+  rnl "$LANE_J2" "$d" --warranted
+  want "PL6: an always-failing probe reads FAIL after the serial confirm" "^  FAIL  core-live *alpha .*rc=1 (expected 0)"
+  wantnot "PL6: and no RACE is claimed" "RACE"
+  sfx "PL6: the verdict is FAIL" "PARITY-CORE: FAIL" "$(lastline)"
+  TRSRC=$LANE_J2 trmut pl6 -e '/# PLRACE$/s/.*/  _pt_pass=1   # PLRACE/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --warranted; want "PL6 mutant: with the confirm's result ignored the failure reads as a race (the cell is RED)" "RACE"; }
+  pl_racefx; _h=$(rlh); rnlh "$_h" "$LANE_J2" "$d" --warranted
+  want "PL7: a race reads RACE" "^# RACE: beta failed in parallel, passed serially"
+  sfx "PL7: the verdict is OK and names the race (S-4)" "PARITY-CORE: OK (1 RACE)" "$(lastline)"
+  PL_RH=$_h; PL_RD=$d; PL_RDV=$DVOUT   # PL10 and PL15 read this run (one J = 2 race run that really raced, asserted by three cells)
+  sfx "PL7: u= holds RACE for it" 1 "$(rlk "$(pl_end "$_h")" u | tr ',' '\n' | grep -c '^core-live:beta:RACE:' || :)"
+  TRSRC=$LANE_J2 trmut pl7 -e '/# PLTAIL$/s/.*/  :   # PLTAIL/'
+  [ -z "$TRM" ] || { pl_racerm; rnl "$TRM" "$d" --warranted; wantnot "PL7 mutant: with the confirm skipped no RACE is found (the cell is RED)" "RACE"; }
+}
+# k5p_run <lane> — a TERM to the LANE pid only while two pooled arms run, each with a TERM-ignoring grandchild (only the KILL ends it): lane rc 143, every group and grandchild gone within 9 s. Sets K5R.
+k5p_run() {
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
+  for _n in alpha beta; do mkchk "$_n" 'echo $$ > "$PWD/arm.'"$_n"'"
+( trap "" TERM; sleep 110 & echo $! > "$PWD/gc.'"$_n"'"; wait ) &
+wait'; done
+  commit_fx; K5R=""
+  ( cd "$d" && PREPUSH_CEILING_S=300 && export PREPUSH_CEILING_S && exec sh "$1" --base HEAD --warranted ) > "$WORK/k5p.out" 2>&1 &
+  _lp=$!; _dl=$(( $(now_s) + 40 ))
+  while { [ ! -s "$d/gc.alpha" ] || [ ! -s "$d/gc.beta" ]; } && [ "$(now_s)" -lt "$_dl" ]; do sleep 1; done
+  if [ ! -s "$d/gc.alpha" ] || [ ! -s "$d/gc.beta" ]; then K5R="red: the arms never started"; hl_kill "$_lp" -KILL || :; return 0; fi
+  _aa=$(cat "$d/arm.alpha"); _ab=$(cat "$d/arm.beta"); _ga=$(cat "$d/gc.alpha"); _gb=$(cat "$d/gc.beta")
+  _pa=$(ps -o pgid= -p "$_aa" 2>/dev/null | tr -d ' '); _pb3=$(ps -o pgid= -p "$_ab" 2>/dev/null | tr -d ' ')
+  sleep 1; kill -s TERM "$_lp" 2>/dev/null || :; _t0=$(now_s); _dl=$(( _t0 + 9 ))
+  while :; do
+    _na=0
+    for _pp2 in "$_lp" "$_ga" "$_gb"; do _ps2=$(ps -o stat= -p "$_pp2" 2>/dev/null | tr -d ' '); case $_ps2 in ''|Z*) ;; *) _na=$((_na+1)) ;; esac; done
+    _nm=$(ps -A -o pid= -o pgid= 2>/dev/null | awk -v a="$_pa" -v b="$_pb3" '($2 == a || $2 == b) { n++ } END { print n + 0 }')
+    [ $((_na + _nm)) -gt 0 ] || break
+    [ "$(now_s)" -lt "$_dl" ] || break
+    sleep 1
+  done
+  _el=$(( $(now_s) - _t0 ))
+  [ $((_na + _nm)) -eq 0 ] || K5R="$K5R alive($_na process(es), $_nm group member(s))"
+  [ "$_el" -le 7 ] || K5R="$K5R took-${_el}s"   # the lane copies scale the kill grace to 4 s: one shared grace ends in about 5-6 s, a per-unit serial grace in about 9-10 s
+  for _pp2 in "$_aa" "$_ab" "$_ga" "$_gb"; do hl_kill "$_pp2" -KILL || :; done
+  _ls=$(ps -o stat= -p "$_lp" 2>/dev/null | tr -d ' '); _lrc=0
+  case $_ls in ''|Z*) { wait "$_lp"; } 2>/dev/null || _lrc=$? ;; *) hl_kill "$_lp" -KILL || :; { wait "$_lp"; } 2>/dev/null || :; _lrc=killed ;; esac
+  [ "$_lrc" = 143 ] || K5R="$K5R lane-rc=$_lrc"
+  if [ -z "$K5R" ]; then K5R=ok; else K5R="red:$K5R"; fi
+}
+# PL8 - a ceiling kill under the pool; K5 under the pool
+selftest_pool_ceiling() {
+  _c2=$WORK/lane-j2-st2.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=2/' "$LANE_J2" > "$_c2"
+  sfx "PL8: the ST_CEIL=2 J=2 lane copy differs" differs "$(cmp -s "$LANE_J2" "$_c2" && echo same || echo differs)"
+  _g3=$WORK/lane-j2-g3.sh; sed 's/^ARM_GRACE_S=5; ARM_CONFIRM_S=5;/ARM_GRACE_S=4; ARM_CONFIRM_S=4;/' "$LANE_J2" > "$_g3"
+  sfx "PL8: the grace-4 J=2 lane copy differs" differs "$(cmp -s "$LANE_J2" "$_g3" && echo same || echo differs)"
+  _pb='case $1 in
+scripts/x.sh)
+'"$K_BODY"'
+;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  stfx "$_pb" scripts/x.sh scripts/y.sh
+  plr "$WORK/pl8-h" "$_c2"
+  want "PL8: the hung pooled target reads UNVERIFIED at the runaway ceiling, its kill confirmed gone" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling.*confirmed gone"
+  want "PL8: the other target reads OK" "^  OK    core-selftest *scripts/y\.sh"
+  sfx "PL8: the hung target's grandchildren are gone" 0 "$(k_alive "$d/k.pids")"; k_reap "$d/k.pids"
+  TRSRC=$_c2 trmut pl8a -e '/# PLCTL$/s/.*/  _rtc=$WORK\/ctl   # PLCTL/'
+  [ -z "$TRM" ] || { stfx "$_pb" scripts/x.sh scripts/y.sh; plr "$WORK/pl8-h2" "$TRM"; k_reap "$d/k.pids"
+    wantnot "PL8 mutant: with the kill state shared in the work root's ctl the pooled kill is not read as a ceiling kill (the cell is RED)" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"; }
+  k5p_run "$_g3"; sfx "PL8 K5: a TERM to the lane pid alone ends it (rc 143) and kills both pooled groups and their TERM-ignoring grandchildren within one shared grace (7 s at a 4 s grace)" ok "$K5R"
+  TRSRC=$_g3 trmut pl8b -e '/# PLTRAP$/s/.*/  :   # PLTRAP/' -e '/^      kill -0 "\$_lpid" 2>\/dev\/null || { arm_orphaned/d'
+  [ -z "$TRM" ] || { k5p_run "$TRM"; sfx "PL8 K5 mutant: a trap that reads only the one legacy control dir leaves the pooled arms alive (the cell is RED)" yes "$(k5_has 'alive')"; }
+  TRSRC=$_g3 trmut pl8c -e '/# PLKILL$/s/.*/  for _g in $_pk_all; do arm_kill "$_g" leader || :; done   # PLKILL/' -e '/^      kill -0 "\$_lpid" 2>\/dev\/null || { arm_orphaned/d'
+  [ -z "$TRM" ] || { k5p_run "$TRM"; sfx "PL8 K5 mutant: a per-unit serial grace takes over 7 s at a 4 s grace (the cell is RED)" yes "$(k5_has 'took-')"; }
+}
+# PL9 - the verdict equals J = 1
+selftest_pool_equal() {
+  _pb='case $1 in
+scripts/bad.sh) echo "TARGET: $1 (both faces)"; exit 1 ;;
+scripts/crash.sh) kill -s SEGV $$ ;;
+scripts/excl.sh) printf "  EXCLUDED: excl.sh — fixture\n" ;;
+scripts/hang.sh) sleep 30 ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  # PL9b shares this run (Architect, route b): the J = 1 lane here is a copy whose pool entry points log their names to $PWD/pool.calls, so the same run proves PL9's equality AND that J = 1 never enters pool code.
+  _j1=$WORK/lane-j1-st2.sh; _j2=$WORK/lane-j2-st2.sh
+  pl_wrap "$LANE_J1" "$_j1"; sed 's/^ST_CEIL=3600$/ST_CEIL=2/' "$LANE_J2" > "$_j2"
+  sfx "PL9b: the call-logging J = 1 copy differs from the lane" differs "$(cmp -s "$LANE_J1" "$_j1" && echo same || echo differs)"
+  stfx "$_pb" scripts/bad.sh scripts/crash.sh scripts/excl.sh scripts/hang.sh scripts/ok.sh
+  rm -f "$d/pool.calls"; pl_eqrun "PL9 default run" "$_j1" "$_j2"; _pu1=$PL_EQU
+  sfx "PL9b: at J = 1 no pool function was called (the call log is empty)" "" "$(cat "$d/pool.calls" 2>/dev/null || :)"
+  sfx "PL9b: and the J = 1 output has exactly one # pool: line" 1 "$(printf '%s\n' "$PL_DVA" | grep -c '^# pool: ' || :)"
+  # control: the same logging on the J = 2 lane DOES log, so an empty log is not an unwired probe; the mutant routes J = 1 through the pool
+  pl_wrap "$LANE_J2" "$WORK/lane-j2-calls.sh"; rm -f "$d/pool.calls"; plr "$(rlh)" "$WORK/lane-j2-calls.sh"
+  sfx "PL9b: control - at J = 2 the pool functions are logged" yes "$([ -s "$d/pool.calls" ] && echo yes || echo no)"
+  TRSRC=$_j1 trmut pl9b -e '/# PLSITE$/s/-lt 2/-lt 1/' -e '/# PLUSE$/s/-ge 2/-ge 1/' -e '/# PLUSE2$/s/.*/  :   # PLUSE2/'
+  [ -z "$TRM" ] || { rm -f "$d/pool.calls"; plr "$(rlh)" "$TRM"
+    sfx "PL9b mutant: with J = 1 routed through the pool the call log is not empty (the cell is RED)" yes "$([ -s "$d/pool.calls" ] && echo yes || echo no)"; }
+  TRSRC=$_j2 trmut pl9 -e '/# PLLAST$/s/-le "\$PQ_M"/-lt "$PQ_M"/'
+  [ -z "$TRM" ] || { _hm=$(rlh); plr "$_hm" "$TRM"
+    sfx "PL9 mutant: with the last queued unit dropped the units differ from J = 1 (the cell is RED)" differs "$([ "$(pl_units "$(pl_end "$_hm")")" = "$_pu1" ] && echo same || echo differs)"; }
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'; mkchk alpha 'exit 0'; mkchk beta 'exit 3'; commit_fx; _stb=$(git -C "$d" rev-parse HEAD)
+  pl_eqrun "PL9 --warranted run" "$LANE_J1" "$LANE_J2" --warranted
+}
+# PL9b - J = 1 is IDENTICAL to today's lane, proved STRUCTURALLY, not textually (Architect, route b): at J = 1 the lane never enters pool code. pl_wrap makes a copy (ST_CEIL=2) of a lane whose pool entry points
+# (pool_arm, pool_loop, pool_start, pool_reap, pool_tail_one) each append their name to $PWD/pool.calls; the legs run inside selftest_pool_equal, on PL9's own run.
+pl_wrap() {
+  sed -e 's/^ST_CEIL=3600$/ST_CEIL=2/' -e 's/^pool_arm() {/pool_arm() { echo pool_arm >> "$PWD\/pool.calls";/' -e 's/^pool_loop() {/pool_loop() { echo pool_loop >> "$PWD\/pool.calls";/' \
+      -e 's/^pool_start() {/pool_start() { echo pool_start >> "$PWD\/pool.calls";/' -e 's/^pool_reap() {/pool_reap() { echo pool_reap >> "$PWD\/pool.calls";/' \
+      -e 's/^pool_tail_one() {/pool_tail_one() { echo pool_tail_one >> "$PWD\/pool.calls";/' "$1" > "$2"
+}
+
+# PL10 - the log
+selftest_pool_log() {
+  [ -x /usr/bin/perl ] || { echo "SKIP: PL10: /usr/bin/perl is absent - the pooled rss_kb was NOT exercised"; return 0; }
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
+  mkchk alpha "/usr/bin/perl -e 'my \$x = q(a) x 67108864; sleep 2'"; mkchk beta 'sleep 2'; commit_fx
+  _h=$(rlh); rnlh "$_h" "$LANE_J2" "$d" --warranted; _lg=$(rlf "$_h" "$d")/runs.log
+  _s=$(grep '^v1 start ' "$_lg" | sed -n 1p); _e=$(grep '^v1 end ' "$_lg" | sed -n 1p)
+  sfx "PL10: the start record carries the provisional J" 2 "$(rlk "$_s" j)"
+  sfx "PL10: the end record carries the final J and the race count" "2|0" "$(rlk "$_e" jf)|$(rlk "$_e" race)"
+  sfx "PL10: the start record matches the v1 grammar" 1 "$(rlc "$_lg" "$RLS_RE")"
+  sfx "PL10: and the end record" 1 "$(rlc "$_lg" "$RLE_RE")"
+  _kb=$(rlk "$_e" u | tr ',' '\n' | sed -n 's/^core-live:alpha:OK:[0-9]*:\([0-9-]*\)$/\1/p'); _kc=$(rlk "$_e" u | tr ',' '\n' | sed -n 's/^core-live:beta:OK:[0-9]*:\([0-9-]*\)$/\1/p')
+  sfx "PL10: every pooled unit's rss_kb is a number, at least 40000 for the 64 MB holder" yes "$([ "${_kb:--}" != - ] && [ "${_kb:-0}" -ge 40000 ] && [ "${_kc:--}" != - ] && echo yes || echo no)"
+  _hr=$PL_RH   # the race run of PL7 (a J = 2 run that really raced); its log is read here
+  DVOUT=$( cd "$PL_RD" && HOME=$_hr sh "$LANE_J2" --log-report --base HEAD 2>&1 ) || :
+  want "PL10: --log-report counts the run as ended" "^# runs: 1 started, 1 ended, 0 incomplete"
+  want "PL10: --log-report reads jf and RACE" "^# pool runs .*jf >= 2 in 1 of 1 ended run.*RACE units 1"
+  TRSRC=$LANE_J2 trmut pl10a -e '/# RLJ$/s/.*/  _rl_j=1   # RLJ/'
+  [ -z "$TRM" ] || { _h2=$(rlh); rnlh "$_h2" "$TRM" "$d" --warranted
+    sfx "PL10 mutant: with j=1 restored the start record does not carry the provisional J (the cell is RED)" differs "$([ "$(rlk "$(grep '^v1 start ' "$(rlf "$_h2" "$d")/runs.log" | sed -n 1p)" j)" = 2 ] && echo same || echo differs)"; }
+  TRSRC=$LANE_J2 trmut pl10b -e 's/okf("j", "^.0-9.+\$")/okf("j", "^1\$")/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$PL_RD" && HOME=$_hr sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "PL10 mutant: with the ^1$ regex restored a J = 2 start record is malformed (the cell is RED)" "^# runs: 1 started, 1 ended"; }
+  TRSRC=$LANE_J2 trmut pl10c -e '/# RLOKEND$/s/.*/  e = (("trunc" in f) ? 14 : 13)   # RLOKEND/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$PL_RD" && HOME=$_hr sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "PL10 mutant: with race= and jf= refused without trunc= the end record is malformed (the cell is RED)" "^# runs: 1 started, 1 ended"; }
+}
+# PL11 - fd 9
+selftest_pool_fd() {
+  _pl=$LANE; LANE=$LANE_J2; selftest_lock_child_fd; LANE=$_pl
+  hlfx
+  stfx 'if ( : >&9 ) 2>/dev/null; then echo open > "$PWD/fd9.$(basename "$1")"; else echo closed > "$PWD/fd9.$(basename "$1")"; fi; echo "TARGET: $1 (both faces)"' scripts/p.sh scripts/q.sh
+  plr "$_lh" "$LANE_J2"
+  want "PL11: the pool took the lock" "^# heavy-arm lock: acquired for the core-pool unit"
+  sfx "PL11: both pooled units ran with descriptor 9 closed" "closed closed" "$(cat "$d/fd9.p.sh" "$d/fd9.q.sh" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+  TRSRC=$LANE_J2 trmut pl11 -e 's/) 9>&-/)/'
+  [ -z "$TRM" ] || { rm -f "$d/fd9.p.sh" "$d/fd9.q.sh"; hlfx; plr "$_lh" "$TRM"
+    sfx "PL11 mutant: with 9>&- removed a pooled unit holds the lock's descriptor (the cell is RED)" yes "$(grep -q open "$d/fd9.p.sh" 2>/dev/null && echo yes || echo no)"; }
+}
+# PL14, PL14b - a fast rc 124 under a late clock; the wd.fired conjunct at function level
+selftest_pool_late() {
+  _c5=$WORK/lane-j2-ceil5.sh; sed 's/ 120 PREPUSH_CEILING_S)/ 5 PREPUSH_CEILING_S)/' "$LANE_J2" > "$_c5"
+  sfx "PL14: the CEIL=5 lane copy differs" differs "$(cmp -s "$LANE_J2" "$_c5" && echo same || echo differs)"
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'; mkchk alpha 'sleep 2'
+  mkchk beta '_u=$(dirname "$TMPDIR"); : > "$_u/../ctl/${_u##*/}/wd.fired"; sleep 1; exit 124'; commit_fx
+  rnl "$_c5" "$d" --warranted
+  want "PL14: a fast rc 124 with a forged marker reads FAIL by its rc, not as a ceiling kill" "^  FAIL  core-live *beta .*rc=124 (expected 0)"
+  wantnot "PL14: and never exceeded ceiling" "exceeded ceiling"
+  TRSRC=$_c5 trmut pl14 -e '/# PLT1$/s/.*/pool_t1() { echo $(( $(date +%s) + 30 )); }   # PLT1/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --warranted; want "PL14 mutant: with a late clock the fast exit reads as a ceiling kill (the cell is RED)" "exceeded ceiling"; }
+  # PL14c (R1-3): a unit's own seconds survive until its row is printed. `alpha` hangs and is killed at the 4 s ceiling (queued first); `zeta` exits at once but its row waits behind alpha. zeta's row must show its OWN
+  # seconds, not alpha's (the lane copy's ceiling is 4 s); the mutant drops s:RUN_S from the saved variables, so zeta's row shows the last decided unit's seconds.
+  _c4=$WORK/lane-j2-ceil4.sh; sed 's/ 120 PREPUSH_CEILING_S)/ 4 PREPUSH_CEILING_S)/' "$LANE_J2" > "$_c4"
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/zeta.sh'; mkchk alpha 'sleep 100 & wait'; mkchk zeta 'exit 0'; commit_fx
+  pl_zs() { printf '%s\n' "$DVOUT" | sed -n 's/^  OK    core-live .*zeta .* \([0-9][0-9]*\)s$/\1/p' | sed -n 1p; }
+  rnl "$_c4" "$d" --warranted
+  sfx "PL14c: the quick unit's row shows its own seconds (2 or fewer), though it waited behind a 4 s kill" yes "$([ "$(pl_zs)" -le 2 ] 2>/dev/null && echo yes || echo "zeta=$(pl_zs)")"
+  TRSRC=$_c4 trmut pl14c -e 's/ s:RUN_S / /'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d" --warranted; sfx "PL14c mutant: without s:RUN_S saved the waiting row shows another unit's seconds (the cell is RED)" yes "$([ "$(pl_zs)" -ge 4 ] 2>/dev/null && echo yes || echo no)"; }
+  # PL14b: ri_decide and st_decide at function level, J = 2, no wd.fired
+  _m=$WORK/lane-pl14b.sh; lane_mut "$_m" '' '' > /dev/null
+  pl14fn() { sed -n -e '/^ri_wd() /p' -e '/^ri_decide() {/,/^}/p' -e '/^crash_sig_of() {/,/^}/p' -e '/^crash_line_in() {/,/^}/p' -e '/^crash_ev_run() {/,/^}/p' -e '/^st_decide() {/,/^}/p' "$1" > "$1.fn"; }
+  pl14run() {   # <fn-file> <touch wd.fired: 0|1> -> "<ri kind>/<st kind>"
+    _ec=$(mktemp -d "${TMPDIR:-/tmp}/fx-ec-XXXXXX"); : > "$_ec/out"; [ "$2" -eq 0 ] || : > "$_ec/wd.fired"
+    # shellcheck source=/dev/null  # sources a lane copy's extracted decide functions (the path is built at run time)
+    ( . "$1"; POOL_J=2; POOL_LATE=0; U_CTL=$_ec; U_OUT=$_ec/out; U_CRASH=$_ec/crash.hit; RUN_RC=124; RUN_S=10; _st_ms=1; _st_s=1; _st_kc=0; _st_bl=""
+      ri_decide core-live "x " 0 5; _k1=$RI_KIND; st_decide scripts/x.sh 5 "scripts/x.sh (both faces)"; echo "$_k1/$ST_KIND" )
+  }
+  pl14fn "$_m"
+  sfx "PL14b: at J = 2 with no wd.fired a rc 124 past the ceiling reads fail, and the target tail reads run (an rc FAIL), not the STCEIL UNV" "fail/run" "$(pl14run "$_m.fn" 0)"
+  sfx "PL14b: control - with the marker present both read ceiling kills" "ceil/ceil" "$(pl14run "$_m.fn" 1)"
+  trmut pl14b1 -e '/# PLWD$/s/.*/ri_wd() { :; }   # PLWD/'
+  [ -z "$TRM" ] || { pl14fn "$TRM"; sfx "PL14b mutant: with the conjunct dropped from ri_decide it reads ceil (the cell is RED)" ceil "$(pl14run "$TRM.fn" 0 | cut -d/ -f1)"; }
+  trmut pl14b2 -e '/# PSCEIL$/s| \&\& \[ -e "[^"]*wd\.fired" \]||'
+  [ -z "$TRM" ] || { pl14fn "$TRM"; sfx "PL14b mutant: with the conjunct dropped from the target tail it reads ceil (the cell is RED)" ceil "$(pl14run "$TRM.fn" 0 | cut -d/ -f2)"; }
+}
+# PL15, PL16 - one record per unit; the first queued UNV reason wins
+selftest_pool_records() {
+  d=$PL_RD; _h=$PL_RH; _e=$(pl_end "$_h")   # PL7's race run (a FAIL in the pool, a pass serially)
+  _rows=$(printf '%s\n' "$PL_RDV" | grep -Ec '^  (OK|FAIL|UNVERIFIED|SKIP|N/A) ' || :)
+  sfx "PL15: after a FAIL, PASS sequence the rows, ran and the units are one each" "$_rows|$_rows" "$(rlk "$_e" ran)|$(rlk "$_e" u | tr ',' '\n' | grep -c . || :)"
+  sfx "PL15: and no unit is numbered #2" 0 "$(rlk "$_e" u | grep -c '#2' || :)"
+  TRSRC=$LANE_J2 trmut pl15a -e '/# PLDEFER$/s/_pd_s=defer/_pd_s=rec/'
+  [ -z "$TRM" ] || { pl_racerm; rnl "$TRM" "$d" --warranted; want "PL15 mutant: with the pool FAIL recorded early no race is found (the cell is RED)" "^  FAIL  core-live *beta"; }
+  _c2=$WORK/lane-j2-st2.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=2/' "$LANE_J2" > "$_c2"
+  _pb='case $1 in
+scripts/x.sh) m=$PWD/once.x; if [ ! -e "$m" ]; then : > "$m"; echo "TARGET: $1 (both faces)"; exit 1; fi; sleep 100 & wait ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  stfx "$_pb" scripts/p.sh scripts/x.sh; _h=$(rlh); plr "$_h" "$_c2"
+  want "PL15: a pool FAIL then a serial hang stays UNVERIFIED" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
+  wantnot "PL15: and is never a RACE" "RACE"
+  sfx "PL15: one UNV unit in the log" 1 "$(rlk "$(pl_end "$_h")" u | tr ',' '\n' | grep -c '^core-selftest:scripts/x\.sh:UNV:' || :)"
+  TRSRC=$_c2 trmut pl15b -e '/# PLRACE$/s/.*/  _pt_pass=1   # PLRACE/'
+  [ -z "$TRM" ] || { stfx "$_pb" scripts/p.sh scripts/x.sh; plr "$(rlh)" "$TRM"; want "PL15 mutant: a serial UNV mapped to a pass claims a RACE (the cell is RED)" "RACE"; }
+  # PL16: x (queued first) ignores TERM and dies last; y (queued second) is reaped first; the verdict names x
+  _pb='case $1 in
+scripts/x.sh) trap "" TERM; sleep 100 & wait ;;
+*) sleep 100 & wait ;;
+esac'
+  _c2g=$WORK/lane-j2-st2g.sh; sed 's/^ARM_GRACE_S=5; ARM_CONFIRM_S=5;/ARM_GRACE_S=2; ARM_CONFIRM_S=2;/' "$_c2" > "$_c2g"   # x (TERM ignored) then dies at about 4.5 s, y at about 2.3 s
+  stfx "$_pb" scripts/x.sh scripts/y.sh; plr "$(rlh)" "$_c2g"
+  sfx "PL16: the first-queued unit's UNV reason wins" "PARITY-CORE: UNVERIFIED (core-selftest scripts/x.sh: killed at the 2 s runaway ceiling)" "$(lastline)"
+  TRSRC=$_c2g trmut pl16 -e '/# PLSTATE$/s/   # PLSTATE$/; [ "$ST_KIND" != ceil ] || unv "core-selftest $_pd_t: killed at reap"   # PLSTATE/'
+  [ -z "$TRM" ] || { stfx "$_pb" scripts/x.sh scripts/y.sh; plr "$(rlh)" "$TRM"; wantnot "PL16 mutant: with unv called at reap the first-reaped reason leads (the cell is RED)" "UNVERIFIED (core-selftest scripts/x.sh: killed at the 2 s"; }
+}
+# PL17 - the @pool-k lifecycle
+_pkb='case $1 in
+scripts/x.sh) printf "%s\n" "$(basename "$(dirname "$TMPDIR")")" >> "$PWD/where.x"
+  if [ ! -e "$PWD/once.x" ]; then : > "$PWD/once.x"; sleep 100 & wait; fi
+  printf "  PASS: face (a) x (3 s) battery: ok\n  PASS: face (b) x (4 s) battery: ok\n"; echo "TARGET: $1 (both faces)" ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+pl17_seq() {   # <lane> <runs> <home>: runs 1-3 on the same bytes (run 1 kills x once), run 4 edits x and kills it again, run 5 edits it and runs clean
+  stfx "$_pkb" scripts/p.sh scripts/q.sh scripts/x.sh
+  _bx1=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _bx2=""; _bx3=""
+  : > "$WORK/trtab.rows"; printf '@pool-k\tscripts/y.sh\t%040d\t0\tlocal\t%s\n' 7 "$(date +%s)" >> "$WORK/trtab.rows"
+  # PL17_SEEDX=1: x already holds a live @pool-k row for these bytes (and its kill-once marker is set), so ONE run reaches the tail path a mutant must break
+  [ "${PL17_SEEDX-}" != 1 ] || { printf '@pool-k\tscripts/x.sh\t%s\t0\tlocal\t%s\n' "$_bx1" "$(date +%s)" >> "$WORK/trtab.rows"; : > "$d/once.x"; }
+  trtab "$3"
+  _prn=0
+  while [ "$_prn" -lt "$2" ]; do
+    _prn=$((_prn+1))
+    # the schedule PL17_S has one op per run: r = run again, e = edit x and re-arm its kill (it is killed again), c = edit x (it then runs clean)
+    case $(printf '%s' "$PL17_S" | cut -c"$_prn") in
+      e) rm -f "$d/once.x"; printf '# edit %s\n' "$_prn" >> "$d/scripts/x.sh"; commit_fx; _bx2=$(git -C "$d" rev-parse HEAD:scripts/x.sh) ;;
+      c) printf '# edit %s\n' "$_prn" >> "$d/scripts/x.sh"; commit_fx; _bx3=$(git -C "$d" rev-parse HEAD:scripts/x.sh) ;;
+    esac
+    plr "$3" "$1"
+    _plw=$(tail -n 1 "$d/where.x" | cut -c1); PL_WHERE="$PL_WHERE$_plw"
+    [ -z "${PL17_HOOK-}" ] || "$PL17_HOOK" "$_prn" "$3"
+  done
+}
+# the checks after each run of the main PL17 sequence (r r r e c): one sequence of five runs asserts runs 1, 2, 4 and 5
+pl17_hook() {
+  case $1 in
+    1) want "PL17 run 1: the pooled kill reads UNVERIFIED at the runaway ceiling" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
+       sfx "PL17 run 1: exactly one @pool-k row for x, with its blob" "scripts/x.sh $_bx1" "$(pl_pkrows "$2" | grep '^scripts/x\.sh ')"
+       sfx "PL17 run 1: and no @selftest-k floor" 0 "$(awk -F'\t' '$1 == "@selftest-k"' "$(pl_times "$2")" | grep -c . || :)"
+       sfx "PL17 run 1: y's row (a unit this run does not touch) was kept" 1 "$(pl_pkrows "$2" | grep -c '^scripts/y\.sh ' || :)" ;;
+    2) sfx "PL17 run 2: x runs in the serial tail (run 1 in the pool, run 2 in the tail), passes, writes today's @selftest row and keeps its @pool-k row" "ut|1|1" "$PL_WHERE|$(pl_pkrows "$2" | grep -c "^scripts/x\.sh $_bx1\$" || :)|$(awk -F'\t' -v b="$_bx1" '$1 == "@selftest" && $2 == b' "$(pl_times "$2")" | grep -c . || :)" ;;
+    4) sfx "PL17 run 4: after an edit x is killed in the pool again and the table holds exactly one row for it, with the new blob" "1|scripts/x.sh $_bx2" "$(pl_pkrows "$2" | grep -c '^scripts/x\.sh ' || :)|$(pl_pkrows "$2" | grep '^scripts/x\.sh ')" ;;
+    5) sfx "PL17 run 5: x's row is retired and y's row is untouched (no sweep)" "0|1" "$(pl_pkrows "$2" | grep -c '^scripts/x\.sh ' || :)|$(pl_pkrows "$2" | grep -c '^scripts/y\.sh ' || :)" ;;
+  esac
+}
+selftest_pool_pk() {
+  _c2=$WORK/lane-j2-pk.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=2/' "$LANE_J2" > "$_c2"
+  # one sequence of five runs (r r r e c) with the checks after runs 1, 2, 4 and 5 (pl17_hook); the mutants below run only as many runs as they need
+  _h=$WORK/pl17-h; PL_WHERE=""; PL17_S=rrrec; PL17_HOOK=pl17_hook; pl17_seq "$_c2" 5 "$_h"; PL17_HOOK=""
+  sfx "PL17: x ran in the pool, then the tail twice, then the pool twice" "uttuu" "$PL_WHERE"
+  TRSRC=$_c2 trmut pl17a -e '/# PSREC$/s/ || \[ "\$POOL_IN" -eq 1 \]//'
+  [ -z "$TRM" ] || { _h=$WORK/pl17-ma; PL17_S=r; pl17_seq "$TRM" 1 "$_h"
+    sfx "PL17 mutant: with STREC active at J >= 2 a pooled kill leaves a @selftest-k floor (the cell is RED)" yes "$([ "$(awk -F'\t' '$1 == "@selftest-k"' "$(pl_times "$_h")" | grep -c . || :)" -ge 1 ] && echo yes || echo no)"; }
+  TRSRC=$_c2 trmut pl17b -e '/# PLTAILREC$/s/   # PLTAILREC$/; tr_rewrite @pool-k "$_pt_key" -   # PLTAILREC/'
+  # control for the two seeded mutants below (pl17b, pl17e): on the CORRECT lane the seeded x is held, runs in the tail and keeps its row, so a seed that failed to take cannot pass them vacuously
+  _h=$WORK/pl17-mc0; PL_WHERE=""; PL17_S=r; PL17_SEEDX=1; pl17_seq "$_c2" 1 "$_h"; PL17_SEEDX=0
+  sfx "PL17 control: the seeded x runs in the tail and keeps its one row (the seed took)" "t|1" "$PL_WHERE|$(pl_pkrows "$_h" | grep -c '^scripts/x\.sh ' || :)"
+  # x is seeded with a live row, so one run holds it for the tail (where it passes clean); the row must survive that clean tail run (the correct lane: 1 row, the mutant: 0)
+  [ -z "$TRM" ] || { _h=$WORK/pl17-mb; PL_WHERE=""; PL17_S=r; PL17_SEEDX=1; pl17_seq "$TRM" 1 "$_h"; PL17_SEEDX=0
+    sfx "PL17 mutant: with @pool-k cleared on a clean tail run the row is gone after it (the cell is RED)" 0 "$(pl_pkrows "$_h" | grep -c '^scripts/x\.sh ' || :)"; }
+  _ov='tr_rewrite() { [ -n "$TR_TIMES" ] || return 0; [ "$3" = - ] || tr_record "$1" "$2" "$3"; return 0; }'
+  _m=$WORK/lane-pl17c.sh; LM_SRC=$_c2 lane_mut "$_m" '' "$_ov" > /dev/null
+  _h=$WORK/pl17-mc; PL_WHERE=""; PL17_S=re; pl17_seq "$_m" 2 "$_h"   # kill, edit, kill again: two rows for x if tr_rewrite appends
+  sfx "PL17 mutant: with tr_rewrite an append run 2 holds two rows for x (the cell is RED)" 2 "$(pl_pkrows "$_h" | grep -c '^scripts/x\.sh ' || :)"
+  _ov='tr_rewrite() { [ -n "$TR_TIMES" ] || return 0; _t=$(mktemp "$TR_TIMES.XXXXXX") || return 0; awk -F"\t" "\$1 != \"@pool-k\"" "$TR_TIMES" > "$_t"; [ "$3" = - ] || printf "%s\t%s\t%s\t0\tlocal\t%s\n" "$1" "$2" "$3" "$(date +%s)" >> "$_t"; mv -f "$_t" "$TR_TIMES"; }'
+  LM_SRC=$_c2 lane_mut "$_m" '' "$_ov" > /dev/null
+  _h=$WORK/pl17-md; PL_WHERE=""; PL17_S=r; pl17_seq "$_m" 1 "$_h"   # the first pool kill already sweeps y's row
+  sfx "PL17 mutant: with a sweep of untouched rows y's row is gone after the first rewrite (the cell is RED)" 0 "$(pl_pkrows "$_h" | grep -c '^scripts/y\.sh ' || :)"
+  TRSRC=$_c2 trmut pl17e -e '/# PLPKLOOK$/s/.*/    tr_look @pool-k "$_pu_key"; _pu_pk=$L_SEC   # PLPKLOOK/'
+  [ -z "$TRM" ] || { _h=$WORK/pl17-me; PL_WHERE=""; PL17_S=r; PL17_SEEDX=1; pl17_seq "$TRM" 1 "$_h"; PL17_SEEDX=0
+    sfx "PL17 mutant: reading the row through tr_look (it drops a non-number) holds nothing, so the seeded x runs in the pool (the cell is RED)" u "$PL_WHERE"; }
+  # the core-live variant: @pool-k <basename+argv> <script blob>
+  _c1=$WORK/lane-j2-cl2.sh; sed 's/ 120 PREPUSH_CEILING_S)/ 2 PREPUSH_CEILING_S)/' "$LANE_J2" > "$_c1"
+  pl17cl() {   # <lane> <home> <runs>
+    mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh' 'sh conformance/gamma.sh'
+    mkchk alpha 'basename "$(dirname "$TMPDIR")" >> "$PWD/where.alpha"; if [ ! -e "$PWD/once.alpha" ]; then : > "$PWD/once.alpha"; sleep 100 & wait; fi'
+    mkchk beta 'exit 0'; mkchk gamma 'exit 0'; commit_fx; _stb=$(git -C "$d" rev-parse HEAD)
+    _ca1=$(git -C "$d" rev-parse HEAD:conformance/alpha.sh); _cn=0; PL_WHERE=""
+    # seed mode: alpha holds a row whose blob is forty zeros (no real script has it), its kill-once marker set; one run then shows whether an edit-proof blob keeps it held
+    [ "${4-}" != seed ] || { printf '@pool-k\talpha\t%040d\t0\tlocal\t%s\n' 0 "$(date +%s)" > "$WORK/trtab.rows"; trtab "$2"; : > "$d/once.alpha"; }
+    while [ "$_cn" -lt "$3" ]; do
+      _cn=$((_cn+1))
+      [ "$_cn" -ne 3 ] || { printf '# edit\n' >> "$d/conformance/alpha.sh"; commit_fx; }
+      plr "$2" "$1" --warranted; PL_WHERE="$PL_WHERE$(tail -n 1 "$d/where.alpha" | cut -c1)"
+    done
+  }
+  _h=$WORK/pl17-cl; pl17cl "$_c1" "$_h" 3
+  sfx "PL17 core-live: killed in the pool, then held in the tail while the script is unchanged, then in the pool after an edit" "utu" "$PL_WHERE"
+  sfx "PL17 core-live: the edit retired the row" 0 "$(pl_pkrows "$_h" | grep -c '^alpha ' || :)"
+  TRSRC=$_c1 trmut pl17f -e '/# PLCLBLOB$/s/.*/  _pu_bl=0000000000000000000000000000000000000000   # PLCLBLOB/'
+  [ -z "$TRM" ] || { _h=$WORK/pl17-clm; pl17cl "$TRM" "$_h" 1 seed
+    sfx "PL17 core-live mutant: a row without the script blob (the seeded zeros match it) keeps alpha held, so the row is not retired (the cell is RED)" 1 "$(pl_pkrows "$_h" | grep -c '^alpha ' || :)"; }
+}
+# PL18 - a forged TARGET after the reap
+selftest_pool_forge() {
+  # x is an OK unit decided at its reap and recorded straight from the pool (no tail); z waits for x's `reaped` marker (20 s bound, else exit 2: the cell then FAILs as vacuous) and appends a crash line (built with printf from parts) to x's u1/out
+  _fb='case $1 in
+scripts/x.sh) echo "TARGET: $1 (both faces)" ;;
+scripts/a.sh)
+  _i=0; while [ ! -e "$TMPDIR/../../ctl/u2/reaped" ] && [ "$_i" -lt 200 ]; do sleep 0.1 2>/dev/null || sleep 1; _i=$((_i+1)); done
+  [ -e "$TMPDIR/../../ctl/u2/reaped" ] || exit 2
+  printf "%s %s\n" Segmentation "fault: 11" >> "$TMPDIR/../../u2/out"
+  echo "TARGET: $1 (both faces)" ;;
+esac'
+  # the forger a.sh is queued FIRST (u1, label order) and the victim x.sh second (u2): x's record waits in pool_flush behind the still-running forger, so the forgery always lands before x is recorded
+  stfx "$_fb" scripts/x.sh scripts/a.sh; plr "$(rlh)" "$LANE_J2"
+  want "PL18: the crash line forged into x's output after the reap does not change its OK (it was decided at the reap)" "^  OK    core-selftest *scripts/x\.sh"
+  wantnot "PL18: and x is not read as crashed" "scripts/x\.sh.*crashed"
+  want "PL18: the forger ran to the end (the cell is not vacuous)" "^  OK    core-selftest *scripts/a\.sh"
+  TRSRC=$LANE_J2 trmut pl18 -e '/# PLREC$/s/pool_st_prior; st_apply/st_decide "$_st_p" "$_st_cl" "$_st_p"; pool_st_prior; st_apply/'
+  [ -z "$TRM" ] || { stfx "$_fb" scripts/x.sh scripts/a.sh; plr "$(rlh)" "$TRM"; want "PL18 mutant: re-deciding at the record reads the forged line, so x reads UNVERIFIED (crashed) (the cell is RED)" "^  UNVERIFIED  core-selftest *scripts/x\.sh.*crashed"; }
+}
+# PL19 - the half-ceiling rule
+selftest_pool_half() {
+  _c10=$WORK/lane-j2-st3.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=3/' "$LANE_J2" > "$_c10"   # a 3 s ceiling: 1 s is under half of it, 2 s is not
+  _pb='case $1 in
+scripts/x.sh) if [ ! -e "$PWD/once.x" ]; then : > "$PWD/once.x"; sleep 100 & wait; fi; echo "TARGET: $1 (both faces)" ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  stfx "$_pb" scripts/p.sh scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _h=$WORK/pl19-h; stt "$_h" "$_bx=1"; plr "$_h" "$_c10"
+  want "PL19 (i): a unit measured at 1 s of 10 killed in the pool re-runs serially and reads its serial verdict" "^  OK    core-selftest *scripts/x\.sh"
+  sfx "PL19 (i): a half-test re-run that passes writes no @pool-k" 0 "$(pl_pkrows "$_h" | grep -c . || :)"
+  TRSRC=$_c10 trmut pl19a -e '/# PLHALF$/s/\&\& _pd_s=defer/\&\& _pd_s=rec/'
+  [ -z "$TRM" ] || { stfx "$_pb" scripts/p.sh scripts/x.sh; stt "$_h" "$_bx=1"; plr "$_h" "$TRM"; wantnot "PL19 (i) mutant: with no re-run the kill stays UNV (the cell is RED)" "^  OK    core-selftest *scripts/x\.sh"; }
+  _pb='printf "argv=[%s]\n" "$1" >> "$PWD/herm.out"; sleep 100 & wait'
+  stfx "$_pb" scripts/x.sh scripts/y.sh; _by=$(git -C "$d" rev-parse HEAD:scripts/y.sh); stt "$_h" "$_by=2"; plr "$_h" "$_c10"
+  sfx "PL19 (ii): an unmeasured unit and one measured at 2 s of 3 are each called once and read UNV" "argv=[scripts/x.sh] argv=[scripts/y.sh]|2" "$(hm | sed 's/argv=\[scripts\/y.sh\] argv=\[scripts\/x.sh\]/argv=[scripts\/x.sh] argv=[scripts\/y.sh]/')|$(printf '%s\n' "$DVOUT" | grep -c '^  UNVERIFIED  core-selftest .*killed at the 3 s' || :)"
+  TRSRC=$_c10 trmut pl19b -e '/# PLHALF$/s/pool_half "\$_pd_h" "\$_pd_c"/true/'
+  [ -z "$TRM" ] || { stfx "$_pb" scripts/x.sh scripts/y.sh; stt "$_h" "$_by=2"; plr "$_h" "$TRM"
+    sfx "PL19 (ii) mutant: with the half test dropped each is called twice (the cell is RED)" 4 "$(grep -c '^argv=' "$d/herm.out" 2>/dev/null || :)"; }
+}
+# PL20 - no perl: J = 1 with a note
+selftest_pool_noperl() {
+  _np=$WORK/lane-j2-noperl.sh; sed 's|^ARM_PERL=.*$|ARM_PERL=/nonexistent/perl|' "$LANE_J2" > "$_np"
+  one_step; mkchk alpha 'exit 0'; commit_fx; rnl "$_np" "$d"
+  want "PL20: with no perl J is 1 and the note says why" "^# pool: J=1 (no /nonexistent/perl"
+  TRSRC=$_np trmut pl20 -e '/# PLPERL$/s/if ! arm_perl_ok; then/if false; then/'
+  [ -z "$TRM" ] || { rnl "$TRM" "$d"; wantnot "PL20 mutant: with the perl test removed J is not 1 (the cell is RED)" "^# pool: J=1 "; }
+}
+# PL21 - reap latency, dash and bash
+selftest_pool_reap() {
+  # the lane copy scales the ceiling to 5 s and the poll bound's constant to 6 s (bound = 5 + 0 + 6 = 11 s, not 35 s), so the mutant waits about 10 s instead of 35
+  _c5=$WORK/lane-j2-ceil5b.sh; sed -e 's/ 120 PREPUSH_CEILING_S)/ 5 PREPUSH_CEILING_S)/' -e 's|_ps_cl / 10 + 30|_ps_cl / 10 + 6|' "$LANE_J2" > "$_c5"
+  mkcin 'sh conformance/alpha.sh' 'sh conformance/beta.sh'
+  mkchk alpha 'sleep 1; date +%s > "$PWD/end.alpha"'; mkchk beta 'sleep 1; date +%s > "$PWD/end.beta"'; commit_fx
+  pl_lag() {   # <shell> <lane> -> seconds from the last unit's own end to the lane's end
+    rm -f "$d/end.alpha" "$d/end.beta"; ( cd "$d" && "$1" "$2" --base HEAD --warranted ) > /dev/null 2>&1 || :
+    _pe=$(cat "$d/end.alpha" "$d/end.beta" 2>/dev/null | sort -n | tail -n 1); echo $(( $(now_s) - ${_pe:-0} ))
+  }
+  for _sh in dash bash; do
+    command -v "$_sh" > /dev/null 2>&1 || { echo "FAIL: PL21: no $_sh here, so the real-reap leg is not graded under $_sh"; SF=1; continue; }
+    sfx "PL21: under $_sh a 1 s pooled unit is reaped well inside 7 s of its end (the scaled poll bound is 11 s)" yes "$([ "$(pl_lag "$_sh" "$_c5")" -le 7 ] && echo yes || echo no)"
+  done
+  # FUNCTION LEVEL (the PL14b idiom): pool_done's liveness test is lifted out of a lane copy and run in a subshell of each shell, with `kill` overridden to succeed (a zombie that kill -0 still sees) and `ps` overridden to print Z.
+  # The overrides exist only inside this cell's own `-c` script; the shipped function is untouched. Platform-independent: no real zombie is needed, so the Z arm is graded wherever dash or bash is installed.
+  pl21fn() { [ -n "$1" ] || return 0; sed -n -e '/^pv_set() /p' -e '/^pv_get() /p' -e '/^pool_done() {/,/^}/p' "$1" > "$1.fn21" 2>/dev/null || :; }
+  pl21run() {   # <shell> <fn-file> -> done | alive
+    "$1" -c '. "$1"; PV_pid_1=4242; PV_t0_1=100; PV_bound_1=1000; kill() { return 0; }; ps() { echo Z; }; command -v pool_done >/dev/null || { echo error; exit 0; }; if pool_done 1 101; then echo done; else echo alive; fi' x "$2" 2>/dev/null || echo error
+  }
+  trmut pl21z -e '/# PLZ$/s/Z\*)/ZZZ_NEVER)/'
+  pl21fn "$TRM"   # an empty TRM (trmut already printed its FAIL) leaves an unreadable file, which the checks below FAIL on
+  _m21=$WORK/lane-pl21.sh; lane_mut "$_m21" '' '' > /dev/null; pl21fn "$_m21"
+  sfx "PL21: the lifted function file holds pool_done" 1 "$(grep -c '^pool_done() {' "$_m21.fn21" 2>/dev/null || :)"
+  sfx "PL21 mutant: the lifted mutant file holds pool_done with the Z arm renamed" 1 "$(grep -c 'ZZZ_NEVER) return 0' "$TRM.fn21" 2>/dev/null || :)"
+  for _sh in dash bash; do
+    command -v "$_sh" > /dev/null 2>&1 || { echo "FAIL: PL21: no $_sh here, so the Z arm is not graded under $_sh"; SF=1; continue; }
+    sfx "PL21: under $_sh the exited-but-unreaped unit (kill -0 succeeds, ps says Z) reads DONE" 'done' "$(pl21run "$_sh" "$_m21.fn21")"
+    sfx "PL21 mutant under $_sh: KILLED - without the Z arm the same unit reads ALIVE, so the cell is RED" 'alive' "$(pl21run "$_sh" "$TRM.fn21")"
+  done
+}
+# PLR - the touched readers stay exactly as at J = 1
+selftest_pool_readers() {
+  # two touched selftest targets (scripts/p.sh, q.sh) make PQ_U = 2, so the J = 2 run really takes the pool (two # pool: lines, the second after the lock) before the readers run
+  mkcin 'sh conformance/ra.sh' 'sh conformance/rb.sh' 'sh conformance/rc.sh'; mkchk ra 'exit 0'; mkchk rb 'exit 0'; mkchk rc 'exit 0'; mkchk selftest-hermetic "$STREC"; commit_fx; _stb=$(git -C "$d" rev-parse HEAD)
+  mkdir -p "$d/scripts"; for _sp in p q; do printf '#!/bin/sh\n# %s\ncase ${1-} in --selftest) exit 0 ;; esac\n' "$_sp" > "$d/scripts/$_sp.sh"; done; commit_fx
+  _now=$(date +%s); printf 'ra\t\t2\t0\tlocal\t%s\nrb\t\t3\t0\tlocal\t%s\nrc\t\t400\t0\tlocal\t%s\n' "$_now" "$_now" "$_now" > "$WORK/trtab.rows"
+  pl_rdr() { printf '%s\n' "$DVOUT" | grep -E '^(  (OK|FAIL|UNVERIFIED) +touched-readers|CI-GRADED|CI-ONLY|# touched-readers)' | sed -e 's/  *[0-9][0-9]*s  / Ns  /' -e 's/[0-9][0-9]* s/N s/g'; }
+  pl_rd() { _hh2=$WORK/plr-$2; trtab "$_hh2"; DVOUT=$( cd "$d" && HOME=$_hh2 PREPUSH_NO_CACHE=0 sh "$1" --base "$_stb" 2>&1 ) || :; PL_R=$(pl_rdr); }   # sets PL_R (the reader lines) and leaves the whole output in DVOUT
+  pl_rd "$LANE_J1" j1; _r1=$PL_R; pl_rd "$LANE_J2" j2; _r2=$PL_R
+  sfx "PLR: the J = 2 run really took the pool (two # pool: lines, the second after the lock)" 2 "$(printf '%s\n' "$DVOUT" | grep -c '^# pool: J=2 ' || :)"
+  want "PLR: and the lock was taken for the pool" "^# heavy-arm lock: acquired for the core-pool unit"
+  sfx "PLR: the reader rows, their order and the CI-GRADED lines equal J = 1's" "$_r1" "$_r2"
+  sfx "PLR: and the leg is not vacuous (two OK reader rows, ra and rb, and the CI-GRADED line for rc)" 3 "$(printf '%s\n' "$_r2" | grep -c -e '^  OK    touched-readers' -e '^CI-GRADED: rc' || :)"
+  TRSRC=$LANE_J2 trmut plr -e 's/^  tr_exec$/  tr_exec; tr_exec/'
+  [ -z "$TRM" ] || sfx "PLR mutant: a reader run twice reads differently (the cell is RED; the plan's reader-in-the-pool mutant needs SWAS-872's code)" differs "$(pl_rd "$TRM" jm; [ "$PL_R" = "$_r1" ] && echo same || echo differs)"
+}
+# RL13 - @pool-k units: N
+selftest_pool_report() {
+  one_step; mkchk alpha 'exit 0'; commit_fx; _h=$(rlh); _sd=$(rlf "$_h" "$d"); ( umask 077; mkdir -p "$_sd" )
+  pl_rep() { DVOUT=$( cd "$d" && HOME=$_h sh "$LANE_J2" --log-report --base HEAD 2>&1 ) || :; }
+  printf '@pool-k\tscripts/x.sh\t%040d\t0\tlocal\t1\n@pool-k\tscripts/y.sh\t%040d\t0\tlocal\t1\n@pool\t%040d\t5\t0\tlocal\t1\n' 1 2 3 > "$_sd/times.tsv"
+  pl_rep; want "RL13: two @pool-k rows and one @pool row print 2" "^# @pool-k units: 2\$"
+  printf '@pool\t%040d\t5\t0\tlocal\t1\n' 3 > "$_sd/times.tsv"; pl_rep; want "RL13: a table with none prints 0" "^# @pool-k units: 0\$"
+  rm -f "$_sd/times.tsv"; pl_rep; want "RL13: no table prints unavailable, never 0" "^# @pool-k units: unavailable: "
+  wantnot "RL13: and never a 0" "^# @pool-k units: 0"
+  printf '@pool-k\tscripts/x.sh\t%040d\t0\tlocal\t1\n@pool-k\tscripts/z.sh\tNOT-A-BLOB\t0\tlocal\t1\n' 1 > "$_sd/times.tsv"; pl_rep
+  want "RL13: a malformed @pool-k row in times.tsv is skipped by the count" "^# @pool-k units: 1\$"
+  stfx "$STREC" scripts/x.sh; _hn=$(rlh); plr "$_hn" "$LANE_J2"; _cl=$(lastline); _cr=$DVRC
+  _sd2=$(rlf "$_h" "$d"); ( umask 077; mkdir -p "$_sd2" ); printf '@pool-k\tscripts/x.sh\tNOT-A-BLOB\t0\tlocal\t1\n' > "$_sd2/times.tsv"; plr "$_h" "$LANE_J2"
+  sfx "RL13: a malformed @pool-k row in times.tsv changes no run verdict" "$_cl|$_cr" "$(lastline)|$DVRC"
+  printf '@pool-k\tscripts/x.sh\t%040d\t0\tlocal\t1\n' 1 > "$_sd/times.tsv"
+  TRSRC=$LANE_J2 trmut rl13a -e '/# RLPK$/d'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "RL13 mutant: with the line dropped nothing is printed (the cell is RED)" "@pool-k units"; }
+  TRSRC=$LANE_J2 trmut rl13b -e '/# RLPKN$/s/.*/  _lp_n=0   # RLPKN/'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "RL13 mutant: with N always 0 a table holding a row prints 0 (the cell is RED)" "^# @pool-k units: 1\$"; }
 }
 
 main "$@"

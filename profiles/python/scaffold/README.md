@@ -11,12 +11,23 @@ plus a `/healthz` -> 200 surface and its test.
 pyproject.toml        # project "app" (src layout), dev tooling, ruff/mypy/pytest/coverage config
 src/app/__init__.py
 src/app/health.py     # health() pure fn + stdlib /healthz server (server runs only under __main__)
-tests/test_health.py  # asserts health() == {"status": "ok"}
+tests/__init__.py     # empty: makes tests/ a package, so two test files may share a name
+tests/test_health.py  # the health surface: health() == {"status": "ok"}
+tests/test_flags.py   # the feature-flag module + provider seam (observed behaviour, incl. a live flip of the same file)
+tests/test_telemetry.py  # the pure telemetry module: spans, bounded-cardinality metrics, correlated JSON logs
+tests/integration/__init__.py      # empty: every test folder needs one too
+tests/integration/test_greeting.py # the flag seam + telemetry wired through the running server, on a real socket
+tests/e2e/__init__.py              # empty
+tests/e2e/test_journey.py          # a full user journey: liveness, the greeting feature, a not-found route
 .gitignore
 ```
 
+Every new test folder needs its own empty `__init__.py`. Without it, a new
+`tests/test_greeting.py` beside `tests/integration/test_greeting.py` (or `tests/e2e/`) stops pytest
+("import file mismatch") and makes mypy report a duplicate module.
+
 The package is importable as `app` (src layout), and coverage is sourced from `app` —
-so the single test exercises the package's pure logic well above the 80% gate. The
+so the unit, integration and e2e suites exercise the package well above the 80% gate. The
 HTTP server code is guarded under `if __name__ == "__main__":` (and `# pragma: no cover`),
 so importing the module for tests binds no port and doesn't drag coverage down.
 

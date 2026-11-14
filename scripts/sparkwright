@@ -1,13 +1,19 @@
 #!/bin/sh
 # What it changes: nothing directly — a pure router that dispatches (via exec) to the named
-# subcommand's script (doctor/postmortem/explain/status/resume/start/board/prepush);
+# subcommand's script (doctor/postmortem/explain/status/resume/start/board/lease/prepush/new/adopt/team); `lease` is
+# checkout-lease.sh, the main-checkout custody verb (its writes are its own);
 # every effect belongs to that subcommand. `status` is board-claim.sh's read-only who-holds-what
 # view; `resume` is slice-resume.sh, which is read-only by contract; `start` is start.sh, the
 # one-command loop entry (classify · claim · print the trailer block) — its only writes are
 # board-claim.sh's own; `board` is board.sh, the MCP-neutral write port (claim/release/move/
 # create) — its writes are its own, behind its own backend dispatch and proofs; `prepush` is
 # conformance/prepush-lane.sh, the CI-parity lane (the only arm outside scripts/, resolved
-# `$0`-relative via $here — never $PWD), which runs checks and writes nothing to the tree or refs.
+# `$0`-relative via $here — never $PWD), which runs checks and writes nothing to the tree or refs;
+# `new` is new.sh, the one-command greenfield start (export · preflight · incept · preflight into a
+# new <dest-dir>) — its writes are its own, and it never writes inside the kit checkout; `adopt` is
+# adopt.sh, which composes one reviewed patch for an existing repository's `.claude/` and `.gitignore`
+# into a file outside that repository — it never applies the patch; `team` is
+# solo-to-team.sh, which moves a solo project to team (or adds people to a team) by editing up to three files — its writes are its own.
 # Guardrails: no privileges of its own; empty/-h/--help prints usage and exits 2; an unknown subcommand
 # exits 2 without dispatching; all behavior is delegated to the subcommand it execs.
 set -eu
@@ -20,7 +26,11 @@ case "${1:-}" in
   resume) shift; exec sh "$here/slice-resume.sh" "$@" ;;
   start) shift; exec sh "$here/start.sh" "$@" ;;
   board) shift; exec sh "$here/board.sh" "$@" ;;
+  lease) shift; exec sh "$here/checkout-lease.sh" "$@" ;;
   prepush) shift; exec sh "$here/../conformance/prepush-lane.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
+  new) shift; exec sh "$here/new.sh" "$@" ;;
+  adopt) shift; exec sh "$here/adopt.sh" "$@" ;;
+  team) shift; exec sh "$here/solo-to-team.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, explain, status, resume, start, board, lease, prepush, new, adopt, team" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, explain, status, resume, start, board, lease, prepush, new, adopt, team" >&2; exit 2 ;;
 esac
