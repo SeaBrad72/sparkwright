@@ -46,7 +46,9 @@
 # ⚠️ DECLARED DEPENDENCY — READ THIS BEFORE YOU COPY THE FILE. This rendering is honest only while your
 # review requirement exists. `scripts/branch-protection-apply.sh` sets `required_approving_review_count:
 # 1`; if you drop it to 0, an unratified control-plane PR shows a GREEN check and nothing blocks it.
-# The setting is the block. This check is the explanation. Ship both or neither.
+# The setting is the block. This check is the explanation. Ship both or neither. (One exception, SWAS-901: a
+# solo-declared repository whose protection requires `solo-go-bound` runs at 0 approvals by design, and that
+# required check, run from the base branch, is the block there.)
 #
 # BRANCH PROTECTION: add `control-plane-ratification` to your required status checks so it BLOCKS.
 # The required context is the JOB KEY, which is exactly that string. You may move the job to another

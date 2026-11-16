@@ -88,6 +88,13 @@ set -eu
 LC_ALL=C
 export LC_ALL
 
+# SWAS-903: the CI-holder proof below reaches gh. Inside the macOS agent sandbox a bare gh fails TLS (x509 OSStatus -26276); scripts/gh-tls.sh sets the system
+# bundle for this process only on that signature (one probe, right before the gh call). A missing library means no probe: today's behaviour. A lease reached
+# through promotion-verify.sh already inherits the pin (the probe there returns at once).
+_cl_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_cl_ghtls" ]; then . "$_cl_ghtls"; fi
+
 CL_REF="refs/local-lease/checkout"
 CL_SYNCED="refs/local-lease/checkout-synced"
 CL_LOG="refs/local-lease-log/checkout"
@@ -920,6 +927,7 @@ cl_ciproof() {
   set -- "$@" --json status,conclusion,createdAt,updatedAt,workflowName,headBranch,event
   # S5: the fields come out of gh as ONE tab-separated line in a fixed order (`--jq` with @tsv escapes a tab or newline inside a value), never parsed from JSON layout
   set -- "$@" --jq '[.status,.conclusion,.createdAt,.updatedAt,.workflowName,.headBranch,.event]|@tsv'
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # MUT-LPROBE
   _cj=$(gh "$@" 2>/dev/null) || { CL_WHY="gh could not read run $(cl_clean "$CL_RUN")"; return 0; }   # MUT-LGHFAIL
   _cj=$(printf '%s\n' "$_cj" | head -n 1)
   [ "$(printf '%s' "$_cj" | tr -cd '\t' | wc -c | tr -d ' ')" = 6 ] || { CL_WHY="gh answered with something other than the seven fields"; return 0; }
@@ -1150,6 +1158,9 @@ cl_selftest() {
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null; export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_DIR GIT_WORK_TREE KIT_GUARD_SELFEDIT KIT_LEASE_FORCE_BREAK KIT_LEASE_FRONT_DOOR 2>/dev/null || true
   cl_dir=$(dirname -- "$CL_SELF")
+  # SWAS-903: a non-empty SSL_CERT_FILE makes the gh-tls probe return at once, so the CL14 cells see only their own gh calls in gh.log (the probe's own behaviour is
+  # scripts/gh-tls.sh --selftest; CL14p below proves, with a stub library, that the probe runs right before the gh call).
+  SSL_CERT_FILE=/fixture/ssl-cert.pem; export SSL_CERT_FILE
   cl_realgit=$(command -v git)
   # THE HARDWARE-ID SEAM: PATH shims (as for gh and git below) give every verb run in this selftest a FAKE hardware id and a FAKE host name, kept in files this
   # selftest rewrites; the machine's real id is never read here. `ioreg` answers from hw.id (nothing when that file is absent), `cat` hides /etc/machine-id, `uname -n` answers from hw.host.
@@ -2031,6 +2042,20 @@ cl_selftest() {
     printf 'lease: land\nholder: train\npurpose: land\nrun: 1;x\nmachine: ci\npid: unproven\npid-start: (none)\nttl-s: 2700\n' > "$cl_base/b14.txt"
     cl_lplant_blob 100000 "$cl_base/b14.txt"; cl_ci "$cl_mscript" status
     cl_killed "CL14b mutant (the run grammar dropped) is killed: the crafted run is read as a lease" "$([ "$cl_rc" = 0 ] && echo 1 || echo 0)" "$(case "$cl_out" in *MALFORMED*) echo 0 ;; *) echo 1 ;; esac)"
+  fi
+  cl_lclear
+  # CL14p (SWAS-903): the gh-tls probe runs right before the gh call of the CI proof (never before the MALFORMED return above, which makes no gh call).
+  # A stub library stands in for scripts/gh-tls.sh beside a COPY of this script and logs PROBE to gh.log; the first gh.log line must be PROBE and the second
+  # the `run view` call. Mutant: the probe line deleted -> the first line is the gh call.
+  cl_ciplant 60 123/1 completed success -10 -5 train main push
+  mkdir -p "$cl_base/pcell"; cp "$CL_SELF" "$cl_base/pcell/checkout-lease.sh"
+  printf 'kit_gh_tls_pin() { printf "PROBE\\n" >> "%s/gh.log"; }\n' "$cl_base" > "$cl_base/pcell/gh-tls.sh"
+  : > "$cl_base/gh.log"; cl_ci "$cl_base/pcell/checkout-lease.sh" status
+  cl_check "CL14p the probe runs first, then the gh call" "$([ "$(sed -n 1p "$cl_base/gh.log")" = PROBE ] && sed -n 2p "$cl_base/gh.log" | grep -q '^run view' && echo 1 || echo 0)"
+  if cl_mutant CL14p LPROBE 'd'; then
+    cp "$cl_base/pcell/gh-tls.sh" "$cl_base/mut-CL14p/gh-tls.sh"
+    : > "$cl_base/gh.log"; cl_ci "$cl_mscript" status
+    cl_killed "CL14p mutant (the probe deleted) is killed: the first gh.log line is the gh call, not the probe" "$([ -s "$cl_base/gh.log" ] && echo 1 || echo 0)" "$([ "$(sed -n 1p "$cl_base/gh.log")" = PROBE ] && echo 0 || echo 1)"
   fi
   cl_lclear
   # CL14c: no proof from another workflow, a non-main branch, a PR event, or another attempt (age only: past the ttl)

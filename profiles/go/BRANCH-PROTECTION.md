@@ -38,6 +38,8 @@ Enforces the §14 contract at the repo boundary: `main` protected, green CI to m
 | `require_code_owner_reviews` | `false` | `true` |
 | merge methods (separate PATCH) | squash-only | squash-only |
 
+**A third profile, `solo-agent` (SWAS-901), is chosen by `--replace` itself, never by a flag.** When the target's default branch declares `MERGE_RELATIONSHIP=solo` (no Governance team line) and `solo-go-bound` is declared, installed and read by the verbs, it writes `enforce_admins:true`, `required_approving_review_count:0`, `require_last_push_approval:false`, `require_code_owner_reviews:false` and requires `solo-go-bound`: that check, run from the base branch, stands in for the approval one account cannot give (`docs/adoption/vc-hosts.md`). Any other case, a failed read included, writes the solo column. Show-only prints `review-count: live=<n> target=<0|1>` first.
+
 A single manual additive call (no script) looks like:
 ```bash
 gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=ci'

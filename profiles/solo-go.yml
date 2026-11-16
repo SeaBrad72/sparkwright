@@ -1,0 +1,105 @@
+# Reference SOLO-GO workflow — the required check that stands in for a review in a SOLO-DECLARED repository
+# (MERGE_RELATIONSHIP=solo in .kit/dials.conf on the default branch). Its one job, `solo-go-bound`, reads the GO the owner
+# recorded for a pull request's head (`promotion-verify.sh go-bound`) and REDS a head that has none. THE SINGLE, STACK-NEUTRAL
+# SOURCE, like profiles/adopter-trunk-trace.yml: it runs no toolchain step, so it is identical for every stack.
+# COPY & ADAPT: this file is INERT here in the kit repo (GitHub only runs workflows under .github/workflows/). incept installs it
+# into every GitHub adopter; it is REQUIRED only in a solo-declared repository, after `branch-protection-apply.sh --replace` has
+# set the check as a required context; everywhere else it reads a green `na`
+# (docs/architecture/2026-11-14-solo-agent-merge-901-design.md).
+#
+# WHY pull_request_target. On `pull_request` GitHub runs the workflow file FROM THE PR, so a PR could edit the check it has to
+# pass. On `pull_request_target` the workflow file and the checked-out code come from the BASE branch. That is only safe
+# while the job NEVER runs anything from the PR head, and that is the whole shape of this file:
+#   * one checkout, of the base (no `ref:`, no `repository:`), credential not persisted;
+#   * the PR head is fetched as git OBJECTS ONLY, to be read by sha, never checked out and never executed;
+#   * the token is read-only: exactly `contents: read`, at the workflow level (the job makes no API call);
+#   * `edited` is a trigger type, so a PR retargeted to the default branch is judged again;
+#   * the merge verbs (`actuate`, `land`) also check that this run came from this file on `pull_request_target`, was run for the
+#     default branch as the PR's base, and is the only kind of run behind the check (design T17); they re-run a red one once the GO exists;
+#   * the warning step below is a two-tree `git diff` of the default tip and the PR head: a file the default branch changed after the PR
+#     branched also warns. It is advice only and holds no exit.
+#   * every ${{ }} value is bound through `env:`, never written into a `run:` line;
+#   * no job-level `if:`: a skipped required job reads as success.
+# conformance/adopter-gates-parity.sh pins each of these (SG1-SG10) by text.
+#
+# THE EXIT IS A FIXED MAP of go-bound's one output line, and nothing else decides it: na -> green (the base reads team, so it is
+# not required there), ok -> green, missing -> red, anything else (an error, or no parsable line) -> red. The relationship, the
+# note, the pick and the judgment are all in the verb (`pv_solo_go_ok`); there is no decision in this YAML.
+#
+# HONEST CEILING — READ BEFORE TRUSTING A GREEN.
+#   * It does NOT authenticate the GO. A note binds, it does not authenticate (D-240805-3): a fabricated note that passes the five
+#     legs turns this green. What it adds is a server-side refusal of a MISSING GO, where the plan enforces branch protection.
+#   * A same-named job added by a PR (a `pull_request` workflow keyed `solo-go-bound`) may shadow this check. Not measured here.
+#   * REACH, NOT RUNTIME. The parity lock proves the shape of this source; only a live run on GitHub proves the job attaches to
+#     the PR head and blocks a merge.
+#   * A note recorded AFTER the job ran does not re-run it; re-run the job once the GO is recorded.
+name: Solo GO Bound
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  solo-go-bound:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The PR head and the DEFAULT branch tip come from origin as objects, then the GO ledger, best effort. The relationship is read from
+      # the default branch tip (never from the PR's own base, which a PR can retarget). The token rides the git child's environment only
+      # (GIT_CONFIG_*), masked, never on its argv and never written to disk. A head or default tip that cannot be fetched fails the step
+      # (fail closed). A ledger origin does not hold yet is a notice: a solo repository then reads missing (red), a team one reads na.
+      - name: Fetch the PR head, the default branch tip and the GO ledger as objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          enc="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$enc"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $enc"
+          git fetch --no-tags origin "+refs/pull/${PR}/head:refs/kit/solo-go-head" "+refs/heads/${DEFAULT_BRANCH}:refs/kit/solo-go-default"
+          if git fetch --no-tags origin "refs/notes/promotions:refs/notes/promotions"; then
+            echo "the GO ledger is fetched"
+          else
+            echo "::notice title=solo-go-bound::origin has no GO ledger yet, or it could not be read: a solo repository reads missing, a team one is not required"
+          fi
+      - name: Warn when this PR changes workflows
+        run: |
+          if git diff --name-only refs/kit/solo-go-default refs/kit/solo-go-head -- .github/workflows/ | grep -q .; then echo "::warning title=solo-go-bound::this PR changes workflows: a same-named check from the PR could shadow this one"; fi
+      # A base whose scripts predate go-bound cannot answer. With no dial file the tree cannot read solo, so it is not required
+      # there (a notice); with a dial file it could, so the absent verb is an error. The branch only sets `line`: the exit below.
+      - name: Read the recorded GO bound to this head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ! grep -q '# KIT-MODE: go-bound' scripts/promotion-verify.sh; then
+            if git cat-file -e refs/kit/solo-go-default:.kit/dials.conf; then
+              line="go-bound: error this tree's scripts predate go-bound; update the kit"
+            else
+              line="go-bound: na no dial file, so this repository cannot be solo; scripts predate go-bound"
+            fi
+          else
+            line="$(sh scripts/promotion-verify.sh go-bound --approved-sha "$HEAD_SHA" --pr "$PR" --base-ref "$BASE_REF" --default-branch "$DEFAULT_BRANCH")" || true
+          fi
+          case "$line" in
+            "go-bound: "*) ;;
+            *) line="go-bound: error no parsable go-bound line" ;;
+          esac
+          word="${line#go-bound: }"
+          word="${word%% *}"
+          reason="${line#go-bound: "$word"}"
+          case "$word" in
+            na) echo "::notice title=solo-go-bound::not required here (team, or no dial file)"; exit 0 ;;
+            ok) echo "solo-go-bound: a recorded GO binds this head"; exit 0 ;;
+            missing) echo "::error title=solo-go-bound::no recorded GO binds this head:${reason}"; exit 1 ;;
+            *) echo "::error title=solo-go-bound::${line}"; exit 1 ;;
+          esac

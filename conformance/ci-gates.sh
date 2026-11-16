@@ -1619,6 +1619,48 @@ check_core_face_graders() {  # <root> -> 0 ok; 1 FAIL
   set +f; return $_cg_rc
 }
 
+# check_split_face_graders <root> (SWAS-871, SG): each SPLIT_FACE_TARGETS entry (selftest-hermetic.sh: a kit-tree target whose faces run its committed groups, one --selftest-group <g> per group) needs, in ANY job of ci.yml,
+# exactly one step `run: sh <entry> --selftest` and that job must not mask it with continue-on-error. The full --selftest is the net for the groups' leg order and shared state (owner Q4, 2026-11-14): H2 grades each group alone.
+# The rule is stated outright, not CG's job-by-basename rule: conformance-selftests-4 has no job named for the target and no diff gate. Fail-closed, kit trees only; one tagged line per rule (SG1 ... SG6e) so the selftest can delete it.
+check_split_face_graders() {  # <root> -> 0 ok; 1 FAIL
+  _sg_hs="$1/conformance/selftest-hermetic.sh"; _sg_wf="$1/.github/workflows/ci.yml"
+  [ -f "$_sg_hs" ] || { echo "FAIL: split-face graders: $_sg_hs is absent, so SPLIT_FACE_TARGETS cannot be read (fail-closed on a kit tree)" >&2; return 1; }   # SG5
+  # outside selftest(), the token may sit on exactly three non-comment lines (the CG census): the literal, its readonly line DIRECTLY after it, and the one list loop. Prints: <mentions> <literals> <readonly> <loops> <readonly-adjacent>
+  _sg_r=$(awk '/^selftest\(\) \{$/ { insf = 1 }
+    { ln = $0; sub(/#.*/, "", ln) }
+    !insf && ln ~ /SPLIT_FACE_TARGET[S]/ { n++ }
+    !insf && ln ~ /^SPLIT_FACE_TARGET[S]=\047[^\047]*\047$/ { lit = NR; litn++ }
+    !insf && ln ~ /^readonly SPLIT_FACE_TARGET[S]$/ { ro++; if (lit && NR == lit + 1) adj++ }
+    !insf && ln ~ /^  for _e in \$SPLIT_FACE_TARGET[S]; do$/ { lp++ }
+    insf && /^}$/ { insf = 0 }
+    END { print n + 0, litn + 0, ro + 0, lp + 0, adj + 0 }' "$_sg_hs")
+  [ "$(printf '%s' "$_sg_r" | cut -d' ' -f2)" = 1 ] || { echo "FAIL: split-face graders: $_sg_hs must carry exactly one SPLIT_FACE_TARGETS= line; counts (mentions literals readonly loops adjacent) $_sg_r" >&2; return 1; }   # SG6a
+  [ "$(printf '%s' "$_sg_r" | cut -d' ' -f3,5)" = "1 1" ] || { echo "FAIL: split-face graders: $_sg_hs must hold one 'readonly SPLIT_FACE_TARGETS' line directly after the literal assignment; counts (mentions literals readonly loops adjacent) $_sg_r" >&2; return 1; }   # SG6b
+  [ "$(printf '%s' "$_sg_r" | cut -d' ' -f1,4)" = "3 1" ] || { echo "FAIL: split-face graders: $_sg_hs names SPLIT_FACE_TARGETS on a line other than the assignment, its readonly line and the one list loop (any indentation counts); counts (mentions literals readonly loops adjacent) $_sg_r" >&2; return 1; }   # SG6c
+  _sg_list=$(sed -n "s/^SPLIT_FACE_TARGETS='\\(.*\\)'\$/\\1/p" "$_sg_hs")
+  [ -n "$(printf '%s' "$_sg_list" | tr -d ' ')" ] || { echo "FAIL: split-face graders: SPLIT_FACE_TARGETS is empty in $_sg_hs; an empty enumeration grades nothing and is never a pass" >&2; return 1; }   # SG6d
+  case $_sg_list in *'*'* | *'?'* | *'['*) echo "FAIL: split-face graders: a SPLIT_FACE_TARGETS entry carries a glob character (* ? [) in $_sg_hs; entries are literal paths" >&2; return 1 ;; esac   # SG6e
+  _sg_rc=0; set -f
+  for _sg_e in $_sg_list; do
+    # n = lines (in any job) that are exactly `run: sh <entry> --selftest`; coe = the matching jobs that carry a continue-on-error (job-level, or on the matching step)
+    _sg_r=$(awk -v e="$_sg_e" '
+      function flush() { if (inj && hit && (jcoe || scoe[ms])) coe++; if (inj && hit && sif[ms]) sifc++ }
+      /^  [A-Za-z0-9_-]+:[ \t]*(#.*)?$/ { flush(); inj = 1; hit = 0; jcoe = 0; ms = 0; step = 0; split("", scoe); split("", sif); next }
+      inj && /^    continue-on-error:/ { jcoe = 1 }
+      inj && /^      - / { step++ }
+      inj && /^(      - |        )if:/ { sif[step] = 1 }
+      inj && /^ +continue-on-error:/ && !/^    continue-on-error:/ { scoe[step] = 1 }
+      /^ +(- )?run: sh / { l = $0; sub(/^ +(- )?run: sh /, "", l); sub(/[ \t]+#.*$/, "", l); if (l == e " --selftest") { n++; hit = 1; ms = step } }   # SG3
+      END { flush(); print n + 0, coe + 0, sifc + 0 }' "$_sg_wf")
+    _sg_n=${_sg_r%% *}; _sg_c=${_sg_r#* }; _sg_i=${_sg_c#* }; _sg_c=${_sg_c%% *}
+    if [ "$_sg_n" -eq 0 ]; then echo "FAIL: split-face graders: SPLIT_FACE_TARGETS entry '$_sg_e' has no CI step 'run: sh $_sg_e --selftest' in $_sg_wf (found $_sg_n); the full --selftest, the net for its groups' leg order and shared state, is graded nowhere" >&2; _sg_rc=1; break; fi   # SG1
+    if [ "$_sg_n" -gt 1 ]; then echo "FAIL: split-face graders: SPLIT_FACE_TARGETS entry '$_sg_e' must run its full --selftest exactly once in $_sg_wf (found $_sg_n)" >&2; _sg_rc=1; break; fi   # SG2
+    if [ "$_sg_c" -gt 0 ]; then echo "FAIL: split-face graders: the job running 'sh $_sg_e --selftest' carries a continue-on-error in $_sg_wf; a masked full run grades nothing" >&2; _sg_rc=1; break; fi   # SG4
+    if [ "$_sg_i" -gt 0 ]; then echo "FAIL: split-face graders: the step running 'sh $_sg_e --selftest' carries a step-level if: in $_sg_wf; a skippable full run grades nothing (a job-level if: is accepted: the shared changes gate skips docs-only runs by design)" >&2; _sg_rc=1; break; fi   # SG4b
+  done
+  set +f; return $_sg_rc
+}
+
 own_tree_run() {  # [<root>]  (default .)
   _ot_root=${1:-.}
   if [ ! -d "$_ot_root" ]; then
@@ -1688,6 +1730,7 @@ own_tree_run() {  # [<root>]  (default .)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_defer_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-376: the H2 step's battery defer (H2D), in the h2-face leg since SWAS-864
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_h2_legs "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-864: the h2-face matrix and the h2-hermetic join (H2F)
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_core_face_graders "$_ot_root" || _ot_rc=1  # SWAS-460: every core-only hermetic target has a diff-gated full grader (CG)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_split_face_graders "$_ot_root" || _ot_rc=1  # SWAS-871: every split hermetic target has its full --selftest graded once, unmasked (SG)  # SG7CALL
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-docs || _ot_rc=1  # SWAS-409: the docs shard (C30, C31) is graded live in every docs leg
     [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_shard_join_shape "$_ot_root/.github/workflows/ci.yml" conformance-selftests || _ot_rc=1  # SWAS-409: the selftests shard (C31, C32)
     check_runner_switch_tree "$_ot_root" || _ot_rc=1  # SWAS-280: the runner-switch lock (RS, R1-R7); kit trees only
@@ -5048,6 +5091,84 @@ selftest() {
     _rp_mut RP4b "$_kr/.github/workflows/adopter-tracker-gates.yml" "!d && /'ubuntu-24.04'/ { sub(/ubuntu-24.04/, \"ubuntu-latest\"); d = 1 } { print }" \
       "workflows/adopter-tracker-gates.yml:" "the tracker workflow with one fallback reverted"
 
+    # SG0-SG6 (SWAS-871) — check_split_face_graders: every SPLIT_FACE_TARGETS entry has exactly one unmasked `run: sh <entry> --selftest` step in ANY job (the rule is stated outright; conformance-selftests-4 has no basename job and no diff gate, so CG's rule does not fit).
+    # Each cell runs the real function on a scratch root and then the SAME function with its one tagged line (or the SG3 exactness) rewritten: the mutant must no longer red naming the cause. SG0 is the real tree, green.
+    mkdir -p "$d/sg"
+    _sg_hs() {   # <list literal> <shape: ok|late|extra> — a stand-in hermetic in the three-mention shape (no line of it starts with a closing brace: this body sits inside selftest(), whose end the mark check finds by that)
+      _sg_a="SPLIT_FACE_TARGETS='$1'"; _sg_b='readonly SPLIT_FACE_TARGETS'; _sg_c='split_face_listed() {'; _sg_d='  for _e in $SPLIT_FACE_TARGETS; do'; _sg_e='  done'; _sg_f='}'
+      case $2 in
+        two) printf '%s\n' "$_sg_a" "$_sg_a" "$_sg_b" "$_sg_c" "$_sg_d" "$_sg_e" "$_sg_f" ;;
+        late) printf '%s\n' "$_sg_a" "$_sg_c" "$_sg_d" "$_sg_e" "$_sg_f" "$_sg_b" ;;
+        extra) printf '%s\n' "$_sg_a" "$_sg_b" "$_sg_c" "$_sg_d" "$_sg_e" "$_sg_f" 'X="$SPLIT_FACE_TARGETS"' ;;
+        *) printf '%s\n' "$_sg_a" "$_sg_b" "$_sg_c" "$_sg_d" "$_sg_e" "$_sg_f" ;;
+      esac
+    }
+    _sg_fx() {   # <name> <hermetic text> <step lines> [<job-level lines>] — a kit-shaped scratch root with a stand-in hermetic and a one-job ci.yml
+      mkdir -p "$d/sg/$1/conformance" "$d/sg/$1/.github/workflows"
+      printf '%s\n' "$2" > "$d/sg/$1/conformance/selftest-hermetic.sh"
+      printf 'jobs:\n  conformance-selftests-4:\n    runs-on: ubuntu-24.04\n%s    steps:\n%s' "${4:-}" "$3" > "$d/sg/$1/.github/workflows/ci.yml"
+    }
+    _sg_hok=$(_sg_hs conformance/prepush-lane.sh ok)
+    _sg_cell() {   # <id> <root> <want text> <mutant sed (empty: none)> <desc> — the function reds (rc 1) naming <want text>; with the mutation it no longer does
+      _sc_o=$(check_split_face_graders "$2" 2>&1) && _sc_rc=0 || _sc_rc=$?
+      if [ "$_sc_rc" = 1 ] && _has "$_sc_o" "$3"; then echo "selftest PASS: $1 — $5 -> RED, naming '$3'"
+      else echo "selftest FAIL: $1 — $5 (rc=$_sc_rc, want 1 naming '$3'): $_sc_o"; sf=1; fi
+      [ -n "$4" ] || return 0
+      sed -n '/^check_split_face_graders() {/,/^}/p' "$0" | sed -e "$4" > "$d/sg/m-$1.fn"
+      sed -n '/^check_split_face_graders() {/,/^}/p' "$0" > "$d/sg/o-$1.fn"
+      if cmp -s "$d/sg/o-$1.fn" "$d/sg/m-$1.fn"; then echo "selftest FAIL: $1m — the mutant equals the original (its tag is gone)"; sf=1; return 0; fi
+      # shellcheck source=/dev/null  # sources a mutated copy of the function extracted at run time
+      _sc_mo=$( . "$d/sg/m-$1.fn"; check_split_face_graders "$2" 2>&1 ) && _sc_mrc=0 || _sc_mrc=$?
+      if [ "$_sc_mrc" = 0 ] || ! _has "$_sc_mo" "$3"; then echo "selftest PASS: $1m — with the rule rewritten the same root no longer reds naming '$3', so $1 has teeth"
+      else echo "selftest FAIL: $1m — the mutant still reds naming '$3' (the rule is not what reds it): $_sc_mo"; sf=1; fi
+    }
+    _sg_step='      - run: sh conformance/prepush-lane.sh --selftest
+'
+    if check_split_face_graders "$_kr" >/dev/null 2>&1; then
+      echo "selftest PASS: SG0 — the real tree lists its split targets once, each with exactly one unmasked full --selftest step, in the three-mention shape"
+    else echo "selftest FAIL: SG0 — the real tree's split-face graders do not hold: $(check_split_face_graders "$_kr" 2>&1)"; sf=1; fi
+    _sg_fx sg0 "$_sg_hok" "$_sg_step"
+    if check_split_face_graders "$d/sg/sg0" >/dev/null 2>&1; then echo "selftest PASS: SG0f — a scratch root in the real shape is green (the positive control for the cells below)"
+    else echo "selftest FAIL: SG0f — a scratch root in the real shape reds: $(check_split_face_graders "$d/sg/sg0" 2>&1)"; sf=1; fi
+    _sg_fx sg1 "$_sg_hok" '      - run: echo nothing
+'
+    _sg_cell SG1 "$d/sg/sg1" "(found 0)" '/# SG1$/d' "no step runs the full --selftest of a split target"
+    _sg_fx sg2 "$_sg_hok" "$_sg_step$_sg_step"
+    _sg_cell SG2 "$d/sg/sg2" "exactly once in" '/# SG2$/d' "two steps run the full --selftest"
+    _sg_fx sg3 "$_sg_hok" '      - run: sh conformance/prepush-lane.sh --selftest-group g1
+'
+    _sg_cell SG3 "$d/sg/sg3" "(found 0)" '/# SG3$/s/l == e " --selftest"/index(l, e " --selftest") == 1/' "only a --selftest-group step runs (not the full run)"
+    _sg_fx sg4 "$_sg_hok" "$_sg_step" '    continue-on-error: true
+'
+    _sg_cell SG4 "$d/sg/sg4" "carries a continue-on-error" '/# SG4$/d' "the job carrying the full run is masked with continue-on-error"
+    _sg_si=$(printf '      - if: github.event_name == x\n        run: sh conformance/prepush-lane.sh --selftest\nEND'); _sg_si=${_sg_si%END}
+    _sg_fx sg4b "$_sg_hok" "$_sg_si"
+    _sg_cell SG4b "$d/sg/sg4b" "carries a step-level if:" '/# SG4b$/d' "the step running the full run carries an if: (it can be skipped)"
+    _sg_ji=$(printf '    if: needs.changes.outputs.docs_only != x\nEND'); _sg_ji=${_sg_ji%END}
+    _sg_fx sg4c "$_sg_hok" "$_sg_step" "$_sg_ji"
+    if check_split_face_graders "$d/sg/sg4c" >/dev/null 2>&1; then echo "selftest PASS: SG4c — a job-level if: (the shared changes gate) is accepted: it skips docs-only runs by design, as the real conformance-selftests-4 job does"
+    else echo "selftest FAIL: SG4c — a job-level if: on the job running the full run reds: $(check_split_face_graders "$d/sg/sg4c" 2>&1)"; sf=1; fi
+    mkdir -p "$d/sg/sg5/.github/workflows"; cp "$d/sg/sg0/.github/workflows/ci.yml" "$d/sg/sg5/.github/workflows/ci.yml"
+    _sg_cell SG5 "$d/sg/sg5" "is absent" '/# SG5$/d' "selftest-hermetic.sh is absent from a kit-shaped scratch root (fail-closed, never N/A)"
+    _sg_fx sg6a "$(_sg_hs conformance/prepush-lane.sh two)" "$_sg_step"
+    _sg_cell SG6a "$d/sg/sg6a" "must carry exactly one SPLIT_FACE_TARGETS= line" '/# SG6a$/d' "two literal SPLIT_FACE_TARGETS= lines (a second assignment)"
+    _sg_fx sg6c "$(_sg_hs conformance/prepush-lane.sh extra)" "$_sg_step"
+    _sg_cell SG6c "$d/sg/sg6c" "on a line other than the assignment" '/# SG6c$/d' "a fourth mention of the list token (an append, an export, an eval would all count)"
+    _sg_fx sg6b "$(_sg_hs conformance/prepush-lane.sh late)" "$_sg_step"
+    _sg_cell SG6b "$d/sg/sg6b" "directly after the literal assignment" '/# SG6b$/d' "the readonly line moved away from the literal"
+    _sg_fx sg6d "$(_sg_hs '' ok)" "$_sg_step"
+    _sg_cell SG6d "$d/sg/sg6d" "is empty in" '/# SG6d$/d' "an empty list"
+    _sg_fx sg6e "$(_sg_hs 'conformance/*.sh' ok)" "$_sg_step"
+    _sg_cell SG6e "$d/sg/sg6e" "carries a glob character" '/# SG6e$/d' "a glob entry"
+    # SG7 — the --own-tree kit block calls check_split_face_graders: a kit-marked sg1 root (no step runs the full --selftest) reds naming (found 0) through the real entry point; with the call line deleted it does not
+    mkdir -p "$d/sg/sg1/docs"; : > "$d/sg/sg1/docs/ROADMAP-KIT.md"
+    _ot_case SG7 "$d/sg/sg1" 1 "(found 0)" "--own-tree on a kit-marked root whose ci.yml never runs the lane's full --selftest names (found 0)"
+    sed '/# SG7CALL$/d' "$0" > "$d/sg/m7.sh"
+    if cmp -s "$0" "$d/sg/m7.sh"; then echo "selftest FAIL: SG7m — the call-deleting mutant equals the original (its tag is gone)"; sf=1
+    elif _sg_o7=$(sh "$d/sg/m7.sh" --own-tree "$d/sg/sg1" 2>&1); _has "$_sg_o7" "(found 0)"; then echo "selftest FAIL: SG7m — with the call deleted --own-tree still names (found 0): the cell does not bind the wiring"; sf=1
+    elif ! _has "$_sg_o7" "gate-lint"; then echo "selftest FAIL: SG7m — the mutant died before the own-tree checks ran (no gate-lint line from the tree judge): its absence of (found 0) proves nothing: $_sg_o7"; sf=1
+    else echo "selftest PASS: SG7m — with the call line deleted --own-tree no longer names (found 0), so SG7 has teeth"; fi
+
     # OT15 — gate-test STAYS TERMINAL (reviewer LOW-4): reaching the id attests every step above
     # it passed ONLY while it is the LAST step of conformance-selftests — a step planted after
     # it is NOT attested (the anchor comment at the id states exactly this).
@@ -6345,8 +6466,9 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
     # 26 = the 25 before SWAS-552 plus its on-demand macOS workflow (.github/workflows/boundary-redteam-macos.yml), a deliberate add
     # 27 = the 26 plus SWAS-725's dispatch-only adopter fixture workflow (.github/workflows/adopter-fixture.yml), a deliberate add
     # 28 = the 27 plus SWAS-258's trunk-trace workflow template (profiles/adopter-trunk-trace.yml), a deliberate add
-    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 28 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 28 judged files"
-    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 28; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
+    # 29 = the 28 plus SWAS-901's solo-go workflow template (profiles/solo-go.yml), a deliberate add
+    if [ "$_lbr_rc" = 0 ] && [ "$_lb_files" = 29 ]; then echo "selftest PASS: LBr — the real kit tree holds no banned byte, and the walk read exactly the 29 judged files"
+    else echo "selftest FAIL: LBr — the real kit tree: rc=$_lbr_rc, $_lb_files file(s) read (want rc 0 and exactly 29; a template add or remove moves the count by a deliberate edit): $(cat "$d/lb/lbr.out")"; sf=1; fi
   else echo "selftest SKIP: LBr — not a kit tree"; fi
   # the mutants: a sed-edited COPY of this script runs the cell's fixture; the original must show the needle (the positive control) and the mutant must not.
   # A sed that matches nothing is "unbound" and fails loud: the pinned line moved, and a mutant equal to the original proves nothing.
@@ -6884,7 +7006,10 @@ $1"
     # TR8P-8: the derivation reads selftest_touched_replay up to its rc-0 sfx, off_kit, tr8_gate and tr8_noci, and the roster running touched_replay. A cksum of those lines is pinned; any edit
     # (an added early return included) reds this cell and sends the editor to design section 2, which says what the derivation needs. Bumping the pin is that deliberate edit.
     # PIN: the measured cksum (crc-size) of those lines at SWAS-658's build; the FAIL line prints the new value when they change.
-    _TR8P_PIN=1267903540-1285
+    # SWAS-903 (SWAS-909 narrow part): selftest_touched_replay now plans in a fixture clone of the real tree (tr8_clone, tr8_commit; the base is a sha of the fixture's own commit), so the lane's
+    # last real commit no longer decides the plan. Design section 2 re-read: P1 (three kit files) and P3 (CI file) are unchanged; the old HEAD~1 branch (P2) is gone from TR8, and the one new early
+    # exit (the clone cannot be built) is a FAIL with SF=1, never an N/A pass, so the derived proof gains no vacuous branch. The region is 1744 bytes (was 1285): the clone lines.
+    _TR8P_PIN=907424207-1744
     _tr8p_pin() {
       _tp_src="$_kr/conformance/prepush-lane.sh"
       _tp_got=$(awk '
@@ -6897,7 +7022,7 @@ $1"
         t { print }
         t && index($0, "sfx \"TR8: the plan on the real tree is rc 0\"") { t = 0 }
       ' "$_tp_src" | cksum | awk '{ print $1 "-" $2 }')
-      _tp_ro=$(sed -n '/^ *touched_failclosed /p' "$_tp_src")
+      _tp_ro=$(sed -n "s/^ST_G_[a-z0-9]*='\\(.*\\)'\$/ \\1 /p" "$_tp_src")   # SWAS-871: the roster is the committed group table (ST_G_<g> lines), no longer one list: every group's legs, space-padded
       case "$_tp_got" in
         ''|*-0) echo "selftest FAIL: TR8P-8 — the pin extraction found no TR8 lines in conformance/prepush-lane.sh (measured $_tp_got)"; sf=1 ;;
         *) if ! _has "$_tp_ro" ' touched_replay '; then echo "selftest FAIL: TR8P-8 — the selftest roster no longer runs touched_replay, so verify's prepush-lane PASS would not cover TR8"; sf=1

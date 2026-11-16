@@ -915,6 +915,7 @@ profiles/rust/scaffold/src/server.rs
 profiles/rust/scaffold/src/telemetry.rs
 profiles/rust/scaffold/tests/e2e.rs
 profiles/rust/scaffold/tests/integration.rs
+profiles/solo-go.yml
 profiles/terraform.md
 profiles/terraform/BRANCH-PROTECTION.md
 profiles/terraform/CODEOWNERS
@@ -998,6 +999,7 @@ scripts/fixtures/agent-trace-sample.jsonl
 scripts/fixtures/engineer-fixture.sh
 scripts/fixtures/otel-trace-sample.ndjson
 scripts/fixtures/sbom/sample-cyclonedx.json
+scripts/gh-tls.sh
 scripts/incept.sh
 scripts/inception-scan.sh
 scripts/install-shellcheck.sh

@@ -9,7 +9,10 @@
 #     merely that the settings block exists (an empty block requires nothing). That number is what
 #     blocks an unratified control-plane merge, and since 2026-08-28 the `control-plane-ratification`
 #     check renders WAITING as GREEN because of it (RATIFICATION-WAITING-IS-GREEN) — so this gate and
-#     that rendering are one control, and the count is checked here or nowhere. It ALSO compares the
+#     that rendering are one control, and the count is checked here or nowhere. (SWAS-901: ONE tree may run at a count of 0, `OK-solo`: it
+#     declares MERGE_RELATIONSHIP=solo in a regular dial file with no Governance team line, lists solo-go-bound, carries the installed workflow and
+#     the go-bound verb, and has solo-go-bound live, with enforce_admins true; the check run from the base then stands in for the approval. Every
+#     other tree keeps the arms below byte for byte; a solo tree at count 1 gets an ADVISORY that the agent cannot merge.) It ALSO compares the
 #     live `required_status_checks.contexts` against the declaration: a declared-but-unbound context FAILs
 #     by name; a live-but-undeclared context is an ADVISORY (never fatal, never buries the existing
 #     code-owner ADVISORY below it); no declaration file present -> behaves exactly as before
@@ -158,13 +161,13 @@ GOV_MODE=undeclared; GOV_NOTE=""; MERGE_METHODS=unknown; INVITES_STATE=""; PENDI
 # no field, the unfilled `[solo / team]` placeholder, another case or word). More than one field line is
 # AMBIGUOUS: `team` if ANY says team (fail toward the stricter reading), else undeclared; GOV_NOTE says so, so
 # the choice is visible on the governance: line.
-GOV_FIELD='^[-*+ ]*\*\*Governance\*\* (§ solo/team):'
+GOV_FIELD='^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team):'
 read_governance() {
   GOV_MODE=undeclared; GOV_NOTE=""
   [ -f "$1" ] || return 0
   _rg_n=$(grep -c -e "$GOV_FIELD" "$1" || true)
   [ "$_rg_n" -ge 1 ] || return 0
-  _rg_vals=$(sed -n 's#^[-*+ ]*\*\*Governance\*\* (§ solo/team): \([^ ]*\).*$#\1#p' "$1")
+  _rg_vals=$(sed -n 's#^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team): \([^[:space:]]*\).*$#\1#p' "$1")
   [ "$_rg_n" = 1 ] || GOV_NOTE="ambiguous: $_rg_n field lines"
   for _rg_v in $_rg_vals; do
     [ "$_rg_v" = team ] && { GOV_MODE=team; return 0; }
@@ -398,6 +401,13 @@ read_declaration() {
   RD_LIST=$(printf '%s' "$RD_LIST" | sed 's/^ *//')
 }
 
+# bp_rsc_text <body> — SWAS-901 E6 R3-2/R4-1: the text of the FIRST required_status_checks object, on one line: from its `{` to the first `}` that is
+# followed by a key (no checks entry's `}` is). The ONE cut every read of that object goes through (the contexts, the checks and the app pin), so
+# a "context", "contexts" or app_id text anywhere else in the body binds nothing.
+bp_rsc_text() {
+  printf '%s' "$1" | tr -d '\n' | awk '{ i = index($0, "\"required_status_checks\""); if (i) print substr($0, i) }' | sed 's/^[^{]*{//; s/}[[:space:]]*,[[:space:]]*".*$//'   # MUT-BPSCOPE
+}
+
 # extract_live_contexts <body> — one required-status-check context per line on stdout (rc always 0;
 # empty stdout means none present or the body was unparsable). jq is an OPTIONAL fast path (Δ7): the
 # live side is GitHub's JSON, so unlike the declaration side a hard jq dependency would add a new
@@ -405,14 +415,21 @@ read_declaration() {
 extract_live_contexts() {
   if command -v jq >/dev/null 2>&1; then
     if _elc_j=$(printf '%s' "$1" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null); then
-      if [ -n "$_elc_j" ]; then printf '%s\n' "$_elc_j"; return 0; fi
+      if [ -n "$_elc_j" ]; then printf '%s\n' "$_elc_j" | sort -u; return 0; fi
     fi
   fi
-  printf '%s' "$1" | tr -d '\n' \
-    | sed -n 's/.*"contexts"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' \
-    | tr ',' '\n' \
-    | sed 's/^[[:space:]]*"\{0,1\}//; s/"\{0,1\}[[:space:]]*$//' \
-    | grep -v '^[[:space:]]*$' || true
+  # E6 R2-1: a `checks` entry names a required context too (the solo-agent body has ONLY `checks`); GitHub's own answer lists both.
+  # E6 R3-2: but only INSIDE the required_status_checks object (bp_rsc_text).
+  _elc_o=$(bp_rsc_text "$1")
+  _elc_s=$(printf '%s' "$_elc_o" | sed -n 's/.*"checks"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
+  {
+    printf '%s' "$_elc_o" \
+      | sed -n 's/.*"contexts"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' \
+      | tr ',' '\n' \
+      | sed 's/^[[:space:]]*"\{0,1\}//; s/"\{0,1\}[[:space:]]*$//' \
+      | grep -v '^[[:space:]]*$' || true
+    printf '%s' "$_elc_s" | grep -o '"context"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"//; s/"$//' || true   # MUT-BPCHK
+  } | sort -u
   return 0
 }
 
@@ -499,6 +516,53 @@ judge_team_profile() {
   fi
 }
 
+# read_merge_relationship <root> — SWAS-901: sets REL_MODE to `solo` or `team` from the TREE's own files (the grammar of the verbs' reader, and
+# go_act_review's file hygiene): `solo` only when <root>/.kit/dials.conf is a regular file that is not a symlink, its last MERGE_RELATIONSHIP line
+# says solo, and CLAUDE.md carries no Governance `team` line. Every other case, an unreadable one included, is team. GOV_MODE/GOV_NOTE are restored.
+REL_MODE=team; REL_TIPERR=0
+# bp_tip_blob <root> <path> -> the file as the default branch's TIP holds it (refs/remotes/origin/$BRANCH, as the verbs and the picker read it, never the
+# checked-out tree a PR controls); rc 0 = printed, 1 = absent, 2 = not a regular file or unreadable, 3 = the ref itself is missing (fetch origin <branch>).
+bp_tip_blob() {
+  git -C "$1" rev-parse -q --verify "refs/remotes/origin/$BRANCH^{commit}" >/dev/null 2>&1 || return 3
+  _btb_e=$(git -C "$1" ls-tree --full-tree "refs/remotes/origin/$BRANCH" -- "$2" 2>/dev/null | head -n 1) || return 2
+  [ -n "$_btb_e" ] || return 1
+  if [ "${_btb_e%% *}" != 100644 ] && [ "${_btb_e%% *}" != 100755 ]; then return 2; fi   # MUT-BPREG
+  _btb_o=${_btb_e#* }; _btb_o=${_btb_o#* }; _btb_o=${_btb_o%%"$(printf '\t')"*}
+  git -C "$1" cat-file blob "$_btb_o" 2>/dev/null || return 2
+}
+read_merge_relationship() {
+  REL_MODE=team; REL_TIPERR=0
+  _rmr_dr=0; _rmr_d=$(bp_tip_blob "$1" .kit/dials.conf) || _rmr_dr=$?
+  if [ "$_rmr_dr" = 3 ]; then REL_TIPERR=1; fi
+  [ "$_rmr_dr" = 0 ] || return 0
+  _rmr_v=$(printf '%s\n' "$_rmr_d" | grep -E '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=' | tail -n1 \
+    | sed -E 's/^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*//; s/#.*$//; s/["'"'"']//g; s/[[:space:]].*$//') || _rmr_v=""
+  [ "$_rmr_v" = solo ] || return 0
+  _rmr_cr=0; _rmr_c=$(bp_tip_blob "$1" CLAUDE.md) || _rmr_cr=$?
+  if [ "$_rmr_cr" = 2 ]; then return 0; fi   # a CLAUDE.md that is not a regular file reads Governance team, as the verbs read it # MUT-BPGOV
+  _rmr_g=undeclared
+  if [ "$_rmr_cr" = 0 ]; then
+    _rmr_gm=$GOV_MODE; _rmr_gn=$GOV_NOTE; _rmr_tf=$(mktemp) || return 0
+    printf '%s\n' "$_rmr_c" > "$_rmr_tf"; read_governance "$_rmr_tf"; _rmr_g=$GOV_MODE; GOV_MODE=$_rmr_gm; GOV_NOTE=$_rmr_gn; rm -f "$_rmr_tf"
+  fi
+  if [ "$_rmr_g" != team ]; then REL_MODE=solo; fi
+  return 0
+}
+
+# bp_solo_agent_ok <body> — 0 only when the solo-agent state is complete: solo-go-bound is declared in REQUIRED-CHECKS.md, is a LIVE required
+# check, and the tree carries the installed workflow and the verbs' go-bound marker. Otherwise 1, with SA_MISSING naming the first missing piece.
+bp_solo_agent_ok() {
+  SA_MISSING=""
+  if [ ! -f "$DECLARATION" ]; then SA_MISSING="there is no declaration file ($DECLARATION)"; return 1; fi
+  read_declaration "$DECLARATION"
+  printf '%s\n' $RD_LIST | grep -qxF solo-go-bound || { SA_MISSING="solo-go-bound is not declared in $DECLARATION"; return 1; }
+  extract_live_contexts "$1" | grep -qxF solo-go-bound || { SA_MISSING="solo-go-bound is not a live required check on $BRANCH"; return 1; }
+  bp_rsc_text "$1" | tr -d ' \t' | grep -qE '"context":"solo-go-bound","app_id":15368[,}]' || { SA_MISSING="solo-go-bound is not pinned to the GitHub Actions app (app_id 15368), so another app's same-named check could satisfy it"; return 1; }   # MUT-BPPIN
+  if [ -f "$REPO_ROOT/.github/workflows/solo-go.yml" ] && grep -qF 'COPY & ADAPT' "$REPO_ROOT/.github/workflows/solo-go.yml"; then :; else SA_MISSING="the solo-go workflow is not installed in this tree (.github/workflows/solo-go.yml)"; return 1; fi
+  if [ -f "$REPO_ROOT/scripts/promotion-verify.sh" ] && grep -qF '# KIT-MODE: go-bound' "$REPO_ROOT/scripts/promotion-verify.sh"; then :; else SA_MISSING="this tree's merge verbs have no go-bound verb"; return 1; fi
+  return 0
+}
+
 # classify RC BODY — decide PASS/FAIL/UNVERIFIED from the HTTP outcome, NOT body substrings.
 # Only a genuine HTTP 200 (gh exit 0) is allowed to reach the required-settings check, so a
 # non-200 ERROR body that merely *names* the settings can never read as protected.
@@ -516,11 +580,25 @@ classify() {
     # No jq (this leg must run on a bare runner): strip whitespace, take the digits.
     _bp_rc_count=$(printf '%s' "$body" | tr -d ' \t\n' \
       | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
-    if [ -z "$_bp_rc_count" ]; then
+    # SWAS-901: the ONE tree that may run with approvals=0 declares solo AND has the check that stands in for the approval (see bp_solo_agent_ok).
+    # Every other tree keeps the arms below byte for byte; a symlinked or unreadable dial file reads team.
+    SA_OK=0; SA_MISSING=""
+    read_merge_relationship "$REPO_ROOT"
+    if [ "$REL_MODE" = solo ] && bp_solo_agent_ok "$body"; then SA_OK=1; fi
+    # E6 R2-2: a missing origin/<branch> ref cannot say whether the tree is solo; where the checked-out tree CLAIMS solo, that is UNVERIFIED (name the fetch), never the team ZERO text
+    if [ "${_bp_rc_count:-9}" = 0 ] && [ "$REL_TIPERR" = 1 ] && grep -qE '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*"?solo' "$REPO_ROOT/.kit/dials.conf" 2>/dev/null; then unverifiable "cannot read origin/$BRANCH: git fetch origin $BRANCH (a zero-approval state is judged by the dial and CLAUDE.md on that tip, never by the checked-out tree)"; fi   # MUT-BPTIPERR
+    if [ "${_bp_rc_count:-9}" = 0 ] && [ "$REL_MODE" = solo ]; then
+      if [ "$SA_OK" = 1 ]; then
+        printf '%s\n' "OK-solo: approvals=0 — solo-go-bound reads the recorded GO in place of a review"
+      else
+        printf '%s\n' "FAIL: $BRANCH sets required_approving_review_count=0 on a tree that declares solo, but the solo-agent state is incomplete: $SA_MISSING. With zero approvals only solo-go-bound can hold a merge, so it must be declared, installed and live before the count drops. Cure (an admin act, done by a human): sh scripts/branch-protection-apply.sh --replace, which chooses the profile from the forge itself."; ok=1  # MUT-BPSOLO
+      fi
+    elif [ -z "$_bp_rc_count" ]; then
       printf '%s\n' "FAIL: $BRANCH does not declare required_approving_review_count — the merge of an unratified control-plane PR is blocked by that count, and the control-plane-ratification check is GREEN while waiting BECAUSE of it (DEVELOPMENT-PROCESS.md §13). Absent, nothing blocks. Fix it (an admin act, done by a human) in the Settings UI (Branches → edit the rule → 'Require a pull request before merging' → approvals 1 or more), not with branch-protection-apply.sh --apply, which only adds status-check contexts. branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."; ok=1  # MUT-BPCOUNT
     elif [ "$_bp_rc_count" -lt 1 ]; then
       printf '%s\n' "FAIL: $BRANCH sets required_approving_review_count=$_bp_rc_count — a review requirement of ZERO. The required_pull_request_reviews block being PRESENT means nothing on its own; with a count of 0 an unratified control-plane PR merges with a GREEN ratification check (that check explains the wait, it does not block it). Fix it (an admin act, done by a human) with the admin PATCH (not branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F required_approving_review_count=1, or the Settings UI (Branches → edit the rule → 'Require approvals', 1 or more). branch-protection-apply.sh --replace also sets it, but rewrites the whole rule to a profile: the default (solo) turns enforce_admins and code-owner review off and pins the repo's merge methods to squash-only; on a team repo use --replace --team."; ok=1  # MUT-BPCOUNT
     fi
+    if [ "${_bp_rc_count:-0}" = 1 ] && [ "$REL_MODE" = solo ]; then printf '%s\n' "ADVISORY: solo-declared but approvals=1 — the agent cannot merge on a recorded GO while one approval is required; run sh scripts/branch-protection-apply.sh --replace (an admin act at a terminal) once solo-go-bound is declared, installed and live."; fi
     # ★★ THE TWO SETTINGS THAT CARRY review-lane's RETIRED ATTESTATION LEG
     # (REVIEW-LANE-WAITING-IS-GREEN, 2026-09-05). Until then `conformance/review-lane.sh` read the
     # forge's review list itself and returned WAITING — rc 1, which a CI job renders RED — until a
@@ -564,7 +642,10 @@ classify() {
     fi
     printf '%s' "$_bp_rc_flat" | grep -q '"dismiss_stale_reviews":true' \
       || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. ${_bp_ds_cure}${_bp_goact}"; ok=1; }
+    _bp_sa=0; [ "${_bp_rc_count:-9}" = 0 ] && [ "$SA_OK" = 1 ] && _bp_sa=1
+    if [ "$_bp_sa" = 1 ] && [ "$(bp_enforce_admins "$_bp_rc_flat")" != true ]; then printf '%s\n' "FAIL: the solo-agent state needs enforce_admins on: the solo-agent profile sets enforce_admins:true (Q6), but $BRANCH has it off, so an admin could merge past solo-go-bound. Cure (an admin act, done by a human): sh scripts/branch-protection-apply.sh --replace."; ok=1; fi  # MUT-BPSOLO
     printf '%s' "$_bp_rc_flat" | grep -q '"require_last_push_approval":true' \
+      || [ "$_bp_sa" = 1 ] \
       || { printf '%s\n' "FAIL: $BRANCH does not set require_last_push_approval to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting replaces review-lane's deleted rl_role_swap heuristic, which guessed at the role swap by matching an approver's forge login against the head commit's author/committer identity. As a server-side rule it is stronger and it is the only control left for the property: without it whoever pushed the head can approve their own push. ${_bp_lp_cure}"; ok=1; }
     printf '%s' "$body" | grep -q '"required_status_checks"' || { printf '%s\n' "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
     # advisory (non-fatal): CODEOWNER-review enforcement is recommended but not required by this gate
@@ -701,9 +782,13 @@ selftest() {
   # case runs in a subshell that also sets the REQUIRE level for the unverifiable path.
   # DECLARATION defaults to a path that can never exist, so these six PRE-B4 cells keep their
   # pre-B4 behaviour untouched even though the kit's own REQUIRED-CHECKS.md now sits at repo root.
+  # SWAS-920: every classify cell below that does not build its own tree runs with REPO_ROOT = _bphroot, a fixture git repo with no dial and
+  # no Governance line (it reads team), so the real tree's merge relationship (a solo-declared adopter's included) never reaches a cell.
+  _bphroot=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the hermetic team root"; st=1; }
+  git init -q "$_bphroot" 2>/dev/null || true
   cls() {  # expect_rc require rc body label [declaration-file]
     e=$1; req=$2; r=$3; b=$4; lbl=$5; d=${6:-/nonexistent-required-checks-$$}
-    ( REQUIRE="$req"; REPO=selftest; DECLARATION="$d"; classify "$r" "$b" ) >/dev/null 2>&1 && g=0 || g=$?
+    ( REQUIRE="$req"; REPO=selftest; DECLARATION="$d"; REPO_ROOT="$_bphroot"; classify "$r" "$b" ) >/dev/null 2>&1 && g=0 || g=$?
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> exit $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
   cls 0 0 0 '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{}}' "200 + both settings + a review count of 1"
@@ -736,7 +821,7 @@ selftest() {
   # ── B4: declared-contexts comparison + the offline --declared-only leg. Fixtures live in a
   # mktemp dir, trap-cleaned; never a committed fixture (which would poison the self-scanning gates).
   _bpdir=""; _ghdir=""; _ghenvdir=""
-  trap 'rm -rf "$_bpdir" "$_ghdir" "$_ghenvdir" 2>/dev/null || true' EXIT
+  trap 'rm -rf "$_bpdir" "$_ghdir" "$_ghenvdir" "$_bphroot" 2>/dev/null || true' EXIT
   _bpdir=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for declared-context fixtures"; st=1; }
   printf '# fixture\n\n```\nci\ncontrol-plane-ratification\n```\n' > "$_bpdir/good.md"
   printf '```\nci\nci\n```\n' > "$_bpdir/dup.md"
@@ -755,7 +840,7 @@ selftest() {
 
   clsd() {  # expect_rc needle require rc body declaration-file label — classify() WITH a real declaration
     e=$1; needle=$2; req=$3; r=$4; b=$5; d=$6; lbl=$7
-    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="$d"; classify "$r" "$b" ) 2>&1 ) && g=0 || g=$?
+    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="$d"; REPO_ROOT="$_bphroot"; classify "$r" "$b" ) 2>&1 ) && g=0 || g=$?   # MUT-BPHROOT
     if [ "$g" = "$e" ] && printf '%s\n' "$out" | grep -qF -e "$needle"; then
       echo "selftest PASS: $lbl -> exit $g"
     else
@@ -832,6 +917,104 @@ selftest() {
   gact no "$_gooff" "dismiss_stale_reviews off + the dial absent -> still FAIL (not weakened), without the GO_ACT sentence"
   gact no "$_gosep" "dismiss_stale_reviews off + GO_ACT=separate -> still FAIL, without the GO_ACT=review sentence"
   gact no "$_bpdir/no-such-root" "dismiss_stale_reviews off + no dial file at all -> still FAIL"
+
+  # ── SWAS-901 slice B (T15a-f): the solo-agent state. A tree that declares MERGE_RELATIONSHIP=solo (a regular dial file, no Governance
+  # team override), lists solo-go-bound in REQUIRED-CHECKS.md, carries the installed workflow and the verbs' go-bound marker, and whose
+  # protection has solo-go-bound live may run with approvals=0, last_push=false and enforce_admins=true. Every other tree keeps today's
+  # verdicts, byte for byte. A mutant is a sed copy of THIS script: its read_merge_relationship, bp_solo_agent_ok and classify are
+  # extracted and sourced inside the cell's subshell (classify is only ever run in one), and the cell must then FAIL.
+  # SWAS-901 E6 S-4/R1: the dial and CLAUDE.md are read from the default branch's TIP (refs/remotes/origin/<branch>), never the checked-out tree, and a
+  # symlink or other non-regular entry reads team, so each fixture is a git repository with that ref; the workflow, the verbs' marker and
+  # REQUIRED-CHECKS.md are still read from the tree.
+  _sa_git() { git -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false -C "$_sar" "$@"; }
+  _sa_mk() {  # <name> <tip dial: solo|team|link|none> <tip CLAUDE.md: none|link|team> [<dial the working tree has AFTER the tip: solo|team>] -> a tree root under $_bpdir
+    _sar="$_bpdir/$1"; rm -rf "$_sar"; mkdir -p "$_sar/.kit" "$_sar/.github/workflows" "$_sar/scripts"; git init -q "$_sar"
+    if [ "$2" = link ]; then ln -s MERGE_RELATIONSHIP=solo "$_sar/.kit/dials.conf"; elif [ "$2" != none ]; then printf 'MERGE_RELATIONSHIP=%s\n' "$2" > "$_sar/.kit/dials.conf"; fi
+    if [ "$3" = link ]; then ln -s x "$_sar/CLAUDE.md"; elif [ "$3" = team ]; then printf -- '- **Governance** (§ solo/team): team\n' > "$_sar/CLAUDE.md"; fi
+    : > "$_sar/f"; _sa_git add -A; _sa_git commit -q -m tip; _sa_git update-ref refs/remotes/origin/main HEAD
+    if [ -n "${4:-}" ]; then printf 'MERGE_RELATIONSHIP=%s\n' "$4" > "$_sar/.kit/dials.conf"; _sa_git add -A; _sa_git commit -q -m tree; fi
+    printf '```\nci\nsolo-go-bound\n```\n' > "$_sar/REQUIRED-CHECKS.md"
+    printf '# COPY & ADAPT\n' > "$_sar/.github/workflows/solo-go.yml"
+    printf '# KIT-MODE: go-bound\n' > "$_sar/scripts/promotion-verify.sh"
+  }
+  _sa_src=""
+  _sa_chk() {  # <expect rc> <needle> <root> <count> <last_push> <enforce_admins> <contexts json> [nopin] -> 0 when rc and needle match
+    _sack=',"checks":[{"context":"solo-go-bound","app_id":15368}]'; if [ "${8:-}" = nopin ] || [ "${8:-}" = stray ]; then _sack=''; fi
+    if [ "${8:-}" = pin153680 ]; then _sack=',"checks":[{"context":"solo-go-bound","app_id":153680}]'; fi   # R5-1: a longer app id has 15368 as a prefix
+    if [ "${8:-}" = strayunpin ]; then _sack=',"checks":[{"context":"solo-go-bound"}]'; fi   # R4-1: unpinned INSIDE the object, the pinned text outside it
+    _sarsc="\"contexts\":$7$_sack"
+    if [ "$7" = CHECKS ]; then _sarsc='"strict":true,"checks":[{"context":"ci"},{"context":"solo-go-bound","app_id":15368}]'; fi   # a body with ONLY checks[] (E6 R2-1)
+    _sab="{\"required_pull_request_reviews\":{\"required_approving_review_count\":$4,\"dismiss_stale_reviews\":true,\"require_last_push_approval\":$5},\"required_status_checks\":{$_sarsc},\"enforce_admins\":{\"enabled\":$6}}"
+    if [ "${8:-}" = stray ] || [ "${8:-}" = strayunpin ]; then   # E6 R3-2: the pinned solo-go-bound text sits in "context" keys OUTSIDE required_status_checks, before it and after it
+      _sast='[{"context":"solo-go-bound","app_id":15368}]'; _sab="{\"statuses\":$_sast,${_sab#\{}"; _sab="${_sab%\}},\"restrictions\":{\"checks\":$_sast}}"
+    fi
+    # shellcheck source=/dev/null  # the mutant's extracted functions, written by _sa_mut below
+    out=$( ( if [ -n "$_sa_src" ]; then . "$_sa_src"; fi; REQUIRE=0; REPO=selftest; REPO_ROOT="$3"; DECLARATION="$3/REQUIRED-CHECKS.md"; classify 0 "$_sab" ) 2>&1 ) && g=0 || g=$?
+    [ "$g" = "$1" ] && printf '%s\n' "$out" | grep -qF -e "$2"
+  }
+  _sa_ctx='["ci","solo-go-bound"]'
+  _sa_mk sa-ok solo none; _sa_mk sa-team team none; _sa_mk sa-link link none; _sa_mk sa-clink solo link; _sa_mk sa-tip team none solo
+  _sa_mk sa-noref solo none; _sa_git update-ref -d refs/remotes/origin/main   # a checkout that never fetched origin's default branch
+  _sa_ta() { _sa_chk 0 'OK-solo: approvals=0' "$_bpdir/sa-ok" 0 false true "$_sa_ctx"; }
+  _sa_tb() { _sa_chk 1 'is not a live required check' "$_bpdir/sa-ok" 0 false true '["ci"]'; }
+  _sa_tc() { _sa_chk 1 'a review requirement of ZERO' "$_bpdir/sa-team" 0 false true "$_sa_ctx"; }
+  _sa_td() { _sa_chk 0 'ADVISORY: solo-declared but approvals=1' "$_bpdir/sa-ok" 1 true true "$_sa_ctx"; }
+  _sa_te() { _sa_chk 1 'a review requirement of ZERO' "$_bpdir/sa-link" 0 false true "$_sa_ctx"; }
+  _sa_tf() { _sa_chk 1 'sets enforce_admins:true (Q6)' "$_bpdir/sa-ok" 0 false false "$_sa_ctx"; }
+  _sa_cell() { if "$2"; then echo "selftest PASS: $1: $3"; else echo "selftest FAIL: $1: $3"; st=1; fi; }
+  _sa_mut() {  # <label> <sed> <cell> <desc>
+    _sam="$_bpdir/sa-mut-$1.sh"; sed "$2" "$0" > "$_sam.full"
+    if cmp -s "$0" "$_sam.full"; then echo "selftest FAIL: $1: the mutant changed nothing"; st=1; return 0; fi
+    : > "$_sam"; for _saf in bp_rsc_text extract_live_contexts bp_tip_blob read_merge_relationship bp_solo_agent_ok classify; do sed -n "/^$_saf() {\$/,/^}\$/p" "$_sam.full" >> "$_sam"; done
+    _sa_src="$_sam"
+    if "$3"; then echo "selftest FAIL: $1: $4 -- the mutant SURVIVED"; st=1; else echo "selftest PASS: $1: $4 (the mutant is killed)"; fi
+    _sa_src=""
+  }
+  _sa_cell T15a _sa_ta "a solo tree with every piece, approvals=0, last_push=false, enforce_admins=true: OK-solo, rc 0"
+  _sa_mut T15am '/OK-solo: approvals=0/s/^.*$/        :/' _sa_ta "a verifier that never prints the solo line fails the liveness cell"
+  _sa_cell T15b _sa_tb "solo-go-bound declared but not a live required check: FAIL naming it"
+  _sa_mut T15bm '/extract_live_contexts "\$1" | grep -qxF solo-go-bound/d' _sa_tb "without the live-context leg a missing check still reads solo-agent"
+  _sa_cell T15c _sa_tc "a team tree with count 0: today's FAIL text (a review requirement of ZERO)"
+  _sa_mut T15cm 's/ && \[ "\$REL_MODE" = solo \]; then$/; then/' _sa_tc "accepting count 0 on a team tree changes the FAIL text"
+  _sa_cell T15d _sa_td "a solo tree at approvals=1: OK plus an ADVISORY that the agent cannot merge"
+  _sa_mut T15dm '/solo-declared but approvals=1/d' _sa_td "without the advisory a locked-out solo tree reads clean"
+  _sa_cell T15e _sa_te "a symlinked dial file reads team (S-3): count 0 is today's FAIL"
+  _sa_mut T15em '/MUT-BPREG$/d' _sa_te "reading a symlink's target text as the file lets a link grant solo-agent"
+  _sa_tg() { _sa_chk 1 'not pinned to the GitHub Actions app' "$_bpdir/sa-ok" 0 false true "$_sa_ctx" nopin; }
+  _sa_th() { _sa_chk 1 'a review requirement of ZERO' "$_bpdir/sa-clink" 0 false true "$_sa_ctx"; }
+  _sa_ti() { _sa_chk 1 'a review requirement of ZERO' "$_bpdir/sa-tip" 0 false true "$_sa_ctx"; }
+  _sa_cell T15g _sa_tg "solo-go-bound live but not pinned to the Actions app (app_id 15368): FAIL naming the pin"
+  _sa_mut T15gm '/MUT-BPPIN$/d' _sa_tg "without the pin leg another app's same-named check reads solo-agent"
+  _sa_tj() { _sa_chk 0 'OK-solo: approvals=0' "$_bpdir/sa-ok" 0 false true CHECKS; }
+  _sa_tk() { _sa_chk 2 'cannot read origin/main: git fetch origin main' "$_bpdir/sa-noref" 0 false true "$_sa_ctx" && ! printf '%s\n' "$out" | grep -qF 'a review requirement of ZERO'; }
+  _sa_cell T15j _sa_tj "a solo-agent body that carries ONLY checks[] (no contexts key) is read, so every declared context is still asserted live"
+  _sa_mut T15jm '/MUT-BPCHK$/d' _sa_tj "without the checks[] read a body in the solo-agent shape reads every context as unbound"
+  _sa_cell T15k _sa_tk "a solo-declared tree whose origin/<branch> ref is missing reads UNVERIFIED naming the fetch, never the team ZERO FAIL"
+  _sa_mut T15km '/MUT-BPTIPERR$/d' _sa_tk "restoring the team fallback blames a missing ref on the review count"
+  _sa_cell T15h _sa_th "a symlinked CLAUDE.md reads Governance team (R1): count 0 is today's FAIL"
+  _sa_mut T15hm '/MUT-BPGOV$/d' _sa_th "reading a symlinked CLAUDE.md as no Governance line grants solo-agent"
+  _sa_cell T15i _sa_ti "the dial in the checked-out tree says solo but the default branch's tip says team (S-4): count 0 is today's FAIL"
+  _sa_mut T15im 's@refs/remotes/origin/\$BRANCH@HEAD@g' _sa_ti "reading the checked-out tree instead of the default tip lets a PR grant itself solo-agent"
+  _sa_cell T15f _sa_tf "the solo-agent state with enforce_admins false: FAIL (the profile writes true)"
+  _sa_mut T15fm '/\[ "\$_bp_sa" = 1 \] && \[ "\$(bp_enforce_admins/d' _sa_tf "without the enforce leg an admin bypass reads solo-agent"
+  # E6 R3-2/R9: a "context" key outside required_status_checks binds nothing (the POSIX reader is forced: jq is shadowed to fail, so the
+  # scoped sed path is the one under test), and a context named in both contexts[] and checks[] reads once.
+  _sa_tl() { ( jq() { return 1; }; _sa_chk 1 'is not a live required check' "$_bpdir/sa-ok" 0 false true '["ci"]' stray ); }
+  _sa_tn() {
+    _sa_nb='{"required_status_checks":{"strict":true,"contexts":["ci","solo-go-bound"],"checks":[{"context":"ci"},{"context":"solo-go-bound","app_id":15368}]}}'
+    # shellcheck source=/dev/null  # the mutant's extracted functions, written by _sa_mut
+    [ "$( ( jq() { return 1; }; if [ -n "$_sa_src" ]; then . "$_sa_src"; fi; extract_live_contexts "$_sa_nb" ) | grep -c '^ci$' )" = 1 ]
+  }
+  _sa_cell T15l _sa_tl "a pinned solo-go-bound \"context\" key before and after required_status_checks (not inside it) does not bind: FAIL not a live required check"
+  _sa_mut T15lm '/MUT-BPSCOPE$/s/^.*$/  printf "%s" "$1"/' _sa_tl "the unscoped read counts any \"context\" key in the body as a required check"
+  _sa_tp() { _sa_chk 1 'not pinned to the GitHub Actions app' "$_bpdir/sa-ok" 0 false true "$_sa_ctx" strayunpin; }
+  _sa_cell T15p _sa_tp "an UNPINNED solo-go-bound inside required_status_checks with the pinned text only outside it: FAIL naming the pin (R4-1)"
+  _sa_mut T15pm '/MUT-BPPIN$/s/bp_rsc_text "\$1"/printf "%s" "$1"/' _sa_tp "an unscoped pin grep reads a pin written outside the object as the check's own"
+  _sa_tq() { _sa_chk 1 'not pinned to the GitHub Actions app' "$_bpdir/sa-ok" 0 false true "$_sa_ctx" pin153680; }
+  _sa_cell T15q _sa_tq "solo-go-bound pinned to app_id 153680 (15368 only as a prefix): FAIL naming the pin (R5-1)"
+  _sa_mut T15qm '/MUT-BPPIN$/s/15368\[,}\]/15368/' _sa_tq "a pin match with no end anchor reads another app's id as the Actions app"
+  _sa_cell T15n _sa_tn "a context named in both contexts[] and checks[] reads once"
+  _sa_mut T15nm '/^  } | sort -u$/s/sort -u/cat/' _sa_tn "without sort -u a doubly named context reads twice"
 
   clsdo() {  # expect_rc needle file label — declared_only() direct
     e=$1; needle=$2; f=$3; lbl=$4
@@ -1142,7 +1325,7 @@ STUB
   _TEAM_NOCO='{'"$_rv"',"require_code_owner_reviews":false},"required_status_checks":{"contexts":[]},"enforce_admins":{"url":"u","enabled":true}}'
   clst() {  # expect_rc needle require gov merge-methods pending-owners body label
     e=$1; needle=$2; req=$3; gov=$4; mm=$5; pend=$6; b=$7; lbl=$8
-    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?
+    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; REPO_ROOT="$_bphroot"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?   # MUT-BPHROOT
     if [ "$g" = "$e" ] && printf '%s\n' "$out" | grep -qF -e "$needle"; then
       echo "selftest PASS: $lbl -> exit $g"
     else
@@ -1151,7 +1334,7 @@ STUB
   }
   clst_not() {  # needle-must-be-absent variant: expect_rc needle require gov mm pend body label
     e=$1; needle=$2; req=$3; gov=$4; mm=$5; pend=$6; b=$7; lbl=$8
-    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?
+    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; REPO_ROOT="$_bphroot"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?
     if [ "$g" = "$e" ] && ! printf '%s\n' "$out" | grep -qF -e "$needle"; then
       echo "selftest PASS: $lbl -> exit $g"
     else
@@ -1181,7 +1364,7 @@ STUB
   clst_not 0 "ADVISORY: merge methods" 0 solo squash-only "" "$_SOLO_LIVE" "squash-only -> no merge-method ADVISORY"
   clst_not 0 "ADVISORY: merge methods" 0 undeclared unknown "" "$_SOLO_LIVE" "unknown merge methods on an undeclared tree -> no merge-method ADVISORY (the line says unknown)"
   clst 0 "WARN: CODEOWNERS names reviewer-login but that account has only a PENDING invitation" 0 team squash-only "reviewer-login" "$_TEAM_LIVE" "a pending CODEOWNERS invitation -> WARN naming the login (non-fatal)"
-  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE=solo; MERGE_METHODS=squash-only; INVITES_STATE=unreadable; PENDING_OWNERS=""; classify 0 "$_SOLO_LIVE" ) 2>&1 ) && g=0 || g=$?
+  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE=solo; MERGE_METHODS=squash-only; INVITES_STATE=unreadable; PENDING_OWNERS=""; REPO_ROOT="$_bphroot"; classify 0 "$_SOLO_LIVE" ) 2>&1 ) && g=0 || g=$?
   if [ "$g" = 0 ] && printf '%s\n' "$out" | grep -qF "invitations: not readable with this token"; then echo "selftest PASS: unreadable invitations are said, never silent"; else echo "selftest FAIL: unreadable invitations (rc=$g out=[$out])"; st=1; fi
   # the existing 200-body cells carry no settings of their own: they must not have changed rc under the new defaults.
   clst 0 "OK:" 0 undeclared unknown "" '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{}}' "defaults (undeclared, merge methods unknown) keep today's PASS"
@@ -1295,7 +1478,7 @@ STUBE2E
   bp_up() { printf '%s' '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":"403"}'; }
   clsd 2 "UNVERIFIED: protection endpoint returned non-200 on selftest: $_bp_plan" 0 1 "$(bp_up)" "/nonexistent-required-checks-$$" "upgrade-text 403 -> UNVERIFIED naming the plan cause (SWAS-212)"
   clsd 1 "FAIL: branch-protection could not verify (protection endpoint returned non-200 on selftest: $_bp_plan)" 1 1 "$(bp_up)" "/nonexistent-required-checks-$$" "upgrade-text 403 + --require -> FAIL, still naming the plan cause"
-  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; classify 1 '{"message":"Must have admin rights to Repository."}' ) 2>&1 ) && g=0 || g=$?
+  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; REPO_ROOT="$_bphroot"; classify 1 '{"message":"Must have admin rights to Repository."}' ) 2>&1 ) && g=0 || g=$?
   if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF 'non-200 (token may lack repo-admin' && ! printf '%s\n' "$out" | grep -qF -e "$_bp_plan"; then
     echo "selftest PASS: a plain 403 keeps the generic cause (rc alone is not the upgrade signal)"
   else
@@ -1347,6 +1530,31 @@ STUBE2E
     if [ "$_bp_mut_ok" = 1 ]; then echo "selftest PASS: the MUT-BPCOUNT mutant is caught (the old ending returns, both negative cells would red)"; else echo "selftest FAIL: the MUT-BPCOUNT mutant did not restore the old ending on both arms (the negative cells would stay green)"; st=1; fi
   fi
   cp "$0" "$_e2e/conformance/branch-protection.sh"
+
+  # ── SWAS-920: the classify cells that expect team text set their own merge relationship (a fixture root with no dial and no
+  # Governance line), never the real tree's, so a solo-declared adopter's own CI reads the same verdicts. The cell runs two of them
+  # (clsd, clst) with the AMBIENT tree solo-declared (a git repo whose default-branch tip carries MERGE_RELATIONSHIP=solo); the mutant
+  # (a sed copy, cmp-proven, its clsd and clst sourced) restores the real-tree read and must red it.
+  _sa_mk ha-solo solo none
+  _ha_src=""
+  _ha_run() {  # 0 when both team-expecting cells still PASS while REPO_ROOT is the solo-declared tree
+    # shellcheck source=/dev/null  # the mutant's extracted clsd and clst, written by the mutant block below
+    _hao=$( ( REPO_ROOT="$_bpdir/ha-solo"; cd "$REPO_ROOT"; if [ -n "$_ha_src" ]; then . "$_ha_src"; fi
+      clsd 1 "gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_pull_request_reviews -F required_approving_review_count=1" 0 0 "$(bp_c0)" "/nonexistent-required-checks-$$" "ha-clsd"
+      clst 1 "a review requirement of ZERO" 0 undeclared unknown "" "$(bp_c0)" "ha-clst" ) 2>&1 ) || true
+    printf '%s\n' "$_hao" | grep -qF 'selftest FAIL' && return 1
+    [ "$(printf '%s\n' "$_hao" | grep -cF 'selftest PASS')" = 2 ]
+  }
+  if _ha_run; then echo "selftest PASS: SWAS-920: the team-expecting cells pass from inside a solo-declared tree (the selftest sets its own relationship)"; else echo "selftest FAIL: SWAS-920: a team-expecting cell read the real tree's solo relationship (out=[$_hao])"; st=1; fi
+  _ham="$_bpdir/ha-mut.sh"; sed '/# MUT-BPHROOT$/s/REPO_ROOT="\$_bphroot"; //' "$0" > "$_ham.full"
+  if cmp -s "$0" "$_ham.full"; then
+    echo "selftest FAIL: SWAS-920: the MUT-BPHROOT mutant changed nothing"; st=1
+  else
+    : > "$_ham"; for _haf in clsd clst; do sed -n "/^  $_haf() {/,/^  }\$/p" "$_ham.full" >> "$_ham"; done
+    _ha_src="$_ham"
+    if _ha_run; then echo "selftest FAIL: SWAS-920: the MUT-BPHROOT mutant SURVIVED (restoring the real-tree read did not red the cell)"; st=1; else echo "selftest PASS: SWAS-920: restoring the real-tree read reds the cell (the mutant is killed)"; fi
+    _ha_src=""
+  fi
 
   # ── SWAS-812: the dismiss-stale and last-push FAILs lead with a cure that works when the reviews block is absent. With no
   # block a PATCH of one key may have nothing to patch, so those two lines lead with the Settings UI there (as SWAS-164's

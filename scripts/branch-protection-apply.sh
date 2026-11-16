@@ -16,6 +16,12 @@
 #              Default profile = SOLO. It ALSO pins the repository's merge methods to squash-only
 #              (a second call, PATCH repos/{owner}/{repo}, under the same confirmation, both
 #              profiles).
+#              Without --team it picks between TWO profiles (SWAS-901): SOLO-AGENT (enforce_admins:true · required_approving_review_count:0 ·
+#              dismiss_stale_reviews:true · require_last_push_approval:false · require_code_owner_reviews:false) only when GitHub itself
+#              says the default branch reads solo (.kit/dials.conf MERGE_RELATIONSHIP=solo, no Governance team line) AND REQUIRED-CHECKS.md lists
+#              solo-go-bound AND .github/workflows/solo-go.yml and the go-bound verb are installed there; the check `solo-go-bound`, run from the
+#              base, then stands in for the approval one account cannot give. Any other case, a failed read or a --branch that is not the
+#              default branch included, writes the SOLO profile below byte for byte. Show-only prints `review-count: live=<n> target=<0|1>`.
 #   --team     (only with --replace; any other use exits 2) writes the TEAM profile instead of the
 #              solo one: enforce_admins:true · required_approving_review_count:1 ·
 #              dismiss_stale_reviews:true · require_last_push_approval:true ·
@@ -83,10 +89,12 @@ BRANCH=main
 DECLARATION="REQUIRED-CHECKS.md"
 MODE=dry-run
 PRINT_PARSED=0
+PRINT_PAYLOAD=""
 TEAM=0
+PICK_WHY=""
 
 usage() {
-  echo "usage: branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME] [--declaration=FILE] [--apply | --replace [--team] | --print-parsed] | --selftest" >&2
+  echo "usage: branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME] [--declaration=FILE] [--apply | --replace [--team] | --print-parsed | --print-payload=<solo|team|solo-agent>] | --selftest" >&2
 }
 
 for a in "$@"; do
@@ -98,6 +106,7 @@ for a in "$@"; do
     --branch=*) BRANCH=${a#--branch=} ;;
     --declaration=*) DECLARATION=${a#--declaration=} ;;
     --print-parsed) PRINT_PARSED=1 ;;  # read-only debug aid; see the header. No gh calls.
+    --print-payload=*) PRINT_PAYLOAD=${a#--print-payload=} ;;  # read-only debug aid: the --replace body for a profile. No gh calls.
     --selftest) ;;  # dispatched below
     *) usage; exit 2 ;;
   esac
@@ -184,6 +193,16 @@ print_parsed() {
   exit 0
 }
 
+# print_payload — debug-only (--print-payload=<solo|team|solo-agent>): print that profile's --replace body for the declared contexts and
+# exit. No gh call and no mutation; the selftest compares it with frozen literals (SWAS-901).
+print_payload() {
+  [ -f "$DECLARATION" ] || exit 1
+  ad_read_declaration "$DECLARATION"
+  build_replace_payload "$AD_LIST" "$PRINT_PAYLOAD" || exit 1
+  printf '\n'
+  exit 0
+}
+
 # extract_contexts <body> — one live required-status-check context per line (rc always 0; empty
 # stdout = none/unparsable). jq optional fast path; POSIX sed/tr is the load-bearing path (Δ7).
 # K8 — fetch_live_protection <repo> <branch>: the live GET, with THREE outcomes instead of two.
@@ -248,19 +267,29 @@ json_list() {
 build_replace_payload() {
   _brp_list=$1
   case "${2:-solo}" in
-    solo) _brp_ea=false; _brp_co=false ;;
-    team) _brp_ea=true; _brp_co=true ;;
+    solo) _brp_ea=false; _brp_co=false; _brp_rc=1; _brp_lp=true ;;
+    team) _brp_ea=true; _brp_co=true; _brp_rc=1; _brp_lp=true ;;
+    solo-agent) _brp_ea=true; _brp_co=false; _brp_rc=0; _brp_lp=false ;;   # SWAS-901: no approval (solo-go-bound stands in), admins enforced
     *) printf '%s\n' "FAIL: refusing to build the --replace payload — unknown profile '${2:-}'" >&2; return 1 ;;
   esac
   for _brp_c in $_brp_list; do
     valid_context_name "$_brp_c" || { printf '%s\n' "FAIL: refusing to build the --replace payload — '$_brp_c' failed re-validation" >&2; return 1; }
   done
-  if command -v jq >/dev/null 2>&1; then
-    _brp_json=$(printf '%s\n' $_brp_list | grep -v '^$' | jq -R . | jq -s -c --argjson ea "$_brp_ea" --argjson co "$_brp_co" \
-      '{required_status_checks:{strict:true,contexts:.},enforce_admins:$ea,required_pull_request_reviews:{required_approving_review_count:1,dismiss_stale_reviews:true,require_last_push_approval:true,require_code_owner_reviews:$co},restrictions:null}' 2>/dev/null) || _brp_json=""
+  # SWAS-901 E6 S-3/R2-1/R3-1: in solo-agent EVERY required check is a `checks` entry and `contexts` is ABSENT: the body carries `checks` only, because the server treats `contexts` and `checks` as oneOf alternatives and refuses a body with both (measured at SWAS-915's live L1 on 2026-11-15, SWAS-919), and
+  # solo-go-bound is PINNED to the GitHub Actions app (app_id 15368) so no other app's same-named check satisfies it. Built in the shell (values are charset-validated above).
+  _brp_rsc="\"contexts\":[$(json_list "$_brp_list")]"
+  if [ "${2:-solo}" = solo-agent ]; then
+    _brp_chk=""
+    for _brp_c in $_brp_list; do
+      if [ "$_brp_c" != solo-go-bound ]; then _brp_chk="${_brp_chk:+$_brp_chk,}{\"context\":\"$_brp_c\"}"; fi
+    done
+    _brp_rsc="\"checks\":[${_brp_chk:+$_brp_chk,}{\"context\":\"solo-go-bound\",\"app_id\":15368}]"   # MUT-BA-CHK
+  elif command -v jq >/dev/null 2>&1; then
+    _brp_json=$(printf '%s\n' $_brp_list | grep -v '^$' | jq -R . | jq -s -c --argjson ea "$_brp_ea" --argjson co "$_brp_co" --argjson rc "$_brp_rc" --argjson lp "$_brp_lp" \
+      '{required_status_checks:{strict:true,contexts:.},enforce_admins:$ea,required_pull_request_reviews:{required_approving_review_count:$rc,dismiss_stale_reviews:true,require_last_push_approval:$lp,require_code_owner_reviews:$co},restrictions:null}' 2>/dev/null) || _brp_json=""
     if [ -n "$_brp_json" ]; then printf '%s' "$_brp_json"; return 0; fi
   fi
-  printf '{"required_status_checks":{"strict":true,"contexts":[%s]},"enforce_admins":%s,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":%s},"restrictions":null}' "$(json_list "$_brp_list")" "$_brp_ea" "$_brp_co"
+  printf '{"required_status_checks":{"strict":true,%s},"enforce_admins":%s,"required_pull_request_reviews":{"required_approving_review_count":%s,"dismiss_stale_reviews":true,"require_last_push_approval":%s,"require_code_owner_reviews":%s},"restrictions":null}' "$_brp_rsc" "$_brp_ea" "$_brp_rc" "$_brp_lp" "$_brp_co"
 }
 
 # build_merge_payload — the merge-method PATCH body: a FIXED LITERAL, no interpolation of any kind.
@@ -341,6 +370,70 @@ gh_identity_line() {
   fi
 }
 
+# SWAS-901: the picker for --replace's third profile, `solo-agent` (approvals 0, last_push false, enforce_admins true: `solo-go-bound`, run
+# from the base branch, stands in for the approval one account cannot give). It is chosen only when the TARGET's default branch reads solo
+# and all three probes hold on that same branch; every other case, an unreadable one included, reads the solo profile byte for byte.
+# ba_forge_file <repo> <branch> <path> -> the file at the branch tip on stdout; rc 0 = printed, 1 = absent (the forge's 404), 2 = anything else
+# (a failed read, a directory, a symlink). Two reads: the entry's type must be `file`, then its raw bytes.
+ba_forge_file() {
+  _bff_err=$(mktemp) || return 2
+  if ! _bff_t=$(gh_quiet api "repos/$1/contents/$3?ref=$2" --jq '[.type,.path] | @tsv' 2>"$_bff_err"); then
+    _bff_m=$(cat "$_bff_err" 2>/dev/null) || _bff_m=""
+    rm -f "$_bff_err"
+    case "$_bff_m" in
+      *"Not Found"*|*"HTTP 404"*) return 1 ;;
+    esac
+    return 2
+  fi
+  rm -f "$_bff_err"
+  [ "$_bff_t" = "$(printf 'file\t%s' "$3")" ] || return 2   # a regular file AT the requested path (a symlinked directory answers with another path) # MUT-BA-PATH
+  gh_quiet api -H 'Accept: application/vnd.github.raw' "repos/$1/contents/$3?ref=$2" 2>/dev/null || return 2
+}
+
+# ba_rel_from_text <dial read rc> <dial text> <CLAUDE.md read rc> <CLAUDE.md text> -> `solo` | `team`: the grammar of promotion-verify.sh's
+# pv_rel_from_tip, re-stated (that script cannot be sourced): the last MERGE_RELATIONSHIP line wins and its first word must be `solo`; a Governance
+# `team` field line overrides it (solo alone grants nothing); a dial or CLAUDE.md read that failed, or is not a regular file, reads team. T14 diffs them.
+ba_rel_from_text() {
+  [ "$1" = 0 ] || { echo team; return 0; }
+  _brt_line=$(printf '%s\n' "$2" | grep -E '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=' | tail -n 1 || true)
+  _brt_val=$(printf '%s' "$_brt_line" | sed -E "s/^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*//; s/#.*\$//; s/[\"']//g; s/[[:space:]].*\$//")
+  [ "$_brt_val" = solo ] || { echo team; return 0; }
+  if [ "$3" != 0 ] && [ "$3" != 1 ]; then echo team; return 0; fi
+  if [ "$3" = 0 ]; then
+    _brt_n=$(printf '%s\n' "$4" | grep -c -e '^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team):' || true)
+    if [ "${_brt_n:-0}" -ge 1 ]; then
+      _brt_vals=$(printf '%s\n' "$4" | sed -n 's#^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team): \([^[:space:]]*\).*$#\1#p')
+      if printf '%s\n' "$_brt_vals" | grep -qx team; then echo team; return 0; fi
+    fi
+  fi
+  echo solo
+}
+
+# ba_pick_profile -> sets PROFILE (solo | solo-agent) and PICK_WHY. Only called without --team.
+ba_pick_profile() {
+  PROFILE=solo; PICK_WHY=""
+  _bp_def=$(gh_quiet api "repos/$REPO" --jq .default_branch 2>/dev/null | tr -d '[:cntrl:]' | cut -c1-100) || _bp_def=""
+  if [ -z "$_bp_def" ]; then PICK_WHY="the default branch could not be read (an unreadable forge reads the solo profile)"; return 0; fi
+  if [ "$BRANCH" != "$_bp_def" ]; then PICK_WHY="--branch is not the default branch ($_bp_def)"; return 0; fi
+  # E6 R2-5: the tip is resolved ONCE and every read below is at that sha, so a push between two reads cannot mix two trees.
+  _bp_tip=$(gh_quiet api "repos/$REPO/commits/$BRANCH" --jq .sha 2>/dev/null | tr -d '[:cntrl:]' | cut -c1-40) || _bp_tip=""
+  if ! printf '%s' "$_bp_tip" | grep -qE '^[0-9a-f]{40}$'; then PICK_WHY="the default branch's tip could not be resolved (an unreadable forge reads the solo profile)"; return 0; fi
+  _bp_drc=0; _bp_dial=$(ba_forge_file "$REPO" "$_bp_tip" .kit/dials.conf) || _bp_drc=$?
+  _bp_crc=0; _bp_cl=$(ba_forge_file "$REPO" "$_bp_tip" CLAUDE.md) || _bp_crc=$?
+  if [ "$(ba_rel_from_text "$_bp_drc" "$_bp_dial" "$_bp_crc" "$_bp_cl")" != solo ]; then PICK_WHY="the default branch does not read solo"; return 0; fi
+  _bp_rct=$(ba_forge_file "$REPO" "$_bp_tip" REQUIRED-CHECKS.md) || _bp_rct=""
+  _bp_wft=$(ba_forge_file "$REPO" "$_bp_tip" .github/workflows/solo-go.yml) || _bp_wft=""
+  _bp_pvt=$(ba_forge_file "$REPO" "$_bp_tip" scripts/promotion-verify.sh) || _bp_pvt=""
+  _bp_local="$AD_LIST"; _bp_tf=$(mktemp) || { PICK_WHY="no scratch file for the forge copy of REQUIRED-CHECKS.md"; return 0; }
+  printf '%s\n' "$_bp_rct" > "$_bp_tf"; ad_read_declaration "$_bp_tf"; _bp_forge="$AD_LIST"; rm -f "$_bp_tf"; AD_LIST="$_bp_local"
+  printf '%s\n' $_bp_local | grep -qxF solo-go-bound || { PICK_WHY="the local declaration does not list solo-go-bound"; return 0; }
+  printf '%s\n' $_bp_forge | grep -qx solo-go-bound || { PICK_WHY="REQUIRED-CHECKS.md on the default branch does not list solo-go-bound"; return 0; }
+  printf '%s\n' "$_bp_wft" | grep -qF 'COPY & ADAPT' || { PICK_WHY="the solo-go workflow is not installed on the default branch"; return 0; }
+  printf '%s\n' "$_bp_pvt" | grep -qF '# KIT-MODE: go-bound' || { PICK_WHY="scripts/promotion-verify.sh on the default branch has no go-bound verb"; return 0; }
+  PROFILE=solo-agent
+  PICK_WHY="the default branch reads solo, and solo-go-bound is declared, installed and read by the verbs"
+}
+
 # fetch_merge_methods <repo> -> the parsed merge methods on stdout (unknown on any read failure).
 fetch_merge_methods() {
   if _fmm_body=$(gh_quiet api "repos/$1" --jq "$MM_JQ" 2>/dev/null); then parse_merge_methods "$_fmm_body"; else printf '%s' "unknown"; fi
@@ -356,7 +449,7 @@ do_replace() {
   if ! _dr_err=$(printf '%s' "$_dr_payload" | gh_quiet api -X PUT "repos/$_dr_repo/branches/$_dr_branch/protection" --input - 2>&1 >/dev/null); then
     _dr_err=$(printf '%s' "$_dr_err" | tr '\n' ' ' | tr -d '[:cntrl:]' | cut -c1-200)
     printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state; the merge-method PATCH was not attempted${_dr_err:+; gh said: $_dr_err}"
-    return 1
+    return 1   # MUT-BA-PUTSTOP
   fi
   if ! build_merge_payload | gh_quiet api -X PATCH "repos/$_dr_repo" --input - >/dev/null 2>&1; then
     printf '%s\n' "FAIL: PARTIAL — the protection PUT LANDED on $_dr_repo:$_dr_branch ($_dr_profile profile), but the merge-method PATCH FAILED: merge methods are UNCHANGED. Re-run --replace, or set 'Allow squash merging' only in the repo's Settings."
@@ -412,7 +505,13 @@ confirm_replace() {  # [solo|team] [current merge methods]
   _cr_profile=${1:-solo}
   printf '%s\n' "WARNING: --replace performs a full PUT that OVERWRITES every branch-protection setting on" >&2
   printf '%s\n' "  $BRANCH (review requirements, enforce_admins, restrictions) — not just status-check" >&2
-  if [ "$_cr_profile" = team ]; then
+  if [ "$_cr_profile" = solo-agent ]; then
+    printf '%s\n' "  contexts. Profile: SOLO-AGENT profile. The reset values are: enforce_admins:true ·" >&2
+    printf '%s\n' "  required_approving_review_count:0 · dismiss_stale_reviews:true ·" >&2
+    printf '%s\n' "  require_last_push_approval:false · require_code_owner_reviews:false." >&2
+    printf '%s\n' "  solo-go-bound now reads your recorded GO in place of an approval: it refuses a head with no recorded GO, and the agent merges on that GO." >&2
+    printf '%s\n' "  That GO is self-asserted and a note the agent records satisfies it; a fabricated GO is not caught server-side; an admin can still edit protection." >&2
+  elif [ "$_cr_profile" = team ]; then
     printf '%s\n' "  contexts. Profile: TEAM profile. The reset values are: enforce_admins:true ·" >&2
     printf '%s\n' "  required_approving_review_count:1 · dismiss_stale_reviews:true ·" >&2
     printf '%s\n' "  require_last_push_approval:true · require_code_owner_reviews:true." >&2
@@ -516,6 +615,12 @@ main() {
   if [ "$MODE" != apply ]; then
     MM_CURRENT=$(fetch_merge_methods "$REPO")
     printf '%s\n' "  merge-methods: current=$MM_CURRENT target=squash-only (pinned by --replace, both profiles; show-only never changes it)"
+    PROFILE=solo; [ "$TEAM" = 1 ] && PROFILE=team
+    PICK_WHY="--team names the team profile"
+    [ "$TEAM" = 1 ] || ba_pick_profile
+    _bp_live=$(printf '%s' "$BODY" | tr -d ' \t\n' | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    _bp_tgt=1; [ "$PROFILE" != solo-agent ] || _bp_tgt=0
+    printf '%s\n' "  review-count: live=${_bp_live:-absent} target=$_bp_tgt (profile=$PROFILE: $PICK_WHY)"
   fi
 
   case "$MODE" in
@@ -540,7 +645,6 @@ main() {
       printf '%s\n' "FAIL: the additive POST failed"
       exit 1 ;;
     replace)
-      PROFILE=solo; [ "$TEAM" = 1 ] && PROFILE=team
       _dd=$(dirname -- "$DECLARATION"); _top=$(git -C "$_dd" rev-parse --show-toplevel 2>/dev/null) || _top=$_dd
       [ "$PROFILE" = team ] && team_preflight "$REPO" "$_top"
       confirm_replace "$PROFILE" "$MM_CURRENT" || { printf '%s\n' "Aborted — no change made."; exit 1; }
@@ -1018,6 +1122,19 @@ STUBTP
   : > "$_tplog"
   _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; export STUB_DIR STUB_PUT_RC; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
   if [ "$_rc" = 1 ] && ! grep -qF -- "-X PATCH" "$_tplog" && printf '%s\n' "$_o" | grep -qF "did not report success" && ! printf '%s\n' "$_o" | grep -qF "nothing landed"; then echo "selftest PASS: a failed PUT exits 1, never attempts the PATCH, and does not claim nothing landed (S-5)"; else echo "selftest FAIL: PUT-failure path (rc=$_rc, log=$(cat "$_tplog" 2>/dev/null))"; st=1; fi
+  # T7e (SWAS-901 R3-1). the solo-agent profile's failed PUT stops before the merge-method PATCH too. The mutant is a sed copy of do_replace
+  # whose stop after the failed PUT is gone; it is sourced inside the cell's subshell, and the cell must then FAIL.
+  _f_t7e() {   # [<file holding a do_replace to use instead of the real one>]
+    : > "$_tplog"
+    # shellcheck source=/dev/null  # the mutant's do_replace, written by the T7em run below
+    _o=$( ( if [ -n "${1:-}" ]; then . "$1"; fi; PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; export STUB_DIR STUB_PUT_RC; do_replace me/repo main solo-agent "ci solo-go-bound" ) 2>&1 ) && _rc=0 || _rc=$?
+    [ "$_rc" = 1 ] && ! grep -qF -- "-X PATCH" "$_tplog" && printf '%s\n' "$_o" | grep -qF "did not report success"
+  }
+  if _f_t7e; then echo "selftest PASS: T7e: a failed solo-agent PUT exits 1 and never attempts the merge-method PATCH"; else echo "selftest FAIL: T7e: solo-agent PUT-failure path (log=$(cat "$_tplog" 2>/dev/null))"; st=1; fi
+  _t7m="$_tp/do_replace-mut.sh"; sed -n '/^do_replace() {$/,/^}$/p' "$0" | sed '/MUT-BA-PUTSTOP$/s/return 1/:/' > "$_t7m"
+  if [ ! -s "$_t7m" ] || sed -n '/^do_replace() {$/,/^}$/p' "$0" | cmp -s - "$_t7m"; then echo "selftest FAIL: T7em: the mutant changed nothing"; st=1
+  elif _f_t7e "$_t7m"; then echo "selftest FAIL: T7em: a do_replace that goes on to the PATCH after a failed PUT -- the mutant SURVIVED"; st=1
+  else echo "selftest PASS: T7em: a do_replace that goes on to the PATCH after a failed PUT (the mutant is killed)"; fi
   # T7d (SWAS-212). a PUT refused with the upgrade text puts gh's stderr on the FAIL line, stripped of control bytes and
   # capped; the PATCH is still not attempted, and the rc is still 1.
   : > "$_tplog"
@@ -1114,11 +1231,229 @@ STUBTP
   fi
   rm -rf "$_tp" 2>/dev/null || true
 
+  # ── SWAS-901 slice B (B2): the third profile, `solo-agent`. A stub forge serves the target's default branch and its files (a 404 for an
+  # absent one, a 500 for a failed read); the picker may choose it only when the default branch reads solo AND all three probes hold
+  # (REQUIRED-CHECKS.md lists solo-go-bound, the workflow is installed, the verbs carry the go-bound marker). Anything else, a failed read
+  # included, reads the solo profile byte for byte. The payload is driven through --print-payload (no gh call), the picker through the
+  # show-only line. Each mutant is a sed COPY of this script; `cmp` proves the sed applied. No cell can reach a PUT: --replace is tty-gated.
+  _bf=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the solo-agent fixtures"; exit 1; }
+  printf '```\nci\nsolo-go-bound\n```\n' > "$_bf/decl-sg.md"
+  _ba_script="$0"
+  _SGD='MERGE_RELATIONSHIP=solo'; _SGC='# COPY & ADAPT'; _SGP='# KIT-MODE: go-bound'
+  _SGR="$(printf '```\nci\nsolo-go-bound\n```')"; _SGR0="$(printf '```\nci\n```')"
+  _ba_fx() {   # <name> <dial|-> <CLAUDE.md|-> <REQUIRED-CHECKS.md|-> <workflow|-> <promotion-verify.sh|-> [<file whose read fails>]
+    _bfd="$_bf/$1"; rm -rf "$_bfd"; mkdir -p "$_bfd/files/.kit" "$_bfd/files/.github/workflows" "$_bfd/files/scripts"
+    if [ "$2" != - ]; then printf '%s\n' "$2" > "$_bfd/files/.kit/dials.conf"; fi
+    if [ "$3" != - ]; then printf '%s\n' "$3" > "$_bfd/files/CLAUDE.md"; fi
+    if [ "$4" != - ]; then printf '%s\n' "$4" > "$_bfd/files/REQUIRED-CHECKS.md"; fi
+    if [ "$5" != - ]; then printf '%s\n' "$5" > "$_bfd/files/.github/workflows/solo-go.yml"; fi
+    if [ "$6" != - ]; then printf '%s\n' "$6" > "$_bfd/files/scripts/promotion-verify.sh"; fi
+    if [ -n "${7:-}" ]; then : > "$_bfd/fail-$7"; fi
+    printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["ci"]}}' > "$_bfd/prot.json"
+    printf '%s' 1111111111111111111111111111111111111111 > "$_bfd/tipsha"
+    : > "$_bfd/log"
+    printf '%s\n' '#!/bin/sh' 'd=$(dirname "$0"); a="$*"; printf "%s\n" "$a" >> "$d/log"' 'case "$a" in' \
+      '  *"api user"*) echo stub-login ;;' \
+      '  *"-X POST"*|*"-X PUT"*|*"-X PATCH"*) exit 0 ;;' \
+      '  *"--jq .default_branch"*) echo main ;;' \
+      '  *"--jq .sha"*) cat "$d/tipsha" ;;' \
+      '  *contents/*)' \
+      '    p=${a#*contents/}; p=${p%%\?*}' \
+      '    if [ -f "$d/fail-${p##*/}" ]; then echo "gh: HTTP 500" >&2; exit 1; fi' \
+      '    if [ ! -f "$d/files/$p" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi' \
+      '    case "$a" in' \
+      '      *"@tsv"*) if [ -f "$d/redirect-${p##*/}" ]; then printf "file\t%s\n" "elsewhere/${p##*/}"; else printf "file\t%s\n" "$p"; fi ;;' \
+      '      *) cat "$d/files/$p" ;;' \
+      '    esac ;;' \
+      '  *"branches/main/protection"*) cat "$d/prot.json" ;;' \
+      '  *) echo true true true ;;' \
+      'esac' > "$_bfd/gh"
+    chmod +x "$_bfd/gh"
+  }
+  _ba_run() {   # <fixture> [args] -> _bo (the output of one run of the script under test against that forge)
+    _bfx="$1"; shift
+    _bo=$(PATH="$_bf/$_bfx:$PATH" sh "$_ba_script" --repo=me/repo --declaration="$_bf/decl-sg.md" "$@" 2>&1) || true
+  }
+  _ba_pick() { _bpn="$1"; _bpe="$2"; shift 2; _ba_run "$_bpn" "$@"; printf '%s\n' "$_bo" | grep -qF "(profile=$_bpe:"; }   # <fixture> <profile> [args]
+  _ba_cell() { if "$2" "$1"; then echo "selftest PASS: $1: $3"; else echo "selftest FAIL: $1: $3"; st=1; fi; }   # <label> <cell fn> <desc>
+  _ba_mut() {   # <label> <sed> <cell fn> <desc>: the cell must FAIL against the sed copy
+    _bm="$_bf/mut-$1.sh"; sed "$2" "$0" > "$_bm"
+    if cmp -s "$0" "$_bm"; then echo "selftest FAIL: $1: the mutant changed nothing"; st=1; return 0; fi
+    _ba_script="$_bm"
+    if "$3" "m$1"; then echo "selftest FAIL: $1: $4 -- the mutant SURVIVED"; st=1; else echo "selftest PASS: $1: $4 (the mutant is killed)"; fi
+    _ba_script="$0"
+  }
+  _f_t11() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo-agent && printf '%s\n' "$_bo" | grep -qF 'review-count: live=1 target=0'; }
+  _f_t11b() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" -; _ba_pick "$1" solo; }
+  _f_t11c() { _ba_fx "$1" "$_SGD" - "$_SGR" - "$_SGP"; _ba_pick "$1" solo; }
+  _f_t11d() { _ba_fx "$1" "$_SGD" - "$_SGR0" "$_SGC" "$_SGP"; _ba_pick "$1" solo; }
+  _f_t12a() { _ba_fx "$1" - - "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo; }
+  _f_t12b() { _ba_fx "$1" MERGE_RELATIONSHIP=team - "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo; }
+  _f_t12c() { _ba_fx "$1" "$_SGD" '- **Governance** (§ solo/team): team — non-author approval' "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo; }
+  _f_t12d() { _ba_fx "$1" "$_SGD" 'notes' "$_SGR" "$_SGC" "$_SGP" CLAUDE.md; _ba_pick "$1" solo; }
+  _f_t12e() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo --branch=release/1.x; }
+  _f_t12f() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; : > "$_bf/$1/redirect-dials.conf"; _ba_pick "$1" solo; }   # the forge answers the dial's request with ANOTHER path (a symlinked directory): not that file
+  _ba_cell T11 _f_t11 "the dial reads solo and all three probes hold: the solo-agent profile, review-count live=1 target=0"
+  _ba_mut T11m 's@^  PROFILE=solo-agent$@  PROFILE=solo@' _f_t11 "a picker that never picks solo-agent fails the liveness cell"
+  _ba_cell T11b _f_t11b "the verbs do not carry the go-bound marker: the solo profile"
+  _ba_mut T11bm '/KIT-MODE: go-bound.*PICK_WHY/d' _f_t11b "without probe (iii) the missing marker still picks solo-agent"
+  _ba_cell T11c _f_t11c "the workflow is not installed on the default branch: the solo profile"
+  _ba_mut T11cm '/COPY & ADAPT.*PICK_WHY/d' _f_t11c "without probe (ii) the missing workflow still picks solo-agent"
+  _ba_cell T11d _f_t11d "the forge copy of REQUIRED-CHECKS.md does not list solo-go-bound: the solo profile"
+  _ba_mut T11dm '/-qx solo-go-bound.*PICK_WHY/d' _f_t11d "without probe (i) an undeclared context still picks solo-agent"
+  _ba_cell T12a _f_t12a "an undeclared default branch (no dial): the solo profile"
+  _ba_cell T12b _f_t12b "MERGE_RELATIONSHIP=team: the solo profile"
+  _ba_cell T12c _f_t12c "a Governance team line over a solo dial: the solo profile"
+  _ba_mut T12cm '/grep -qx team; then echo team/d' _f_t12c "without the Governance override a team line cannot hold back solo-agent"
+  _ba_cell T12d _f_t12d "a CLAUDE.md read that fails (a 500) reads solo, never absent: the solo profile"
+  _ba_mut T12dm '/^  if \[ "\$3" != 0 \] && \[ "\$3" != 1 \]; then echo team; return 0; fi$/d' _f_t12d "reading a failed CLAUDE.md as no Governance line grants solo-agent"
+  _ba_mut T12am '/^  if \[ "\$(ba_rel_from_text/d' _f_t12a "without the relationship test an undeclared default branch gets solo-agent"
+  _ba_mut T12bm '/^  if \[ "\$(ba_rel_from_text/d' _f_t12b "without the relationship test a team default branch gets solo-agent"
+  _ba_cell T12f _f_t12f "a forge entry whose path is not the requested path (a symlinked directory) is not that file: the solo profile"
+  _ba_mut T12fm '/MUT-BA-PATH$/d' _f_t12f "accepting any path lets a symlinked .kit grant solo-agent"
+  _f_t12g() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_pick "$1" solo-agent && ! grep -q 'ref=main' "$_bf/$1/log" && grep -q 'ref=1111111111111111111111111111111111111111' "$_bf/$1/log"; }   # E6 R2-5: every forge read is at ONE resolved tip sha
+  _ba_cell T12g _f_t12g "the default branch's tip is resolved once and every file read is at that sha, never the moving branch name"
+  _ba_mut T12gm 's/ba_forge_file "\$REPO" "\$_bp_tip"/ba_forge_file "$REPO" "$BRANCH"/g' _f_t12g "reading each file at the branch name lets a push between two reads mix two trees"
+  _ba_cell T12e _f_t12e "--branch is not the default branch: the solo profile"
+  _ba_mut T12em '/"\$BRANCH" != "\$_bp_def"/d' _f_t12e "without the default-branch test another branch gets solo-agent"
+  _p3='"ci","solo-go-bound"'
+  _sa_lit="{\"required_status_checks\":{\"strict\":true,\"checks\":[{\"context\":\"ci\"},{\"context\":\"solo-go-bound\",\"app_id\":15368}]},\"enforce_admins\":true,\"required_pull_request_reviews\":{\"required_approving_review_count\":0,\"dismiss_stale_reviews\":true,\"require_last_push_approval\":false,\"require_code_owner_reviews\":false},\"restrictions\":null}"
+  _tm_lit="{\"required_status_checks\":{\"strict\":true,\"contexts\":[$_p3]},\"enforce_admins\":true,\"required_pull_request_reviews\":{\"required_approving_review_count\":1,\"dismiss_stale_reviews\":true,\"require_last_push_approval\":true,\"require_code_owner_reviews\":true},\"restrictions\":null}"
+  _so_lit="{\"required_status_checks\":{\"strict\":true,\"contexts\":[$_p3]},\"enforce_admins\":false,\"required_pull_request_reviews\":{\"required_approving_review_count\":1,\"dismiss_stale_reviews\":true,\"require_last_push_approval\":true,\"require_code_owner_reviews\":false},\"restrictions\":null}"
+  _ba_pl() { sh "$_ba_script" --declaration="$_bf/decl-sg.md" --print-payload="$1" 2>/dev/null; }
+  _f_t11e() { [ "$(_ba_pl solo-agent)" = "$_sa_lit" ]; }
+  _f_t13() { [ "$(_ba_pl team)" = "$_tm_lit" ] && [ "$(_ba_pl solo)" = "$_so_lit" ]; }
+  _f_t13b() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_run "$1" --replace --team; ! grep -qF 'contents/' "$_bf/$1/log" && ! grep -qF -e '-X PUT' "$_bf/$1/log"; }
+  _ba_cell T11e _f_t11e "the solo-agent payload: count 0, last_push false, enforce_admins true, strict, the other contexts, and solo-go-bound pinned to the Actions app (15368)"
+  _ba_mut T11ep 's/15368/1/g' _f_t11e "an unpinned solo-go-bound lets any app's same-named check satisfy it"
+  _ba_mut T11cx '/MUT-BA-CHK$/s/="\\"checks/="\\"contexts\\":[],\\"checks/' _f_t11e "a solo-agent body that sends contexts beside checks is refused by GitHub's oneOf (measured, SWAS-915 L1)"
+  _ba_mut T11fm '/MUT-BA-CHK$/s/\\"checks\\".*]"/"/' _f_t11e "a solo-agent body that drops the checks array leaves no required check, solo-go-bound included"
+  _ba_mut T11em 's@solo-agent) _brp_ea=true; _brp_co=false; _brp_rc=0;@solo-agent) _brp_ea=true; _brp_co=false; _brp_rc=1;@' _f_t11e "a solo-agent payload that keeps the review count at 1 locks the agent out"
+  _ba_cell T13 _f_t13 "the team and solo payloads are byte-equal to their frozen literals"
+  _ba_mut T13m 's@team) _brp_ea=true; _brp_co=true; _brp_rc=1;@team) _brp_ea=true; _brp_co=true; _brp_rc=0;@' _f_t13 "a team payload with count 0 drifts from its literal"
+  _ba_cell T13b _f_t13b "--replace --team reads nothing from the repository's files (no contents call) and cannot reach a PUT"
+  _ba_mut T13bm 's@^ *\[ "\$TEAM" = 1 \] || ba_pick_profile$@  ba_pick_profile@' _f_t13b "a picker that also runs for --team reads the forge for it"
+  _ba_rel_rows() {   # the shared reader battery: <dial|-> <CLAUDE.md|-> <expected solo|team>, one row per call to the callback $1
+    "$1" 'MERGE_RELATIONSHIP=solo' - solo
+    "$1" - - team
+    "$1" 'MERGE_RELATIONSHIP=team' - team
+    "$1" 'MERGE_RELATIONSHIP=soloish' - team
+    "$1" 'MERGE_RELATIONSHIP=solo' '- **Governance** (§ solo/team): team — x' team
+    "$1" 'MERGE_RELATIONSHIP=solo' '- **Governance** (§ solo/team): solo — x' solo
+    "$1" 'MERGE_RELATIONSHIP=solo # note' - solo
+    "$1" "$(printf 'MERGE_RELATIONSHIP=solo\nMERGE_RELATIONSHIP=team')" - team
+    "$1" 'MERGE_RELATIONSHIP="solo"' - solo
+    "$1" 'MERGE_RELATIONSHIP=solo' "$(printf -- '- **Governance** (§ solo/team): solo\n- **Governance** (§ solo/team): team')" team
+    "$1" 'MERGE_RELATIONSHIP=solo' LINK team
+  }
+  _ba_row_a() {   # in-process: ba_rel_from_text against the expected word (LINK: a CLAUDE.md that is not a regular file reads rc 2)
+    _bra=0; _brc=0; if [ "$1" = - ]; then _bra=1; fi; if [ "$2" = - ]; then _brc=1; fi; if [ "$2" = LINK ]; then _brc=2; fi
+    if [ "$(ba_rel_from_text "$_bra" "$1" "$_brc" "$2")" != "$3" ]; then _rowbad="$_rowbad [$1|$2 want $3]"; fi
+  }
+  _ba_row_b() {   # the verb's own reader (promotion-verify.sh go-bound reads `na` exactly when the base is not solo) against the same word
+    _brg="$_bf/rel-$_rown"; _rown=$((_rown + 1)); rm -rf "$_brg"; mkdir -p "$_brg"
+    ( cd "$_brg" && git init -q && git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m base \
+        && if [ "$1" != - ]; then mkdir -p .kit && printf '%s\n' "$1" > .kit/dials.conf && git add .kit/dials.conf; fi \
+        && if [ "$2" = LINK ]; then ln -s elsewhere CLAUDE.md && git add CLAUDE.md; elif [ "$2" != - ]; then printf '%s\n' "$2" > CLAUDE.md && git add CLAUDE.md; fi \
+        && git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m rel \
+        && git update-ref refs/kit/solo-go-default HEAD ) >/dev/null 2>&1
+    _brs=$(git -C "$_brg" rev-parse HEAD 2>/dev/null) || _brs=""
+    _brx=$(cd "$(dirname "$0")" && pwd)/promotion-verify.sh
+    _brv=$(cd "$_brg" && sh "$_brx" go-bound --approved-sha "$_brs" --pr 7 --base-ref main --default-branch main 2>/dev/null) || _brv=""
+    if [ "$_brv" = "go-bound: na" ]; then _brw=team; else _brw=solo; fi
+    if [ "$_brw" != "$3" ]; then _rowbad="$_rowbad [verb $1|$2 gave $_brw, want $3]"; fi
+  }
+  _t14_quiet=0
+  _f_t14() {   # any disagreement is a failure, and so is a battery that did not run all its rows (a vacuous pass)
+    _rowbad=""; _rown=0; _ba_rel_rows _ba_row_a; _ba_rel_rows _ba_row_b
+    if [ "$_rown" != 11 ]; then _rowbad="$_rowbad [only $_rown verb rows ran]"; fi
+    if [ -n "$_rowbad" ] && [ "$_t14_quiet" = 0 ]; then echo "selftest NOTE: T14 rows that disagree:$_rowbad"; fi
+    [ -z "$_rowbad" ]
+  }
+  _t14m() {   # run the battery against a sed copy's ba_rel_from_text, then put the real one back
+    _bmf="$_bf/relfn-real.sh"; sed -n '/^ba_rel_from_text() {$/,/^}$/p' "$0" > "$_bmf"
+    _bmm="$_bf/relfn-mut.sh"; sed -n '/^ba_rel_from_text() {$/,/^}$/p' "$0" | sed "$1" > "$_bmm"
+    if cmp -s "$_bmf" "$_bmm" || [ ! -s "$_bmf" ]; then echo "selftest FAIL: T14m: the mutant changed nothing"; st=1; return 0; fi
+    # shellcheck source=/dev/null  # a function file this cell just wrote
+    . "$_bmm"
+    _t14_quiet=1
+    if _f_t14; then echo "selftest FAIL: T14m: $2 -- the mutant SURVIVED"; st=1; else echo "selftest PASS: T14m: $2 (the mutant is killed)"; fi
+    _t14_quiet=0
+    # shellcheck source=/dev/null  # the real function, put back
+    . "$_bmf"
+  }
+  _ba_cell T14 _f_t14 "reader parity: ba_rel_from_text and the verb's own reader agree with one battery of dial and Governance rows"
+  _t14m 's@^  \[ "\$_brt_val" = solo \] || { echo team; return 0; }$@  [ "$_brt_val" = solo ] || [ "$_brt_val" = team ] || { echo team; return 0; }@' "a reader that lets MERGE_RELATIONSHIP=team fall through reads solo"
+  _t14m 's@^  if \[ "\$3" != 0 \] && \[ "\$3" != 1 \]; then echo team; return 0; fi$@  :@' "a reader that treats a non-regular CLAUDE.md as no Governance line reads solo"
+  _f_t14b() {   # --replace without a terminal discloses the solo-agent values AND the ceiling, then stops (ABORT with no tty, or the prompt's own abort with one), with no PUT
+    _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_run "$1" --replace
+    printf '%s\n' "$_bo" | grep -qF 'SOLO-AGENT profile' && printf '%s\n' "$_bo" | grep -qF 'enforce_admins:true' \
+      && printf '%s\n' "$_bo" | grep -qF 'required_approving_review_count:0' && printf '%s\n' "$_bo" | grep -qF 'require_last_push_approval:false' \
+      && printf '%s\n' "$_bo" | grep -qF 'solo-go-bound now reads your recorded GO in place of an approval' \
+      && printf '%s\n' "$_bo" | grep -qF 'self-asserted and a note the agent records satisfies it' \
+      && printf '%s\n' "$_bo" | grep -qF 'a fabricated GO is not caught server-side' && printf '%s\n' "$_bo" | grep -qF 'an admin can still edit protection' \
+      && ! printf '%s\n' "$_bo" | grep -qF 'no admin can bypass' \
+      && ! grep -qF -e '-X PUT' "$_bf/$1/log"   # nothing after the prompt is asserted: with a tty present the prompt's own write/read decides the exit, and that is ambient
+  }
+  _ba_cell T14b _f_t14b "--replace on a solo-agent target discloses the values, the swap and the ceiling, and reaches no PUT"
+  _ba_mut T14bm '/solo-go-bound now reads your recorded GO/d' _f_t14b "a confirmation without the swap sentence hides what the check now stands in for"
+  _ba_mut T14cm '/self-asserted and a note the agent records satisfies it/d' _f_t14b "a confirmation without the ceiling hides that a recorded note is the whole check"
+  # T16 (SWAS-901 R3-3): declaration-reader parity. The picker's ad_read_declaration, the verifier's read_declaration and the verb's pv_gb_declared
+  # (through go-bound: `na` exactly when the base is not solo and solo-go-bound is NOT declared) must all read the FIRST fenced block only.
+  _bpx="$(cd "$(dirname "$0")/.." && pwd)/conformance/branch-protection.sh"; _bpfn="$_bf/bpfn.sh"
+  sed -n '/^RD_MAX_LINES=/p;/^valid_context_name() {$/,/^}$/p;/^read_declaration() {$/,/^}$/p' "$_bpx" > "$_bpfn" 2>/dev/null || true
+  _dc_rows() {   # <callback>: a declaration text and whether it declares solo-go-bound
+    "$1" "$(printf '```\nci\n```\n\n```\nsolo-go-bound\n```')" no
+    "$1" "$(printf '```\nci\nsolo-go-bound\n```\n\n```\nother\n```')" yes
+  }
+  _dc_note() { _dcn=$((_dcn + 1)); if [ "$1" != "$2" ]; then _dcbad="$_dcbad [$3: want $2, got $1]"; fi; }   # <got> <want> <reader>
+  _dc_a() {   # the picker's reader, in-process
+    printf '%s\n' "$1" > "$_bf/dc-a.md"; ad_read_declaration "$_bf/dc-a.md"
+    if printf '%s\n' $AD_LIST | grep -qxF solo-go-bound; then _dcw=yes; else _dcw=no; fi; _dc_note "$_dcw" "$2" picker
+  }
+  _dc_b() {   # the verifier's reader, sourced from its own file into a subshell
+    printf '%s\n' "$1" > "$_bf/dc-b.md"
+    # shellcheck source=/dev/null  # the verifier's three functions, extracted above
+    _dcw=$( ( . "$_bpfn"; read_declaration "$_bf/dc-b.md"; if printf '%s\n' $RD_LIST | grep -qxF solo-go-bound; then echo yes; else echo no; fi ) 2>/dev/null ) || _dcw=""
+    _dc_note "$_dcw" "$2" verifier
+  }
+  _dc_c() {   # the verb's reader, through go-bound against a base commit that carries that REQUIRED-CHECKS.md and no solo dial
+    _dcg="$_bf/dc-c"; rm -rf "$_dcg"; mkdir -p "$_dcg"; printf '%s\n' "$1" > "$_dcg/REQUIRED-CHECKS.md"
+    ( cd "$_dcg" && git init -q && git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m base \
+        && git add REQUIRED-CHECKS.md && git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m rc \
+        && git update-ref refs/kit/solo-go-default HEAD ) >/dev/null 2>&1
+    _dcs=$(git -C "$_dcg" rev-parse HEAD 2>/dev/null) || _dcs=""
+    _dcx=$(cd "$(dirname "$0")" && pwd)/promotion-verify.sh
+    _dcv=$(cd "$_dcg" && sh "$_dcx" go-bound --approved-sha "$_dcs" --pr 7 --base-ref main --default-branch main 2>/dev/null) || _dcv=""
+    if [ "$_dcv" = "go-bound: na" ]; then _dcw=no; else _dcw=yes; fi; _dc_note "$_dcw" "$2" verb
+  }
+  _f_t16() {   # all three readers agree with the expected answer on every row, and every reader ran on every row
+    _dcbad=""; _dcn=0; _dc_rows _dc_a; _dc_rows _dc_b; _dc_rows _dc_c
+    if [ "$_dcn" != 6 ]; then _dcbad="$_dcbad [only $_dcn reads ran]"; fi
+    if [ -n "$_dcbad" ] && [ "$_t14_quiet" = 0 ]; then echo "selftest NOTE: T16 readers that disagree:$_dcbad"; fi
+    [ -z "$_dcbad" ]
+  }
+  _t16m() {   # run the battery against a sed copy's ad_read_declaration, then put the real one back
+    _dmf="$_bf/adfn-real.sh"; sed -n '/^ad_read_declaration() {$/,/^}$/p' "$0" > "$_dmf"
+    _dmm="$_bf/adfn-mut.sh"; sed "$1" "$_dmf" > "$_dmm"
+    if cmp -s "$_dmf" "$_dmm" || [ ! -s "$_dmf" ]; then echo "selftest FAIL: T16m: the mutant changed nothing"; st=1; return 0; fi
+    # shellcheck source=/dev/null  # a function file this cell just wrote
+    . "$_dmm"
+    _t14_quiet=1
+    if _f_t16; then echo "selftest FAIL: T16m: $2 -- the mutant SURVIVED"; st=1; else echo "selftest PASS: T16m: $2 (the mutant is killed)"; fi
+    _t14_quiet=0
+    # shellcheck source=/dev/null  # the real function, put back
+    . "$_dmf"
+  }
+  _ba_cell T16 _f_t16 "declaration-reader parity: the picker, the verifier and the verb all read the first fenced block only"
+  _t16m 's@else _ad_in=0; _ad_done=1; fi@else _ad_in=0; fi@' "a picker reader that reads every block takes a second block's solo-go-bound"
+  rm -rf "$_bf" 2>/dev/null || true
+
   [ "$st" = "0" ] && echo "branch-protection-apply --selftest: OK"
   return "$st"
 }
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  *) validate_args; if [ "$PRINT_PARSED" = 1 ]; then print_parsed; fi; main ;;
+  *) validate_args; if [ "$PRINT_PARSED" = 1 ]; then print_parsed; fi; if [ -n "$PRINT_PAYLOAD" ]; then print_payload; fi; main ;;
 esac

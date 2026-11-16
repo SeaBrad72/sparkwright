@@ -2412,6 +2412,35 @@ GO_GIVERS=owner-rev second-rev'
   _a1 L4m-mutant-no-generic-header-rule 's/function hdr(s) { return s ~ \/^(record|land): promotion \/ }/function hdr(s) { return s ~ \/^record: promotion \/ }/' land-after refuse 'does not meet the control-plane bar'
   _a1 D1-a-note-with-no-header-binds-nothing - no-header refuse 'holds a merge-gate GO record'
 
+  # SWAS-901 slice B (B1), T16c: `actuate` in a solo-declared repository reads the head's solo-go-bound runs before it merges (the verb's
+  # step; `land`'s cells are T16-T18 in promotion-verify-wired.sh). The mutant removes actuate's call site: the red check then no longer stops the merge.
+  _sga_cell T16c-actuate-solo-red-solo-go-bound-is-refused-after-one-re-run - red refuse 'run 11'
+  _sga_cell T16cm-mutant-actuate-without-the-call-site 's@^  pv_sg_gate actuate .*$@  :@' red refuse 'run 11'
+  _sga_cell T16d-actuate-solo-green-solo-go-bound-merges - green merge 'solo-go-bound: green'
+  _sga_cell T16e-actuate-solo-without-the-installed-workflow-says-n-a-and-merges - nowf merge 'solo-go-bound: not installed'
+  # SWAS-901 E6 S-5: actuate (unlike land) never bound the note's PR to the ref it merges where the CI-evidence read is N/A (an adopter layout), so the
+  # solo step reads the PR's head and refuses a PR whose head is not --ref at the approved sha.
+  _sga_cell T16f-actuate-solo-a-PR-whose-head-is-not-ref-is-refused - badref refuse 'is not the pull request whose head is'
+  _sga_cell T16fm-mutant-actuate-without-the-ref-binding '/MUT-SG-BIND$/d' badref refuse 'is not the pull request whose head is'
+  # E6 R2-4: --ref may also be the bound PR's own NUMBER (a local ref named so); another PR's number refuses. The default merge in solo goes by the bound number.
+  _sga_cell T16h-actuate-solo-ref-is-the-bound-PR-number-passes - numref merge 'solo-go-bound: green'
+  _sga_cell T16hm-mutant-the-PR-number-leg-removed 's@ \&\& \[ "\$5" != "\$_sgp" \]@@' numref merge 'solo-go-bound: green'
+  _sga_cell T16i-actuate-solo-ref-is-another-PRs-number-is-refused - othernum refuse 'is not the pull request whose head is'
+  _sga_cell T16im-mutant-the-bind-never-refuses 's@"\$5" != "\$_sgp"@"$5" != "$5"@' othernum refuse 'is not the pull request whose head is'
+  _sga_cell T16j-actuate-solo-default-merge-goes-by-the-bound-PR-number - defmerge merge 'pr merge 260 --squash --match-head-commit @SHA@'
+  _sga_cell T16jm-mutant-the-default-merge-keeps-the-branch-name '/MUT-SG-MERGE$/d' defmerge merge 'pr merge 260 --squash --match-head-commit @SHA@'
+
+  # SWAS-901 slice B, HO1-HO3: the handover line. A solo `actuate` prints it twice (after the relationship line and before the success line); a team
+  # or an undeclared one never does, and a Governance solo line alone grants nothing. Each mutant removes one print (or the solo test) from a COPY.
+  _HOL="actuate: From here the agent merges on your recorded GO; the owner's per-PR act is the GO only."
+  _sga_cell HO1-actuate-solo-prints-the-handover-line-twice - nowf merge "$_HOL" 2
+  _sga_cell HO1m1-mutant-no-print-after-the-relationship-line 's@^  pv_handover actuate .*MUT-HO-REL$@  :@' nowf merge "$_HOL" 2
+  _sga_cell HO1m2-mutant-no-print-before-the-success-line 's@^  pv_handover actuate .*MUT-HO-OK$@  :@' nowf merge "$_HOL" 2
+  _hot_cell HO2-actuate-team-never-prints-the-handover-line - MERGE_RELATIONSHIP=team NONE
+  _hot_cell HO2m-mutant-the-solo-test-removed '/^  \[ "\$PV_REL" = solo \] || return 0$/d' MERGE_RELATIONSHIP=team NONE
+  _hot_cell HO3-actuate-undeclared-with-a-Governance-solo-line-never-prints-it - NONE '- **Governance** (§ solo/team): solo — x'
+  _hot_cell HO3m-mutant-a-Governance-solo-line-grants-solo 's@^  if \[ "\$_mrval" = undeclared \]; then$@  if [ "$_mrval" = undeclared ] \&\& [ "$_mrgov" != solo ]; then@' NONE '- **Governance** (§ solo/team): solo — x'
+
   _unv_end || st=1
   rm -f "$_unv_f"
   if [ "$st" = 0 ]; then
@@ -2695,13 +2724,19 @@ _act_mktip() {
   _mt_ents=""
   _mt_nl='
 '
+  if [ "${SN_WF:-}" = 1 ]; then   # SWAS-901: the installed solo-go workflow is on the tip (the marker line is what the verb reads)
+    _mt_w="$(printf '# COPY & ADAPT\nname: solo-go\n' | git -C "$1" hash-object -w --stdin)"
+    _mt_ws="$(printf '100644 blob %s\tsolo-go.yml\n' "$_mt_w" | git -C "$1" mktree)"
+    _mt_gs="$(printf '040000 tree %s\tworkflows\n' "$_mt_ws" | git -C "$1" mktree)"
+    _mt_ents="040000 tree $_mt_gs	.github$_mt_nl"
+  fi
   if [ "$2" != NONE ] && [ "${4:-}" = LINK ]; then
     _mt_l="$(printf 'elsewhere' | git -C "$1" hash-object -w --stdin)"
-    _mt_ents="120000 blob $_mt_l	.kit$_mt_nl"
+    _mt_ents="${_mt_ents}120000 blob $_mt_l	.kit$_mt_nl"
   elif [ "$2" != NONE ]; then
     _mt_b="$(printf '%s\n' "$2" | git -C "$1" hash-object -w --stdin)"
     _mt_s="$(printf '100644 blob %s\tdials.conf\n' "$_mt_b" | git -C "$1" mktree)"
-    _mt_ents="040000 tree $_mt_s	.kit$_mt_nl"
+    _mt_ents="${_mt_ents}040000 tree $_mt_s	.kit$_mt_nl"
   fi
   if [ "$3" != NONE ]; then
     _mt_g="$(printf '%s\n' "$3" | git -C "$1" hash-object -w --stdin)"
@@ -2776,6 +2811,87 @@ _solo_cell() {
     fail "$_sc_l: rc=$RC invoked=$(invoked "$_sc_d") OUT=[$OUT]"
   fi
   rm -rf "$_sc_d" 2>/dev/null || true
+}
+
+# _sga_cell <label> <sed|-> <red|green|nowf> <merge|refuse> <needle> — one solo `actuate` (SWAS-901) with a `gh` PATH stub in front of the default forge:
+#    it serves a fixture check-run list and workflow-run list (through the verb's own --jq, real jq), logs every call, and sends the rest to $EVD/gh.
+#    red: one failed qualifying run that stays red (PROMOTION_VERIFY_SG_POLL=1 bounds the wait); green: the same run succeeded; nowf: the tip carries no
+#    installed workflow. A sed script makes it a MUTANT over a kit-layout COPY of the gate; it passes only when the assertion then FAILS.
+_sga_cell() {
+  _sg_l="$1"; _sg_m="$2"; _sg_k="$3"; _sg_w="$4"; _sg_n="$5"; _sg_cnt="${6:-}"   # a 6th argument: the needle must be a whole line, exactly that many times
+  _sg_d="$(mkrepo)" || { fail "$_sg_l: fixture build"; return 0; }
+  _sg_x="$(cat "$_sg_d/.X")"
+  write_snote "$_sg_d" "$_sg_x" "the owner [self-asserted]" release-candidate AUTO ordinary "Author A [committer]"
+  SN_WF=1; [ "$_sg_k" != nowf ] || SN_WF=0
+  _act_base "$_sg_d" MERGE_RELATIONSHIP=solo NONE
+  SN_WF=""
+  _sg_c=failure; if [ "$_sg_k" = green ] || [ "$_sg_k" = numref ] || [ "$_sg_k" = defmerge ]; then _sg_c=success; fi
+  printf '{"check_runs":[{"id":1,"app":{"slug":"github-actions"},"check_suite":{"id":101},"status":"completed","conclusion":"%s"}]}\n' "$_sg_c" > "$_sg_d/.cr.json"
+  printf '{"workflow_runs":[{"id":11,"path":".github/workflows/solo-go.yml","event":"pull_request_target","check_suite_id":101,"run_attempt":1,"status":"completed","conclusion":"%s","pull_requests":[{"number":260,"base":{"ref":"main"}}]}]}\n' "$_sg_c" > "$_sg_d/.wr.json"
+  printf '%s' "$_sg_x" > "$_sg_d/.headsha"; printf '%s' feat > "$_sg_d/.headref"; [ "$_sg_k" != badref ] || printf '%s' other > "$_sg_d/.headref"
+  printf '%s\n' '#!/bin/sh' \
+    'd=$(dirname "$0"); a="$*"; jqf=.; prev=' \
+    'for x in "$@"; do if [ "$prev" = --jq ]; then jqf=$x; fi; prev=$x; done' \
+    'case "$a" in' \
+    '  *rerun-failed-jobs*) exit 0 ;;' \
+    '  *check-runs*) jq -r "$jqf" < "$d/../.cr.json"; exit $? ;;' \
+    '  *"pr merge"*) printf "%s\n" "$a" > "$d/../.argv"; exit 0 ;;' \
+    '  *pulls/*) case "$a" in' \
+    '      *draft*) exec "$EVD/gh" "$@" ;;' \
+    '      *) printf "%s\t%s\n" "$(cat "$d/../.headref")" "$(cat "$d/../.headsha")"; exit 0 ;;' \
+    '    esac ;;' \
+    '  *"actions/runs?head_sha"*) jq -r "$jqf" < "$d/../.wr.json"; exit $? ;;' \
+    '  *) exec "$EVD/gh" "$@" ;;' \
+    'esac' > "$_sg_d/.gh"
+  mkdir -p "$_sg_d/.ghd"; cp "$_sg_d/.gh" "$_sg_d/.ghd/gh"; chmod +x "$_sg_d/.ghd/gh"
+  # a --ref that is a PR NUMBER only passes where the CI-evidence leg is N/A (an adopter layout: the kit layout binds --ref to the head branch itself), so those two kinds run an adopter-layout COPY of the gate
+  _sg_g="$VERIFY"; _sg_mut=0; _sg_lay=1
+  if [ "$_sg_k" = numref ] || [ "$_sg_k" = othernum ]; then _sg_lay=0; fi
+  if [ "$_sg_m" != - ] || [ "$_sg_lay" = 0 ]; then
+    _le_pvcopy "$_sg_d/pv" "$_sg_lay" "$_sg_lay"; _fxlay "$_sg_d" "$_sg_lay" "$_sg_lay"
+    if [ "$_sg_m" != - ]; then
+      _sg_mut=1
+      if ! _le_mutate "$_sg_d/pv/scripts/promotion-verify.sh" "$_sg_m"; then fail "$_sg_l: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$_sg_d" 2>/dev/null || true; return 0; fi
+    fi
+    _sg_g="$_sg_d/pv/scripts/promotion-verify.sh"
+  fi
+  _sg_ref=feat
+  if [ "$_sg_k" = numref ]; then _sg_ref=260; elif [ "$_sg_k" = othernum ]; then _sg_ref=261; fi
+  git -C "$_sg_d" branch -f 260 "$_sg_x" >/dev/null 2>&1; git -C "$_sg_d" branch -f 261 "$_sg_x" >/dev/null 2>&1
+  _sg_p="$PATH"; PATH="$_sg_d/.ghd:$PATH"; PROMOTION_VERIFY_SG_POLL=1; export PROMOTION_VERIFY_SG_POLL
+  if [ "$_sg_k" = defmerge ]; then
+    if OUT="$( ( cd "$_sg_d" && sh "$_sg_g" actuate --ref feat --approved-sha "$_sg_x" ) 2>&1 )"; then RC=0; else RC=$?; fi
+  else
+    run_actuate "$_sg_g" "$_sg_d" "$_sg_ref" "$_sg_x" "$(_act_stub "$_sg_d" "$_sg_x")"
+  fi
+  PATH="$_sg_p"; unset PROMOTION_VERIFY_SG_POLL
+  if [ "$_sg_k" = defmerge ]; then
+    if [ "$RC" = 0 ] && [ "$(cat "$_sg_d/.argv" 2>/dev/null)" = "$(printf '%s' "$_sg_n" | sed "s/@SHA@/$_sg_x/")" ]; then _sg_r=0; else _sg_r=1; fi
+  elif [ "$_sg_w" = merge ]; then
+    if [ "$RC" = 0 ] && [ -f "$_sg_d/.invoked" ] && _has "$OUT" "$_sg_n" && { [ -z "$_sg_cnt" ] || [ "$(printf '%s\n' "$OUT" | grep -cxF "$_sg_n")" = "$_sg_cnt" ]; }; then _sg_r=0; else _sg_r=1; fi
+  elif [ "$RC" != 0 ] && [ ! -f "$_sg_d/.invoked" ] && _has "$OUT" "$_sg_n"; then _sg_r=0; else _sg_r=1; fi
+  _le_judge "$_sg_l" "$_sg_mut" "$_sg_r"
+  rm -rf "$_sg_d" 2>/dev/null || true
+}
+
+# _hot_cell <label> <sed|-> <dial|NONE> <claude-md-line|NONE> — one TEAM-bar `actuate` (an authenticated non-author approval on the note) that must merge and
+#    must NOT print the handover line ($_HOL). A sed script makes it a MUTANT over a kit-layout COPY of the gate; it passes only when the assertion then FAILS.
+_hot_cell() {
+  _ho_l="$1"; _ho_m="$2"
+  _ho_d="$(mkrepo)" || { fail "$_ho_l: fixture build"; return 0; }
+  _ho_x="$(cat "$_ho_d/.X")"
+  write_note "$_ho_d" "$_ho_x" "Reviewer B [authenticated: github-review]"
+  _act_base "$_ho_d" "$3" "$4"
+  _ho_g="$VERIFY"; _ho_mut=0
+  if [ "$_ho_m" != - ]; then
+    _ho_mut=1; _le_pvcopy "$_ho_d/pv" 1 1; _fxlay "$_ho_d" 1 1
+    if ! _le_mutate "$_ho_d/pv/scripts/promotion-verify.sh" "$_ho_m"; then fail "$_ho_l: the mutant script changed nothing (it no longer matches the gate)"; rm -rf "$_ho_d" 2>/dev/null || true; return 0; fi
+    _ho_g="$_ho_d/pv/scripts/promotion-verify.sh"
+  fi
+  run_actuate "$_ho_g" "$_ho_d" feat "$_ho_x" "$(_act_stub "$_ho_d" "$_ho_x")"
+  if [ "$RC" = 0 ] && [ -f "$_ho_d/.invoked" ] && ! _has "$OUT" "$_HOL"; then _ho_r=0; else _ho_r=1; fi
+  _le_judge "$_ho_l" "$_ho_mut" "$_ho_r"
+  rm -rf "$_ho_d" 2>/dev/null || true
 }
 
 # ── GO-IDENTITY-AND-LAND-SOD land fixtures. `land` records THROUGH origin and refuses --no-push, so these

@@ -84,11 +84,12 @@
 # Usage: sh conformance/prepush-lane.sh [--require | --best-effort]
 #          [--green-on-clone | --exports | --non-vacuity <basename> | --slow | --warranted]
 #          [--base <ref>] [--ci-file <path>] [--verbose]     # NO MODE FLAG = THE RUN
-#        sh conformance/prepush-lane.sh --derive | --census [--ci-file <path>] | --selftest | --help
+#        sh conformance/prepush-lane.sh --derive | --census [--ci-file <path>] | --selftest | --selftest-group <name> | --help
+#          --selftest-group <name> (SWAS-871): one of the committed groups of this lane's own selftest legs (the ST_GROUPS table below the marker), run in its own process; rc 2 for any other name. The pool runs each group as a unit.
 #        sh conformance/prepush-lane.sh --plan [--base <ref>]                      # the touched-readers selection; executes nothing
 #        sh conformance/prepush-lane.sh --refresh-times [--ci-file <path>]         # pull CI step/job times and 30-day reds with gh (read-only)
 #        sh conformance/prepush-lane.sh --log-report [--base <ref>]                # read-only: the run log's wall times and the merged-PR share; executes nothing, no network
-# THE RUN LOG (SWAS-568, docs/plans/2026-11-12-prepush-run-log-568-plan.md): every run appends a start and an end record to $HOME/.local/state/sparkwright/prepush/<root-commit>/runs.log
+# THE RUN LOG (SWAS-568, docs/plans/2026-11-12-prepush-run-log-568-plan.md): every run appends a start and an end record to $HOME/.cache/sparkwright/prepush/<root-commit>/runs.log (SWAS-903: moved from ~/.local/state, which the agent sandbox does not let a session write)
 #   (the live log plus three rotated files of about 1 MB each), so the wall time, the units and their peak RSS can be measured. A per-user measurement cache, never evidence: no switch turns it
 #   off, it records no free text and no absolute path (core-selftest units carry their repo-relative target; floor_mb is a digits-only env bound), a write failure is dropped (never a verdict change), and the run never reads it. See the section `THE RUN LOG` below.
 # THE TOUCHED-READERS ARM (SWAS-468 and its delta) closes the DEFAULT run: it fills PREPUSH_READERS_BUDGET_S (raise-only, default 300 s) with the
@@ -113,7 +114,7 @@
 #   a default run, `PARITY-CORE: OK (K arm(s) from cache, not executed this run)` when --warranted took arms
 #   from the cache; FAIL/UNVERIFIED and an unqualified --warranted OK are unchanged.
 # THE --warranted CACHE (PREPUSH-CORE-DEFAULT): an arm that PASSED is recorded under
-#   $HOME/.local/state/sparkwright/prepush/<root-commit>/passed, keyed by a cksum of `git ls-tree -r HEAD`
+#   $HOME/.local/state/sparkwright/prepush/<root-commit>/passed, keyed by a cksum of `git ls-tree -r HEAD`   (SWAS-903: this is the ONE file that stays under ~/.local/state: a pass cache an agent could forge must not sit in a directory the agent sandbox lets it write, so inside the sandbox --warranted runs every arm and says so)
 #   minus the bookkeeping paths (BACKLOG.md, CHANGELOG.md, docs/reviews|plans|architecture/); the next
 #   --warranted run on the same tree prints `SKIP … passed at <head> on this tree` for it. TWO KEYS: core-live
 #   arms key on the FULL tree (whitespace-clean, owner-step-markers, check-links, roadmap-current,
@@ -138,7 +139,7 @@
 #   reads only what `ps` shows it — a restricted `ps` (another user's processes, a container
 #   boundary) leaves it blind to heavy work it cannot see.
 # THE HEAVY-ARM LOCK (SWAS-278b, design 2026-10-17-guard-dev-clone-prepush-design.md §6.2): the heavy phase of a run — core-selftest
-#   (the default run too), core-live and every Tier-2 arm — holds ONE kernel flock on $HOME/.local/state/sparkwright/heavy-arm.lock,
+#   (the default run too), core-live and every Tier-2 arm — holds ONE kernel flock on $HOME/.cache/sparkwright/heavy-arm.lock (SWAS-903: moved from ~/.local/state),
 #   taken before the first heavy unit and released after the last. A second run WAITS (polls every 15 s, prints the holder every 5 min)
 #   within one 5400 s budget per run, then every remaining heavy unit is UNVERIFIED, never OK. flock(1), else /usr/bin/perl; neither,
 #   a symlinked or foreign-owned lock path or an unsafe state dir is UNVERIFIED too. The lock is never broken or deleted; children run
@@ -698,7 +699,11 @@ POOL_U_MB=1536
 # target: a plain assignment (no environment or argv name; a selftest scales it in a lane COPY), not coupled to SELFCEIL. A kill at it reads UNVERIFIED, never OK and never named CI-bound.
 ST_BUDGET_DEFAULT=300
 ST_CEIL=3600
+# SWAS-871: the ceiling of the one static `selftest-hermetic.sh --groups <path>` call per touched target that carries a group table: a plain assignment (no environment or argv name; a selftest scales it in a lane COPY).
+GRP_CEIL=30
 STBUD=300; ST_N=0; ST_K=0; ST_U=0; ST_NM=0; ST_EX=0; ST_SC=""; ST_OB=0; ST_H=0
+# SWAS-871: the group of the unit in hand (empty for a target run whole), its display name (<path>@<group>, the path alone when whole), the groups each split target was cut into and the group units that passed.
+_st_g=""; _st_dn=""; ST_GL=""; ST_GP=""
 CRASH=0; CRASH_LIST=""; CRASH_EV=""; CRASH_TXT=""; CRASH_LINE=""; CRASH_BYLINE=0   # SWAS-600: the crashed-unit counter, its names, and the evidence of the unit just run
 # SELFCEIL (reviewer I-1): the ceiling of the core arms that are not one hermetic call per target (shellcheck, parse-lint, secret-scan, the board gates). Since SWAS-811 each
 # core-selftest call has its own ceiling (ST_CEIL since SWAS-840), not this one. The reasoning below is the original one: a face that runs BOTH hermeticity
@@ -883,7 +888,7 @@ heavy_allowed() {
 }
 
 # ---- SWAS-278b: the machine-wide heavy-arm lock (design docs/architecture/2026-10-17-guard-dev-clone-prepush-design.md §6.2) ----
-# A kernel advisory lock (flock) on $HOME/.local/state/sparkwright/heavy-arm.lock, held ONCE per run over the heavy phase:
+# A kernel advisory lock (flock) on $HOME/.cache/sparkwright/heavy-arm.lock (SWAS-903: moved from $HOME/.local/state/sparkwright, which the agent sandbox does not let a session write; an old lock file there is left in place), held ONCE per run over the heavy phase:
 # core-selftest (the default run too), core-live, claims, non-vacuity, green-on-clone and the single heavy flags. The kernel drops
 # it when the last descriptor closes, a SIGKILLed holder included, so nothing is ever broken, aged or deleted. Back ends: flock(1)
 # at /usr/bin/flock or /bin/flock (Linux; never through PATH) or `cd / && env -i /usr/bin/perl` (macOS; no PERL5OPT, PERL5LIB, PERLLIB,
@@ -917,7 +922,7 @@ hl_open() {
   HL_WHY=""
   hl_tool || return 1
   case ${HOME-} in /?*) ;; *) HL_WHY="HOME is unset or not absolute"; return 1 ;; esac
-  HL_DIR=$HOME/.local/state/sparkwright; HL_FILE=$HL_DIR/heavy-arm.lock; HL_HOLDER=$HL_DIR/heavy-arm.holder
+  HL_DIR=$HOME/.cache/sparkwright; HL_FILE=$HL_DIR/heavy-arm.lock; HL_HOLDER=$HL_DIR/heavy-arm.holder   # SWAS-903: ~/.cache is writable inside the agent sandbox, ~/.local/state is not; the literal $HOME path, never $XDG_CACHE_HOME
   if [ ! -e "$HL_DIR" ] && [ ! -L "$HL_DIR" ]; then
     ( umask 077; mkdir -p "$HL_DIR" ) 2>/dev/null || { HL_WHY="the state dir cannot be created"; return 1; }
   fi
@@ -1031,7 +1036,7 @@ hl_release() {
 
 # ====================================================================== THE RUN LOG (SWAS-568)
 # Plan: docs/plans/2026-11-12-prepush-run-log-568-plan.md; design 2026-11-12-ci-local-parity-nightly-design.md (P0, section 3.6, errata C1). A per-user MEASUREMENT CACHE, never evidence:
-# one runs.log beside the times table, in $HOME/.local/state/sparkwright/prepush/<root-commit>/, two records per run (start, end), one per line, ASCII, space-separated key=value. The keys
+# one runs.log beside the times table, in $HOME/.cache/sparkwright/prepush/<root-commit>/ (SWAS-903), two records per run (start, end), one per line, ASCII, space-separated key=value. The keys
 # are literal text in two fixed printf formats. NO free text: each value is a closed enum, a digit string, a sha or a capped token that passed rl_val (floor_mb is a digits-only env bound, the
 # raise-only PREPUSH_MEM_FLOOR_MB), and the free-text sources the lane holds (UNV reasons, paths, the branch, the --base text, the ci-file path, output) have no field. There is NO switch:
 # PREPUSH_NO_CACHE does not reach it (a selftest isolates it by HOME). It is written by ONE printf per record (rl_emit), a failure of which is dropped and never a verdict change, and the run
@@ -1044,6 +1049,7 @@ hl_release() {
 #   R = <epoch>-<pid>; mode = default|warranted|green-on-clone|exports|slow|non-vacuity|plan; lane = a checksum of the checkout path, not the path itself (tells clones apart); row = HEAD's Kit-Row
 #   trailer; brule = the clauses of the design's rule (3.3) that would fire (battery_rule): none, or a,b-partial,c,d,e joined; U = <bucket>:<name>:<verdict>:<secs>:<rss_kb> (a repeated name
 #   gets #2, #3; verdict OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE; no unit argv; rss_kb is `-` when unavailable); rc is `-` for INTERRUPTED (a trap does not know it).
+#   (SWAS-871: a core-selftest unit of a split target is named <path>@<g>, the group in [a-z0-9]+, checked apart from the path's charset by rl_name; --log-report reads that name and prints one `# unit seconds` line per core-selftest unit.)
 # HONEST LABEL for rss_kb [measured, sampled]: the arm group's summed RSS (ps -o rss, KB), sampled once a second by the watchdog; it misses spikes shorter than a tick and descendants that left
 # the group; the arm can forge it (ctl is reachable), which is acceptable for a measurement. With no /usr/bin/perl there is no group, so `-`.
 RL_ON=0; RL_FILE=""; RL_RUN=""; RL_T0=0; RL_U=""; RL_TRUNC=0; RL_ENDED=0; RL_SEEN=""; RL_UMAX=16384
@@ -1072,13 +1078,18 @@ rl_val() {
 }
 # rl_name <bucket> <name> — a unit name: a repo-relative path for core-selftest, else a basename; anything else (a leading slash, a `..`) is `-`.
 rl_name() {
+  _rn_g=""
   case $1 in
-    core-selftest) _rn_v=$(rl_val path "$2") ;;
+    core-selftest) _rn_p=$2   # SWAS-871: a group unit is <path>@<g>; the path keeps its charset and the group is checked apart, against [a-z0-9]+
+                   case $2 in *@*) _rn_p=${2%@*}; _rn_g=${2##*@}; case $_rn_g in ''|*[!a-z0-9]*) _rn_g=BAD ;; *) _rn_g=@$_rn_g ;; esac ;; esac
+                   _rn_v=$(rl_val path "$_rn_p") ;;
     *) _rn_v=$(rl_val base "$2") ;;
   esac
   case $_rn_v in
     /*|*..*) _rn_v=- ;;
   esac
+  if [ "$_rn_g" = BAD ]; then _rn_v=-; fi
+  if [ "$_rn_v" != - ]; then _rn_v=$_rn_v$_rn_g; fi   # RLGRP
   printf '%s' "$_rn_v"
 }
 # rl_bucket <bucket> — the unit's bucket, from a closed list.
@@ -1106,7 +1117,7 @@ rl_init() {
   case $_ri_r in
     ''|*[!0-9a-f]*) rl_off "no root commit"; return 0 ;;
   esac
-  _ri_d=$HOME/.local/state/sparkwright/prepush/$_ri_r
+  _ri_d=$HOME/.cache/sparkwright/prepush/$_ri_r   # SWAS-903: the run log lives under ~/.cache (writable in the agent sandbox); the --warranted pass cache stays under ~/.local/state
   if [ ! -e "$_ri_d" ] && [ ! -L "$_ri_d" ]; then
     ( umask 077; mkdir -p "$_ri_d" ) 2>/dev/null || { rl_off "the state dir cannot be created"; return 0; }
   fi
@@ -1302,7 +1313,7 @@ function okf(k, re) { return ((k in f) && f[k] ~ re) }
 function oku(s,  m, j, y) {
   if (s == "-") return 1
   m = split(s, y, ",")
-  for (j = 1; j <= m; j++) if (y[j] !~ "^[a-z-]+:[-A-Za-z0-9._/#]+:(OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE):[0-9]+:([0-9]+|-)$") return 0
+  for (j = 1; j <= m; j++) if (y[j] !~ "^[a-z-]+:[-A-Za-z0-9._/#@]+:(OK|FAIL|UNV|CRASH|SKIP|NA|CIB|RACE):[0-9]+:([0-9]+|-)$") return 0
   return 1 }
 function okstart(n) {
   return (n == 16 && okf("run", "^[0-9]+-[0-9]+$") && okf("ts", "^[0-9]+$") && okf("head", "^[0-9a-f]+$") && length(f["head"]) == 40 \
@@ -1342,7 +1353,9 @@ function grp(label, kind,  r, g, n, G, tmp, any) {
   for (i = 1; i <= nu; i++) {
     if (split(U[i], x, ":") != 5) continue
     nm = x[2]; sub("#[0-9]+$", "", nm); k = x[1] ":" nm
-    if (x[5] ~ /^[0-9]+$/ && (!(k in RM) || x[5] + 0 > RM[k])) RM[k] = x[5] + 0 } }
+    if (x[5] ~ /^[0-9]+$/ && (!(k in RM) || x[5] + 0 > RM[k])) RM[k] = x[5] + 0
+    if (x[1] == "core-selftest" && x[4] ~ /^[0-9]+$/) { UQ[nm]++; US[nm, UQ[nm]] = x[4] + 0 }   # LRUNITC
+  } }
 END {
   if (starts == 0) { printf "# run log: unavailable: no start record could be read (%d malformed line(s) skipped)\n", bad + 0; exit }
   inc = 0; for (r in S) if (!(r in E)) inc++
@@ -1361,7 +1374,9 @@ END {
     for (t = 1; t <= 5; t++) { bk = ""; bv = -1
       for (k in RM) if (!(k in P) && RM[k] > bv) { bv = RM[k]; bk = k }
       if (bk == "") break
-      P[bk] = 1; printf "#   %s %d KB\n", bk, bv } } }'
+      P[bk] = 1; printf "#   %s %d KB\n", bk, bv } }
+  uq = 0; for (un in UQ) UNM[++uq] = un; sortn(UNM, uq); for (ui = 1; ui <= uq; ui++) { un = UNM[ui]; split("", UT); for (uj = 1; uj <= UQ[un]; uj++) UT[uj] = US[un, uj]; sortn(UT, UQ[un]); printf "# unit seconds [M]: %s n=%d p50=%d max=%d\n", un, UQ[un], pct(UT, UQ[un], 50), UT[UQ[un]] }   # LRUNIT
+}'
 # shellcheck disable=SC2016
 LSPROG='
 { n++
@@ -1383,7 +1398,7 @@ lr_runs() {
   case $_lr_r in
     ''|*[!0-9a-f]*) note "run log: unavailable: no root commit"; return 0 ;;
   esac
-  _lr_d=$HOME/.local/state/sparkwright/prepush/$_lr_r
+  _lr_d=$HOME/.cache/sparkwright/prepush/$_lr_r
   if [ -L "$_lr_d" ] || [ ! -d "$_lr_d" ] || ! hl_owner_ok "$_lr_d"; then
     note "run log: unavailable: no run log yet for this repository (each pre-push run writes one)"; return 0
   fi
@@ -1413,7 +1428,7 @@ lr_poolk() {
   case $_lp_r in
     ''|*[!0-9a-f]*) note "@pool-k units: unavailable: no root commit"; return 0 ;;
   esac
-  _lp_d=$HOME/.local/state/sparkwright/prepush/$_lp_r
+  _lp_d=$HOME/.cache/sparkwright/prepush/$_lp_r
   if [ -L "$_lp_d" ] || [ ! -d "$_lp_d" ] || ! hl_owner_ok "$_lp_d"; then note "@pool-k units: unavailable: no state dir for this repository yet"; return 0; fi
   _lp_l=$(ls -ld "$_lp_d" 2>/dev/null) || _lp_l=""
   case ${_lp_l%% *} in
@@ -1935,7 +1950,8 @@ st_secs() {
 # st_named <path> — rc 0 iff the run's OWN output names the target: its anchored TARGET line, or an anchored EXCLUDED disposition (ST_EX=1). A target's output reaches
 # the lane only indented, on a red, so an anchored line is hermetic's own.
 st_named() {
-  grep -qxF -e "TARGET: $1 (both faces)" "${U_OUT:-$WORK/out}" 2>/dev/null && return 0   # STTARGET
+  _sn_t="TARGET: $1 (both faces)"; [ -z "${2-}" ] || _sn_t="TARGET: $1 group $2 (both faces)"   # SWAS-871: a group unit's own line names the group (st_named <path> [<group>])
+  grep -qxF -e "$_sn_t" "${U_OUT:-$WORK/out}" 2>/dev/null && return 0   # STTARGET
   P="  EXCLUDED: ${1##*/} — " LC_ALL=C awk 'index($0, ENVIRON["P"]) == 1 { f = 1 } END { exit !f }' "${U_OUT:-$WORK/out}" 2>/dev/null && { ST_EX=1; return 0; }   # STEXCL
   return 1
 }
@@ -1963,9 +1979,90 @@ st_scan() {
     _st_bl=$(st_blob "$_st_t"); _st_ms=0; _st_s=0; _st_kc=0
     [ -z "$_st_bl" ] || st_look "$_st_bl"
     [ "$_st_ms" -eq 1 ] || ST_U=$((ST_U+1))
-    ST_SC="$ST_SC$_st_ms$TAB$_st_s$TAB$_st_t$TAB$_st_bl$TAB$_st_kc$NL"
+    ST_SC="$ST_SC$_st_ms$TAB$_st_s$TAB$_st_t$TAB$_st_bl$TAB$_st_kc$TAB$NL"   # STSC1
   done < "$WORK/herm.targets"
   ST_SC=$(printf '%s' "$ST_SC" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3)   # STSORT
+  st_groups   # STGPASS2
+}
+# st_has_table <path> — rc 0 iff the bytes HEAD has for the path hold a column-0 `ST_GROUPS='` line (SWAS-871, errata E1): a presence test of one fixed line prefix, never a parse (selftest-hermetic.sh is the only parser of the table).
+st_has_table() {
+  git show "HEAD:$1" > "$WORK/stg.head" 2>/dev/null || return 1
+  [ -n "$(sed -n "/^ST_GROUPS='/{p;q;}" "$WORK/stg.head")" ]
+}
+# st_groups — pass 2 of st_scan (SWAS-871). It runs after pass 1's loop has read $WORK/herm.targets to its end and walks the candidates in the VARIABLE ST_SC: a child (the --groups call below) can reach that file through its TMPDIR, and a loop still reading it would
+# lose every target after the one that truncated it. A candidate whose HEAD bytes carry an ST_GROUPS line is asked for its groups (st_expand); every other candidate is kept as it is, with no call and no note. The list is sorted again by STSORT's keys, group last.
+st_groups() {
+  _gx_in=$ST_SC; ST_SC=""; ST_GL=""; ST_GP=""
+  _gx_any=0
+  while [ -n "$_gx_in" ]; do
+    _gx_l=${_gx_in%%"$NL"*}
+    case $_gx_in in
+      *"$NL"*) _gx_in=${_gx_in#*"$NL"} ;;
+      *) _gx_in="" ;;
+    esac
+    _gx_p=$(fld 3 "$_gx_l")
+    if st_has_table "$_gx_p"; then _gx_any=1; st_expand "$_gx_l" "$_gx_p"; else ST_SC="$ST_SC$_gx_l$NL"; fi
+  done
+  # re-sorted only when a target was expanded: with none, pass 1's order (STSORT) stands untouched
+  if [ "$_gx_any" -eq 1 ]; then ST_SC=$(printf '%s' "$ST_SC" | LC_ALL=C sort -t "$TAB" -k1,1n -k2,2n -k3,3 -k6,6); else ST_SC=${ST_SC%"$NL"}; fi   # STSORT2
+}
+# st_expand <candidate line> <path> — one `selftest-hermetic.sh --groups <path>` call (run_inv: the scrub and the GRP_CEIL ceiling apply; its output is copied at once, as the next call overwrites it). A group name outside [a-z0-9]+, an rc other than 0, or an
+# unreadable answer runs the target as ONE whole unit and says so (D11: time, not coverage). An answer of nothing at rc 0 means the hermetic lane does not list the path: it runs whole, silently. Each group becomes a candidate timed by its own row (<blob>:<g>).
+st_expand() {
+  _gx_whole=$1; _gx_p=$2
+  RUN_HB=""; run_inv "$GRP_CEIL" sh conformance/selftest-hermetic.sh --groups "$_gx_p"
+  _gx_rc=$RUN_RC; _gx_o=$(cat "${U_OUT:-$WORK/out}" 2>/dev/null) || _gx_o=""
+  _gx_ok=1; [ "$_gx_rc" -eq 0 ] || _gx_ok=0
+  set -f; set -- $_gx_o; set +f
+  _gx_seen=" "
+  for _gx_g in "$@"; do
+    case $_gx_g in ''|*[!a-z0-9]*) _gx_ok=0 ;; esac   # STGNAME
+    case $_gx_seen in *" $_gx_g "*) _gx_ok=0 ;; esac   # STGDUP
+    _gx_seen="$_gx_seen$_gx_g "
+  done
+  if [ "$_gx_ok" -eq 0 ]; then
+    note "core-selftest: $_gx_p — groups unreadable: ran whole"
+    ST_SC="$ST_SC$_gx_whole$NL"   # STGWHOLE
+    return 0
+  fi
+  if [ "$#" -eq 0 ]; then ST_SC="$ST_SC$_gx_whole$NL"; return 0; fi
+  _gx_bl=$(fld 4 "$_gx_whole"); _gx_n=$#
+  _gx_ms=$(fld 1 "$_gx_whole"); [ "$_gx_ms" -eq 1 ] || ST_U=$((ST_U-1))   # pass 1 counted the whole target unmeasured; its groups are counted one by one
+  ST_GL="$ST_GL$_gx_p$TAB$_gx_n$NL"
+  for _gx_g in "$@"; do
+    _st_ms=0; _st_s=0; _st_kc=0
+    [ -z "$_gx_bl" ] || st_look "$_gx_bl:$_gx_g"
+    [ "$_st_ms" -eq 1 ] || ST_U=$((ST_U+1))
+    ST_SC="$ST_SC$_st_ms$TAB$_st_s$TAB$_gx_p$TAB$_gx_bl$TAB$_st_kc$TAB$_gx_g$NL"
+  done
+}
+# st_tk <blob> <group> — the key of a unit's recorded time: the blob, or <blob>:<g> for a group unit; empty when the blob is unknown. (@pool-k uses <path>@<g> instead, pool_key.)
+st_tk() { if [ -n "$1" ]; then printf '%s' "$1${2:+:$2}"; fi; }
+# st_bump K|NM — a target's run or named count (one per target). A group unit never counts itself: st_gfin counts a split target once, when its units are in.
+st_bump() {
+  [ -z "$_st_g" ] || return 0
+  case $1 in K) ST_K=$((ST_K+1)) ;; *) ST_NM=$((ST_NM+1)) ;; esac
+}
+# st_gnote o|x — a group unit that passed (o) or was excluded with a reason (x): the path and the word, one line.
+st_gnote() { if [ -n "$_st_g" ]; then ST_GP="$ST_GP$_st_p$TAB$_st_g$TAB$1$NL"; fi; }
+# st_gfin — count each split target once: run (K) when every group unit passed, named (NM) when any did not (a failed, killed or unrun group), or when its groups were excluded.
+st_gfin() {
+  _sf_in=$ST_GL
+  while [ -n "$_sf_in" ]; do
+    _sf_l=${_sf_in%%"$NL"*}
+    case $_sf_in in
+      *"$NL"*) _sf_in=${_sf_in#*"$NL"} ;;
+      *) _sf_in="" ;;
+    esac
+    _sf_p=${_sf_l%%"$TAB"*}; _sf_n=${_sf_l#*"$TAB"}
+    _sf_o=$(printf '%s' "$ST_GP" | LC_ALL=C sort -u | grep -c -e "^${_sf_p}${TAB}[a-z0-9]*${TAB}o\$" || :)   # STGDISTINCT
+    _sf_x=$(printf '%s' "$ST_GP" | LC_ALL=C sort -u | grep -c -e "^${_sf_p}${TAB}[a-z0-9]*${TAB}x\$" || :)
+    if [ $((_sf_o + _sf_x)) -ge "$_sf_n" ] && [ "$_sf_x" -eq 0 ]; then   # STGFIN
+      ST_K=$((ST_K+1))
+    else
+      ST_NM=$((ST_NM+1))
+    fi
+  done
 }
 # st_one <candidate line> — run ONE target (both faces) and reconcile what came back: a clean run that neither printed its TARGET line nor an EXCLUDED disposition is a FAIL.
 # SWAS-840: nothing is cut by a budget. Before each call the lane prints the target's prior time ([measured], a [measured floor: killed] row, or unmeasured), and when that time passes
@@ -1974,28 +2071,29 @@ st_scan() {
 # ST_CEIL + 1 s names the target UNVERIFIED on the same bytes with no call; a lower floor (every row the old 300 s budget left) is printed and the target runs. The heavy-arm lock is
 # taken lazily, just before the first real call.
 st_one() {
-  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1")
+  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1"); _st_g=$(fld 6 "$1"); _st_dn=$_st_p${_st_g:+@$_st_g}
   _st_b12=$(printf '%s' "$_st_bl" | cut -c1-12)
   if [ "$_st_kc" -eq 1 ] && [ "$_st_s" -ge $((ST_CEIL + 1)) ]; then   # STHUNG
-    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
-    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
-    unv "core-selftest $_st_p: killed at >=$_st_s s on these bytes"   # STHUNGUNV
-    rl_u core-selftest "$_st_p" UNV
+    RAN=$((RAN+1)); st_bump NM; ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_dn: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
+    unv "core-selftest $_st_dn: killed at >=$_st_s s on these bytes"   # STHUNGUNV
+    rl_u core-selftest "$_st_dn" UNV
     return 0
   fi
   if [ "$_st_lk" -eq 0 ]; then
     _st_lk=1; hl_need core-selftest || _st_lk=2   # STLOCK
-    [ "$_st_lk" -eq 1 ] || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"; rl_u core-selftest "$_st_p" UNV; }
+    [ "$_st_lk" -eq 1 ] || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"; rl_u core-selftest "$_st_dn" UNV; }
   fi
-  if [ "$_st_lk" -ne 1 ]; then ST_NM=$((ST_NM+1)); note "core-selftest: $_st_p — NOT run (the heavy-arm lock is not held)"; return 0; fi
+  if [ "$_st_lk" -ne 1 ]; then st_bump NM; note "core-selftest: $_st_dn — NOT run (the heavy-arm lock is not held)"; return 0; fi
   _st_ov=""
   if [ "$_st_ms" -eq 1 ] && [ "$_st_s" -gt "$STBUD" ]; then _st_ov="; over the ${STBUD} s budget: run anyway"; ST_OB=$((ST_OB+1)); fi   # STOVER
   if [ "$_st_ms" -eq 0 ]; then _st_pr="unmeasured (no recorded time at $_st_b12)"
   elif [ "$_st_kc" -eq 1 ]; then _st_pr="prior $_st_s s at $_st_b12 [measured floor: killed]"
   else _st_pr="prior $_st_s s at $_st_b12 [measured]"; fi
-  note "core-selftest: $_st_p — $_st_pr$_st_ov"
+  note "core-selftest: $_st_dn — $_st_pr$_st_ov"
   _st_cl=$ST_CEIL
-  RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""
+  if [ -n "$_st_g" ]; then RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh --group "$_st_g" "$_st_p"; RUN_HB=""
+  else RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""; fi
   ST_EX=0
   # The kill is read from the WATCHDOG's own evidence (run_timed leaves $WORK/ctl/wd.fired when the ceiling fired), not from an exit status: the hermetic harness traps TERM
   # and INT and exits 130 itself, so an rc test (124, 137, 143) misses the very run this exists for. The marker is reachable from a target (`$TMPDIR/../ctl`), so it is not
@@ -2003,23 +2101,24 @@ st_one() {
   # twin: st_decide's PSCEIL line is the pool's copy of this decision (and PSNAMED of STNAMED below); change both together
   if [ "$RUN_RC" -ne 0 ] && [ -e "${U_CTL:-$WORK/ctl}/wd.fired" ] && [ "$RUN_S" -ge "$_st_cl" ]; then   # STCEIL
     _st_n=$((_st_cl + 1)); [ "$_st_ms" -eq 0 ] || [ "$_st_s" -le "$_st_n" ] || _st_n=$_st_s
-    [ -z "$_st_bl" ] || tr_record @selftest-k "$_st_bl" "$_st_n"   # STREC
-    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
-    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
-    unv "core-selftest $_st_p: killed at the ${ST_CEIL} s runaway ceiling"   # STUNV
-    rl_u core-selftest "$_st_p" UNV run   # RLUNV
+    [ -z "$_st_bl" ] || tr_record @selftest-k "$(st_tk "$_st_bl" "$_st_g")" "$_st_n"   # STREC
+    RAN=$((RAN+1)); st_bump NM; ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_dn: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+    unv "core-selftest $_st_dn: killed at the ${ST_CEIL} s runaway ceiling"   # STUNV
+    rl_u core-selftest "$_st_dn" UNV run   # RLUNV
     return 0
   fi
-  if [ "$RUN_RC" -eq 0 ] && ! st_named "$_st_p"; then   # STNAMED
-    ST_K=$((ST_K+1)); RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_p: neither run nor named"; rl_u core-selftest "$_st_p" FAIL; return 0
+  if [ "$RUN_RC" -eq 0 ] && ! st_named "$_st_p" "$_st_g"; then   # STNAMED
+    st_bump K; RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_dn: neither run nor named"; rl_u core-selftest "$_st_dn" FAIL; return 0
   fi
-  if [ "$ST_EX" -eq 0 ]; then ST_K=$((ST_K+1)); else ST_NM=$((ST_NM+1)); fi
-  _st_f0=$FAILS; _st_c0=$CRASH; _st_lab="$_st_p (both faces)"
-  [ "$ST_EX" -eq 0 ] || _st_lab="$_st_p (excluded with a reason: not run)"
+  if [ "$ST_EX" -eq 0 ]; then st_bump K; else st_bump NM; fi
+  _st_f0=$FAILS; _st_c0=$CRASH; _st_lab="$_st_dn (both faces)"
+  [ "$ST_EX" -eq 0 ] || _st_lab="$_st_dn (excluded with a reason: not run)"
   report_inv core-selftest "$_st_lab" 0 "$_st_cl"
   { [ "$RUN_RC" -eq 0 ] && [ "$FAILS" -eq "$_st_f0" ] && [ "$CRASH" -eq "$_st_c0" ]; } || return 0
-  _st_ss=$(st_secs "${U_OUT:-$WORK/out}"); { [ -z "$_st_ss" ] || [ -z "$_st_bl" ]; } || tr_record @selftest "$_st_bl" "$_st_ss"
-  note "core-selftest: $_st_p took $RUN_S s [measured, this run]"
+  if [ "$ST_EX" -eq 0 ]; then st_gnote o; else st_gnote x; fi
+  _st_ss=$(st_secs "${U_OUT:-$WORK/out}"); { [ -z "$_st_ss" ] || [ -z "$_st_bl" ]; } || tr_record @selftest "$(st_tk "$_st_bl" "$_st_g")" "$_st_ss"
+  note "core-selftest: $_st_dn took $RUN_S s [measured, this run]"
   return 0
 }
 # selftest_arm — the touched selftests of the default run: scan, run each candidate (the heavy-arm lock is taken lazily by the first), validate a touched exclusions file when
@@ -2039,6 +2138,7 @@ selftest_arm() {
     esac
     st_one "$_st_l"
   done
+  st_gfin   # SWAS-871: a split target counts once, run when every group unit passed
   [ "$ST_K" -ne 0 ] || excl_check   # STEXCL2
   note "touched-selftest roster: $ST_N (run: $ST_K, CI-bound: $SELF_NE, named: $ST_NM, unmeasured: $ST_U)"
   note "touched-selftest over budget: $ST_OB run, $ST_H UNVERIFIED at the ceiling"
@@ -2064,29 +2164,29 @@ st_hungp() { [ "$_st_kc" -eq 1 ] && [ "$_st_s" -ge $((ST_CEIL + 1)) ]; }
 pq_line() { printf '%s\n' "$PQ" | sed -n "${1}p"; }
 pq_f() { fld "$2" "$(pq_line "$1")"; }
 cl_key() { printf '%s' "$1${2:+ $2}"; }
-pool_key() { _pk_l=$(pq_line "$1"); if [ "$(fld 5 "$_pk_l")" = st ]; then fld 6 "$_pk_l"; else cl_key "$(fld 6 "$_pk_l")" "$(fld 8 "$_pk_l")"; fi; }
+pool_key() { _pk_l=$(pq_line "$1"); if [ "$(fld 5 "$_pk_l")" = st ]; then _pk_g=$(fld 15 "$_pk_l"); printf '%s' "$(fld 6 "$_pk_l")${_pk_g:+@$_pk_g}"; else cl_key "$(fld 6 "$_pk_l")" "$(fld 8 "$_pk_l")"; fi; }   # PLKEY
 pool_dirs() { ( umask 077; mkdir -p "$WORK/$1/tmp" "$WORK/$1/empty" "$WORK/$1/gh" "$WORK/ctl/$1" ); }   # <tag>: a unit's own scratch dirs and control dir (0700)
 # pool_unit_row — appends the unit described by _pu_* to _pq_raw: ms os label kind target blob argv kc hsec held stale nms ns (the first three are the sort keys). A live @pool-k row for the SAME blob holds the unit for the tail;
 # a row for another blob is stale (the unit was edited): the run retires it unless it kills the unit in the pool again.
 pool_unit_row() {
-  _pu_held=0; _pu_stale=0; _pu_key=$_pu_tgt; [ "$_pu_kind" = st ] || _pu_key=$(cl_key "$_pu_tgt" "$_pu_arg")
+  _pu_held=0; _pu_stale=0; _pu_key=$_pu_tgt${_pu_grp:+@$_pu_grp}; [ "$_pu_kind" = st ] || _pu_key=$(cl_key "$_pu_tgt" "$_pu_arg")   # SWAS-871: a group unit's key is <path>@<g>
   _pu_pk=$(tr_pk_blob "$_pu_key")   # PLPKLOOK
   if [ -n "$_pu_pk" ]; then
     if [ -n "$_pu_bl" ] && [ "$_pu_pk" = "$_pu_bl" ]; then _pu_held=1; else _pu_stale=1; fi
   fi
-  _pq_raw="$_pq_raw$_pu_ms$TAB$_pu_os$TAB$_pu_lab$TAB$_pu_kind$TAB$_pu_tgt$TAB$_pu_bl$TAB$_pu_arg$TAB$_pu_kc$TAB$_pu_h$TAB$_pu_held$TAB$_pu_stale$TAB$_pu_nms$TAB$_pu_ns$NL"
+  _pq_raw="$_pq_raw$_pu_ms$TAB$_pu_os$TAB$_pu_lab$TAB$_pu_kind$TAB$_pu_tgt$TAB$_pu_bl$TAB$_pu_arg$TAB$_pu_kc$TAB$_pu_h$TAB$_pu_held$TAB$_pu_stale$TAB$_pu_nms$TAB$_pu_ns$TAB$_pu_grp$NL"
 }
 pool_unit_st() {   # <ST_SC candidate line>
-  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1")
+  _st_ms=$(fld 1 "$1"); _st_s=$(fld 2 "$1"); _st_p=$(fld 3 "$1"); _st_bl=$(fld 4 "$1"); _st_kc=$(fld 5 "$1"); _st_g=$(fld 6 "$1"); _st_dn=$_st_p${_st_g:+@$_st_g}
   if st_hungp; then return 0; fi
-  _pu_kind=st; _pu_lab=$_st_p; _pu_tgt=$_st_p; _pu_bl=$_st_bl; _pu_arg=""; _pu_kc=$_st_kc; _pu_nms=$_st_ms; _pu_ns=$_st_s
+  _pu_kind=st; _pu_lab=$_st_dn; _pu_tgt=$_st_p; _pu_bl=$_st_bl; _pu_arg=""; _pu_grp=$_st_g; _pu_kc=$_st_kc; _pu_nms=$_st_ms; _pu_ns=$_st_s
   _pu_ms=$_st_ms; _pu_os=0; _pu_h=""
   if [ "$_st_ms" -eq 1 ]; then _pu_os=$_st_s; [ "$_st_kc" -ne 0 ] || _pu_h=$_st_s
-  elif [ -n "$_st_bl" ]; then tr_look @pool "$_st_bl"; [ -z "$L_SEC" ] || { _pu_ms=1; _pu_os=$L_SEC; }; fi
+  elif [ -n "$_st_bl" ]; then tr_look @pool "$(st_tk "$_st_bl" "$_st_g")"; [ -z "$L_SEC" ] || { _pu_ms=1; _pu_os=$L_SEC; }; fi
   pool_unit_row
 }
 pool_unit_cl() {   # <basename> <argv>
-  _pu_key=$(cl_key "$1" "$2"); _pu_ms=0; _pu_os=0
+  _pu_grp=""; _pu_key=$(cl_key "$1" "$2"); _pu_ms=0; _pu_os=0
   tr_look "$1" "$2"; _pu_h=$L_SEC
   tr_look @pool "$_pu_key"; _pu_pl=$L_SEC
   [ -z "$_pu_h$_pu_pl" ] || { _pu_ms=1; _pu_os=${_pu_h:-$_pu_pl}; }
@@ -2151,13 +2251,13 @@ pool_hung_rows() {   # the targets already killed at the ceiling on these bytes:
   while [ -n "$_ph_s" ]; do
     _ph_l=${_ph_s%%"$NL"*}
     case $_ph_s in *"$NL"*) _ph_s=${_ph_s#*"$NL"} ;; *) _ph_s="" ;; esac
-    _st_ms=$(fld 1 "$_ph_l"); _st_s=$(fld 2 "$_ph_l"); _st_p=$(fld 3 "$_ph_l"); _st_bl=$(fld 4 "$_ph_l"); _st_kc=$(fld 5 "$_ph_l")
+    _st_ms=$(fld 1 "$_ph_l"); _st_s=$(fld 2 "$_ph_l"); _st_p=$(fld 3 "$_ph_l"); _st_bl=$(fld 4 "$_ph_l"); _st_kc=$(fld 5 "$_ph_l"); _st_g=$(fld 6 "$_ph_l"); _st_dn=$_st_p${_st_g:+@$_st_g}
     st_hungp || continue
     _st_b12=$(printf '%s' "$_st_bl" | cut -c1-12)
-    RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
-    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
-    unv "core-selftest $_st_p: killed at >=$_st_s s on these bytes"
-    rl_u core-selftest "$_st_p" UNV
+    RAN=$((RAN+1)); st_bump NM; ST_H=$((ST_H+1))
+    printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_dn: killed at >=$_st_s s at $_st_b12 on these bytes [measured floor]; to get out: edit the target, or delete its @selftest-k row in times.tsv, or defer it by a reviewed PR (PREPUSH_NO_CACHE=1 runs it for this run only)"
+    unv "core-selftest $_st_dn: killed at >=$_st_s s on these bytes"
+    rl_u core-selftest "$_st_dn" UNV
   done
 }
 pool_loop() {
@@ -2191,10 +2291,10 @@ pool_flush() {   # record, in queue order, every unit up to the first one still 
   done
 }
 pool_start() {   # <n> — dispatch queue unit n in its own dirs, descriptor 9 closed
-  _ps_n=$1; _ps_l=$(pq_line "$_ps_n"); _ps_k=$(fld 5 "$_ps_l"); _ps_t=$(fld 6 "$_ps_l"); _ps_a=$(fld 8 "$_ps_l")
+  _ps_n=$1; _ps_l=$(pq_line "$_ps_n"); _ps_k=$(fld 5 "$_ps_l"); _ps_t=$(fld 6 "$_ps_l"); _ps_a=$(fld 8 "$_ps_l"); _ps_g=$(fld 15 "$_ps_l")
   pool_dirs "u$_ps_n"
   if [ "$_ps_k" = st ]; then
-    set -- sh conformance/selftest-hermetic.sh "$_ps_t"; _ps_cl=$ST_CEIL; _ps_hb=$BASE
+    set -- sh conformance/selftest-hermetic.sh; [ -z "$_ps_g" ] || set -- "$@" --group "$_ps_g"; set -- "$@" "$_ps_t"; _ps_cl=$ST_CEIL; _ps_hb=$BASE
   else
     # the closed-charset argv, single-spaced, becomes ARGV one word at a time (no IFS assignment, no eval)
     set --; _ps_x=$_ps_a
@@ -2241,7 +2341,7 @@ pool_reap() {   # <n> — take the worker's rc, read what it left into parent va
 pool_decide() {
   _pd_n=$1; _pd_l=$(pq_line "$_pd_n")
   _pd_k=$(fld 5 "$_pd_l"); _pd_t=$(fld 6 "$_pd_l"); _pd_a=$(fld 8 "$_pd_l"); _pd_b=$(fld 7 "$_pd_l"); _pd_h=$(fld 10 "$_pd_l"); _pd_lab=$(fld 4 "$_pd_l")
-  _pd_c=$(pv_get "$_pd_n" ceil)
+  _pd_c=$(pv_get "$_pd_n" ceil); _pd_g=$(fld 15 "$_pd_l")
   U_CTL=$WORK/ctl/u$_pd_n; U_OUT=$WORK/u$_pd_n/out; U_CRASH=$U_CTL/crash.hit; UNIT_DIR=$WORK/u$_pd_n
   POOL_LATE=$(pv_get "$_pd_n" late); POOL_LATE=${POOL_LATE:-0}
   RUN_RC=$2; ARM_CEIL_TXT=""; RUN_S=$(( $(pv_get "$_pd_n" t1) - $(pv_get "$_pd_n" t0) ))
@@ -2251,7 +2351,7 @@ pool_decide() {
   pv_set "$_pd_n" fin "$(cat "$UNIT_DIR/fin.out")"
   RI_KIND=""; ST_KIND=""; ST_EX=0; ST_SS=""; _pd_s=rec
   if [ "$_pd_k" = st ]; then
-    _st_p=$_pd_t; _st_bl=$_pd_b; _st_cl=$_pd_c
+    _st_p=$_pd_t; _st_g=$_pd_g; _st_dn=$_pd_t${_pd_g:+@$_pd_g}; _st_bl=$_pd_b; _st_cl=$_pd_c
     st_decide "$_pd_t" "$_pd_c" "$_pd_t"
     case $ST_KIND in
       neither) _pd_s=defer ;;
@@ -2271,7 +2371,7 @@ pool_decide() {
     if [ "$ST_KIND" = ceil ] || [ "$RI_KIND" = ceil ]; then pool_pk_write "$_pd_n"; fi
   fi
   if [ "$RI_KIND" = ok ] && [ "$ST_KIND" != ceil ] && [ "$ST_KIND" != neither ]; then
-    _pd_pk=$_pd_b; [ "$_pd_k" = st ] || _pd_pk=$(cl_key "$_pd_t" "$_pd_a")
+    _pd_pk=$(st_tk "$_pd_b" "$_pd_g"); [ "$_pd_k" = st ] || _pd_pk=$(cl_key "$_pd_t" "$_pd_a")
     [ -z "$_pd_pk" ] || tr_record @pool "$_pd_pk" "$RUN_S"
   fi
   pv_set "$_pd_n" state "$_pd_s"   # PLSTATE
@@ -2283,9 +2383,9 @@ st_decide() {
   ST_KIND=""; ST_EX=0; ST_SS=""; _st_cl=$2
   # twin: st_one's STCEIL and STNAMED lines are the serial copy of these two decisions; change both together
   if [ "$RUN_RC" -ne 0 ] && [ -e "${U_CTL:-$WORK/ctl}/wd.fired" ] && [ "$POOL_LATE" -eq 0 ] && [ "$RUN_S" -ge "$_st_cl" ]; then ST_KIND=ceil; return 0; fi   # PSCEIL
-  if [ "$RUN_RC" -eq 0 ] && ! st_named "$1"; then ST_KIND=neither; return 0; fi   # PSNAMED
-  ST_KIND=run; _st_lab="$1 (both faces)"
-  [ "$ST_EX" -eq 0 ] || _st_lab="$1 (excluded with a reason: not run)"
+  if [ "$RUN_RC" -eq 0 ] && ! st_named "$1" "${_st_g-}"; then ST_KIND=neither; return 0; fi   # PSNAMED
+  ST_KIND=run; _st_lab="$1${_st_g:+@$_st_g} (both faces)"
+  [ "$ST_EX" -eq 0 ] || _st_lab="$1${_st_g:+@$_st_g} (excluded with a reason: not run)"
   ri_decide core-selftest "$_st_lab" 0 "$_st_cl"
   [ "$RI_KIND" != ok ] || ST_SS=$(st_secs "${U_OUT:-$WORK/out}")
   return 0
@@ -2297,27 +2397,28 @@ pool_st_prior() {   # the prior-time note a target prints before its row (st_one
   if [ "$_st_ms" -eq 0 ]; then _st_pr="unmeasured (no recorded time at $_st_b12)"
   elif [ "$_st_kc" -eq 1 ]; then _st_pr="prior $_st_s s at $_st_b12 [measured floor: killed]"
   else _st_pr="prior $_st_s s at $_st_b12 [measured]"; fi
-  note "core-selftest: $_st_p — $_st_pr$_st_ov"
+  note "core-selftest: $_st_dn — $_st_pr$_st_ov"
 }
 # st_apply — the effects of st_decide's verdict (the row, the counters, the log, the times): the pool's twin of st_one's tail. POOL_IN is 1 for the pool's own records (no time rows), 0 for the serial tail (today's rows).
 st_apply() {
   case $ST_KIND in
     ceil)
       _st_n=$((_st_cl + 1)); [ "$_st_ms" -eq 0 ] || [ "$_st_s" -le "$_st_n" ] || _st_n=$_st_s
-      [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest-k "$_st_bl" "$_st_n"   # PSREC
-      RAN=$((RAN+1)); ST_NM=$((ST_NM+1)); ST_H=$((ST_H+1))
-      printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_p: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
-      unv "core-selftest $_st_p: killed at the ${ST_CEIL} s runaway ceiling"   # PSUNV
-      rl_u core-selftest "$_st_p" UNV run   # PSRLUNV
+      [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest-k "$(st_tk "$_st_bl" "$_st_g")" "$_st_n"   # PSREC
+      RAN=$((RAN+1)); st_bump NM; ST_H=$((ST_H+1))
+      printf '  UNVERIFIED  %-12s %s\n' core-selftest "$_st_dn: killed at the ${ST_CEIL} s runaway ceiling, not proven locally [measured $RUN_S s]${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"
+      unv "core-selftest $_st_dn: killed at the ${ST_CEIL} s runaway ceiling"   # PSUNV
+      rl_u core-selftest "$_st_dn" UNV run   # PSRLUNV
       return 0 ;;
     neither)
-      ST_K=$((ST_K+1)); RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_p: neither run nor named"; rl_u core-selftest "$_st_p" FAIL; return 0 ;;
+      st_bump K; RAN=$((RAN+1)); FAILS=$((FAILS+1)); printf '  FAIL  %-18s %s\n' core-selftest "$_st_dn: neither run nor named"; rl_u core-selftest "$_st_dn" FAIL; return 0 ;;
   esac
-  if [ "$ST_EX" -eq 0 ]; then ST_K=$((ST_K+1)); else ST_NM=$((ST_NM+1)); fi
+  if [ "$ST_EX" -eq 0 ]; then st_bump K; else st_bump NM; fi
   ri_record core-selftest "$_st_lab" 0 "$_st_cl"
   [ "$RI_KIND" = ok ] || return 0
-  [ -z "$ST_SS" ] || [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest "$_st_bl" "$ST_SS"
-  note "core-selftest: $_st_p took $RUN_S s [measured, this run]"
+  if [ "$ST_EX" -eq 0 ]; then st_gnote o; else st_gnote x; fi
+  [ -z "$ST_SS" ] || [ -z "$_st_bl" ] || [ "$POOL_IN" -eq 1 ] || tr_record @selftest "$(st_tk "$_st_bl" "$_st_g")" "$ST_SS"
+  note "core-selftest: $_st_dn took $RUN_S s [measured, this run]"
   return 0
 }
 pool_cl_cache() {   # <basename> <argv> <skip-like 0|1> — exec_cached's tail: a PASS (not a tool-absent SKIP) is recorded in the --warranted cache
@@ -2333,7 +2434,7 @@ pool_record() {   # <n> — the unit's decision, in queue order: notes, UNV, row
   _pc_f=$(pv_get "$_pc_n" fin); [ -z "$_pc_f" ] || printf '%s\n' "$_pc_f"
   _pc_u=$(pv_get "$_pc_n" unvn); [ -z "$_pc_u" ] || unv "$_pc_u"
   if [ "$_pc_k" = st ]; then
-    _st_p=$_pc_t; _st_bl=$(fld 7 "$_pc_l"); _st_kc=$(fld 9 "$_pc_l"); _st_ms=$(fld 13 "$_pc_l"); _st_s=$(fld 14 "$_pc_l"); _st_cl=$_pc_c
+    _st_p=$_pc_t; _st_g=$(fld 15 "$_pc_l"); _st_dn=$_pc_t${_st_g:+@$_st_g}; _st_bl=$(fld 7 "$_pc_l"); _st_kc=$(fld 9 "$_pc_l"); _st_ms=$(fld 13 "$_pc_l"); _st_s=$(fld 14 "$_pc_l"); _st_cl=$_pc_c
     pool_st_prior; st_apply   # PLREC
   else
     ri_record core-live "$_pc_lab" 0 "$_pc_c"
@@ -2360,8 +2461,9 @@ pool_tail_one() {
   U_CTL=$WORK/ctl/t$_pt_n; U_OUT=$WORK/t$_pt_n/out; U_CRASH=$U_CTL/crash.hit; UNIT_DIR=$WORK/t$_pt_n
   POOL_IN=0; POOL_LATE=0; ST_KIND=""; ST_EX=0; ST_SS=""; RI_KIND=""
   if [ "$_pt_k" = st ]; then
-    _st_p=$_pt_t; _st_bl=$(fld 7 "$_pt_l"); _st_kc=$(fld 9 "$_pt_l"); _st_ms=$(fld 13 "$_pt_l"); _st_s=$(fld 14 "$_pt_l"); _st_cl=$ST_CEIL
-    RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""
+    _st_p=$_pt_t; _st_g=$(fld 15 "$_pt_l"); _st_dn=$_pt_t${_st_g:+@$_st_g}; _st_bl=$(fld 7 "$_pt_l"); _st_kc=$(fld 9 "$_pt_l"); _st_ms=$(fld 13 "$_pt_l"); _st_s=$(fld 14 "$_pt_l"); _st_cl=$ST_CEIL
+    if [ -n "$_st_g" ]; then RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh --group "$_st_g" "$_st_p"; RUN_HB=""
+    else RUN_HB=$BASE; run_inv "$_st_cl" sh conformance/selftest-hermetic.sh "$_st_p"; RUN_HB=""; fi
     st_decide "$_st_p" "$_st_cl" "$_st_p"
   else
     set --; _pt_x=$_pt_a   # the same word-by-word split as pool_start (no IFS assignment)
@@ -2404,7 +2506,7 @@ pool_interrupt_u() {   # called by cleanup before rl_end INTERRUPTED: a unit fin
     case $(pv_get "$_pi_n" state) in rec|defer) ;; *) continue ;; esac
     [ "$(pv_get "$_pi_n" pr)" != 1 ] || continue
     _pi_l=$(pq_line "$_pi_n"); RUN_S=$(pv_get "$_pi_n" s); RUN_RSS=$(pv_get "$_pi_n" rss); RUN_S=${RUN_S:-0}; RUN_RSS=${RUN_RSS:--}
-    if [ "$(fld 5 "$_pi_l")" = st ]; then rl_u core-selftest "$(fld 6 "$_pi_l")" UNV run; else rl_u core-live "$(fld 6 "$_pi_l")" UNV run; fi
+    if [ "$(fld 5 "$_pi_l")" = st ]; then rl_u core-selftest "$(pool_key "$_pi_n")" UNV run; else rl_u core-live "$(fld 6 "$_pi_l")" UNV run; fi
   done
 }
 # ---- the interrupt (P-17): every pooled unit's group, watchdog and worker, one shared grace and one confirm ----
@@ -3158,7 +3260,7 @@ RWEOF
 # run_inv (the scrub, the dash shim, the ceiling). Everything below is its own section; run_timed, the orphan code and the heavy arms are untouched.
 #   Fail-closed: no --derive output, an unreadable listing or a refused state dir makes the ARM UNVERIFIED. A check over its limit (max(120 s, 1.5 x its
 #   measured time)) is LISTED CI-GRADED, never a FAIL. The red history LEARNS: `--refresh-times` ingests the recent failed CI steps (gh, read-only).
-#   THE TIME TABLE: $HOME/.local/state/sparkwright/prepush/<root-commit>/times.tsv, a cache and never evidence, six tab fields:
+#   THE TIME TABLE: $HOME/.cache/sparkwright/prepush/<root-commit>/times.tsv (SWAS-903: moved from ~/.local/state), a cache and never evidence, six tab fields:
 #   basename · argv · seconds · reds · source (local|ci|red) · epoch. A `red` row carries a failed-step count and the last-red epoch (counted for 30 days).
 #   `@job` rows (name · wall s · timeout-minutes) and one `@green` row (job-seconds of the last green PR run) ride in the same columns.
 #   A local row beats a CI row beats a built-in SEED row for the time; the red count is the max over all sources.
@@ -3233,7 +3335,7 @@ tr_state() {
   case ${HOME-} in /?*) ;; *) tr_refuse "HOME is unset or not absolute"; return 1 ;; esac
   _r0=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p)
   case $_r0 in ''|*[!0-9a-f]*) tr_refuse "no root commit"; return 1 ;; esac
-  _sd=$HOME/.local/state/sparkwright/prepush/$_r0
+  _sd=$HOME/.cache/sparkwright/prepush/$_r0   # SWAS-903: the times table is a cache and never evidence, so it lives under ~/.cache (writable in the agent sandbox)
   if [ ! -e "$_sd" ] && [ ! -L "$_sd" ]; then ( umask 077; mkdir -p "$_sd" ) 2>/dev/null || { tr_refuse "the state dir cannot be created"; return 1; }; fi
   _ls=$(ls -ld "$_sd" 2>/dev/null) || { tr_refuse "the state dir cannot be inspected"; return 1; }
   case ${_ls%% *} in d????[!w]??[!w]*) ;; *) tr_refuse "the state dir is not a plain directory, or is group/world-writable"; return 1 ;; esac
@@ -3620,11 +3722,17 @@ run_lane() {
 main() {
   # NO ARGUMENT is THE RUN (`sparkwright prepush`); --help is rc 2 — the kit's usage convention,
   # locked live by conformance/sparkwright-verbs.sh ("`prepush --help` exits 2 through the router").
-  _mode=""; _ci=${KIT_CI_FILE:-$CI_DEFAULT}; _strict=0; _ci_given=0
+  _mode=""; _ci=${KIT_CI_FILE:-$CI_DEFAULT}; _strict=0; _ci_given=0; _sgop=""
   [ -z "${KIT_CI_FILE:-}" ] || _ci_given=1
   while [ $# -gt 0 ]; do
     case $1 in
       --derive|--census|--selftest|--refresh-times|--log-report) [ -z "$_mode" ] || die2 "one mode per invocation"; _mode=$1 ;;
+      # SWAS-871: one group of the lane's own selftest legs, by name. A closed grammar: ONE operand, matched whole against the committed ST_GROUPS table (never a pattern, a number, a path or a list), rc 2 otherwise and nothing runs.
+      --selftest-group) [ -z "$_mode" ] || die2 "one mode per invocation"
+                        [ $# -ge 2 ] || die2 "--selftest-group needs a group name"
+                        case $2 in ''|*[!a-z0-9]*) die2 "--selftest-group takes one group name in [a-z0-9]+, never a list or a path: $2" ;; esac
+                        case " $ST_GROUPS " in *" $2 "*) ;; *) die2 "--selftest-group: no such group: $2 (the committed groups are ST_GROUPS)" ;; esac
+                        _mode=$1; _sgop=$2; shift ;;
       --plan) PLAN=1 ;;                           # SWAS-468: print the touched-readers selection, execute nothing
       --ci-file) [ $# -ge 2 ] || die2 "--ci-file needs a path"; _ci=$2; _ci_given=1; shift ;;
       --base) [ $# -ge 2 ] || die2 "--base needs a ref"; BASE=$2; shift ;;
@@ -3659,12 +3767,14 @@ main() {
   [ "$PLAN" -eq 0 ] || { [ "$_mode" = --run ] && [ -z "$HEAVY" ] && [ "$WARRANTED" -eq 0 ]; } || die2 "--plan takes no mode and no heavy arm"
   case $_mode in
     --selftest) selftest; exit $? ;;
+    --selftest-group) selftest "$_sgop"; exit $? ;;
     --run)      root_or_die; cd "$ROOT"
                 [ "$_ci_given" -eq 1 ] || [ -e "$CI_DEFAULT" ] || [ -L "$CI_DEFAULT" ] ||
                   die2 "this tree has no GitHub Actions CI file ($CI_DEFAULT). The pre-push lane derives its checks from GitHub Actions only, so it checks nothing here; run sh conformance/verify.sh before you push."
                 _rel=$(resolve_ci "$_ci") || exit $?
                 run_lane "$_rel" ;;
     --census)   root_or_die; cd "$ROOT"
+                off_kit || stg_check || exit 1   # STGCEN
                 census "$_ci" ;;
     --refresh-times) root_or_die; cd "$ROOT"
                 tr_refresh "$_ci" ;;
@@ -3681,6 +3791,8 @@ main() {
 # ============================================================================================
 # --selftest — every leg BELOW this marker (the non-vacuity sweep mutates only lines ABOVE it).
 selftest() {
+  _stg_g=${1-}   # SWAS-871: empty runs every group, in table order, in this one process; a name runs that group alone (main has checked it against ST_GROUPS)
+  stg_check || { echo "prepush-lane --selftest${_stg_g:+-group $_stg_g}: FAIL (the group table, above)"; return 1; }   # STGSELF
   SF=0
   LANE=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
   KROOT=$(git rev-parse --show-toplevel 2>/dev/null && :) || KROOT=""
@@ -3703,43 +3815,77 @@ selftest() {
   lane_mut "$LANE_J1" '' 'pool_cores() { echo 1; }; pool_free_mb() { echo 99999; }' > /dev/null
   lane_mut "$LANE_J2" '' 'pool_cores() { echo 3; }; pool_free_mb() { echo 99999; }' > /dev/null
   LANE=$LANE_J1
-  # THE ROSTER, in order; each name is a leg's function name verbatim (a missing one is a `not found`).
-  for _leg in grammar continuation block_scalar disqualifiers env_not_applied doc_level ci_file \
-              census_unbucketed census_denominator census_negative twin_stale twin_cishape \
-              heavy_rows twin_grammar injection scrub docs_only rename newline newline_charset base \
-              ceiling budget \
-              floor argv core_selftest local_defer troster tname tbudget heavy_needs_flag dash verdict shim bounded_fanout no_write \
-              no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced twin_carve \
-              cache_skip_same_tree cache_code_change cache_bookkeeping cache_heavy_bookkeeping \
-              cache_dirty_bypass cache_skip_output_never \
-              cache_fail_never cache_unusable_dir cache_state_dir_modes cache_opt_out \
-              warranted_nonvac_registered warranted_nonvac_unregistered \
-              warranted_nonvac_nowordsplit_noglob \
-              warranted_charset warranted_goc_scripts warranted_goc_export_ignored \
-              warranted_claims warranted_docs_only warranted_exports_never \
-              warranted_export_ignored_runs_nothing \
-              warranted_claims_exact_match warranted_conflict warranted_operand warranted_serial \
-              warranted_fail_continues warranted_busy_hit warranted_busy_own_descendant \
-              warranted_busy_ancestor warranted_busy_numeric_ignored \
-              warranted_busy_ps_fail warranted_floor_refuses_all warranted_router_dial \
-              board_gate_fails board_gate_passes board_gate_skipped board_gate_zero_rows \
-              board_gate_derivation_pin board_gate_underived board_gate_refused \
-              board_gate_symlink board_gate_literal board_gate_selftest_prefix \
-              lock_acquire_release lock_acquire_e2e lock_phase_e2e lock_light_unlocked lock_wait lock_wait_e2e \
-              lock_kill9 lock_stale_note lock_budget_end lock_budget_runlevel lock_dir_unsafe lock_floor_reread \
-              lock_symlink lock_foreign_owner lock_holder_sanitised lock_home_scoped lock_no_tool lock_race \
-              lock_child_fd lock_ancestor_note lock_perl_env lock_flock_shim lock_owner_real lock_holder_symlink \
-              cache_producer_skip_line cache_producer_other_tree cache_off_index_tags cache_off_sparse_filter \
-              cache_filter_applied lock_kill_zero \
-              tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv \
-              orphan_ceiling orphan_unconfirmed orphan_trap orphan_leftover orphan_noperl orphan_guard orphan_parent orphan_leader orphan_reuse orphan_perl_env \
-              touched_failclosed tr8_gate tr8_gitlab touched_replay touched_budget touched_output touched_refresh \
-              preflight_case_variant crash tree \
-              runlog_lines runlog_fields runlog_complete runlog_secret runlog_rotate runlog_unsafe runlog_interrupt runlog_rss runlog_brule runlog_report runlog_unread \
-              pool_unsettable pool_dirs pool_order pool_race pool_ceiling pool_equal pool_log pool_fd pool_late pool_records pool_pk pool_forge pool_half pool_noperl pool_reap pool_readers pool_report
-  do _leg_t0=$(date +%s); "selftest_$_leg"; echo "# leg $_leg $(( $(date +%s) - _leg_t0 ))"; done
+  # THE LEGS, by group: the groups of the committed table (ST_GROUPS, below this function), each leg's function name verbatim (a missing one is a `not found`). --selftest runs every group in table order, in this process; a group name runs that group alone.
+  # The same legs run either way, and stg_check (above) refused a table that drops one. A leg's result is its own: SF is cleared for it and folded back, so "<k> of <N> legs" counts the legs that passed.
+  _stg_run=$ST_GROUPS; [ -z "$_stg_g" ] || _stg_run=$_stg_g
+  _stg_n=0; _stg_k=0
+  for _stg_x in $_stg_run; do _stg_l=''; eval "_stg_l=\$ST_G_$_stg_x"; set -f; set -- $_stg_l; set +f; _stg_n=$((_stg_n + $#)); done   # STGN
+  for _stg_x in $_stg_run; do
+    _stg_l=''; eval "_stg_l=\$ST_G_$_stg_x"; set -f; set -- $_stg_l; set +f
+    for _leg in "$@"; do
+      _leg_t0=$(date +%s); _stg_s0=$SF; SF=0; "selftest_$_leg"; _stg_lf=$SF; SF=$_stg_s0
+      if [ "$_stg_lf" -eq 0 ]; then _stg_k=$((_stg_k + 1)); else SF=1; fi
+      echo "# leg $_leg $(( $(date +%s) - _leg_t0 ))"
+    done
+  done
+  if [ -n "$_stg_g" ]; then
+    [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest-group $_stg_g: OK ($_stg_k of $_stg_n legs)"; return 0; }
+    echo "prepush-lane --selftest-group $_stg_g: FAIL ($_stg_k of $_stg_n legs)"; return 1
+  fi
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
   echo "prepush-lane --selftest: FAIL"; return 1
+}
+
+# ---- SWAS-871: the committed group table and its partition lock (below selftest() on purpose: the non-vacuity sweep starts its oracle at the selftest() line, and stg_check is a test oracle) ----------------------------------------------
+# ST_GROUPS is the ordered list of groups; ST_G_<g> is one single-quoted line of leg names (the legs' function names without the `selftest_` prefix), in the charset [a-z0-9_ ]. selftest-hermetic.sh parses ONLY the ST_GROUPS line, statically, to give the pool its units.
+# The cut is measured (T0 of the plan: one full run, longest-processing-time into six groups of about 146 s each [measured]); a leg added later goes to the lightest group, and stg_check refuses a leg left out or listed twice.
+ST_GROUPS='g1 g2 g3 g4 g5 g6'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g1='grammar continuation block_scalar disqualifiers env_not_applied doc_level census_unbucketed census_denominator twin_stale twin_cishape heavy_rows twin_grammar injection rename newline_charset floor argv verdict shim cache_code_change cache_skip_output_never warranted_goc_scripts warranted_docs_only warranted_operand warranted_busy_ps_fail warranted_floor_refuses_all warranted_router_dial board_gate_zero_rows board_gate_derivation_pin board_gate_symlink board_gate_literal lock_acquire_release lock_acquire_e2e lock_phase_e2e lock_light_unlocked lock_wait lock_stale_note lock_floor_reread lock_foreign_owner lock_holder_sanitised lock_home_scoped lock_no_tool lock_race lock_owner_real lock_holder_symlink lock_kill_zero tripwire_positive tripwire_conf_exists orphan_reuse tr8_gate tr8_gitlab touched_budget crash runlog_lines runlog_fields runlog_interrupt runlog_brule pool_late'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g2='base twin_not_enforced cache_skip_same_tree cache_heavy_bookkeeping warranted_charset warranted_goc_export_ignored warranted_claims_exact_match board_gate_fails board_gate_underived lock_budget_end lock_symlink lock_child_fd tripwire_old_argv orphan_leftover orphan_leader runlog_secret runlog_rotate runlog_report pool_dirs pool_race pool_log pool_records pool_pk pool_readers'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g3='census_negative newline ceiling budget local_defer no_write shellcheck_scoped cache_bookkeeping warranted_nonvac_nowordsplit_noglob warranted_conflict warranted_busy_ancestor board_gate_passes lock_dir_unsafe cache_off_sparse_filter cache_filter_applied orphan_trap orphan_noperl runlog_unread pool_equal pool_fd pool_report'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g4='ci_file scrub tbudget no_exec_of_context core_live_default twin_carve cache_dirty_bypass cache_fail_never warranted_nonvac_registered warranted_export_ignored_runs_nothing warranted_busy_hit board_gate_refused lock_flock_shim cache_producer_other_tree tripwire_lane orphan_parent touched_refresh runlog_unsafe runlog_rss pool_order pool_forge pool_half'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g5='core_selftest troster tname dash bounded_fanout secretscan_scoped parselint_scoped cache_unusable_dir cache_opt_out warranted_nonvac_unregistered warranted_exports_never warranted_busy_numeric_ignored board_gate_selftest_prefix lock_kill9 lock_ancestor_note cache_off_index_tags tripwire_scrub_mutant orphan_ceiling orphan_perl_env touched_failclosed pool_unsettable pool_reap stg stg_log'
+# shellcheck disable=SC2034  # read through eval (stg_check, selftest)
+ST_G_g6='docs_only heavy_needs_flag cache_state_dir_modes warranted_claims warranted_serial warranted_fail_continues warranted_busy_own_descendant board_gate_skipped lock_wait_e2e lock_budget_runlevel lock_perl_env cache_producer_skip_line orphan_unconfirmed orphan_guard touched_replay touched_output preflight_case_variant tree runlog_complete pool_ceiling pool_noperl stg_pool state_split'
+# stg_check — the partition lock (R1-R5): every selftest_<leg>() defined below the marker is in exactly one group, every group names only defined legs and has at least one, and the table is well formed. Prints one FAIL line per break and returns 1; run at the start of --selftest and
+# --selftest-group, and by --census on a kit tree. It reads the lane's own text (STG_SELF, the absolute path made before any cd), so a copy with an edited table is judged on its own table.
+STG_SELF=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)/$(basename "$0")
+stg_check() {
+  _gk_bad=0
+  case $ST_GROUPS in ''|*[!a-z0-9' ']*) echo "FAIL: prepush-lane: bad group table: ST_GROUPS is empty or outside [a-z0-9 ]"; return 1 ;; esac
+  _gk_lit=$(sed -n "s/^ST_GROUPS='\\([a-z0-9 ]*\\)'\$/\\1/p" "$STG_SELF")   # SWAS-871 review: the runtime variable must equal the ONE committed literal selftest-hermetic.sh parses, or a shadow assignment splits what H2 grades from what runs
+  [ "$_gk_lit" = "$ST_GROUPS" ] || { echo "FAIL: prepush-lane: bad group table: ST_GROUPS differs from its one committed literal line (a shadow assignment?)"; return 1; }   # STGSTATIC
+  _gk_defs=$(awk '/^selftest\(\) \{$/ { on = 1; next } on && /^selftest_[A-Za-z0-9_]+[ \t]*\([ \t]*\)[ \t]*\{/ { n = $0; sub(/^selftest_/, "", n); sub(/[ \t]*\(.*$/, "", n); print n }' "$STG_SELF") || _gk_defs=""   # STGDEF
+  _gk_nl="$NL$_gk_defs$NL"; _gk_seen=" "; _gk_map=" "
+  set -f
+  for _gk_g in $ST_GROUPS; do
+    case $_gk_seen in *" $_gk_g "*) echo "FAIL: prepush-lane: bad group table: group $_gk_g is listed twice in ST_GROUPS"; _gk_bad=1; continue ;; esac
+    _gk_seen="$_gk_seen$_gk_g "
+    _gk_l=''; eval "_gk_l=\${ST_G_$_gk_g-}"
+    case $_gk_l in *[!a-z0-9_' ']*) echo "FAIL: prepush-lane: bad group table: the line of group $_gk_g is outside [a-z0-9_ ]"; _gk_bad=1; continue ;; esac
+    _gk_sl=$(sed -n "s/^ST_G_${_gk_g}='\\([a-z0-9_ ]*\\)'\$/\\1/p" "$STG_SELF")
+    [ "$_gk_sl" = "$_gk_l" ] || { echo "FAIL: prepush-lane: bad group table: group $_gk_g differs from its one committed literal line (a shadow assignment?)"; _gk_bad=1; continue; }   # STGSTATIC
+    set -- $_gk_l
+    if [ "$#" -eq 0 ]; then echo "FAIL: prepush-lane: group table: group $_gk_g has no legs"; _gk_bad=1; continue; fi
+    for _gk_x in "$@"; do
+      case $_gk_nl in *"$NL$_gk_x$NL"*) ;; *) echo "FAIL: prepush-lane: group table: group $_gk_g names an undefined leg $_gk_x"; _gk_bad=1; continue ;; esac
+      case $_gk_map in
+        *" $_gk_x="*) _gk_o=${_gk_map#*" $_gk_x="}; _gk_o=${_gk_o%% *}; echo "FAIL: prepush-lane: group table: leg $_gk_x is in groups $_gk_o and $_gk_g"; _gk_bad=1 ;;
+        *) _gk_map="$_gk_map$_gk_x=$_gk_g " ;;
+      esac
+    done
+  done
+  for _gk_x in $_gk_defs; do
+    case $_gk_map in *" $_gk_x="*) ;; *) echo "FAIL: prepush-lane: group table: leg $_gk_x is in no group"; _gk_bad=1 ;; esac
+  done
+  set +f
+  [ "$_gk_bad" -eq 0 ] || return 1
+  return 0
 }
 
 # --- selftest-only helpers (BELOW selftest() on purpose: see the marker above) ---------------
@@ -4629,7 +4775,7 @@ selftest_tbudget() {
   sfx "B3: the ST_CEIL=2 lane copy differs" differs "$(cmp -s "$LANE" "$_sc" && echo same || echo differs)"
   stfx "$STSLEEP" scripts/x.sh scripts/y.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _by=$(git -C "$d" rev-parse HEAD:scripts/y.sh)
   _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
-  _h=$WORK/st-h3; stt "$_h"; strun "$_h" "$_sc"; _tt=$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  _h=$WORK/st-h3; stt "$_h"; strun "$_h" "$_sc"; _tt=$_h/.cache/sparkwright/prepush/$_rc0/times.tsv
   sfx "B3: rc 1" 1 "$DVRC"
   want "B3: the killed target reads UNVERIFIED, naming the runaway ceiling and the seconds it ran" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling, not proven locally \[measured [0-9]* s\]"
   wantnot "B3: and it is no FAIL" "^  FAIL  "
@@ -4647,13 +4793,13 @@ selftest_tbudget() {
     sfx "B3 mutant: with a kill spending the run the second target is not called (the cell is RED)" "argv=[scripts/x.sh]" "$(hm)"; }
   TRSRC=$_sc trmut b3c -e '/# STREC$/d'
   [ -z "$TRM" ] || { _h=$WORK/st-h3c; stt "$_h"; strun "$_h" "$TRM"
-    sfx "B3 mutant: skipping the record leaves no time against the blob (the cell is RED)" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
+    sfx "B3 mutant: skipping the record leaves no time against the blob (the cell is RED)" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
   # B3m (rewrites R17d) — a MEASURED target killed at the ceiling reads the same way, never a FAIL whose remedy names PREPUSH_CEILING_S
   stfx "$STSLEEP" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
   _h=$WORK/st-h3m; stt "$_h" "$_bx=1"; strun "$_h" "$_sc"
   want "B3m: a measured target killed at the ceiling reads UNVERIFIED" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
   wantnot "B3m: and it is no FAIL" "^  FAIL  "
-  sfx "B3m: the censored row is at least ceiling + 1 s" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
+  sfx "B3m: the censored row is at least ceiling + 1 s" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
   TRSRC=$_sc trmut b3m -e '/# STCEIL$/s/if \[ "\$RUN_RC" -ne 0 \]/if [ "$_st_ms" -eq 0 ] \&\& [ "$RUN_RC" -ne 0 ]/'
   [ -z "$TRM" ] || { _h=$WORK/st-h3n; stt "$_h" "$_bx=1"; strun "$_h" "$TRM"
     want "B3m mutant: unmeasured-only handling turns the measured kill into a FAIL (the cell is RED)" "^  FAIL  core-selftest "; }
@@ -4662,7 +4808,7 @@ selftest_tbudget() {
   _h=$WORK/st-h3e; stt "$_h"; strun "$_h" "$_sc"
   want "B3e: a target that traps TERM and exits 130 reads UNVERIFIED at the ceiling" "^  UNVERIFIED  core-selftest *scripts/x\.sh: killed at the 2 s runaway ceiling"
   wantnot "B3e: and it is no FAIL" "^  FAIL  "
-  sfx "B3e: and a censored time is recorded against its blob" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
+  sfx "B3e: and a censored time is recorded against its blob" yes "$([ "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n 1p)" -ge 3 ] 2>/dev/null && echo yes || echo no)"
   TRSRC=$_sc trmut b3e -e '/# STCEIL$/s/if .*; then/if [ "$RUN_RC" -eq 143 ]; then/'
   [ -z "$TRM" ] || { _h=$WORK/st-h3f; stt "$_h"; strun "$_h" "$TRM"
     want "B3e mutant: keyed on rc 143 the exit-130 kill reads as a FAIL (the cell is RED)" "^  FAIL  core-selftest "; }
@@ -4673,7 +4819,7 @@ selftest_tbudget() {
   stfx "$STFORGE" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
   _h=$WORK/st-h17h; stt "$_h"; strun "$_h" "$_s5"
   want "roster/R17f: a forged marker on a fast failure still reads FAIL" "^  FAIL  core-selftest "
-  sfx "roster/R17f: and no censored row is recorded" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
+  sfx "roster/R17f: and no censored row is recorded" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
   TRSRC=$_s5 trmut r17f -e '/# STCEIL$/s/ \&\& \[ "\$RUN_S" -ge "\$_st_cl" \]//'
   [ -z "$TRM" ] || { _h=$WORK/st-h17i; stt "$_h"; strun "$_h" "$TRM"
     want "roster/R17f mutant: without the time conjunct the forged marker reads UNVERIFIED at the ceiling (the cell is RED)" "scripts/x\.sh: killed at the 5 s runaway ceiling"; }
@@ -4968,7 +5114,7 @@ selftest_no_write() {
   _pf=$(ls "$_h"/.local/state/sparkwright/prepush/*/passed 2>/dev/null | sed -n 1p)
   sfx "no-write: the record landed under the temp HOME, not in the repo" yes "$([ -n "$_pf" ] && [ -f "$_pf" ] && echo yes || echo no)"
   # SWAS-568 (RL11): the run log and the report write nothing in the repo either
-  _rf=$(ls "$_h"/.local/state/sparkwright/prepush/*/runs.log 2>/dev/null | sed -n 1p)
+  _rf=$(ls "$_h"/.cache/sparkwright/prepush/*/runs.log 2>/dev/null | sed -n 1p)
   sfx "no-write: the run log landed under the temp HOME too" yes "$([ -n "$_rf" ] && [ -f "$_rf" ] && echo yes || echo no)"
   DVOUT=$( cd "$d" && HOME=$_h sh "$LANE" --log-report --base HEAD 2>&1 ) || :
   _s4=$( cd "$d" && git status --porcelain && git for-each-ref refs/ )
@@ -5256,10 +5402,10 @@ selftest_cache_opt_out() {
   cfx; CRNC=1; cr; cr; CRNC=0
   sfx "cache/opt-out: with PREPUSH_NO_CACHE=1 both runs execute the check" 2 "$(nruns)"
   want "cache/opt-out: with one note" "^# cache: off — PREPUSH_NO_CACHE=1"
-  # (the heavy-arm lock legitimately creates $HOME/.local/state/sparkwright/, and the run log (SWAS-568, no switch) the prepush/<root> dir; the cache's own `passed` file must be absent)
+  # (the heavy-arm lock and the run log (SWAS-568, no switch) legitimately create $HOME/.cache/sparkwright/ (SWAS-903); the cache's own `passed` file, under ~/.local/state, must be absent)
   sfx "cache/opt-out: and no cache state was written under HOME" no "$(ls "$_h"/.local/state/sparkwright/prepush/*/passed >/dev/null 2>&1 && echo yes || echo no)"
   _rc1=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p )
-  sfx "cache/opt-out: the root dir holds exactly the run log (no passed, no times.tsv)" "runs.log" "$(ls -A "$_h/.local/state/sparkwright/prepush/$_rc1" | tr '\n' ' ' | sed 's/ $//')"
+  sfx "cache/opt-out: the root dir holds exactly the run log (no passed, no times.tsv)" "runs.log" "$(ls -A "$_h/.cache/sparkwright/prepush/$_rc1" | tr '\n' ' ' | sed 's/ $//')"
 }
 
 # --- PREPUSH-BATTERY-CHANGE-SCOPED (T1: the derivation + skip lines) -------------------------
@@ -5729,7 +5875,7 @@ selftest_board_gate_selftest_prefix() {
 now_s() { date +%s; }
 # hlfx — a fresh HOME for one lock leg: sets _lh (HOME), _ld (the state dir), _ll (the lock file).
 hlfx() {
-  _lh=$(mktemp -d "${TMPDIR:-/tmp}/fx-lk-XXXXXX"); _ld=$_lh/.local/state/sparkwright; _ll=$_ld/heavy-arm.lock
+  _lh=$(mktemp -d "${TMPDIR:-/tmp}/fx-lk-XXXXXX"); _ld=$_lh/.cache/sparkwright; _ll=$_ld/heavy-arm.lock
   mkdir -p "$_ld"; chmod 700 "$_ld"
 }
 # hl_run <home> <budget> <poll> <unit> — hl_acquire in a subshell; prints its notes, then rc/state/UNV/seconds waited and the holder note's first line.
@@ -5737,13 +5883,13 @@ hl_run() {
   ( set +e; HOME=$1; HL_BUDGET=$2; HL_POLL=$3; HL_STATE=none; UNV=""
     _s0=$(now_s); _r=0; hl_acquire "$4" || _r=$?
     printf 'rc=%s state=%s unv=[%s] waited=%s\n' "$_r" "${HL_STATE-}" "$UNV" "$(( $(now_s) - _s0 ))"
-    [ ! -f "$1/.local/state/sparkwright/heavy-arm.holder" ] || printf 'note1=%s\n' "$(sed -n 1p "$1/.local/state/sparkwright/heavy-arm.holder")" ) 2>&1
+    [ ! -f "$1/.cache/sparkwright/heavy-arm.holder" ] || printf 'note1=%s\n' "$(sed -n 1p "$1/.cache/sparkwright/heavy-arm.holder")" ) 2>&1
 }
 # hl_holder <home> <seconds> [note-pid] — a process that HOLDS the lock for <seconds>; sets HPID. exec sleep: the pid IS the holder.
 hl_holder() {
   _hrdy=$1/ready; rm -f "$_hrdy"
   ( set +e; HOME=$1; HL_WHY=""; hl_open || exit 7; hl_try || exit 8
-    printf '%s\n/fixture/tree\nfixture-unit\n2026-01-01T00:00:00Z\n' "${3:-4242}" > "$1/.local/state/sparkwright/heavy-arm.holder"
+    printf '%s\n/fixture/tree\nfixture-unit\n2026-01-01T00:00:00Z\n' "${3:-4242}" > "$1/.cache/sparkwright/heavy-arm.holder"
     : > "$_hrdy"; exec sleep "$2" ) 2>/dev/null &
   HPID=$!; _i=0
   while [ ! -e "$_hrdy" ] && [ "$_i" -lt 100 ]; do
@@ -5829,7 +5975,83 @@ selftest_lock_phase_e2e() {
 selftest_lock_light_unlocked() {
   one_step; mkchk alpha 'exit 0'; commit_fx; _h2=$(mktemp -d "${TMPDIR:-/tmp}/fx-home-XXXXXX")
   rnh "$_h2" "$d"; sfx "lock/light: rc 0" 0 "$DVRC"
-  sfx "lock/light: a default run with no heavy unit takes no lock (no lock file)" no "$([ -e "$_h2/.local/state/sparkwright/heavy-arm.lock" ] && echo yes || echo no)"
+  sfx "lock/light: a default run with no heavy unit takes no lock (no lock file)" no "$([ -e "$_h2/.cache/sparkwright/heavy-arm.lock" ] && echo yes || echo no)"
+}
+# --- SWAS-903: the state split (plan §4.2). The heavy-arm lock, the run log and the times table live under ~/.cache/sparkwright (a directory the agent sandbox lets
+# a session write); the --warranted `passed` cache STAYS under ~/.local/state (a pass record is a forgeable skip, so it must sit where the sandbox refuses a write).
+# Every cell binds to a MUTANT: a sed on a COPY of the lane (trmut); a mutation that changes nothing fails its leg. Legs that need a read-only directory stand
+# down as root (mode 500 does not stop root).
+st903_run() { DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "${1:-$LANE}" --base HEAD --warranted 2>&1 ) && DVRC=0 || DVRC=$?; }
+st903_ro() {   # ST-T1 and ST-T2: ~/.local/state unwritable (mode 500), ~/.cache writable
+  cfx; mkdir -p "$_h/.local/state" "$_h/.cache"; chmod 500 "$_h/.local/state"
+  st903_run
+  sfx "state/T1: with ~/.local/state unwritable the run is rc 0" 0 "$DVRC"
+  want "state/T1: the heavy-arm lock is taken (under ~/.cache)" "heavy-arm lock: acquired"
+  sfx "state/T1: and the lock file is under ~/.cache/sparkwright" yes "$([ -f "$_h/.cache/sparkwright/heavy-arm.lock" ] && echo yes || echo no)"
+  wantnot "state/T1: and the verdict is not UNVERIFIED" '^PARITY-CORE: UNVERIFIED'
+  want "state/T2: the --warranted pass cache is off, with its note" '^# cache: off'
+  sfx "state/T2: the arm ran" 1 "$(nruns)"
+  st903_run; sfx "state/T2: a second run runs it again (nothing was cached)" 2 "$(nruns)"
+  wantnot "state/T2: and never prints a SKIP" '^  SKIP  '
+  sfx "state/T2: and no pass record sits under ~/.cache" no "$(ls "$_h"/.cache/sparkwright/prepush/*/passed >/dev/null 2>&1 && echo yes || echo no)"
+  trmut st903a -e 's|^  HL_DIR=\$HOME/.cache/sparkwright;|  HL_DIR=$HOME/.local/state/sparkwright;|'
+  [ -z "$TRM" ] || { st903_run "$TRM"; sfx "state/T1 mutant: the lock path reverted to ~/.local/state -> no lock is acquired (the cell is RED)" differs "$(printf '%s\n' "$DVOUT" | grep -q 'heavy-arm lock: acquired' && echo same || echo differs)"; }
+  trmut st903b -e 's|^  _sd=\$HOME/.local/state/sparkwright/prepush/\$_rc0$|  _sd=$HOME/.cache/sparkwright/prepush/$_rc0|'
+  [ -z "$TRM" ] || { st903_run "$TRM"; sfx "state/T2 mutant (a): the pass cache moved to ~/.cache -> a passed record appears (the cell is RED)" yes "$(ls "$_h"/.cache/sparkwright/prepush/*/passed >/dev/null 2>&1 && echo yes || echo no)"; }
+  trmut st903c -e 's|^cache_off() { CACHE_OK=0;|cache_off() { CACHE_OK=0; unv "cache off";|'
+  [ -z "$TRM" ] || { st903_run "$TRM"; sfx "state/T2 mutant (b): a cache that is off marks the run UNVERIFIED (the cell is RED)" yes "$(printf '%s\n' "$DVOUT" | grep -q '^PARITY-CORE: UNVERIFIED' && echo yes || echo no)"; }
+  chmod 700 "$_h/.local/state"
+}
+st903_forge() {   # ST-T3: a pass record planted under ~/.cache is not trusted
+  cfx; st903_run
+  sfx "state/T3: setup: the first run executed the check and recorded a pass under ~/.local/state" 1 "$(nruns)"
+  _rc1=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p )
+  mkdir -p "$_h/.cache/sparkwright/prepush/$_rc1"; chmod 700 "$_h/.cache/sparkwright/prepush/$_rc1"
+  cp "$_h/.local/state/sparkwright/prepush/$_rc1/passed" "$_h/.cache/sparkwright/prepush/$_rc1/passed"
+  rm -f "$_h/.local/state/sparkwright/prepush/$_rc1/passed"
+  st903_run; sfx "state/T3: a pass record planted under ~/.cache is ignored: the check ran again" 2 "$(nruns)"
+  wantnot "state/T3: and never prints a SKIP" '^  SKIP  '
+  trmut st903d -e 's|^  _sd=\$HOME/.local/state/sparkwright/prepush/\$_rc0$|  _sd=$HOME/.cache/sparkwright/prepush/$_rc0|'
+  [ -z "$TRM" ] || { st903_run "$TRM"; sfx "state/T3 mutant: the pass cache read from ~/.cache -> the planted record is trusted and the check is skipped (the cell is RED)" 2 "$(nruns)"; want "state/T3 mutant: and the run prints the SKIP line (the mutated lane really ran)" '^  SKIP  '; }
+}
+st903_xdg() {   # ST-T4: the lock path is the LITERAL $HOME/.cache, never $XDG_CACHE_HOME
+  cfx; _x=$(mktemp -d "${TMPDIR:-/tmp}/fx-xdg-XXXXXX")
+  DVOUT=$( cd "$d" && HOME=$_h XDG_CACHE_HOME=$_x PREPUSH_NO_CACHE=1 sh "$LANE" --base HEAD --warranted 2>&1 ) && DVRC=0 || DVRC=$?   # no pass cache: every arm runs, so the lock is taken
+  sfx "state/T4: nothing is written under XDG_CACHE_HOME" "" "$(ls -A "$_x")"
+  sfx "state/T4: the lock is under HOME/.cache" yes "$([ -f "$_h/.cache/sparkwright/heavy-arm.lock" ] && echo yes || echo no)"
+  trmut st903e -e 's|^  HL_DIR=\$HOME/.cache/sparkwright;|  HL_DIR=${XDG_CACHE_HOME:-$HOME/.cache}/sparkwright;|'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h XDG_CACHE_HOME=$_x PREPUSH_NO_CACHE=1 sh "$TRM" --base HEAD --warranted 2>&1 ) || :
+    sfx "state/T4 mutant: the lock path follows XDG_CACHE_HOME -> a file appears there (the cell is RED)" yes "$([ -n "$(ls -A "$_x")" ] && echo yes || echo no)"; }
+}
+st903_times() {   # ST-T5: the times table is not refused when ~/.local/state is unwritable (kit tree only: it plans the kit's own touched readers)
+  [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
+    { echo "PASS: state/T5: N/A - not the kit tree"; return 0; }
+  _pb=$(git -C "$KROOT" rev-parse HEAD~1 2>/dev/null) || { echo "PASS: state/T5: N/A - no parent commit to take a listing from"; return 0; }
+  if tr8_noci "$KROOT"; then echo "PASS: state/T5: N/A - no GitHub CI file to plan from"; return 0; fi
+  _h=$(mktemp -d "${TMPDIR:-/tmp}/fx-home-XXXXXX"); mkdir -p "$_h/.local/state" "$_h/.cache"; chmod 500 "$_h/.local/state"
+  DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "state/T5: the plan is rc 0" 0 "$DVRC"
+  wantnot "state/T5: with ~/.local/state unwritable the times table is not refused (it lives under ~/.cache)" 'times: refused'
+  trmut st903f -e 's|^  _sd=\$HOME/.cache/sparkwright/prepush/\$_r0 |  _sd=$HOME/.local/state/sparkwright/prepush/$_r0 |'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) || :
+    sfx "state/T5 mutant: the table reverted to ~/.local/state -> it is refused (the cell is RED)" yes "$(printf '%s\n' "$DVOUT" | grep -q 'times: refused' && echo yes || echo no)"; }
+  chmod 700 "$_h/.local/state"
+}
+st903_logrep() {   # ST-T6: --log-report reads the run log under ~/.cache
+  cfx; st903_run
+  DVOUT=$( cd "$d" && HOME=$_h sh "$LANE" --log-report --base HEAD 2>&1 ) || :
+  want "state/T6: --log-report reads the run log under ~/.cache" '^# runs: 1 started'
+  trmut st903g -e 's|^  _lr_d=\$HOME/.cache/sparkwright/prepush/\$_lr_r$|  _lr_d=$HOME/.local/state/sparkwright/prepush/$_lr_r|'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :
+    wantnot "state/T6 mutant: the reader reverted to ~/.local/state -> no run log is found (the cell is RED)" '^# runs: 1 started'; }
+}
+selftest_state_split() {
+  if [ "$(id -u)" = 0 ]; then
+    echo "SKIP: state/T1, T2, T5: running as root - mode 500 does not stop root, so those legs were NOT exercised"
+  else
+    st903_ro; st903_times
+  fi
+  st903_forge; st903_xdg; st903_logrep
 }
 # K2
 selftest_lock_wait() {
@@ -6389,20 +6611,28 @@ selftest_tr8_gate() {
     sfx "TR8 gate mutant M-TR8b: the anchor test removed -> the spoofed fixture no longer reads spoofed (the cell is RED)" differs "$([ "$_res" = spoofed ] && echo same || echo differs)"; }
 }
 
+# SWAS-909 (narrow part, SWAS-903 round): the TR8 legs used to plan against the REAL repository's HEAD~1, so what the real tree's LAST commit touched decided the answer (a last commit that touches
+# agent-autonomy.sh, as a PR's merge commit does in CI, made `agent-autonomy --selftest` a core-selftest and not a touched reader, so TR8 (a) read RED). They now plan against a FIXTURE: a shallow,
+# hard-link-free clone of the real tree plus ONE fixture commit that touches guard-core.sh only (the file the readers read), planned with --base <sha of HEAD~1> (the fixture commit's own diff).
+# tr8_clone <dir> -> a shallow clone of the real tree at <dir>; tr8_commit <dir> <path> -> one commit appending a comment line to <path> (a shell file).
+tr8_clone() { git clone -q --no-hardlinks --depth 1 "file://$KROOT" "$1" >/dev/null 2>&1; }
+tr8_commit() { ( cd "$1" && printf '# tr8 fixture\n' >> "$2" && git add "$2" && git -c user.email=f@x -c user.name=f -c commit.gpgsign=false commit -qm "tr8 $2" ) >/dev/null 2>&1; }
 selftest_touched_replay() {
   [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
     { echo "PASS: TR8: N/A - not the kit tree"; return 0; }
-  _pb=$(git -C "$KROOT" rev-parse HEAD~1 2>/dev/null) || { echo "PASS: TR8: N/A - no parent commit to take a listing from"; return 0; }
-  DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
-  if tr8_noci "$KROOT"; then
+  _tr=$WORK/tr8a
+  { tr8_clone "$_tr" && tr8_commit "$_tr" .claude/hooks/guard-core.sh; } || { echo "FAIL: TR8: the fixture clone of the real tree could not be built (a FAIL, never an N/A pass: the derived proof must not gain a vacuous branch)"; SF=1; return 0; }
+  _pb=$(git -C "$_tr" rev-parse HEAD~1)   # a SHA: --base takes a closed charset [A-Za-z0-9._/-]+ and refuses `HEAD~1` (rc 2, no plan)
+  DVOUT=$( cd "$_tr" && unset KIT_CI_FILE && sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  if tr8_noci "$_tr"; then
     sfx "TR8: a tree with no GitHub CI file refuses the plan, rc 2" 2 "$DVRC"
     want "TR8: and says there is no GitHub Actions CI file" 'no GitHub Actions CI file'
     echo "PASS: TR8: N/A - no GitHub CI file to plan from (the lane derives from .github/workflows/ci.yml only)"
     return 0
   fi
-  sfx "TR8: the plan on the real tree is rc 0" 0 "$DVRC"
+  sfx "TR8: the plan on the real tree is rc 0" 0 "$DVRC"   # the plan runs in the fixture clone of the real tree; the label is the end marker ci-gates TR8P-8 pins, so it stays; a refused --base is rc 2, which this line turns RED, so no leg below is vacuous
   [ "$DVRC" -ne 0 ] || echo "PASS: TR8: measured on this tree [M] — $(printf '%s\n' "$DVOUT" | sed -n 's/^# touched-readers: \([0-9]* candidate.*\) · budget.*$/\1/p')"
-  case $(tr8_gate "$KROOT") in
+  case $(tr8_gate "$_tr") in
     kit) ;;
     offkit)   # rc 0 above is the twin-table assertion (a MALFORMED row makes --plan return 1); the greps are a belt
       wantnot "TR8 off the kit tree: no malformed twin table" '^# TWIN-TABLE MALFORMED'
@@ -6415,23 +6645,38 @@ selftest_touched_replay() {
   want "TR8 (a) under an EMPTY table: S7 in agent-autonomy --selftest runs" '^  PLAN  touched-readers  *agent-autonomy --selftest '
   want "TR8 (b) under an EMPTY table: the prepush-twins census runs" '^  PLAN  touched-readers  *prepush-lane --census '
   want "TR8 (c) under an EMPTY table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
-  _h=$WORK/tr8home; _rc0=$(git -C "$KROOT" rev-list --max-parents=0 HEAD | sed -n 1p); _sd=$_h/.local/state/sparkwright/prepush/$_rc0; ( umask 077; mkdir -p "$_sd" )
+  _h=$WORK/tr8home; _rc0=$(git -C "$_tr" rev-list --max-parents=0 HEAD | sed -n 1p); _sd=$_h/.cache/sparkwright/prepush/$_rc0; ( umask 077; mkdir -p "$_sd" )
   _now=$(date +%s)
   { printf 'agent-autonomy\t--selftest\t97\t2\tci\t%s\n' "$_now"; printf 'prepush-lane\t--census\t21\t2\tci\t%s\n' "$_now"
     printf 'citation-live\t\t3\t0\tci\t%s\n' "$_now"; printf 'conformance-mass-budget\t\t62\t0\tci\t%s\n' "$_now"; } > "$_sd/times.tsv"
-  DVOUT=$( cd "$KROOT" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  DVOUT=$( cd "$_tr" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
   want "TR8 (a) under the #914 table with reds30: S7 runs, in the red-history tier" '^  PLAN  touched-readers  *agent-autonomy --selftest .*\[red-history\]'
   want "TR8 (b) under the #914 table: the census runs, in the red-history tier"     '^  PLAN  touched-readers  *prepush-lane --census .*\[red-history\]'
   want "TR8 (c) under the #914 table: citation-live runs" '^  PLAN  touched-readers  *citation-live '
   wantnot "TR8 (a): and S7 is not cut short of its time (the budget is not spent on 100 cheap checks first)" '^  PLAN  touched-readers  *agent-autonomy --selftest .*CUT:'
   sfx "TR8 (a): and S7, in the red-history tier, is the first plan line" same "$(printf '%s\n' "$DVOUT" | grep '^  PLAN  touched-readers' | sed -n 1p | grep -q 'agent-autonomy --selftest' && echo same || echo differs)"
   trmut tr8a -e 's/-k1,1n -k2,2n -k3,3/-k2,2n -k3,3/'
-  [ -z "$TRM" ] || { DVOUT=$( cd "$KROOT" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  [ -z "$TRM" ] || { DVOUT=$( cd "$_tr" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
     sfx "TR8 mutant: fastest-first ordering -> S7 is left behind the cheap checks, no longer the first plan line (the cell is RED)" differs "$(printf '%s\n' "$DVOUT" | grep '^  PLAN  touched-readers' | sed -n 1p | grep -q 'agent-autonomy --selftest' && echo same || echo differs)"; }
+  # SWAS-909: the answer must not depend on what the real tree's last commit touched. The fixture below stands for a real tree whose LAST commit touches agent-autonomy.sh (the first
+  # commit); TR8's own fixture commit (the second, guard-core.sh only) is planned with --base HEAD~1, so S7 still runs. The mutant restores the old read, the real tree's last commit
+  # (--base HEAD~2, a listing that includes agent-autonomy.sh): S7 is then no longer a touched reader and the same want reads RED.
+  _tr2=$WORK/tr8b
+  if tr8_clone "$_tr2" && tr8_commit "$_tr2" conformance/agent-autonomy.sh && tr8_commit "$_tr2" .claude/hooks/guard-core.sh; then
+    _b1=$(git -C "$_tr2" rev-parse HEAD~1); _b2=$(git -C "$_tr2" rev-parse HEAD~2)   # SHAs: --base refuses `HEAD~N` (closed charset)
+    DVOUT=$( cd "$_tr2" && unset KIT_CI_FILE && sh "$LANE" --plan --base "$_b1" 2>&1 ) && DVRC=0 || DVRC=$?
+    sfx "TR8/909: the plan against the fixture commit's own diff runs (rc 0)" 0 "$DVRC"
+    want "TR8/909: with the real tree's last commit touching agent-autonomy.sh, S7 still runs as a touched reader" '^  PLAN  touched-readers  *agent-autonomy --selftest '
+    DVOUT=$( cd "$_tr2" && unset KIT_CI_FILE && sh "$LANE" --plan --base "$_b2" 2>&1 ) && DVRC=0 || DVRC=$?
+    sfx "TR8/909 mutant: the old-read plan itself runs (rc 0), so the mutant is not vacuous" 0 "$DVRC"
+    wantnot "TR8/909 mutant: the old read (the real tree's last commit as the listing) lists agent-autonomy.sh, so S7 is no longer a touched reader (the cell is RED)" '^  PLAN  touched-readers  *agent-autonomy --selftest '
+  else
+    echo "FAIL: TR8/909: the second fixture clone could not be built (a FAIL, never an N/A pass)"; SF=1
+  fi
 }
 
 trtab() {   # trtab <home> <printf-rows-file-content already written to $WORK/trtab.rows> — put the rows where the lane under test looks
-  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _sd=$1/.local/state/sparkwright/prepush/$_rc0
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _sd=$1/.cache/sparkwright/prepush/$_rc0
   ( umask 077; mkdir -p "$_sd" ); cp "$WORK/trtab.rows" "$_sd/times.tsv"
 }
 selftest_touched_budget() {
@@ -6457,7 +6702,7 @@ selftest_touched_budget() {
   want "TR11: the first check ran" '^  OK    touched-readers  *ba '
   want "TR11: the second is listed, the budget spent by the first measured 3 s (not its predicted 1 s)" '^CI-GRADED: bb (budget spent'
   _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p )
-  sfx "TR-record: the measured wall of the check that ran is appended as a local row (the next run's time)" "local" "$(awk -F'\t' '$1 == "ba" && $3 + 0 >= 3 { r = $5 } END { print r }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
+  sfx "TR-record: the measured wall of the check that ran is appended as a local row (the next run's time)" "local" "$(awk -F'\t' '$1 == "ba" && $3 + 0 >= 3 { r = $5 } END { print r }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
   TRSRC=$_sb trmut tr11 -e 's/_rem=\$((_rem - RUN_S))/_rem=$((_rem - _pred))/'
   [ -z "$TRM" ] || { _h=$WORK/trbh2; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
     want "TR11 mutant: charging the prediction lets the second run (the cell is RED)" '^  OK    touched-readers  *bb '; }
@@ -6555,13 +6800,13 @@ exit 0'
   _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
   DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
   want "B14: the first run kills it at the cap and lists it as a ceiling hit" '^CI-GRADED: rdf (local ceiling hit at'
-  sfx "B14: the kill leaves a floor row of ceiling + 1 s = 5, which the clamp to cap + 1 s keeps (the full cap is 4)" 5 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"
+  sfx "B14: the kill leaves a floor row of ceiling + 1 s = 5, which the clamp to cap + 1 s keeps (the full cap is 4)" 5 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"
   TRSRC=$_s2 trmut b14a -e '/# TRREC$/s/\[ "\$_ncf" -eq 0 \] || { _fv=/[ 1 -eq 1 ] || { _fv=/'
   [ -z "$TRM" ] || { _h2=$WORK/trb14a; trtab "$_h2"; DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
-    sfx "B14 mutant: with the recording off no floor row is left (the cell is RED)" "" "$(awk -F'\t' '$1 == "@reader-k" { print $3 }' "$_h2/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
+    sfx "B14 mutant: with the recording off no floor row is left (the cell is RED)" "" "$(awk -F'\t' '$1 == "@reader-k" { print $3 }' "$_h2/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"; }
   TRSRC=$_s2 trmut b14b -e '/# TRREC$/s/-le \$((TR_CAPE + 1)) \] || _fv=\$((TR_CAPE + 1));/-le 0 ] || _fv=$TR_CAPE;/'
   [ -z "$TRM" ] || { _h2=$WORK/trb14b; trtab "$_h2"; DVOUT=$( cd "$d" && HOME=$_h2 PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) || :
-    sfx "B14 mutant: with the old clamp to the full cap the floor is 4 and the reader would run and be killed again (the cell is RED)" 4 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h2/.local/state/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"; }
+    sfx "B14 mutant: with the old clamp to the full cap the floor is 4 and the reader would run and be killed again (the cell is RED)" 4 "$(awk -F'\t' '$1 == "@reader-k" && $2 == "rdf" { print $3 }' "$_h2/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null | sed -n '$p')"; }
   # the next runs: a fast stub (uncommitted, so the listing is unchanged), the floor the first run actually wrote (home $_h), then a floor 31 days old
   mkchk rdf ': scripts/preflight.sh'
   DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_s2" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
@@ -6658,7 +6903,7 @@ GH
   chmod 755 "$_g/gh"; _h=$WORK/trref
   DVOUT=$( cd "$d" && PATH=$_g:$PATH HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
   sfx "refresh: rc 0" 0 "$DVRC"
-  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t=$_h/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t=$_h/.cache/sparkwright/prepush/$_rc0/times.tsv
   sfx "refresh: the step row carries the CI wall" "alpha		97	0	ci" "$(awk -F'\t' '$1=="alpha" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
   sfx "refresh: a failed step becomes a RED row (count, source red) for its invocation, mapped by step name" "beta		0	1	red" "$(awk -F'\t' '$1=="beta" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t" 2>/dev/null)"
   # the red history LEARNS: beta had no red row and no seed, and is now tier 1; alpha is not
@@ -6689,7 +6934,7 @@ GH
   # M1: a failing gh KEEPS the old rows and is rc 1 (a failure must not wipe the red history)
   _gb=$WORK/badgh; mkdir -p "$_gb"; printf '#!/bin/sh\nexit 1\n' > "$_gb/gh"; chmod 755 "$_gb/gh"
   printf 'beta\t\t0\t2\tred\t%s\n' "$(date +%s)" > "$WORK/trtab.rows"; _h4=$WORK/trkeep; trtab "$_h4"
-  _t4=$_h4/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  _t4=$_h4/.cache/sparkwright/prepush/$_rc0/times.tsv
   DVOUT=$( cd "$d" && PATH=$_gb:$PATH HOME=$_h4 PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
   sfx "M1: a failing gh is rc 1" 1 "$DVRC"
   sfx "M1: and the old red row is KEPT (count still 2)" "beta		0	2	red" "$(awk -F'\t' '$1=="beta" { print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 }' "$_t4" 2>/dev/null)"
@@ -6715,7 +6960,7 @@ YAML
   commit_fx; _g2=$WORK/fakegh2; mkdir -p "$_g2"
   sed -e "s/Other step/Blk step\\\\nGhost step/" -e "s/job-a/job-b/g" -e "s/My step/Blk step/g" "$_g/gh" > "$_g2/gh"; chmod 755 "$_g2/gh"
   _h5=$WORK/trblk; DVOUT=$( cd "$d" && PATH=$_g2:$PATH HOME=$_h5 PREPUSH_NO_CACHE=0 sh "$LANE" --refresh-times 2>&1 ) && DVRC=0 || DVRC=$?
-  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t5=$_h5/.local/state/sparkwright/prepush/$_rc0/times.tsv
+  _rc0=$( cd "$d" && git rev-list --max-parents=0 HEAD | sed -n 1p ); _t5=$_h5/.cache/sparkwright/prepush/$_rc0/times.tsv
   sfx "M2: BOTH lines of the block get the step's red row" "alpha beta" "$(awk -F'\t' '$5 == "red" { print $1 }' "$_t5" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')"
   want "M2: and the failed step name that maps to no invocation is counted" '1 failed step name(s) mapped to no invocation'
 }
@@ -7315,7 +7560,7 @@ selftest_tree() {
 RLS_RE='^v1 start run=[0-9]+-[0-9]+ ts=[0-9]+ head=[0-9a-f]{40} base=([0-9a-f]{40}|-) row=([A-Z0-9][A-Z0-9-]{0,31}|-) mode=(default|warranted|green-on-clone|exports|slow|non-vacuity|plan) ci=(default|other) lane=[0-9]+ os=(darwin|linux|other) j=[0-9]+ free_mb=([0-9]+|-) floor_mb=[0-9]+ listing=([0-9]+|-) brule=[a-z,-]+$'
 RLE_RE='^v1 end run=[0-9]+-[0-9]+ ts=[0-9]+ verdict=(OK|FAIL|UNVERIFIED|PLAN|INTERRUPTED) rc=([0-9]+|-) wall_s=([0-9]+|-) lock=(held|failed|none) lock_wait_s=([0-9]+|-) ran=[0-9]+ fails=[0-9]+ crash=[0-9]+ u=[^ ]+( trunc=[0-9]+)? jf=[0-9]+ race=[0-9]+$'
 rlh() { _rlh_d=$(mktemp -d "${TMPDIR:-/tmp}/fx-rlh-XXXXXX"); printf '%s\n' "$_rlh_d"; }   # a private HOME
-rlf() { _rlf_r=$(git -C "$2" rev-list --max-parents=0 HEAD | sed -n 1p); printf '%s\n' "$1/.local/state/sparkwright/prepush/$_rlf_r"; }   # <home> <repo> -> the state dir of that repo
+rlf() { _rlf_r=$(git -C "$2" rev-list --max-parents=0 HEAD | sed -n 1p); printf '%s\n' "$1/.cache/sparkwright/prepush/$_rlf_r"; }   # <home> <repo> -> the state dir of that repo
 rlc() { _rlc_n=$(grep -Ec -e "$2" "$1" 2>/dev/null || :); printf '%s\n' "${_rlc_n:-0}"; }   # <file> <ERE> -> how many lines match (0 when the file is absent)
 rlk() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | sed -n 1p; }   # <record line> <key> -> its value
 rlw() { printf '%s\n' "$(lastline)" | sed -n 's/^PARITY-CORE: \([A-Z]*\).*$/\1/p'; }   # the verdict word of the last stdout line
@@ -7526,7 +7771,7 @@ selftest_runlog_unread() {
 plr() { _plh=$1; _pll=$2; shift 2; DVOUT=$( cd "$d" && env HOME="$_plh" PREPUSH_NO_CACHE=0 sh "$_pll" --base "$_stb" "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
 pl_end() { grep '^v1 end ' "$(rlf "$1" "$d")/runs.log" | sed -n 1p; }   # <home> -> its first end record
 pl_units() { rlk "$1" u | tr ',' '\n' | awk -F: '{ print $1 ":" $2 ":" $3 }' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'; }   # <end record> -> sorted bucket:name:verdict
-pl_times() { printf '%s\n' "$1/.local/state/sparkwright/prepush/$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)/times.tsv"; }   # <home> -> its times table
+pl_times() { printf '%s\n' "$1/.cache/sparkwright/prepush/$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)/times.tsv"; }   # <home> -> its times table
 pl_pkrows() { awk -F'\t' '$1 == "@pool-k" { print $2 " " $3 }' "$(pl_times "$1")" 2>/dev/null || :; }   # <home> -> one "key blob" per @pool-k row
 pl_ncount() { grep -c -e "$2" "$1" 2>/dev/null || :; }
 pl_racefx() {   # alpha holds `busy` until beta has checked it; beta fails if it sees `busy`: in parallel beta fails, alone it passes
@@ -8011,6 +8256,219 @@ selftest_pool_report() {
   [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "RL13 mutant: with the line dropped nothing is printed (the cell is RED)" "@pool-k units"; }
   TRSRC=$LANE_J2 trmut rl13b -e '/# RLPKN$/s/.*/  _lp_n=0   # RLPKN/'
   [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "RL13 mutant: with N always 0 a table holding a row prints 0 (the cell is RED)" "^# @pool-k units: 1\$"; }
+  # SWAS-903 (F5): this leg reads the moved lr_poolk path; the mutant reverts ONLY _lp_d to ~/.local/state. NOTE: stfx above re-made $d (a new root commit), so the row is planted
+  # in $_sd2, the state dir of the CURRENT $d, not in $_sd (the old repository's: the pre-existing rl13b mutant above reads that one, so it grades only that the line can print 0).
+  printf '@pool-k\tscripts/x.sh\t%040d\t0\tlocal\t1\n' 1 > "$_sd2/times.tsv"
+  pl_rep; want "RL13/903: a @pool-k row planted under ~/.cache is counted by --log-report" "^# @pool-k units: 1\$"
+  TRSRC=$LANE_J2 trmut rl13c -e 's|^  _lp_d=\$HOME/.cache/sparkwright/prepush/\$_lp_r|  _lp_d=$HOME/.local/state/sparkwright/prepush/$_lp_r|'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && HOME=$_h sh "$TRM" --log-report --base HEAD 2>&1 ) || :; wantnot "RL13/903 mutant: _lp_d reverted to ~/.local/state -> the planted row is not found (the cell is RED)" "^# @pool-k units: 1\$"; }
+}
+
+# ===================================================================================================
+# SWAS-871 (S1) - the lane's own selftest runs as six committed groups (docs/plans/2026-11-14-prepush-lane-selftest-split-871-plan.md). Cells: R1-R6c (the partition lock), R7-R11 (the pool's group units), PK, LR1 (the run log).
+# stg_mut <out> <sed-expr>... — a copy of the lane with edits; when the edit changed nothing it prints a FAIL, marks the run, clears DVOUT/DVRC and returns 1, so a mutant whose anchor is gone is never a silent skip. Callers write `stg_mut ... && stg_run ...` (a dead anchor then never runs a whole nested selftest) or `stg_mut ... || :` (the selftest runs under set -e).
+stg_mut() {
+  _sm_o=$1; shift
+  sed "$@" "$LANE_REAL" > "$_sm_o"
+  if cmp -s "$LANE_REAL" "$_sm_o"; then echo "FAIL: stg: the mutant $_sm_o changed nothing (its anchor is gone)"; SF=1; DVOUT=""; DVRC=99; return 1; fi
+  return 0
+}
+# stg_run <lane> [args...] — a run from the work root (no repository: every call here refuses before it runs a leg) -> DVOUT/DVRC
+stg_run() { _sr_l=$1; shift; DVOUT=$( cd "$WORK" && sh "$_sr_l" "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
+# stg_mini <out> — the lane up to its selftest-only helpers (every leg left out), a trivial lane_mut, and a two-group table (ga: a1 a2; gb: b1 b2 b3) of no-op legs, so the group arm can be run for real and quickly.
+stg_mini() {
+  awk '/^# --- selftest-only helpers/ { exit } !/^ST_GROUPS=/ && !/^ST_G_g[0-9]+=/ && !/^main "\$@"$/ { print }' "$LANE_REAL" > "$1"
+  { printf '%s\n' 'lane_mut() { cp "$LANE" "$1"; echo differs; }'
+    printf '%s\n' 'selftest_a1() { echo "PASS: a1"; }' 'selftest_a2() { echo "PASS: a2"; }' 'selftest_b1() { echo "PASS: b1"; }' 'selftest_b2() { echo "PASS: b2"; }' 'selftest_b3() { echo "PASS: b3"; }'
+    if [ "${2-}" = odd ]; then printf '%s\n' 'selftest_odd(){ :; }'; fi   # a leg written without the space before its brace, in no group
+    printf '%s\n' "ST_GROUPS='ga gb'" "ST_G_ga='a1 a2'" "ST_G_gb='b1 b2 b3'" 'main "$@"'; } >> "$1"
+}
+selftest_stg() {
+  _a=$WORK/lane-stg-a.sh
+  # R1 - a leg in no group; the census says so too (the call sits above the marker, so the non-vacuity sweep reaches it; the mutant here deletes it)
+  stg_mut "$_a" -e '/^ST_G_g3=/s/orphan_trap //' && stg_run "$_a" --selftest-group g3
+  sfx "stg/R1: a leg in no group is rc 1" 1 "$DVRC"
+  want "stg/R1: the text names the leg" "leg orphan_trap is in no group"
+  wantnot "stg/R1: and no leg ran" "^# leg "
+  one_step; mkchk alpha 'exit 0'; commit_fx
+  DVOUT=$( cd "$d" && sh "$_a" --census 2>&1 ) && DVRC=0 || DVRC=$?
+  sfx "stg/R1: --census on a kit tree refuses it too (rc 1)" 1 "$DVRC"
+  want "stg/R1: with the same text" "leg orphan_trap is in no group"
+  stg_mut "$WORK/lane-stg-am.sh" -e '/^ST_G_g3=/s/orphan_trap //' -e '/# STGCEN$/d' && { DVOUT=$( cd "$d" && sh "$WORK/lane-stg-am.sh" --census 2>&1 ) || :; }
+  wantnot "stg/R1 mutant: with the census arm's call deleted the missing leg goes unnamed (the cell is RED)" "is in no group"
+  DVOUT=$( cd "$d" && sh "$LANE_REAL" --census 2>&1 ) || :
+  wantnot "stg/R1: the real table passes the census (control)" "group table"
+  # R2 - a group names an undefined leg
+  stg_mut "$_a" -e '/^ST_G_g3=/s/orphan_trap /orphan_trap nosuch /' && stg_run "$_a" --selftest-group g3
+  sfx "stg/R2: an undefined leg is rc 1" 1 "$DVRC"
+  want "stg/R2: the text names the group and the leg" "group g3 names an undefined leg nosuch"
+  # R3 - a leg in two groups
+  stg_mut "$_a" -e '/^ST_G_g4=/s/tbudget /tbudget orphan_trap /' && stg_run "$_a" --selftest-group g4
+  sfx "stg/R3: a leg in two groups is rc 1" 1 "$DVRC"
+  want "stg/R3: the text names the leg and both groups" "leg orphan_trap is in groups g3 and g4"
+  # R4 - an empty group is never a vacuous OK
+  stg_mut "$_a" -e "s/^ST_G_g6=.*\$/ST_G_g6=''/" && stg_run "$_a" --selftest-group g6
+  sfx "stg/R4: an empty group is rc 1" 1 "$DVRC"
+  want "stg/R4: the text names the group" "group g6 has no legs"
+  wantnot "stg/R4: and never an OK line" "selftest-group g6: OK"
+  # R5 - a malformed table: a duplicate name, and a name outside [a-z0-9]+
+  stg_mut "$_a" -e "s/^ST_GROUPS='g1 g2 /ST_GROUPS='g1 g1 /" && stg_run "$_a" --selftest-group g1
+  sfx "stg/R5: a duplicate group name is rc 1" 1 "$DVRC"
+  want "stg/R5: and reads a bad table" "bad group table"
+  stg_mut "$_a" -e "s/^ST_GROUPS='g1 g2 /ST_GROUPS='g-1;x g2 /" && stg_run "$_a" --selftest-group g2
+  sfx "stg/R5: a name outside the closed charset is rc 1" 1 "$DVRC"
+  want "stg/R5: and reads a bad table too" "bad group table"
+  # R6 - the operand: unknown, missing, repeated, and beside another mode are rc 2 with no leg run
+  stg_run "$LANE_REAL" --selftest-group nosuchgroup; sfx "stg/R6: an unknown group is rc 2" 2 "$DVRC"; wantnot "stg/R6: and nothing ran" "^# leg "
+  stg_run "$LANE_REAL" --selftest-group; sfx "stg/R6: no operand is rc 2" 2 "$DVRC"; wantnot "stg/R6: and nothing ran (no operand)" "^# leg "
+  stg_run "$LANE_REAL" --selftest-group g1 g2; sfx "stg/R6: a second operand is rc 2" 2 "$DVRC"; wantnot "stg/R6: and nothing ran (second operand)" "^# leg "
+  stg_run "$LANE_REAL" --selftest-group g1 --selftest-group g2; sfx "stg/R6: a repeated mode is rc 2" 2 "$DVRC"
+  stg_run "$LANE_REAL" --selftest --selftest-group g1; sfx "stg/R6: beside --selftest is rc 2" 2 "$DVRC"; wantnot "stg/R6: and nothing ran (beside)" "^# leg "
+  stg_run "$LANE_REAL" --selftest-group g1 --selftest; sfx "stg/R6: --selftest after the group is rc 2" 2 "$DVRC"; wantnot "stg/R6: and nothing ran (after)" "^# leg "
+  stg_run "$LANE_REAL" --selftest-group 'g1 g2'; sfx "stg/R6: a two-word operand is rc 2 (matched whole, never as a list)" 2 "$DVRC"
+  # R6b, R6c - the computed count, and --selftest running every group once, in the table's order
+  stg_mini "$WORK/lane-stg-ab.sh"
+  stg_run "$WORK/lane-stg-ab.sh" --selftest-group ga
+  sfx "stg/R6b: the two-leg group is rc 0" 0 "$DVRC"
+  sfx "stg/R6b: and says 2 of 2" "prepush-lane --selftest-group ga: OK (2 of 2 legs)" "$(lastline)"
+  wantnot "stg/R6b: and ran no leg of the other group" "^# leg b1 "
+  stg_run "$WORK/lane-stg-ab.sh" --selftest-group gb
+  sfx "stg/R6b: the three-leg group says 3 of 3" "prepush-lane --selftest-group gb: OK (3 of 3 legs)" "$(lastline)"
+  wantnot "stg/R6b: and never the whole-run OK line" "^prepush-lane --selftest: OK"
+  sed -e '/# STGN$/s/_stg_n=\$((_stg_n + \$#))/_stg_n=2/' "$WORK/lane-stg-ab.sh" > "$WORK/lane-stg-abm.sh"
+  sfx "stg/R6b mutant: the count mutation changed the mini lane" differs "$(cmp -s "$WORK/lane-stg-ab.sh" "$WORK/lane-stg-abm.sh" && echo same || echo differs)"
+  stg_run "$WORK/lane-stg-abm.sh" --selftest-group gb
+  sfx "stg/R6b mutant: with N a literal 2 the three-leg group reads 3 of 2 (the cell is RED)" "prepush-lane --selftest-group gb: OK (3 of 2 legs)" "$(lastline)"
+  stg_run "$WORK/lane-stg-ab.sh" --selftest
+  sfx "stg/R6c: --selftest runs every group's legs once, in the table's order" "# leg a1 # leg a2 # leg b1 # leg b2 # leg b3" "$(printf '%s\n' "$DVOUT" | sed -n 's/^\(# leg [a-z0-9]*\) [0-9]*$/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+  sfx "stg/R6c: and ends on the whole-run OK line" "prepush-lane --selftest: OK" "$(lastline)"
+  # I - a leg defined as `selftest_odd(){` is still a leg: in no group it reds (the old match took only `selftest_x() {`)
+  stg_mini "$WORK/lane-stg-odd.sh" odd; stg_run "$WORK/lane-stg-odd.sh" --selftest-group ga
+  sfx "stg/I: a leg written selftest_odd(){ and left in no group is rc 1" 1 "$DVRC"
+  want "stg/I: and is named" "leg odd is in no group"
+  sed -e '/# STGDEF$/s/\[ \\t]\*\\{/ \\{/' "$WORK/lane-stg-odd.sh" > "$WORK/lane-stg-oddm.sh"
+  sfx "stg/I mutant: the odd-form change altered the mini lane" differs "$(cmp -s "$WORK/lane-stg-odd.sh" "$WORK/lane-stg-oddm.sh" && echo same || echo differs)"
+  stg_run "$WORK/lane-stg-oddm.sh" --selftest-group ga
+  wantnot "stg/I mutant: with the old definition match the odd leg goes unseen (the cell is RED)" "leg odd is in no group"
+  # B(ii) - a shadow assignment: the runtime table must equal the one committed literal selftest-hermetic.sh parses
+  stg_mut "$_a" -e 's/^ST_G_g6=/ST_GROUPS="g1 g2 g3 g4 g5"; ST_G_g6=/' && stg_run "$_a" --selftest-group g1
+  sfx "stg/B: a double-quoted ST_GROUPS shadow is rc 1" 1 "$DVRC"
+  want "stg/B: and the text says the table differs from its committed literal" "differs from its one committed literal line"
+  stg_mut "$WORK/lane-stg-bm.sh" -e 's/^ST_G_g6=/ST_GROUPS="g1 g2 g3 g4 g5"; ST_G_g6=/' -e '/# STGSTATIC$/d' && stg_run "$WORK/lane-stg-bm.sh" --selftest-group g1
+  wantnot "stg/B mutant: with the comparison deleted the shadow is not named (the cell is RED)" "differs from its one committed literal line"
+  # C - st_gfin counts DISTINCT group units: the same group recorded twice is not a third group (function level, no run)
+  sed -n '/^st_gfin() {/,/^}/p' "$LANE_REAL" > "$WORK/stg-gfin.fn"
+  sed -e '/# STGDISTINCT$/s/LC_ALL=C sort -u/cat/g' "$WORK/stg-gfin.fn" > "$WORK/stg-gfinm.fn"
+  # shellcheck source=/dev/null  # sources a function file extracted from the lane copy at run time
+  stg_gf() { ( . "$1"; ST_K=0; ST_NM=0; ST_GL="p${TAB}3$NL"; ST_GP="p${TAB}g1${TAB}o$NL""p${TAB}g1${TAB}o$NL""p${TAB}g2${TAB}o$NL"; st_gfin; echo "$ST_K/$ST_NM" ); }
+  sfx "stg/C: three units for a three-group target, g1 recorded twice, counts as named (0 run/1 named), not as run" "0/1" "$(stg_gf "$WORK/stg-gfin.fn")"
+  sfx "stg/C mutant: without sort -u the double g1 reads as three passes and the target as run (the cell is RED)" "1/0" "$(stg_gf "$WORK/stg-gfinm.fn")"
+}
+# stg_stub <path> <kind: ok|bad|malformed> — a stub conformance/prepush-lane.sh carrying a three-group table; `bad` fails group g2, `malformed` has a group name outside [a-z0-9]+.
+stg_stub() {
+  _sq="'"
+  { printf '#!/bin/sh\n'
+    if [ "$2" = malformed ]; then printf '%s\n' "ST_GROUPS=${_sq}g1 G-2${_sq}"; else printf '%s\n' "ST_GROUPS=${_sq}g1 g2 g3${_sq}"; fi
+    printf '%s\n' "ST_G_g1=${_sq}a${_sq}" "ST_G_g2=${_sq}b${_sq}" "ST_G_g3=${_sq}c${_sq}"
+    printf '%s\n' 'case ${1-} in' '  --selftest) exit 0 ;;'
+    if [ "$2" = bad ]; then printf '%s\n' '  --selftest-group) case ${2-} in g2) echo "FAIL: planted"; exit 1 ;; esac ;;'; else printf '%s\n' '  --selftest-group) exit 0 ;;'; fi
+    printf '%s\n' 'esac'; } > "$1"
+}
+# stg_fx <stub kind> — a kit-tree fixture: the REAL selftest-hermetic.sh, the stub lane, a plain scripts/x.sh and a conformance/other.sh with its own ST_GROUPS line the hermetic lane does not list -> $d, _stb
+stg_fx() {
+  one_step; mkchk alpha 'exit 0'; cp "$KROOT/conformance/selftest-hermetic.sh" "$d/conformance/selftest-hermetic.sh"; commit_fx; _stb=$(git -C "$d" rev-parse HEAD)
+  stg_stub "$d/conformance/prepush-lane.sh" "$1"
+  mkdir -p "$d/scripts"; printf '#!/bin/sh\n# x\ncase ${1-} in --selftest) exit 0 ;; esac\n' > "$d/scripts/x.sh"
+  printf '#!/bin/sh\nST_GROUPS=%s\ncase ${1-} in --selftest) exit 0 ;; esac\n' "'g1'" > "$d/conformance/other.sh"
+  commit_fx
+}
+stg_seed() {   # <home> — two @pool-k rows: one for group g2 of the split target (stale bytes), one for a group this run never starts
+  : > "$WORK/trtab.rows"
+  printf '@pool-k\tconformance/prepush-lane.sh@g2\t%040d\t0\tlocal\t%s\n@pool-k\tconformance/prepush-lane.sh@g9\t%040d\t0\tlocal\t%s\n' 7 "$(date +%s)" 8 "$(date +%s)" >> "$WORK/trtab.rows"
+  trtab "$1"
+}
+selftest_stg_pool() {
+  [ -n "$KROOT" ] && [ -f "$KROOT/conformance/selftest-hermetic.sh" ] || { echo "PASS: stg/pool: N/A - selftest-hermetic.sh is not in this tree"; return 0; }
+  # R7, R9, R10, PK - one J = 2 run: the split target is three units (g2 fails), a plain target and an unlisted ST_GROUPS file run whole
+  stg_fx bad; _h=$(rlh); stg_seed "$_h"; plr "$_h" "$LANE_J2" --verbose; _e=$(pl_end "$_h")
+  sfx "stg/R7: a failing group makes the run rc 1" 1 "$DVRC"
+  want "stg/R7: the FAIL row names group g2" "^  FAIL  core-selftest *conformance/prepush-lane\.sh@g2 (both faces)"
+  want "stg/R7: group g1 is its own OK row" "^  OK    core-selftest *conformance/prepush-lane\.sh@g1 (both faces)"
+  want "stg/R7: and g3" "^  OK    core-selftest *conformance/prepush-lane\.sh@g3 (both faces)"
+  want "stg/R7: the target is counted once, and not as run while a group fails (run: 2 of 3 targets)" "^# touched-selftest roster: 3 (run: 2, CI-bound: 0, named: 1, "
+  sfx "stg/R9: the run log holds three distinct group names" 3 "$(rlk "$_e" u | tr ',' '\n' | grep -c '^core-selftest:conformance/prepush-lane\.sh@g[123]:' || :)"
+  sfx "stg/R9: and none is a repeat (#2)" 0 "$(rlk "$_e" u | tr ',' '\n' | grep -c '#2' || :)"
+  sfx "stg/PK: group g2's stale @pool-k row is retired, and g9's (a unit this run never started) is kept" "0|1" "$(pl_pkrows "$_h" | grep -c '^conformance/prepush-lane\.sh@g2 ' || :)|$(pl_pkrows "$_h" | grep -c '^conformance/prepush-lane\.sh@g9 ' || :)"
+  want "stg/R10: the table-less target ran whole, as before" "^  OK    core-selftest *scripts/x\.sh (both faces)"
+  wantnot "stg/R10: with no --groups call for it" "selftest-hermetic\.sh --groups scripts/x\.sh"
+  want "stg/R10: a file with an ST_GROUPS line the hermetic lane does not list is asked once" "selftest-hermetic\.sh --groups conformance/other\.sh"
+  want "stg/R10: and runs whole when --groups prints nothing" "^  OK    core-selftest *conformance/other\.sh (both faces)"
+  wantnot "stg/R10: with no group name and no fallback note" "other\.sh@\|groups unreadable"
+  # the same fixture with the stub fixed: the target is run once all three groups pass
+  stg_stub "$d/conformance/prepush-lane.sh" ok; commit_fx; plr "$(rlh)" "$LANE_J2"
+  sfx "stg/R7: with the stub fixed the run is rc 0" 0 "$DVRC"
+  want "stg/R7: and the target counts as run (3 of 3)" "^# touched-selftest roster: 3 (run: 3, CI-bound: 0, named: 0, "
+  TRSRC=$LANE_J2 trmut stg7 -e '/# STGFIN$/s/-ge "\$_sf_n"/-ge 1/'
+  [ -z "$TRM" ] || { stg_fx bad; plr "$(rlh)" "$TRM"; wantnot "stg/R7 mutant: counted run after its first group, the target reads run: 3 while g2 fails (the cell is RED)" "^# touched-selftest roster: 3 (run: 2, "; }
+  TRSRC=$LANE_J2 trmut stg9 -e '/# RLGRP$/s/_rn_v=\$_rn_v\$_rn_g/_rn_v=$_rn_v/'
+  [ -z "$TRM" ] || { stg_fx bad; _h2=$(rlh); plr "$_h2" "$TRM"
+    sfx "stg/R9 mutant: with the group dropped from the name no group name is logged (the cell is RED)" 0 "$(rlk "$(pl_end "$_h2")" u | tr ',' '\n' | grep -c '^core-selftest:conformance/prepush-lane\.sh@g[123]:' || :)"; }
+  TRSRC=$LANE_J2 trmut stgpk -e '/# PLKEY$/s/\${_pk_g:+@\$_pk_g}//'
+  [ -z "$TRM" ] || { stg_fx bad; _h3=$(rlh); stg_seed "$_h3"; plr "$_h3" "$TRM"
+    sfx "stg/PK mutant: with the key lacking the group g2's old row stays (the cell is RED)" 1 "$(pl_pkrows "$_h3" | grep -c '^conformance/prepush-lane\.sh@g2 ' || :)"; }
+  # R8 - a table the hermetic lane cannot read: ONE whole unit and a note, never a skipped target
+  stg_fx malformed; plr "$(rlh)" "$LANE_J2"
+  want "stg/R8: the note says the groups were unreadable" "^# core-selftest: conformance/prepush-lane\.sh — groups unreadable: ran whole"
+  want "stg/R8: the target runs as ONE whole unit" "^  OK    core-selftest *conformance/prepush-lane\.sh (both faces)"
+  wantnot "stg/R8: and not as groups" "prepush-lane\.sh@"
+  TRSRC=$LANE_J2 trmut stg8 -e '/# STGWHOLE$/s/ST_SC=.*# STGWHOLE$/:   # STGWHOLE/'
+  [ -z "$TRM" ] || { stg_fx malformed; plr "$(rlh)" "$TRM"; wantnot "stg/R8 mutant: with the fallback skipping the target it has no row (the cell is RED)" "^  OK    core-selftest *conformance/prepush-lane\.sh (both faces)"; }
+  # R11 - the fail-open guard: a hermetic answer to --groups that truncates the lane's own target file must not drop the target after it
+  _r11='case $1 in
+--groups) : > "$TMPDIR/../herm.targets"; echo g1; echo g2 ;;
+--group) echo "TARGET: $3 group $2 (both faces)" ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  stfx "$_r11" conformance/prepush-lane.sh scripts/x.sh; stg_stub "$d/conformance/prepush-lane.sh" ok; commit_fx; rn "$d" --base "$_stb"
+  want "stg/R11: the split target is two group rows" "^  OK    core-selftest *conformance/prepush-lane\.sh@g2 (both faces)"
+  want "stg/R11: and the plain target after it still has its row" "^  OK    core-selftest *scripts/x\.sh (both faces)"
+  TRSRC=$LANE trmut stg11 -e '/# STSC1$/s/# STSC1$/; run_inv "$GRP_CEIL" sh conformance\/selftest-hermetic.sh --groups "$_st_t"   # STSC1/'
+  [ -z "$TRM" ] || { stfx "$_r11" conformance/prepush-lane.sh scripts/x.sh; stg_stub "$d/conformance/prepush-lane.sh" ok; commit_fx; rnl "$TRM" "$d" --base "$_stb"
+    wantnot "stg/R11 mutant: with the child run inside the file loop the plain target loses its row (the cell is RED)" "^  OK    core-selftest *scripts/x\.sh (both faces)"; }
+  # R8b (and C's duplicate) - a --groups answer that exits 0 but names a group outside [a-z0-9]+ (prepush-lane.sh: g1 and G-2) or names one twice (other.sh: g1 and g1): each target runs as ONE whole unit with the note, never as @ rows
+  _r8b='case $1 in
+--groups) case $2 in conformance/other.sh) printf "g1\ng1\n" ;; *) printf "g1\nG-2\n" ;; esac ;;
+--group) echo "TARGET: $3 group $2 (both faces)" ;;
+*) echo "TARGET: $1 (both faces)" ;;
+esac'
+  r8b_fx() { stfx "$_r8b" conformance/prepush-lane.sh conformance/other.sh; stg_stub "$d/conformance/prepush-lane.sh" ok; printf '#!/bin/sh\nST_GROUPS=%s\ncase ${1-} in --selftest) exit 0 ;; esac\n' "'g1'" > "$d/conformance/other.sh"; commit_fx; }
+  r8b_fx; rn "$d" --base "$_stb"
+  want "stg/R8b: the bad name takes the fallback note" "^# core-selftest: conformance/prepush-lane\.sh — groups unreadable: ran whole"
+  want "stg/R8b: the duplicate name takes it too" "^# core-selftest: conformance/other\.sh — groups unreadable: ran whole"
+  want "stg/R8b: the split target is ONE whole OK row" "^  OK    core-selftest *conformance/prepush-lane\.sh (both faces)"
+  want "stg/R8b: and so is the other target" "^  OK    core-selftest *conformance/other\.sh (both faces)"
+  wantnot "stg/R8b: and no unit is a group row" "core-selftest *conformance/[a-z-]*\.sh@"
+  TRSRC=$LANE trmut stg8b1 -e '/# STGNAME$/d'
+  [ -z "$TRM" ] || { r8b_fx; rnl "$TRM" "$d" --base "$_stb"; want "stg/R8b mutant: with the name re-check deleted G-2 becomes a unit (the cell is RED)" "core-selftest *conformance/prepush-lane\.sh@G-2"; }
+  TRSRC=$LANE trmut stg8b2 -e '/# STGDUP$/d'
+  [ -z "$TRM" ] || { r8b_fx; rnl "$TRM" "$d" --base "$_stb"; want "stg/R8b mutant: with the duplicate check deleted g1 twice becomes two units (the cell is RED)" "core-selftest *conformance/other\.sh@g1"; }
+}
+# LR1 - --log-report reads group names (`@`) and prints one seconds line per group
+selftest_stg_log() {
+  one_step; mkchk alpha 'exit 0'; commit_fx; _h=$(rlh); _sd=$(rlf "$_h" "$d"); ( umask 077; mkdir -p "$_sd" ); chmod 700 "$_sd"
+  _hd=$(git -C "$d" rev-parse HEAD)
+  { printf 'v1 start run=1-1 ts=1 head=%s base=- row=- mode=default ci=default lane=1 os=linux j=2 free_mb=- floor_mb=6144 listing=- brule=none\n' "$_hd"
+    printf 'v1 end run=1-1 ts=2 verdict=FAIL rc=1 wall_s=40 lock=none lock_wait_s=- ran=2 fails=1 crash=0 u=core-selftest:conformance/prepush-lane.sh@g1:OK:12:-,core-selftest:conformance/prepush-lane.sh@g2:FAIL:30:- jf=2 race=0\n'; } > "$_sd/runs.log"
+  lr1() { DVOUT=$( cd "$d" && HOME=$_h sh "$1" --log-report --base HEAD 2>&1 ) || :; }
+  lr1 "$LANE_REAL"
+  want "stg/LR1: both records are read (no malformed line)" "^# runs: 1 started, 1 ended, 0 incomplete.*; 0 malformed line(s) skipped"
+  want "stg/LR1: group g1 has its own seconds line" "^# unit seconds \[M\]: conformance/prepush-lane\.sh@g1 n=1 p50=12 max=12\$"
+  want "stg/LR1: and g2" "^# unit seconds \[M\]: conformance/prepush-lane\.sh@g2 n=1 p50=30 max=30\$"
+  stg_mut "$WORK/lane-stg-l1.sh" -e 's|\[-A-Za-z0-9._/#@\]+|[-A-Za-z0-9._/#]+|' && lr1 "$WORK/lane-stg-l1.sh"
+  want "stg/LR1 mutant: with the grammar refusing @ the end record is skipped as malformed (the cell is RED)" "1 malformed line(s) skipped"
+  wantnot "stg/LR1 mutant: and no group has a seconds line" "^# unit seconds"
+  stg_mut "$WORK/lane-stg-l2.sh" -e '/# LRUNIT$/d' && lr1 "$WORK/lane-stg-l2.sh"
+  wantnot "stg/LR1 mutant: with the per-unit line dropped no group is named (the cell is RED)" "^# unit seconds"
 }
 
 main "$@"

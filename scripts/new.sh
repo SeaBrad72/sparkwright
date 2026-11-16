@@ -196,11 +196,11 @@ owed_items() {
   if [ "$BOARD" = jira ]; then
     printf '%s\n' "- Tracker conf: set base_url and project in .kit/tracker.conf, and fill the minimum day-one rows of JIRA-SETUP.md."
     printf '%s\n' "- Tracker secrets: A person sets KIT_TRACKER_USER and KIT_TRACKER_TOKEN as repository Actions secrets (and in their own shell, if they use one). See JIRA-SETUP.md, minimum day-one rows. The agent does not set them."
-    printf '%s\n' "- Waiver row: fill [owner] and [security-owner] on the board-governance row of WAIVER-REGISTER.md; until a person does, the first PR is red."
+    printf '%s\n' "- Waiver row: a person fills [owner] and [security-owner] on the board-governance row of WAIVER-REGISTER.md (the agent may propose the text; the guard refuses its write to that file); until a person does, the first PR is red."
     printf '%s\n' "- Required check: bind tracker-board-gates to branch protection before the first PR."
   fi
   if [ "$TEAM" = solo ]; then
-    printf '%s\n' "- Declare solo: the repository reads team until this merges. (1) Open a PR that creates .kit/dials.conf with the line MERGE_RELATIONSHIP=solo. (2) Run sh scripts/promotion-verify.sh record on that PR's head sha: class control-plane, your own words in --token, your name in --go-by. (3) Merge that PR yourself, by hand. See docs/adoption/vc-hosts.md, Solo or team."
+    printf '%s\n' "- Declare solo: the repository reads team until this merges. (1) Open a PR that creates .kit/dials.conf with the line MERGE_RELATIONSHIP=solo. (2) Run sh scripts/promotion-verify.sh record on that PR's head sha: class control-plane, your own words in --token, your name in --go-by. (3) Merge that PR yourself, by hand: it is the last merge by hand, because once it has merged sh scripts/sparkwright doctor prints the handover line and from then on actuate and land merge on your recorded GO. See docs/adoption/vc-hosts.md, Solo or team."
   fi
 }
 append_owed() {  # the owed list into <dest>/CLAUDE.md; never through a symlink

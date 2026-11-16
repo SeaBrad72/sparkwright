@@ -32,6 +32,10 @@
 #                     anything else that names --face, --output-file or --join is rc 2.
 #   --join <rec> <rec>  grades the two face records: rc 0 only for exactly one record per face, both on this checkout's HEAD tree and
 #                     the same base, with the same targets and selectors, every target PASS or EXCLUDED (or both N/A). Else rc 1 and the cause.
+#   --groups <path>   SWAS-871: a SPLIT target (SPLIT_FACE_TARGETS, kit trees only) prints its committed group names, one per line, parsed STATICALLY from `git show HEAD:<path>` (nothing of the target runs);
+#                     any other path prints nothing (rc 0); a split target with a missing, malformed, empty or duplicated ST_GROUPS table is rc 1.
+#   --group <name> <path>  one group of a split target under both faces (`<path> --selftest-group <name>`); rc 2 for a name its table does not have. A face record (--touched --face) holds one
+#                     `sel=--selftest-group:<name>` line per group for a split target, and --join checks those lines against the committed table (JN20). Each of the two flags is rc 2 outside its exact grammar.
 #
 # ROSTER semantics = conformance/ci-selftest-coverage.sh's exactly: scan conformance/*.sh
 # scripts/*.sh hooks/pre-push; capability = `--selftest` survives comment-strip.
@@ -69,6 +73,7 @@ TAB=$(printf '\t')
 NL='
 '
 _faces='a b'   # the faces run_faces runs; only the --face arm narrows it
+_hg_g=''       # SWAS-871: the group a run of one split target is limited to (set by run_group and fl_groups); empty runs the whole --selftest
 _rf_fin=0      # run_faces sets 1 once every wanted face ran without a FAIL (so a non-zero return then is UNVERIFIED)
 BASE="${HERMETIC_BASE:-origin/main}"
 EXCL_FILE="conformance/hermetic-exclusions.txt"
@@ -160,6 +165,56 @@ core_face_listed() {
     if [ "$2" = "$_e" ]; then _cf=0; break; fi
   done
   set +f; return $_cf
+}
+
+# SPLIT_FACE_TARGETS (SWAS-871) — repo-relative paths whose --selftest is a table of committed groups (ST_GROUPS below that script's selftest marker), ON A KIT TREE ONLY. The local lane and H2 run each group as a unit under both faces
+# (`<path> --selftest-group <g>`); the target passes only when every group passed on both faces, and the full --selftest is graded by CI job conformance-selftests-4 (ci-gates.sh check_split_face_graders pins that, and an empty list reds there).
+# Matched whole-path and exact (never a pattern or a basename). Inert on an adopter tree (no kit marker). Every reader goes through split_face_listed, the one loop below.
+SPLIT_FACE_TARGETS='conformance/prepush-lane.sh'
+readonly SPLIT_FACE_TARGETS
+
+# split_face_listed <repo-top> <repo-relative-path> — 0 iff the repo top is a kit tree and the path is a listed entry, whole and exact (set -f: an entry is never a glob).
+split_face_listed() {
+  [ -f "$1/docs/ROADMAP-KIT.md" ] || [ -f "$1/.github/workflows/golden-path.yml" ] || return 1   # SFKIT
+  _sf=1; set -f
+  for _e in $SPLIT_FACE_TARGETS; do
+    if [ "$2" = "$_e" ]; then _sf=0; break; fi
+  done
+  set +f; return $_sf
+}
+
+# hf_groups <repo-relative-path> — the group names of a split target, one per line, parsed STATICALLY from the bytes face (b) grades (git show HEAD:<path>): nothing of the target is executed, and the ST_GROUPS line is read in its closed charset.
+# rc 0 with nothing printed: not a split target (no kit marker, or not on the list). rc 1, with the cause on stderr: a split target whose table is missing, malformed, empty or duplicated. Used by --groups, --group, fl_target and the join.
+hf_groups() {
+  _gp=$1
+  _gtop=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  split_face_listed "$_gtop" "$_gp" || return 0
+  git show "HEAD:$_gp" > "$WORK/grp.src" 2>/dev/null || { echo "FAIL: group table: HEAD has no $_gp (face (b) grades HEAD)" >&2; return 1; }   # HGSHOW
+  _gc=$(sed -n "/^ST_GROUPS='/p" "$WORK/grp.src" | grep -c '' || :)
+  [ "$_gc" = 1 ] || { echo "FAIL: group table: $_gp must carry exactly one column-0 ST_GROUPS=' line (found $_gc)" >&2; return 1; }
+  _gm=$(sed -n "/^ST_GROUPS='[a-z0-9 ]*'\$/p" "$WORK/grp.src" | grep -c '' || :)
+  [ "$_gm" = 1 ] || { echo "FAIL: group table: the ST_GROUPS line of $_gp is outside its closed charset [a-z0-9 ] (one single-quoted line)" >&2; return 1; }
+  # a shadow assignment (indented, double-quoted, readonly or export, eval'd) would make this parse and the runtime table disagree: any second non-comment assignment of ST_GROUPS or of one ST_G_<g> is refused
+  _gdup=$(sed 's/#.*//' "$WORK/grp.src" | sed -n -E 's/^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+)?(ST_GROUPS|ST_G_[a-z0-9]+)=.*/\2/p' | LC_ALL=C sort | uniq -d)
+  _gev=$(sed 's/#.*//' "$WORK/grp.src" | grep -c -E 'eval.*ST_G(ROUPS|_[a-z0-9]+)=' || :)
+  { [ -z "$_gdup" ] && [ "$_gev" = 0 ]; } || { echo "FAIL: group table: $_gp assigns ST_GROUPS or an ST_G_<g> line more than once, or through eval (a shadow table)" >&2; return 1; }   # HGSHADOW
+  _gv=$(sed -n "s/^ST_GROUPS='\\([a-z0-9 ]*\\)'\$/\\1/p" "$WORK/grp.src")
+  set -f; set -- $_gv; set +f
+  [ "$#" -gt 0 ] || { echo "FAIL: group table: ST_GROUPS of $_gp names no group" >&2; return 1; }
+  _gseen=" "
+  for _gn in "$@"; do
+    case $_gseen in *" $_gn "*) echo "FAIL: group table: group $_gn is listed twice in $_gp" >&2; return 1 ;; esac
+    _gseen="$_gseen$_gn "
+  done
+  printf '%s\n' "$@"
+}
+# hf_group_known <group> <path> — rc 0 iff <group> is one of the path's committed groups, whole.
+hf_group_known() {
+  case $1 in ''|*[!a-z0-9]*) return 1 ;; esac
+  _hgk=$(hf_groups "$2") || return 1
+  [ -n "$_hgk" ] || return 1
+  case "$NL$_hgk$NL" in *"$NL$1$NL"*) return 0 ;; esac
+  return 1
 }
 
 # battery_state <face-output> — SWAS-376: did this face defer the guard battery? Read from the face's own
@@ -377,9 +432,9 @@ hf_body_a() {
   GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=user.useConfigOnly; GIT_CONFIG_VALUE_0=true
   TMPDIR=$_ta
   export HOME GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 TMPDIR
-  cd "$_top" && hf_exec "$_rel" "$_sel"
+  cd "$_top" && hf_exec "$_rel" "$_sel" ${_sel2:+"$_sel2"}   # HFSEL2
 }
-hf_body_b() { cd "$_c" && TMPDIR=$_tb && export TMPDIR && hf_exec "$_rel" "$_sel"; }
+hf_body_b() { cd "$_c" && TMPDIR=$_tb && export TMPDIR && hf_exec "$_rel" "$_sel" ${_sel2:+"$_sel2"}; }
 # hf_face_a — face (a): stripped environment (B2 §10-A9's exact recipe). rc 1 = the face reds (the lane stops there); UNVERIFIED sets _rv.
 hf_face_a() {
   _hh="$WORK/home.$$"; mkdir -p "$_hh"
@@ -473,7 +528,7 @@ run_faces() {
   _abs=$(CDPATH='' cd "$(dirname "$_tgt")" && pwd -P)/$(basename "$_tgt")
   _rel=${_abs#"$_top"/}
   _o="$WORK/face.out"
-  _sel=--selftest; _tag=''
+  _sel=--selftest; _sel2=''; _tag=''
   if core_face_listed "$_top" "$_rel"; then
     # SWAS-460: on a kit tree a listed target runs its mutant-free core only; a core arm that is absent reds, never passes vacuously
     _cs_pat='s/#.*//; /(^|\|)[[:space:]]*--selftest-core[[:space:]]*[|)]/{p;q;}'
@@ -484,6 +539,8 @@ run_faces() {
     _core=$((_core + 1)); _sel=--selftest-core; _tag=' [--selftest-core]'
     echo "CORE-ONLY: $_rel — both faces run --selftest-core; the full mutant --selftest is graded by CI job $(basename "$_rel" .sh), not here"
   fi
+  # SWAS-871: one group of a split target (run_group / fl_groups set _hg_g): both faces run `<path> --selftest-group <g>`
+  if [ -n "$_hg_g" ]; then _sel=--selftest-group; _sel2=$_hg_g; _tag=" [--selftest-group $_hg_g]"; fi
 
   _rv=0; hf_mode
   case " $_faces " in *" a "*) hf_face_a || return 1 ;; esac   # FACEA
@@ -529,17 +586,37 @@ run_lane() {
   return 0
 }
 
+# run_group <group> <path> — one group of a split target under both faces (SWAS-871): the TARGET line names the group, and the verdict lines are run_lane's. The caller has checked the group against the committed table (hf_group_known).
+run_group() {
+  validate_exclusions || return 1
+  [ -f "$2" ] || { echo "FAIL: target not found: $2"; return 1; }
+  _fail=0; _ran=0; _core=0
+  if ! excluded "$2"; then
+    _ran=1; _hg_g=$1
+    echo "TARGET: $2 group $1 (both faces)"
+    run_faces "$2" || _fail=1
+    _hg_g=''
+  fi
+  if [ "$_fail" != 0 ]; then
+    echo "selftest-hermetic: FAIL — a targeted --selftest-group is not hermetic (face + output above)."
+    return 1
+  fi
+  echo "selftest-hermetic: OK ($_ran target(s) passed both faces, $_core of them --selftest-core only (CORE-ONLY above))"
+  return 0
+}
+
 # usage_text — the usage, with the E1 sentence: one face alone is never a pass.
 usage_text() {
   echo "usage: selftest-hermetic.sh [--touched | --all | <path>... | --selftest]"
+  echo "       selftest-hermetic.sh --groups <path>   |   --group <name> <path>   (a split target's committed groups; one group under both faces)"
   echo "       selftest-hermetic.sh --touched --face <a|b> --output-file <F>   |   --join <record> <record>"
   echo "  one face alone is never a pass: it prints PARTIAL, and only --join over both faces gives a verdict"   # E1SENT
 }
 
-# new_flag_in <arg>... — rc 0 when an argument is one of the three face-mode flags (they are refused, rc 2, outside their exact grammar).
+# new_flag_in <arg>... — rc 0 when an argument is one of the five flags --face --output-file --join --group --groups (they are refused, rc 2, outside their exact grammar).
 new_flag_in() {
   for _nf in "$@"; do
-    case $_nf in --face|--output-file|--join) return 0 ;; esac
+    case $_nf in --face|--output-file|--join|--group|--groups) return 0 ;; esac
   done
   return 1
 }
@@ -553,22 +630,37 @@ face_grammar() {
   _fl_face=$3; _fl_out=$5
 }
 
-# fl_target <path> — one target under the face in $_faces: print its lines and append its verdict line to the record.
-# EXCLUDED and not-found targets carry sel=- (nothing was run, so no selector applies).
+# fl_target <path> — one target under the face in $_faces: print its lines and append its verdict line(s) to the record body ($_fl_body).
+# EXCLUDED and not-found targets carry sel=- (nothing was run, so no selector applies). A split target (SWAS-871) is one body line per committed group; one whose table cannot be read is one `sel=- verdict=FAIL` line and nothing runs.
 fl_target() {
   if [ ! -f "$1" ]; then
     echo "FAIL: target not found: $1"; _fl_bad=1
-    printf 'target=%s sel=- verdict=FAIL\n' "$1" >> "$_fl_rec"; return 0
+    printf 'target=%s sel=- verdict=FAIL\n' "$1" >> "$_fl_body"; _fl_cnt=$((_fl_cnt + 1)); return 0
   fi
   if excluded "$1"; then
-    printf 'target=%s sel=- verdict=EXCLUDED\n' "$1" >> "$_fl_rec"; return 0
+    printf 'target=%s sel=- verdict=EXCLUDED\n' "$1" >> "$_fl_body"; _fl_cnt=$((_fl_cnt + 1)); return 0
   fi
+  _fg=$(hf_groups "$1") || { echo "FAIL: $1 is a split target but its group table cannot be read (the cause is above); nothing ran"; _fl_bad=1; printf 'target=%s sel=- verdict=FAIL\n' "$1" >> "$_fl_body"; _fl_cnt=$((_fl_cnt + 1)); return 0; }   # FLGFAIL
+  if [ -n "$_fg" ]; then fl_groups "$1" "$_fg"; return 0; fi
   echo "TARGET: $1 (face $_fl_face only)"
   _sel=--selftest; _fv=PASS
   if run_faces "$1"; then :
   elif [ "$_rf_fin" = 1 ]; then _fv=UNVERIFIED; _fl_bad=1
   else _fv=FAIL; _fl_bad=1; fi
-  printf 'target=%s sel=%s verdict=%s\n' "$1" "$_sel" "$_fv" >> "$_fl_rec"
+  printf 'target=%s sel=%s verdict=%s\n' "$1" "$_sel" "$_fv" >> "$_fl_body"; _fl_cnt=$((_fl_cnt + 1))
+}
+# fl_groups <path> <groups> — a split target under the face in $_faces: each committed group runs alone and writes its own body line, so a red names the group. Every group runs, whatever an earlier one did.
+fl_groups() {
+  _fl_p=$1; set -f; set -- $2; set +f
+  for _fl_g in "$@"; do
+    echo "TARGET: $_fl_p group $_fl_g (face $_fl_face only)"
+    _hg_g=$_fl_g; _fv=PASS
+    if run_faces "$_fl_p"; then :
+    elif [ "$_rf_fin" = 1 ]; then _fv=UNVERIFIED; _fl_bad=1
+    else _fv=FAIL; _fl_bad=1; fi
+    _hg_g=''
+    printf 'target=%s sel=--selftest-group:%s verdict=%s\n' "$_fl_p" "$_fl_g" "$_fv" >> "$_fl_body"; _fl_cnt=$((_fl_cnt + 1))   # FLGRP
+  done
 }
 
 # fl_commit — the record, atomically: a mktemp file beside F (an unpredictable name, so a planted link cannot be followed), then mv.
@@ -589,13 +681,17 @@ fl_commit() {
 # The last line says PARTIAL: one face alone is never a lane verdict, and this path never prints "selftest-hermetic: OK".
 face_lane() {
   _fl_tree=$(git rev-parse --verify --quiet 'HEAD^{tree}' 2>/dev/null) || _fl_tree=''
-  _fl_rec="$WORK/face.rec"; _fl_bad=0; _core=0
-  printf 'v1 face=%s tree=%s base=%s targets=%s\n' "$_fl_face" "$_fl_tree" "$_fbase" "$#" > "$_fl_rec"
+  _fl_rec="$WORK/face.rec"; _fl_body="$WORK/face.body"; _fl_bad=0; _core=0; _fl_cnt=0; : > "$_fl_body"
   if [ "$#" = 0 ]; then
-    printf 'verdict=N/A\n' >> "$_fl_rec"
+    printf 'verdict=N/A\n' >> "$_fl_body"
     echo "selftest-hermetic: N/A - no touched selftest-capable script (changed-set and roster do not meet vs $BASE)"
   fi
   for _ft in "$@"; do fl_target "$_ft"; done
+  # the header counts BODY lines (a split target is one per group), so it is written after the body is known
+  # a writer-side count: a target's own process could append to the body file, so the header never counts the file's lines (J)
+  _fl_n=$_fl_cnt   # FLN
+  printf 'v1 face=%s tree=%s base=%s targets=%s\n' "$_fl_face" "$_fl_tree" "$_fbase" "$_fl_n" > "$_fl_rec"
+  cat "$_fl_body" >> "$_fl_rec"
   if [ "$_fl_bad" != 0 ]; then echo "selftest-hermetic: FAIL - a targeted --selftest is not hermetic on face ($_fl_face) (face + output above)."; fi
   fl_commit || _fl_bad=1
   echo "selftest-hermetic: PARTIAL - face ($_fl_face) only; not a lane verdict (graded by --join)"   # FMPART
@@ -654,13 +750,49 @@ jn_line() {
     *) _jn_bad "unknown verdict '$_jv' (only PASS or EXCLUDED pass): $1"; return 1 ;;   # JN15
   esac
   _jsel=${_jkey##* sel=}
-  case "$_jsel:$_jv" in --selftest:PASS|--selftest-core:PASS|-:EXCLUDED) : ;; *) _jn_bad "bad selector '$_jsel' for verdict $_jv: $1"; return 1 ;; esac   # JN18
-  case "$NL$_jp" in *"$NL$_jpth$NL"*) _jn_bad "target listed twice on face ($_jf): $_jpth"; return 1 ;; esac   # JN8
-  _jp="$_jp$_jpth$NL"; _jl="$_jl$_jkey$NL"; _jk=$((_jk + 1))
+  _jgok=0   # SWAS-871: a group selector is --selftest-group:<name>, the name in [a-z0-9]+
+  case $_jsel in --selftest-group:*) case ${_jsel#--selftest-group:} in ''|*[!a-z0-9]*) : ;; *) if split_face_listed "$_jtop" "$_jpth"; then _jgok=1; fi ;; esac ;; esac   # JN18G
+  case "$_jsel:$_jv:$_jgok" in --selftest:PASS:0|--selftest-core:PASS:0|-:EXCLUDED:0|--selftest-group:?*:PASS:1) : ;; *) _jn_bad "bad selector '$_jsel' for verdict $_jv: $1"; return 1 ;; esac   # JN18
+  # a split-listed path is keyed by path and selector (one line per group); any other path by path alone
+  if split_face_listed "$_jtop" "$_jpth"; then _jdk="$_jpth $_jsel"; _jdl=$_jd; else _jdk=$_jpth; _jdl=$_jp; fi
+  case "$NL$_jdl" in *"$NL$_jdk$NL"*) _jn_bad "target listed twice on face ($_jf): $_jpth"; return 1 ;; esac   # JN8
+  _jp="$_jp$_jpth$NL"; _jl="$_jl$_jkey$NL"; _jd="$_jd$_jdk$NL"; _jk=$((_jk + 1))
+}
+# jn_group_one <path> — JN20 for one split-listed path of the record in hand: when it has group lines, they are exactly the groups its committed table names (parsed statically from git show HEAD:<path>; the join runs nothing of the target),
+# and no whole --selftest line and no sel=- line sits beside them. A path with no group line is not judged here (an EXCLUDED or not-found split target keeps its one sel=- line).
+jn_group_one() {
+  split_face_listed "$_jtop" "$1" || return 0
+  _jsl=$(printf '%s' "$_jl" | awk -v p="$1" 'index($0, "target=" p " sel=") == 1 { print substr($0, length("target=" p " sel=") + 1) }')
+  _jgc=$(printf '%s\n' "$_jsl" | grep -c '^--selftest-group:' || :)
+  [ "$_jgc" != 0 ] || return 0
+  _jnw=$(printf '%s\n' "$_jsl" | grep -c -x -F -e '--selftest' -e '--selftest-core' || :)
+  [ "$_jnw" = 0 ] || { _jn_bad "a whole --selftest line beside group lines for $1 on face ($_jf)"; return 1; }   # JN20c
+  _jnd=$(printf '%s\n' "$_jsl" | grep -c -x -F -e '-' || :)
+  [ "$_jnd" = 0 ] || { _jn_bad "a sel=- line beside group lines for $1 on face ($_jf)"; return 1; }   # JN20d
+  _jw=$(hf_groups "$1") || { _jn_bad "the group table of $1 cannot be read (the cause is above), so its group lines cannot be graded"; return 1; }
+  printf '%s\n' "$_jw" | LC_ALL=C sort -u > "$WORK/jn20.want"
+  printf '%s\n' "$_jsl" | sed -n 's/^--selftest-group://p' | LC_ALL=C sort -u > "$WORK/jn20.got"
+  _jx=$(LC_ALL=C comm -13 "$WORK/jn20.want" "$WORK/jn20.got" | tr '\n' ' ' | sed 's/ $//')
+  [ -z "$_jx" ] || { _jn_bad "$1 on face ($_jf) names a group the table does not have: $_jx"; return 1; }   # JN20b
+  _jm=$(LC_ALL=C comm -23 "$WORK/jn20.want" "$WORK/jn20.got" | tr '\n' ' ' | sed 's/ $//')
+  [ -z "$_jm" ] || { _jn_bad "$1 on face ($_jf) is missing group $_jm that its table names"; return 1; }   # JN20a
+  return 0
+}
+# jn_groups — JN20 over every distinct path of the record in hand.
+jn_groups() {
+  _jqs=$(printf '%s' "$_jp" | LC_ALL=C sort -u); _jgr=0
+  set -f
+  for _jq in $_jqs; do
+    jn_group_one "$_jq" || _jgr=1
+    [ "$_jgr" = 0 ] || break
+  done
+  set +f
+  return "$_jgr"
 }
 # jn_load <file> — read one record into _jf _jt _jb _jp (target paths) _jl (path and selector lines) _jna (N/A) or name why it is no record.
 jn_load() {
-  _jf=''; _jt=''; _jb=''; _jc=''; _jp=''; _jl=''; _jna=0; _jk=0; _jh=''; _ji=0
+  _jf=''; _jt=''; _jb=''; _jc=''; _jp=''; _jl=''; _jd=''; _jna=0; _jk=0; _jh=''; _ji=0
+  _jtop=$(git rev-parse --show-toplevel 2>/dev/null) || _jtop=''
   IFS= read -r _jh < "$1" || :
   jn_head || return 1
   while IFS= read -r _jr || [ -n "$_jr" ]; do
@@ -670,6 +802,7 @@ jn_load() {
   done < "$1"
   [ "$_jc" = "$_jk" ] || { _jn_bad "count mismatch: the header says targets=$_jc but the body has $_jk target line(s) ($1)"; return 1; }   # JN16
   case "$_jna:$_jk" in 1:0) : ;; 0:0) _jn_bad "inconsistent record: neither a target nor verdict=N/A ($1)"; return 1 ;; 0:*) : ;; *) _jn_bad "inconsistent record: verdict=N/A beside target lines ($1)"; return 1 ;; esac   # JN17
+  jn_groups || return 1   # SWAS-871: JN20, the group lines of a split target against its committed table
   return 0
 }
 join_records() {
@@ -1430,6 +1563,185 @@ _has 'x a y' '[a]' || echo n4" 2>&1)
   st_jrec "$WORK/jn/x2.rec" b "$_jn_t" base1 1 'target=conformance/a.sh sel=- verdict=PASS'
   st_jn JN18 JN18 "bad selector '-' for verdict PASS" "$WORK/jn/x1.rec" "$WORK/jn/x2.rec"
 
+  # GRP, GR, FLG, JNG (SWAS-871, S1) — the split target: a kit-tree-only committed list (SPLIT_FACE_TARGETS), a STATIC parse of the target's group table (git show HEAD:<path>; nothing of the target runs), --group <g> <path> (one group under both faces),
+  # one record line per group, and the join's per-group lines (JN8 keyed by path and selector for a split path, JN18's group selector, JN20). The stub records every run to $HG_MARK, the marker a static parse must never create.
+  _hgm=$WORK/hg.mark; _hgl=$WORK/hg.log; : > "$_hgl"
+  st_repo "$st/gk"; mkdir -p "$st/gk/docs"; : > "$st/gk/docs/ROADMAP-KIT.md"
+  st_splitstub "$st/gk/conformance/prepush-lane.sh" ok; st_splitstub "$st/gk/conformance/other.sh" ok
+  st_commit "$st/gk"
+  st_repo "$st/gn"; st_splitstub "$st/gn/conformance/prepush-lane.sh" ok; st_commit "$st/gn"
+  rc=0; out=$( cd "$st/gk" && HG_MARK=$_hgm CF_LOG=$_hgl sh "$_self" --groups conformance/prepush-lane.sh 2>&1 ) || rc=$?
+  st_expect "GRP a listed target on a kit tree: --groups is rc 0" 0 "$rc"
+  st_expect "GRP and prints its groups in table order, one per line" "g1${NL}g2${NL}g3" "$out"
+  if [ ! -e "$_hgm" ]; then echo "PASS: selftest — GRP --groups executed nothing of the target (the stub's marker is absent)"; else echo "FAIL: selftest — GRP --groups ran the target (its marker exists)"; sfail=1; fi
+  rc=0; out=$( cd "$st/gn" && sh "$_self" --groups conformance/prepush-lane.sh 2>&1 ) || rc=$?
+  st_expect "GRP a non-kit tree prints nothing and is rc 0" "0|" "$rc|$out"
+  rc=0; out=$( cd "$st/gk" && sh "$_self" --groups conformance/other.sh 2>&1 ) || rc=$?
+  st_expect "GRP an unlisted path (with a table of its own) prints nothing and is rc 0" "0|" "$rc|$out"
+  for _hk in dup empty malformed none; do
+    st_repo "$st/g$_hk"; mkdir -p "$st/g$_hk/docs"; : > "$st/g$_hk/docs/ROADMAP-KIT.md"; st_splitstub "$st/g$_hk/conformance/prepush-lane.sh" "$_hk"; st_commit "$st/g$_hk"
+    rc=0; out=$( cd "$st/g$_hk" && sh "$_self" --groups conformance/prepush-lane.sh 2>&1 ) || rc=$?
+    st_expect "GRP a $_hk group table on a listed target is rc 1" 1 "$rc"
+    st_has "GRP and names the table" "$out" 'group table'
+  done
+  if st_cmut grpk '/# SFKIT$/d'; then
+    out=$( cd "$st/gn" && sh "$WORK/cm.grpk.sh" --groups conformance/prepush-lane.sh 2>&1 ) || :
+    st_expect "GRPm with the kit test dropped a non-kit tree prints the groups, so GRP has teeth" "g1${NL}g2${NL}g3" "$out"
+  fi
+  if st_cmut grpx '/# HGSHOW$/s,^,  sh "$_gtop/$_gp" >/dev/null 2>\&1 || :; ,'; then
+    rm -f "$_hgm"; ( cd "$st/gk" && HG_MARK=$_hgm CF_LOG=$_hgl sh "$WORK/cm.grpx.sh" --groups conformance/prepush-lane.sh ) >/dev/null 2>&1 || :
+    if [ -e "$_hgm" ]; then echo "PASS: selftest — GRPm a parse that runs the target creates the stub's marker, so the marker check has teeth"; else echo "FAIL: selftest — GRPm the running mutant left no marker: the marker proves nothing"; sfail=1; fi
+  fi
+  # GR — --group <g> <path>: one group, both faces, the TARGET line names the group; any other grammar is rc 2
+  : > "$_hgl"; rc=0; out=$( cd "$st/gk" && CF_LOG=$_hgl sh "$_self" --group g2 conformance/prepush-lane.sh 2>&1 ) || rc=$?
+  st_expect "GR --group g2 of a split target passes both faces" 0 "$rc"
+  st_has "GR the TARGET line names the group" "$out" 'TARGET: conformance/prepush-lane.sh group g2 (both faces)'
+  st_count "GR each face ran the group once (--selftest-group g2)" 2 "$_hgl" 'conformance/prepush-lane.sh --selftest-group g2'
+  st_count "GR and no other group ran" 0 "$_hgl" 'conformance/prepush-lane.sh --selftest-group g1'
+  st_has "GR the face line carries the group" "$out" 'PASS: face (b) clone — conformance/prepush-lane.sh [--selftest-group g2] ('
+  rc=0; ( cd "$st/gk" && sh "$_self" --group nosuch conformance/prepush-lane.sh ) >/dev/null 2>&1 || rc=$?
+  st_expect "GR a group the table does not name is rc 2" 2 "$rc"
+  rc=0; ( cd "$st/gk" && sh "$_self" --group g1 conformance/other.sh ) >/dev/null 2>&1 || rc=$?
+  st_expect "GR a group of an unlisted path is rc 2" 2 "$rc"
+  st_fmu GR1 --groups
+  st_fmu GR2 --groups conformance/a.sh conformance/b.sh
+  st_fmu GR3 --group g1
+  st_fmu GR4 --touched --groups conformance/a.sh
+  st_fmu GR5 conformance/a.sh --group g1
+  st_fmu GR6 --all --group g1 conformance/a.sh
+  st_fmu GR7 --join --groups conformance/a.sh
+  if st_cmut grp2m '/# HFSEL2$/s/ \${_sel2:+"\$_sel2"}//'; then
+    : > "$_hgl"; ( cd "$st/gk" && CF_LOG=$_hgl sh "$WORK/cm.grp2m.sh" --group g2 conformance/prepush-lane.sh ) >/dev/null 2>&1 || :
+    st_count "GRm with face (a) not handed the group name it runs one call short (--selftest-group g2 once), so GR has teeth" 1 "$_hgl" 'conformance/prepush-lane.sh --selftest-group g2'
+  fi
+  # FLG — a face record holds one line per group, targets= counts the body lines, a malformed table is a FAIL line and runs nothing
+  st_repo "$st/fsp"; mkdir -p "$st/fsp/docs"; : > "$st/fsp/docs/ROADMAP-KIT.md"; st_commit "$st/fsp"
+  ( cd "$st/fsp" && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+  st_splitstub "$st/fsp/conformance/prepush-lane.sh" ok; st_commit "$st/fsp"
+  _fp_t=$(git -C "$st/fsp" rev-parse 'HEAD^{tree}'); _fp_b=$(git -C "$st/fsp" rev-parse refs/remotes/origin/main)
+  _fp_l1='target=conformance/prepush-lane.sh sel=--selftest-group:g1 verdict=PASS'
+  _fp_l2='target=conformance/prepush-lane.sh sel=--selftest-group:g2 verdict=PASS'
+  _fp_l3='target=conformance/prepush-lane.sh sel=--selftest-group:g3 verdict=PASS'
+  : > "$_hgl"
+  for _fx in a b; do
+    rc=0; out=$( cd "$st/fsp" && CF_LOG=$_hgl sh "$_self" --touched --face "$_fx" --output-file "$WORK/fsp.$_fx.rec" 2>&1 ) || rc=$?
+    st_expect "FLG face ($_fx) over a split target: rc 0" 0 "$rc"
+    st_expect "FLG the record header counts the three body lines" "v1 face=$_fx tree=$_fp_t base=$_fp_b targets=3" "$(sed -n 1p "$WORK/fsp.$_fx.rec")"
+    st_expect "FLG and the body is one line per group, in table order" "$_fp_l1${NL}$_fp_l2${NL}$_fp_l3" "$(sed -n '2,$p' "$WORK/fsp.$_fx.rec")"
+    st_has "FLG a group's TARGET line says it is one face" "$out" 'TARGET: conformance/prepush-lane.sh group g3 (face '"$_fx"' only)'
+  done
+  st_count "FLG each group ran once per face (g1, two faces)" 2 "$_hgl" 'conformance/prepush-lane.sh --selftest-group g1'
+  rc=0; out=$( cd "$st/fsp" && sh "$_self" --join "$WORK/fsp.a.rec" "$WORK/fsp.b.rec" 2>&1 ) || rc=$?
+  st_expect "FLG the two records the writer made join green (writer and reader agree)" 0 "$rc"
+  if st_cmut flg1 "/# FLGRP\$/s,^.*\$,    printf 'target=%s sel=--selftest verdict=%s\\\\n' \"\$_fl_p\" \"\$_fv\" >> \"\$_fl_body\"   # FLGRP,"; then
+    ( cd "$st/fsp" && sh "$WORK/cm.flg1.sh" --touched --face a --output-file "$WORK/fsp.m1.rec" ) >/dev/null 2>&1 || :
+    st_expect "FLGm with one whole --selftest line per group the first body line is no group line, so FLG has teeth" "target=conformance/prepush-lane.sh sel=--selftest verdict=PASS" "$(sed -n 2p "$WORK/fsp.m1.rec")"
+  fi
+  if st_cmut flg2 '/# FLN$/s/_fl_n=.*$/_fl_n=$#   # FLN/'; then
+    ( cd "$st/fsp" && sh "$WORK/cm.flg2.sh" --touched --face a --output-file "$WORK/fsp.m2.rec" ) >/dev/null 2>&1 || :
+    st_expect "FLGm with the header counting paths it says targets=1 over three body lines, so FLG has teeth" "v1 face=a tree=$_fp_t base=$_fp_b targets=1" "$(sed -n 1p "$WORK/fsp.m2.rec")"
+  fi
+  st_repo "$st/fsm"; mkdir -p "$st/fsm/docs"; : > "$st/fsm/docs/ROADMAP-KIT.md"; st_commit "$st/fsm"
+  ( cd "$st/fsm" && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+  st_splitstub "$st/fsm/conformance/prepush-lane.sh" malformed; st_commit "$st/fsm"
+  rm -f "$_hgm"; rc=0; out=$( cd "$st/fsm" && HG_MARK=$_hgm sh "$_self" --touched --face a --output-file "$WORK/fsm.a.rec" 2>&1 ) || rc=$?
+  st_expect "FLGb a malformed table: the face is rc 1" 1 "$rc"
+  st_expect "FLGb the record says sel=- verdict=FAIL, one body line" "targets=1${NL}target=conformance/prepush-lane.sh sel=- verdict=FAIL" "$(sed -n 1p "$WORK/fsm.a.rec" | sed 's/^.*targets=/targets=/')${NL}$(sed -n '2,$p' "$WORK/fsm.a.rec")"
+  if [ ! -e "$_hgm" ]; then echo "PASS: selftest — FLGb and nothing of the target ran"; else echo "FAIL: selftest — FLGb the target ran although its table is malformed"; sfail=1; fi
+  # JNG — the join over group lines (a kit fixture holding the stub at HEAD: the join reads git show HEAD:<path>, never the stub)
+  st_repo "$st/jk"; mkdir -p "$st/jk/docs"; : > "$st/jk/docs/ROADMAP-KIT.md"; st_splitstub "$st/jk/conformance/prepush-lane.sh" ok; st_commit "$st/jk"
+  _jk_t=$(git -C "$st/jk" rev-parse 'HEAD^{tree}')
+  st_jrec "$WORK/jn/ga.rec" a "$_jk_t" base1 3 "$_fp_l1" "$_fp_l2" "$_fp_l3"
+  st_jrec "$WORK/jn/gb.rec" b "$_jk_t" base1 3 "$_fp_l1" "$_fp_l2" "$_fp_l3"
+  rm -f "$_hgm"; rc=0; out=$( cd "$st/jk" && HG_MARK=$_hgm sh "$_self" --join "$WORK/jn/ga.rec" "$WORK/jn/gb.rec" 2>&1 ) || rc=$?
+  st_expect "JNG the same three group lines on both faces join OK (JN8 keyed by path and selector, JN16 counts body lines, JN20 agrees with the table)" 0 "$rc"
+  if [ ! -e "$_hgm" ]; then echo "PASS: selftest — JNG the join read the table statically (the stub's marker is absent)"; else echo "FAIL: selftest — JNG the join ran the target"; sfail=1; fi
+  _sj_dir=$st/jk
+  st_jrec "$WORK/jn/gd.rec" a "$_jk_t" base1 1 'target=conformance/prepush-lane.sh sel=--selftest-group: verdict=PASS'
+  st_jn JN18g1 JN18 "bad selector '--selftest-group:' for verdict PASS" "$WORK/jn/gd.rec" "$WORK/jn/gb.rec"
+  st_jrec "$WORK/jn/ge.rec" a "$_jk_t" base1 1 'target=conformance/prepush-lane.sh sel=--selftest-group:G! verdict=PASS'
+  st_jn JN18g2 JN18 "bad selector '--selftest-group:G!' for verdict PASS" "$WORK/jn/ge.rec" "$WORK/jn/gb.rec"
+  st_jrec "$WORK/jn/gf.rec" a "$_jk_t" base1 4 "$_fp_l1" "$_fp_l1" "$_fp_l2" "$_fp_l3"
+  st_jrec "$WORK/jn/gg.rec" b "$_jk_t" base1 4 "$_fp_l1" "$_fp_l1" "$_fp_l2" "$_fp_l3"
+  st_jn JN8g JN8 'listed twice on face (a)' "$WORK/jn/gf.rec" "$WORK/jn/gg.rec"
+  if st_cmut jn8m '/# JN8$/s/\$_jdl/$_jp/;/# JN8$/s/\$_jdk/$_jpth/'; then
+    out=$( cd "$st/jk" && sh "$WORK/cm.jn8m.sh" --join "$WORK/jn/ga.rec" "$WORK/jn/gb.rec" 2>&1 ) || :
+    st_has "JN8gm with the duplicate key by path alone a split target's own group lines read as a duplicate, so JNG has teeth" "$out" 'listed twice'
+  fi
+  st_jrec "$WORK/jn/gh.rec" a "$_jk_t" base1 1 "$_fp_l1" "$_fp_l2" "$_fp_l3"
+  st_jn JN16g JN16 'count mismatch: the header says targets=1 but the body has 3' "$WORK/jn/gh.rec" "$WORK/jn/gb.rec"
+  # a group missing on ONE face reds (JN7 and JN9 compare the line lists; JN20 is each record's own check). With JN20 deleted the join still reds by JN7, and with JN7 gone too it joins, so each is load-bearing
+  st_jrec "$WORK/jn/gi.rec" b "$_jk_t" base1 2 "$_fp_l1" "$_fp_l2"
+  rc=0; out=$( cd "$st/jk" && sh "$_self" --join "$WORK/jn/ga.rec" "$WORK/jn/gi.rec" 2>&1 ) || rc=$?
+  st_expect "JN7g a group missing on face b reds the join" 1 "$rc"
+  if st_cmut jn7a '/# JN20[abcd]$/d'; then
+    out=$( cd "$st/jk" && sh "$WORK/cm.jn7a.sh" --join "$WORK/jn/ga.rec" "$WORK/jn/gi.rec" 2>&1 ) || :
+    st_has "JN7gm with JN20 gone the join still reds, by the two faces' different target lists (JN7)" "$out" 'different target lists'
+  fi
+  if st_cmut jn7b '/# JN20[abcd]$/d;/# JN7$/d;/# JN9$/d'; then
+    rc=0; ( cd "$st/jk" && sh "$WORK/cm.jn7b.sh" --join "$WORK/jn/ga.rec" "$WORK/jn/gi.rec" ) >/dev/null 2>&1 || rc=$?
+    st_expect "JN7gm with JN20, JN7 and JN9 all gone the same two records join, so each check is load-bearing" 0 "$rc"
+  fi
+  # JN20 — each clause, a cell and a mutant: a missing group, an extra group, an unknown group, a whole --selftest line beside group lines, a sel=- line beside group lines (both faces carry the same lines, so only JN20 can red it)
+  _jg_pair() {   # <id> <n> <line>... — two identical records, one per face
+    _jg_id=$1; _jg_n=$2; shift 2
+    st_jrec "$WORK/jn/$_jg_id.a.rec" a "$_jk_t" base1 "$_jg_n" "$@"
+    st_jrec "$WORK/jn/$_jg_id.b.rec" b "$_jk_t" base1 "$_jg_n" "$@"
+  }
+  _jg_pair miss 2 "$_fp_l1" "$_fp_l2"
+  st_jn JN20a JN20a 'is missing group g3' "$WORK/jn/miss.a.rec" "$WORK/jn/miss.b.rec"
+  _jg_pair extra 4 "$_fp_l1" "$_fp_l2" "$_fp_l3" 'target=conformance/prepush-lane.sh sel=--selftest-group:g4 verdict=PASS'
+  st_jn JN20b JN20b 'names a group the table does not have: g4' "$WORK/jn/extra.a.rec" "$WORK/jn/extra.b.rec"
+  _jg_pair unk 3 "$_fp_l1" "$_fp_l2" 'target=conformance/prepush-lane.sh sel=--selftest-group:gx verdict=PASS'
+  st_jn JN20bu JN20b 'names a group the table does not have: gx' "$WORK/jn/unk.a.rec" "$WORK/jn/unk.b.rec"
+  _jg_pair whole 4 "$_fp_l1" "$_fp_l2" "$_fp_l3" 'target=conformance/prepush-lane.sh sel=--selftest verdict=PASS'
+  st_jn JN20c JN20c 'a whole --selftest line beside group lines' "$WORK/jn/whole.a.rec" "$WORK/jn/whole.b.rec"
+  _jg_pair dash 4 "$_fp_l1" "$_fp_l2" "$_fp_l3" 'target=conformance/prepush-lane.sh sel=- verdict=EXCLUDED'
+  st_jn JN20d JN20d 'a sel=- line beside group lines' "$WORK/jn/dash.a.rec" "$WORK/jn/dash.b.rec"
+  _jg_pair excl 1 'target=conformance/prepush-lane.sh sel=- verdict=EXCLUDED'
+  rc=0; out=$( cd "$st/jk" && sh "$_self" --join "$WORK/jn/excl.a.rec" "$WORK/jn/excl.b.rec" 2>&1 ) || rc=$?
+  st_expect "JN20 an excluded split target keeps its ONE sel=- line and joins (JN20 applies only when group lines exist)" 0 "$rc"
+  # JN18g3 (D) - a group selector is admitted only for a split-listed path: on any other path it is a bad selector
+  st_jrec "$WORK/jn/gu.a.rec" a "$_jk_t" base1 1 'target=conformance/a.sh sel=--selftest-group:g1 verdict=PASS'
+  st_jrec "$WORK/jn/gu.b.rec" b "$_jk_t" base1 1 'target=conformance/a.sh sel=--selftest-group:g1 verdict=PASS'
+  rc=0; out=$( cd "$st/jk" && sh "$_self" --join "$WORK/jn/gu.a.rec" "$WORK/jn/gu.b.rec" 2>&1 ) || rc=$?
+  st_expect "JN18g3 a group line on an unsplit path reds the join" 1 "$rc"
+  st_has "JN18g3 naming the selector" "$out" "bad selector '--selftest-group:g1' for verdict PASS"
+  if st_cmut jn18g '/# JN18G$/s/if split_face_listed "\$_jtop" "\$_jpth"; then _jgok=1; fi/_jgok=1/'; then
+    rc=0; ( cd "$st/jk" && sh "$WORK/cm.jn18g.sh" --join "$WORK/jn/gu.a.rec" "$WORK/jn/gu.b.rec" ) >/dev/null 2>&1 || rc=$?
+    st_expect "JN18g3m with the split-list condition dropped the same unsplit group line joins, so JN18g3 has teeth" 0 "$rc"
+  fi
+  # B(i) - a shadow table (a second, double-quoted ST_GROUPS) is refused by the static parse
+  st_repo "$st/gshadow"; mkdir -p "$st/gshadow/docs"; : > "$st/gshadow/docs/ROADMAP-KIT.md"; st_splitstub "$st/gshadow/conformance/prepush-lane.sh" shadow; st_commit "$st/gshadow"
+  rc=0; out=$( cd "$st/gshadow" && sh "$_self" --groups conformance/prepush-lane.sh 2>&1 ) || rc=$?
+  st_expect "GRPs a second, double-quoted ST_GROUPS line is rc 1" 1 "$rc"
+  st_has "GRPs naming the shadow table" "$out" 'a shadow table'
+  if st_cmut grps '/# HGSHADOW$/d'; then
+    rc=0; out=$( cd "$st/gshadow" && sh "$WORK/cm.grps.sh" --groups conformance/prepush-lane.sh 2>&1 ) || rc=$?
+    st_expect "GRPsm with the census line deleted the shadow table parses (rc 0), so GRPs has teeth" 0 "$rc"
+  fi
+  # H - the two operand arms screen their operands with new_flag_in
+  st_fmu H1 --groups --join
+  st_fmu H2 --group g1 --groups
+  if st_cmut hgf '/# HGFLAG$/d'; then
+    rc=0; ( cd "$st/jn" && sh "$WORK/cm.hgf.sh" --groups --join ) >/dev/null 2>&1 || rc=$?
+    st_expect "Hm with the flag screen deleted --groups --join is no longer rc 2, so H has teeth" 0 "$rc"
+  fi
+  # J - the face header is a writer-side count, so a line a target appends to the body file cannot make the record agree with itself
+  _jf='/# FLGRP$/s/; _fl_cnt=/; echo "target=conformance\/z-$_fl_g.sh sel=- verdict=EXCLUDED" >> "$_fl_body"; _fl_cnt=/'
+  if st_cmut jf1 "$_jf"; then
+    for _jx in a b; do ( cd "$st/fsp" && sh "$WORK/cm.jf1.sh" --touched --face "$_jx" --output-file "$WORK/jf.$_jx.rec" ) >/dev/null 2>&1 || :; done
+    rc=0; out=$( cd "$st/fsp" && sh "$_self" --join "$WORK/jf.a.rec" "$WORK/jf.b.rec" 2>&1 ) || rc=$?
+    st_expect "J a body with appended lines reds the join (the header is the writer's count)" 1 "$rc"
+    st_has "J naming the count mismatch" "$out" 'count mismatch: the header says targets=3 but the body has 6'
+  fi
+  if st_cmut jf2 "$_jf;/# FLN\$/s/.*/  _fl_n=\$(grep -c \"\" \"\$_fl_body\" || :)   # FLN/"; then
+    for _jx in a b; do ( cd "$st/fsp" && sh "$WORK/cm.jf2.sh" --touched --face "$_jx" --output-file "$WORK/jf2.$_jx.rec" ) >/dev/null 2>&1 || :; done
+    rc=0; ( cd "$st/fsp" && sh "$_self" --join "$WORK/jf2.a.rec" "$WORK/jf2.b.rec" ) >/dev/null 2>&1 || rc=$?
+    st_expect "Jm with the header counting the file's lines again the forged body joins (rc 0), so J has teeth" 0 "$rc"
+  fi
+  _sj_dir=''
+
   # C3-C5, C10 and C7 (SWAS-600; errata E3) - the crash cells run as one group into a file, the file is printed, and the same file is rescanned: a crash cell's own PASS output must hold no crash line
   _cq=$WORK/crash.cells
   crash_cells_h > "$_cq" 2>&1 || :
@@ -1642,13 +1954,21 @@ st_jrec() { # <file> <face> <tree> <base> <n> [line...] — write a v1 face reco
   _sj_f=$1; _sj_h="v1 face=$2 tree=$3 base=$4 targets=$5"; shift 5
   { printf '%s\n' "$_sj_h"; if [ "$#" -gt 0 ]; then printf '%s\n' "$@"; fi; } > "$_sj_f"
 }
-st_jn() { # <id> <tag> <cause> <record>... — the join reds (rc 1) and names the cause; the same run with the tagged check deleted (a throwaway copy, the st_cmut idiom) no longer names it
+st_splitstub() { # <path> <kind: ok|dup|empty|malformed|none> — a stub target: it records every run to $HG_MARK (the marker a static parse must never create) and logs each --selftest / --selftest-group call to $CF_LOG; `none` carries no ST_GROUPS line
+  case $2 in ok|shadow) _sp_t="g1 g2 g3" ;; dup) _sp_t="g1 g1" ;; empty) _sp_t="" ;; malformed) _sp_t="g1 G-2" ;; none) _sp_t="" ;; esac
+  mkdir -p "$(dirname "$1")"
+  { printf '%s\n' '#!/bin/sh' '[ -z "${HG_MARK-}" ] || : > "$HG_MARK"'
+    if [ "$2" != none ]; then printf "ST_GROUPS='%s'\n" "$_sp_t"; fi
+    if [ "$2" = shadow ]; then printf 'ST_GROUPS="g1"\n'; fi
+    printf '%s\n' 'case "${1:-}" in' '  --selftest|--selftest-group) printf "%s %s\n" "$0" "$*" >> "${CF_LOG:-/dev/null}"; echo OK ;;' 'esac'; } > "$1"
+}
+st_jn() { # <id> <tag> <cause> <record>... — the join reds (rc 1) and names the cause; the same run with the tagged check deleted (a throwaway copy, the st_cmut idiom) no longer names it. Runs in $_sj_dir when set (a kit fixture), else in $st/jn.
   _sj_id=$1; _sj_tag=$2; _sj_cause=$3; shift 3
-  rc=0; out=$( cd "$st/jn" && sh "$_self" --join "$@" 2>&1 ) || rc=$?
+  rc=0; out=$( cd "${_sj_dir:-$st/jn}" && sh "$_self" --join "$@" 2>&1 ) || rc=$?
   st_expect "$_sj_id the join reds" 1 "$rc"
   st_has "$_sj_id the join names its cause" "$out" "$_sj_cause"
   if st_cmut "${_sj_id}m" "/# $_sj_tag\$/d"; then
-    out=$( cd "$st/jn" && sh "$WORK/cm.${_sj_id}m.sh" --join "$@" 2>&1 ) || :
+    out=$( cd "${_sj_dir:-$st/jn}" && sh "$WORK/cm.${_sj_id}m.sh" --join "$@" 2>&1 ) || :
     st_has "${_sj_id}m the mutant still reached a join verdict (it did not crash)" "$out" 'selftest-hermetic: join'
     st_lacks "${_sj_id}m with the tagged check deleted the join no longer names the cause, so $_sj_id has teeth" "$out" "$_sj_cause"
   fi
@@ -1779,6 +2099,20 @@ case "${1:-}" in
     if [ -z "$_set" ]; then echo "selftest-hermetic: N/A — the roster is empty on this tree"; _fin 0; fi
     # shellcheck disable=SC2086
     run_lane $_set; _fin $? ;;
+  --groups)
+    # SWAS-871: exactly `--groups <path>`; a static parse (hf_groups), nothing of the target runs
+    shift
+    if [ "$#" != 1 ]; then usage_text >&2; exit 2; fi
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi   # HGFLAG
+    hf_groups "$1"; _fin $? ;;
+  --group)
+    # SWAS-871: exactly `--group <name> <path>`, the name one of the path's committed groups (rc 2 otherwise)
+    shift
+    if [ "$#" != 2 ]; then usage_text >&2; exit 2; fi
+    if new_flag_in "$@"; then usage_text >&2; exit 2; fi   # HGFLAG
+    cd "$(git rev-parse --show-toplevel)" 2>/dev/null || { echo "selftest-hermetic: not a git repo" >&2; exit 2; }
+    if ! hf_group_known "$1" "$2"; then usage_text >&2; echo "selftest-hermetic: '$1' is not a committed group of '$2' (see --groups $2)" >&2; exit 2; fi
+    run_group "$1" "$2"; _fin $? ;;
   "")
     usage_text >&2; exit 2 ;;
   *)

@@ -1014,6 +1014,50 @@ selftest() {
   tf_mut "M-TF3: the NUL mapping removed (a NUL is dropped silently: GOx)" 's/ | LC_ALL=C tr .\\000. .\\001.; printf x)$/; printf x)/' "$TFT" "control character" --token-file "$TFT/nul"
   TF_MUT_WANT=
   tf_mut "M-TF4: the secret-shape refusal removed" 's/^  if _pv_tf_secret "\$_tf_v"; then$/  if false; then/' "$TFT" "token shape" --token-file "$TFT/sec"
+
+  # SWAS-902 — `record` refuses template text in angle brackets (`<your name>`) in the eight screened fields, rc 2, before any write.
+  # Every refuse cell asserts rc 2, an untouched ledger and its variant's line (a token sends the owner's words back to the owner; the
+  # other fields say to write the value without the brackets). A later flag overrides tf_rec's default (the loop's last value wins).
+  PH_TOK="never edit their words yourself"; PH_VAL="Write the value without '<' and '>'"
+  tf_cell "PH1: --go-by '<your name>' is refused" "$TFT" "$PH_VAL" --token 'GO fine' --go-by '<your name>'
+  tf_cell "PH2: --token '<your approval, in your words>' is refused, the owner is asked" "$TFT" "$PH_TOK" --token '<your approval, in your words>'
+  printf '%s\n' "<the owner's words>" > "$TFT/ph1"
+  tf_cell "PH3a: --token-file holding '<the owner's words>' is refused with the fixed first line (no span)" "$TFT" "record: --token-file holds text in angle brackets, which reads as an unfilled template." --token-file "$TFT/ph1"
+  # PH3b/PH3c read the same run's output (_tf_out, left by PH3a): the ask-the-owner line is there, and no byte of the file is echoed.
+  if printf '%s' "$_tf_out" | grep -qF -e "$PH_TOK"; then echo "PASS: PH3b: the --token-file refusal carries the ask-the-owner line"
+  else echo "FAIL: PH3b: the --token-file refusal lacks '$PH_TOK'; out=$_tf_out"; st=1; fi
+  if printf '%s' "$_tf_out" | grep -qF -e "the owner's words"; then echo "FAIL: PH3c: the --token-file refusal echoed the file's text; out=$_tf_out"; st=1
+  else echo "PASS: PH3c: the --token-file refusal echoes no byte of the file"; fi
+  tf_cell "PH4: --basis '<path-to-the-design-artifact>' is refused" "$TFT" "$PH_VAL" --token 'GO fine' --basis '<path-to-the-design-artifact>'
+  tf_cell "PH5: --approved-by '<reviewer login>' is refused" "$TFT" "$PH_VAL" --token 'GO fine' --approved-by '<reviewer login>'
+  tf_cell "PH6: --scope 'PR #<PR number>' is refused" "$TFT" "$PH_VAL" --token 'GO fine' --scope 'PR #<PR number>'
+  tf_cell "PH7: --token '<…>' (an ellipsis span) is refused" "$TFT" "$PH_TOK" --token '<…>'
+  tf_cell "PH8: --token 'I approve; tell <name> it shipped' is refused (the disclosed over-refusal, pinned)" "$TFT" "$PH_TOK" --token 'I approve; tell <name> it shipped'
+  ph_allow() {   # <label> <note key> <want value> <record args...>: rc 0 and the note holds the value as stored
+    _pa_l="$1"; _pa_k="$2"; _pa_w="$3"; shift 3
+    tf_rec "$TFT" "$@"; _pa_g="$(tf_note | sed -n "s/^$_pa_k: //p")"
+    if [ "$_tf_rc" = 0 ] && [ "$_pa_g" = "$_pa_w" ]; then echo "PASS: $_pa_l (recorded: $_pa_g)"
+    else echo "FAIL: $_pa_l: want rc 0 and $_pa_k '$_pa_w'; got rc $_tf_rc, '$_pa_g'; out=$_tf_out"; st=1; fi
+  }
+  ph_allow "PH9: --token 'Go, merge PR 2' records" approval-token '"Go, merge PR 2"' --token 'Go, merge PR 2'
+  ph_allow "PH10: --token 'ship it <3' records (a digit after '<')" approval-token '"ship it <3"' --token 'ship it <3'
+  ph_allow "PH11: --token 'a < b and x -> y' records (no template span)" approval-token '"a < b and x -> y"' --token 'a < b and x -> y'
+  ph_allow "PH12: --token 'a <= b' records ('=' after '<')" approval-token '"a <= b"' --token 'a <= b'
+  ph_allow "PH13: --go-by 'Pat Doe <pat@example.com>' records (git's Name <email> form)" go-by 'Pat Doe <pat@example.com> [self-asserted]' --token 'GO fine' --go-by 'Pat Doe <pat@example.com>'
+  # Mutants. 1: the CALL in record removed (the shared predicate stays), so the refuse cells record instead. 2: the '@' exclusion removed
+  # from the grammar, so the allow cell PH13 is refused (the check below passes only when the mutant refuses it, rc 2, with the new message).
+  TF_MUT_WANT=
+  tf_mut "M-PH1a: the record call removed -> PH1's '<your name>' go-by records" 's|^    if _pv_placeholder_span "\$_fv" >/dev/null; then   # PV-PLACEHOLDER-RECORD$|    if false; then   # PV-PLACEHOLDER-RECORD|' "$TFT" "$PH_VAL" --token 'GO fine' --go-by '<your name>'
+  tf_mut "M-PH1b: the record call removed -> PH2's template token records" 's|^    if _pv_placeholder_span "\$_fv" >/dev/null; then   # PV-PLACEHOLDER-RECORD$|    if false; then   # PV-PLACEHOLDER-RECORD|' "$TFT" "$PH_TOK" --token '<your approval, in your words>'
+  rm -rf "$D/tfmut"; mkdir -p "$D/tfmut/scripts" "$D/tfmut/conformance"
+  cp "$VERIFY" "$D/tfmut/orig.sh"; cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$D/tfmut/conformance/ci-classify-changes.sh" 2>/dev/null || true
+  sed 's/<>@]/<>]/g' "$D/tfmut/orig.sh" > "$D/tfmut/scripts/promotion-verify.sh"
+  if cmp -s "$D/tfmut/orig.sh" "$D/tfmut/scripts/promotion-verify.sh"; then echo "FAIL: M-PH2: the mutant script changed nothing (it no longer matches the producer)"; st=1
+  else
+    TF_V="$D/tfmut/scripts/promotion-verify.sh"; tf_rec "$TFT" --token 'GO fine' --go-by 'Pat Doe <pat@example.com>'; TF_V="$VERIFY"
+    if [ "$_tf_rc" = 2 ] && printf '%s' "$_tf_out" | grep -qF -e "$PH_VAL"; then echo "PASS: M-PH2: the '@' exclusion removed -> PH13's 'Name <email>' go-by is refused (the mutant is killed)"
+    else echo "FAIL: M-PH2: the mutant SURVIVED (want rc 2 and '$PH_VAL'; got rc $_tf_rc); out=$_tf_out"; st=1; fi
+  fi
   rm -rf "$D/tfmut" "$TFB" 2>/dev/null || true
 
   # =====================================================================================
@@ -1072,6 +1116,17 @@ selftest() {
         --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" \
         --class control-plane --scope "PR #77" --token "GO" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   lsolo_report "land SOLO NEGATIVE: no --go-by is still refused (0d(i) kept), nothing merged" refuse "--go-by"
+  # SWAS-902: land reaches record's template-text refusal (solo, so no earlier team-mode refusal can pass for it): the new message, no merge,
+  # no note on origin or in the clone's ledger. The later --go-by overrides lland's default one.
+  mkorigin lsoloph; lsolo_base MERGE_RELATIONSHIP=solo
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-ph" --go-by '<the GO-giver>'
+  lsolo_report "land SOLO NEGATIVE (SWAS-902): --go-by '<the GO-giver>' is refused by record's template-text check, nothing merged" refuse "Write the value without '<' and '>'"
+  if onote "$LOSHA" || git -C "$LOA" notes --ref="$LR2" show "$LOSHA" >/dev/null 2>&1; then
+    echo "FAIL: land SOLO NEGATIVE (SWAS-902): a note was written although the go-by was template text"; st=1
+  else
+    echo "PASS: land SOLO NEGATIVE (SWAS-902): no note on origin or in the clone's ledger"
+  fi
   # a note planted on origin whose approved-tree is NOT the sha's tree: a post-receive hook on the bare origin rewrites the
   # note record just published, so land's step 2 reads the planted copy back and the solo bar's tree leg refuses it
   mkorigin lsolotree; lsolo_base MERGE_RELATIONSHIP=solo
@@ -2914,6 +2969,26 @@ EOF
   lfix s8blank; lrec "$LF/B" "$BSHA" "branch/s8blankc" --no-push --go-by "owner-login"
   lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: owner-login/'
   lvcase "sync L8(c) (−): a go-by with no [self-asserted] label is refused naming go-by" 'go-by'
+  # SWAS-902: `sync` re-validates a LOCAL-ONLY note as what record would write NOW, and record now refuses template text in angle brackets.
+  # The notes are written directly (bypassing record); each cell refuses on the new line, publishes nothing, and moves nothing.
+  lfix s902g; lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: <your name> [self-asserted]/'
+  lvcase "sync SWAS-902 (−): a local-only note whose go-by holds '<your name>' is refused naming the go-by field, nothing moved" 'go-by: template text in angle brackets'
+  lfix s902t; lmut "$LF/B" "$BSHA" 's/^approval-token: .*/approval-token: "<your approval, in your words>"/'
+  lvcase "sync SWAS-902 (−): a local-only note whose token holds template text is refused naming approval-token, nothing moved" 'approval-token: template text in angle brackets'
+  # Mutant 3: the sync leg removed -> the same go-by note is PUBLISHED (the cell above fails against it; rc 0 and `published` prove the leg alone refused it).
+  lfix s902m; lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: <your name> [self-asserted]/'
+  rm -rf "$D/phmut"; mkdir -p "$D/phmut/scripts" "$D/phmut/conformance"
+  cp "$VERIFY" "$D/phmut/orig.sh"; cp "$(dirname "$VERIFY")/../conformance/ci-classify-changes.sh" "$D/phmut/conformance/ci-classify-changes.sh" 2>/dev/null || true
+  sed 's|^  _pv_vc_placeholder .*# PV-PLACEHOLDER-SYNC.*$|  true|' "$D/phmut/orig.sh" > "$D/phmut/scripts/promotion-verify.sh"
+  if cmp -s "$D/phmut/orig.sh" "$D/phmut/scripts/promotion-verify.sh"; then
+    echo "FAIL: M-PH3: the mutant script changed nothing (it no longer matches the producer)"; st=1
+  else
+    if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
+    _ph_v="$VERIFY"; VERIFY="$D/phmut/scripts/promotion-verify.sh"; lsync "$LF/B"; VERIFY="$_ph_v"
+    if [ "$_anc" = 0 ] && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "published $BSHA"; then _lc=0; else _lc=1; fi
+    lpass "$_lc" "sync M-PH3 (mutant): the sync leg removed -> the template-text go-by note is published (the mutant is killed)" "anc=$_anc rc=$LRC out=$LOUT"
+  fi
+  rm -rf "$D/phmut" 2>/dev/null || true
   # SAST-PARSE-MERGE-TOOL: one refuse cell per vet arm whose one-line `case` was split. Each pins its OWN message (a rewrite that
   # widens or drops a match turns it red); the cells pass on the code before the split too: they pin behaviour, not red-first.
   lfix s8brk; lrec "$LF/B" "$BSHA" "branch/s8brkc" --no-push --go-by "owner-login"
@@ -3796,6 +3871,422 @@ EOF
   _j323 CAP _f_cap - "the land record counts toward the 64-record cap: 63 records + GO + land refuses"
   _j323 CAPm _f_cap 's/^  if \[ -n "\${lbody:-}" \]; then _nw_kept=\$((_nw_kept + 1)); fi$/  :/' "not counting the land record writes a 65th record"
   J323_COPY=0
+
+  # =====================================================================================
+  # SWAS-901 slice A: `go-bound`, the read-only verb the solo-go-bound workflow runs from the BASE branch. It prints exactly one line,
+  # `go-bound: na|ok|missing|error [reason]`, and writes nothing. Each cell is run by _j323 against the real gate (must hold) and, for the
+  # mutants, against a sed-edited COPY (must NOT hold). GB-T1..GB-T12 read the relationship from the DEFAULT branch's tip (refs/kit/solo-go-default, set to the base B by the fixture) and the PR head by sha; GB-T9c
+  # is a LAND cell (a layout-carrying copy). The fixture is a plain repository: HEAD is the base B, the PR head sits on another branch, and
+  # the GO notes are written by the real `record --no-push` (so a note has the shape the verb really reads).
+  # =====================================================================================
+  G901_REAL="$VERIFY"
+  _g901_repo() {   # <name> <dial|NONE> <claude-md line|NONE> -> G_R (the repository, HEAD = the base tip) and G_B (that tip)
+    G_R="$LROOT/g901-$1"; rm -rf "$G_R"; mkdir -p "$G_R"
+    ( set -e; cd "$G_R"; git init -q; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt; git add f.txt
+      if [ "$2" != NONE ]; then mkdir -p .kit; printf '%s\n' "$2" > .kit/dials.conf; git add .kit/dials.conf; fi
+      if [ "$3" != NONE ]; then printf '%s\n' "$3" > CLAUDE.md; git add CLAUDE.md; fi
+      git commit -qm base; git update-ref refs/kit/solo-go-default HEAD ) >/dev/null 2>&1
+    G_B="$(git -C "$G_R" rev-parse HEAD)"
+  }
+  _g901_head() {   # <repo> <parent> <change|empty> [<dial line>] -> G_H, a commit on <parent>; HEAD goes back to the base tip
+    ( set -e; cd "$1"; git checkout -q "$2"
+      if [ "$3" = change ]; then
+        printf '%s\n' "$2" >> f.txt; git add f.txt
+        if [ -n "${4:-}" ]; then mkdir -p .kit; printf '%s\n' "$4" > .kit/dials.conf; git add .kit/dials.conf; fi
+        git commit -qm pr
+      else git commit -q --allow-empty -m empty; fi
+      git rev-parse HEAD > "$1.sha"; git checkout -q "$G_B" ) >/dev/null 2>&1
+    G_H="$(cat "$1.sha" 2>/dev/null || true)"
+  }
+  _g901_rec() {   # <repo> <sha> <scope> <gate> [<class>] -> one GO record on <sha>, written offline by the real verb
+    if [ "$4" = design ]; then
+      ( cd "$1" && $VSH "$G901_REAL" record --no-push --approved-sha "$2" --approved-by "solo maintainer" --go-by "the owner" --gate design \
+          --rung Design --class "${5:-control-plane}" --scope "$3" --token "GO: design $2" --basis docs/architecture/x-design.md ) >/dev/null 2>&1
+    else
+      ( cd "$1" && $VSH "$G901_REAL" record --no-push --approved-sha "$2" --approved-by "solo maintainer" --go-by "the owner" --gate "$4" \
+          --rung "Release candidate" --class "${5:-ordinary}" --scope "$3" --token "GO: $4 $2" ) >/dev/null 2>&1
+    fi
+  }
+  _g901_gb() {   # <repo> <sha> <pr> [<base-ref> = main] [<default-branch> = main] -> LOUT (stdout), LRC
+    if LOUT="$( cd "$1" && $VSH "$VERIFY" go-bound --approved-sha "$2" --pr "$3" --base-ref "${4:-main}" --default-branch "${5:-main}" 2>/dev/null )"; then LRC=0; else LRC=$?; fi
+  }
+  _g901_ran() { case "$LOUT" in 'go-bound: '*) _op323=0 ;; esac; }   # the verb ran to its own verdict, so only the property may differ under a mutant
+  _g901_is() {   # <word> -> 0 when LOUT is exactly one line, `go-bound: <word>` with an optional reason
+    [ "$(printf '%s\n' "$LOUT" | wc -l | tr -d ' ')" = 1 ] || return 1
+    case "$LOUT" in "go-bound: $1"|"go-bound: $1 "*) return 0 ;; esac
+    return 1
+  }
+  _g901_snap() { ( cd "$1" && git for-each-ref && git notes --ref=promotions list ) 2>&1; }
+  _g901_solo() {   # <name> -> a solo base, a PR head G_H on it and a valid merge-gate record for PR #7 on that head
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #7" release-candidate
+  }
+  _f_gb1() {   # a base that reads team or has no dial is na, though the PR head declares solo and carries a valid note
+    _g901_repo "${1}a" NONE NONE; _gr1="$G_R"; _g901_head "$_gr1" "$G_B" change MERGE_RELATIONSHIP=solo; _gh1="$G_H"
+    _g901_rec "$_gr1" "$_gh1" "PR #7" release-candidate || return 1
+    _g901_repo "${1}b" MERGE_RELATIONSHIP=team NONE; _gr2="$G_R"; _g901_head "$_gr2" "$G_B" change MERGE_RELATIONSHIP=solo; _gh2="$G_H"
+    _g901_rec "$_gr2" "$_gh2" "PR #7" release-candidate || return 1
+    _g901_gb "$_gr1" "$_gh1" 7; _gt1="$LOUT"; _gc1="$LRC"
+    _g901_gb "$_gr2" "$_gh2" 7; _g901_ran
+    [ "$_gt1" = "go-bound: na" ] && [ "$_gc1" = 0 ] && [ "$LOUT" = "go-bound: na" ] && [ "$LRC" = 0 ]
+  }
+  _f_gb2() {   # solo base + one valid merge-gate record for this PR, bound to the head -> ok
+    _g901_solo "$1" || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is ok && [ "$LRC" = 0 ]
+  }
+  _f_gb3a() {   # a record that names the head but sits on ANOTHER sha (the base) is no GO on the head
+    _g901_solo "$1" || return 1
+    ( cd "$G_R" && git notes --ref=promotions copy "$G_H" "$G_B" && git notes --ref=promotions remove "$G_H" ) >/dev/null 2>&1 || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb3b() {   # a note on the head that names an OLDER sha with the SAME tree (an empty commit pushed after the GO) binds nothing
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change; _gold="$G_H"
+    _g901_head "$G_R" "$_gold" empty
+    _g901_rec "$G_R" "$_gold" "PR #7" release-candidate || return 1
+    ( cd "$G_R" && git notes --ref=promotions copy "$_gold" "$G_H" ) >/dev/null 2>&1 || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb3c() {   # an approved-sha line that is only the 12-character prefix of the head binds nothing
+    _g901_solo "$1" || return 1
+    ( cd "$G_R" && git notes --ref=promotions show "$G_H" | sed "s/^approved-sha: .*/approved-sha: $(printf '%s' "$G_H" | cut -c1-12)/" > "$G_R.note" \
+        && git notes --ref=promotions add -f -F "$G_R.note" "$G_H" ) >/dev/null 2>&1 || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb4a() {   # a design-gate record and a merge-gate record for the same PR: the merge-gate one is judged -> ok
+    _g901_solo "$1" || return 1
+    _g901_rec "$G_R" "$G_H" "PR #7" design || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is ok
+  }
+  _f_gb4b() {   # a design GO alone is not a merge GO -> missing
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #7" design || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb5() {   # the only record is scoped to ANOTHER PR: no one-record shortcut -> missing
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #8" release-candidate || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb6() {   # two merge-gate records for this PR (two gates) are ambiguous, never guessed -> missing
+    _g901_solo "$1" || return 1
+    _g901_rec "$G_R" "$G_H" "PR #7" merge || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb7() {   # a PR that targets a branch other than the default -> error, rc 2
+    _g901_solo "$1" || return 1
+    _g901_gb "$G_R" "$G_H" 7 feature main; _g901_ran
+    _g901_is error && [ "$LRC" = 2 ]
+  }
+  _f_gb7b() {   # a base that reads team (or has no dial) is na even for a PR into a non-default branch: team reads na, never error
+    _g901_repo "${1}a" MERGE_RELATIONSHIP=team NONE; _gr1="$G_R"; _g901_head "$_gr1" "$G_B" change; _g901_rec "$_gr1" "$G_H" "PR #7" release-candidate || return 1
+    _g901_gb "$_gr1" "$G_H" 7 feature main; _gt1="$LOUT"; _gc1="$LRC"
+    _g901_repo "${1}b" NONE NONE; _g901_head "$G_R" "$G_B" change; _g901_rec "$G_R" "$G_H" "PR #7" release-candidate || return 1
+    _g901_gb "$G_R" "$G_H" 7 feature main; _g901_ran
+    [ "$_gt1" = "go-bound: na" ] && [ "$_gc1" = 0 ] && [ "$LOUT" = "go-bound: na" ] && [ "$LRC" = 0 ]
+  }
+  _f_gb7c() {   # S-1: the default branch reads solo and the PR's own base (the checkout, HEAD) reads team: still error, never na
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE
+    ( set -e; cd "$G_R"; git checkout -q "$G_B"; printf 'MERGE_RELATIONSHIP=team\n' > .kit/dials.conf; git commit -qam x; git rev-parse HEAD > "$G_R.x" ) >/dev/null 2>&1 || return 1
+    _gx="$(cat "$G_R.x")"; _g901_head "$G_R" "$_gx" change; _g901_rec "$G_R" "$G_H" "PR #7" release-candidate || return 1
+    ( cd "$G_R" && git checkout -q "$_gx" ) >/dev/null 2>&1 || return 1
+    _g901_gb "$G_R" "$G_H" 7 x main; _g901_ran
+    _g901_is error && [ "$LRC" = 2 ]
+  }
+  _f_gb10() {   # the head commit is not in the object store -> error, rc 2
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE
+    _g901_gb "$G_R" 0123456789012345678901234567890123456789 7; _g901_ran
+    _g901_is error && [ "$LRC" = 2 ]
+  }
+  _f_gb11() {   # a note whose first line is no record header is malformed and binds nothing -> missing
+    _g901_solo "$1" || return 1
+    ( cd "$G_R" && { printf 'stray: x\n'; git notes --ref=promotions show "$G_H"; } > "$G_R.bad" && git notes --ref=promotions add -f -F "$G_R.bad" "$G_H" ) >/dev/null 2>&1 || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gb12() {   # no GO ledger at all (S-2): a team default reads na, a solo default reads missing
+    _g901_repo "${1}a" MERGE_RELATIONSHIP=team NONE; _g901_head "$G_R" "$G_B" change
+    _g901_gb "$G_R" "$G_H" 7; _gt1="$LOUT"; _gc1="$LRC"
+    _g901_repo "${1}b" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    [ "$_gt1" = "go-bound: na" ] && [ "$_gc1" = 0 ] && _g901_is missing && [ "$LRC" = 0 ]
+  }
+  _f_gb8() {   # a Governance team line on the base tightens a solo dial -> na
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): team — non-author approval'; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #7" release-candidate || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is na
+  }
+  _f_gb9() {   # go-bound writes no ref and no note: the ref list and the ledger are equal before and after
+    _g901_solo "$1" || return 1
+    _g901_snap "$G_R" > "$G_R.s0"
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_snap "$G_R" > "$G_R.s1"
+    _g901_is ok && [ -s "$G_R.s0" ] && cmp -s "$G_R.s0" "$G_R.s1"
+  }
+  _f_gb9b() {   # stdout is exactly one `go-bound:` line, and a bad flag is an error with rc 2
+    _g901_solo "$1" || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran; _gok=1
+    if [ "$(printf '%s\n' "$LOUT" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$LOUT" | grep -Eq '^go-bound: (na|ok|missing|error)( .*)?$'; then _gok=0; fi
+    _g901_gb "$G_R" nothex 7
+    [ "$_gok" = 0 ] && [ "$LRC" = 2 ] && _g901_is error
+  }
+  _f_gb9c() {   # the relationship and merge GO lines of a solo land are unchanged by the factoring (a LAND cell)
+    mkorigin "$1"; lsolo_base MERGE_RELATIONSHIP=solo; rm -f "$LAND_MARK"
+    lland "$LAND_STUB" "$LOSHA" control-plane "branch/$1"
+    LOUT="$_ld_out"; LRC="$_ldc"
+    if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ]; then _op323=0; fi
+    [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -qF -e 'merge relationship: solo (origin/main'
+  }
+  J323_COPY=0
+  _j323 GB-T1 _f_gb1 - "go-bound: a base that reads team or has no dial is na, though the PR head declares solo"
+  _j323 GB-T1m _f_gb1 's@^  _gb_tip=.*$@  _gb_tip="$_gb_sha"@' "reading the dial from the PR head instead of the base tip opens a solo reading"
+  _j323 GB-T2 _f_gb2 - "go-bound: a solo base and one valid merge-gate record scoped to the PR, bound to the head, is ok"
+  _j323 GB-T2m _f_gb2 's@echo "go-bound: ok"@echo "go-bound: missing"@' "a verb that never says ok is not live"
+  _j323 GB-T3a _f_gb3a - "go-bound: a record that names the head but sits on another sha is no GO on the head"
+  _j323 GB-T3am _f_gb3a 's@notes --ref="\$NOTES_REF" show "\$_gb_sha"@notes --ref="$NOTES_REF" show HEAD@' "looking the note up on the base tip finds a GO that is not the head's"
+  _j323 GB-T3b _f_gb3b - "go-bound: a note on the head that names an older sha with the same tree binds nothing"
+  _j323 GB-T3bm _f_gb3b 's@if \[ "\$_sgb" != "\$_sga" .; then@if false; then@' "without leg 1 (the sha) only the tree is read, and a same-tree sha passes"
+  _j323 GB-T3c _f_gb3c - "go-bound: a 12-character prefix in approved-sha binds nothing"
+  _j323 GB-T3cm _f_gb3c 's@if \[ "\$_sgb" != "\$_sga" .; then@if [ -z "$_sgb" ] || [ "${_sga#"$_sgb"}" = "$_sga" ]; then@' "comparing the sha by prefix accepts a 12-character name"
+  _j323 GB-T4a _f_gb4a - "go-bound: a design record beside a merge record for the PR leaves the merge record judged"
+  _j323 GB-T4am _f_gb4a 's@^    if pv_go_gate_typed "\$(_pv_rec_field "\$_gp_r" gate)"; then continue; fi$@    :@' "without the gate filter two records are kept and the pick refuses"
+  _j323 GB-T4b _f_gb4b - "go-bound: a design GO alone is not a merge GO"
+  _j323 GB-T4bm _f_gb4b 's@^    if pv_go_gate_typed "\$(_pv_rec_field "\$_gp_r" gate)"; then continue; fi$@    :@;s@^    design\*|plan\*)$@    zz-never)@' "a typed gate treated as a merge gate in the pick and in leg 4 is judged ok"
+  _j323 GB-T5 _f_gb5 - "go-bound: the only record is for another PR, so there is no one-record shortcut"
+  _j323 GB-T5m _f_gb5 's@^    \[ "\$(pv_ev_pr_number .*|| continue$@    :@' "accepting a single record whatever its scope merges under another PR's GO"
+  _j323 GB-T6 _f_gb6 - "go-bound: two merge-gate records for this PR are ambiguous, never guessed"
+  _j323 GB-T6m _f_gb6 's@^  \[ "\$_gp_kept" = 1 . || return 1$@  [ "$_gp_kept" -ge 1 ] || return 1@' "picking the first of two records judges one by position"
+  _j323 GB-T7 _f_gb7 - "go-bound: a PR into a branch that is not the default is an error, rc 2"
+  _j323 GB-T7m _f_gb7 's@^  if \[ "\$_gb_base" != "\$_gb_def" .; then$@  if false; then@' "skipping the base-ref check judges a PR into a feature branch"
+  _j323 GB-T7b _f_gb7b - "go-bound: a team or undeclared base is na even for a PR into a non-default branch"
+  _j323 GB-T7bm _f_gb7b 's@^  if \[ "\$PV_REL" != solo \]; then _gb_say na; return 0; fi$@  if [ "$PV_REL" != solo ] \&\& [ "$_gb_base" = "$_gb_def" ]; then _gb_say na; return 0; fi@' "running the base-ref check ahead of the relationship read reds a team repository's PR into a feature branch"
+  _j323 GB-T7c _f_gb7c - "go-bound: a default branch that reads solo is error for a PR whose own base reads team (a retargeted PR)"
+  _j323 GB-T7cm _f_gb7c 's@^  _gb_tip=.*$@  _gb_tip="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"@' "reading the relationship from the checkout instead of the default branch tip lets a retargeted PR read team"
+  _j323 GB-T10 _f_gb10 - "go-bound: a head commit that is not in the object store is an error, rc 2"
+  _j323 GB-T10m _f_gb10 's@^  if ! git -C "\$ROOT" cat-file -e .*; then$@  if false; then@' "without the presence check a missing head reads as a missing note"
+  _j323 GB-T11 _f_gb11 - "go-bound: a malformed note (its first line is no record header) binds nothing"
+  _j323 GB-T11m _f_gb11 '/NR == 1/ s/bad = 1/bad = 0/; /if (hdr(/ s/bad = 1/bad = 0/' "without the first-line rule the stray-first note binds"
+  _j323 GB-T12 _f_gb12 - "go-bound: with no GO ledger a team default is na and a solo default is missing"
+  _j323 GB-T12m _f_gb12 's@_gb_say missing "no GO note on@_gb_say error "no GO note on@' "a missing ledger turned into an error reds the solo case as error"
+  _j323 GB-T8 _f_gb8 - "go-bound: a Governance team line on the base overrides a solo dial"
+  _j323 GB-T8m _f_gb8 's@^  if \[ "\$_mrgov" = team .; then$@  if false; then@' "letting the dial win over Governance team reads solo"
+  _j323 GB-T9 _f_gb9 - "go-bound: writes no ref and no note"
+  _j323 GB-T9m _f_gb9 's@echo "go-bound: ok"@git notes --ref=promotions add -f -m x "$_gb_sha" >/dev/null 2>\&1; echo "go-bound: ok"@' "a notes add inside go-bound moves the ledger"
+  _j323 GB-T9b _f_gb9b - "go-bound: stdout is exactly one line, and a bad flag is an error, rc 2"
+  _j323 GB-T9bm _f_gb9b 's@echo "go-bound: ok"@echo "go-bound: ok"; echo "go-bound: ok"@' "a second output line breaks the one-line grammar"
+  # SWAS-901 E6 S-1: once the default branch's REQUIRED-CHECKS.md declares solo-go-bound, a default branch that no longer READS solo (a team dial, a
+  # deleted or symlinked dial, a symlinked CLAUDE.md: the verbs' own reader) makes go-bound an `error`, never a green `na`, because protection would
+  # otherwise hold a required check that passes for everyone. A team adopter that never declared it still reads `na`.
+  _g901_s1() {  # <name> <dial: solo|team|link|none> <CLAUDE.md: none|link> <declared 1|0> -> G_R, G_B (the default tip; no PR head is needed: the relationship is read first)
+    G_R="$LROOT/g901-$1"; rm -rf "$G_R"; mkdir -p "$G_R/.kit"
+    ( set -e; cd "$G_R"; git init -q; git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt
+      if [ "$2" = solo ]; then printf 'MERGE_RELATIONSHIP=solo\n' > .kit/dials.conf
+      elif [ "$2" = team ]; then printf 'MERGE_RELATIONSHIP=team\n' > .kit/dials.conf
+      elif [ "$2" = link ]; then ln -s elsewhere .kit/dials.conf; fi
+      if [ "$3" = link ]; then ln -s elsewhere CLAUDE.md; fi
+      if [ "$4" = 1 ]; then printf '```\nci\nsolo-go-bound\n```\n' > REQUIRED-CHECKS.md
+      elif [ "$4" = second ]; then printf '```\nci\n```\n\n```\nsolo-go-bound\n```\n' > REQUIRED-CHECKS.md
+      elif [ "$4" = link ]; then ln -s elsewhere REQUIRED-CHECKS.md; fi
+      git add -A; git commit -qm base; git update-ref refs/kit/solo-go-default HEAD ) >/dev/null 2>&1
+    G_B="$(git -C "$G_R" rev-parse HEAD)"
+  }
+  _f_s1a() { _g901_s1 "$1" team none 0; _g901_gb "$G_R" "$G_B" 7; _g901_ran; [ "$LOUT" = "go-bound: na" ] && [ "$LRC" = 0 ]; }
+  _f_s1b() { _g901_s1 "$1" link none 1; _g901_gb "$G_R" "$G_B" 7; _g901_ran; _g901_is error && [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -qF 'declares solo-go-bound'; }
+  _f_s1c() { _g901_s1 "$1" none none 1; _g901_gb "$G_R" "$G_B" 7; _g901_ran; _g901_is error && [ "$LRC" = 2 ]; }
+  _f_s1d() { _g901_s1 "$1" solo link 1; _g901_gb "$G_R" "$G_B" 7; _g901_ran; _g901_is error && [ "$LRC" = 2 ]; }
+  _f_s1e() { _g901_s1 "$1" team none link; _g901_gb "$G_R" "$G_B" 7; _g901_ran; _g901_is error && [ "$LRC" = 2 ]; }   # R2-3: an unreadable declaration (a symlink) reads error, never "not declared"
+  _f_s1f() { _g901_s1 "$1" team none second; _g901_gb "$G_R" "$G_B" 7; _g901_ran; [ "$LOUT" = "go-bound: na" ] && [ "$LRC" = 0 ]; }   # only the FIRST fenced block is the declaration
+  _S1M='s@^  if \[ "\$_gb_dr" != 1 \]; then@  if false; then@'
+  _j323 GB-E6a _f_s1a - "go-bound: a team default branch that never declared solo-go-bound still reads na"
+  _j323 GB-E6b _f_s1b - "go-bound: solo-go-bound declared and the dial a symlink is an error, never na"
+  _j323 GB-E6bm _f_s1b "$_S1M" "without the arm a declared check beside a symlinked dial reads a green na"
+  _j323 GB-E6c _f_s1c - "go-bound: solo-go-bound declared and the dial deleted is an error"
+  _j323 GB-E6cm _f_s1c "$_S1M" "without the arm a declared check beside a deleted dial reads a green na"
+  _j323 GB-E6e _f_s1e - "go-bound: a REQUIRED-CHECKS.md that is a symlink reads error, never not-declared"
+  _j323 GB-E6em _f_s1e 's@\[ "\$_gb_dr" != 1 \]@[ "$_gb_dr" = 0 ]@' "treating only rc 0 as a declaration reads an unreadable one as a green na"
+  _j323 GB-E6f _f_s1f - "go-bound: solo-go-bound listed only in a SECOND fenced block is not the declaration: na"
+  _j323 GB-E6fm _f_s1f 's@if (done) next; @@' "reading every fenced block lets a usage example declare the check"
+  _j323 GB-E6d _f_s1d - "go-bound: solo-go-bound declared, a solo dial and a symlinked CLAUDE.md (the verbs read team) is an error"
+  _j323 GB-E6dm _f_s1d "$_S1M" "without the arm a declared check beside a symlinked CLAUDE.md reads a green na"
+  J323_COPY=1; LGH_NOREV=1
+  _j323 GB-T9c _f_gb9c - "a solo land still prints its merge relationship line after the factoring"
+  _j323 GB-T9cm _f_gb9c 's/merge relationship: solo (origin/merge relationship: SOLO (origin/' "editing one string in the factored reader changes land's line"
+  J323_COPY=0; LGH_NOREV=""
+
+  # =====================================================================================
+  # SWAS-901 slice B (B1): in a solo-declared repository the merge verbs (`land` here, `actuate` in promotion-actuate-wired.sh) read the
+  # head's `solo-go-bound` runs, refuse a foreign one, re-run a red one and wait for it. `gh` is a PATH stub that serves fixture JSON through
+  # the verb's own --jq filter (real jq), logs every call, and sends everything else to lgh's shim. It never reaches a forge. Each cell
+  # has one mutant on a layout-carrying COPY of the gate (_j323, J323_COPY=1; the copy must differ from the gate, cmp proves it).
+  # =====================================================================================
+  _SGW=.github/workflows/solo-go.yml
+  _sg_cr() { printf '{"id":%s,"app":{"slug":"%s"},"check_suite":{"id":%s},"status":"%s","conclusion":%s}' "$1" "$2" "$3" "$4" "$5"; }   # <id> <slug> <suite> <status> <conclusion JSON>
+  _sg_wr() {   # <id> <path> <event> <suite> <attempt> <status> <conclusion JSON> <base ref|none>
+    if [ "$8" = none ]; then _sgw_pr='[]'; else _sgw_pr="[{\"number\":77,\"base\":{\"ref\":\"$8\"}}]"; fi
+    printf '{"id":%s,"path":"%s","event":"%s","check_suite_id":%s,"run_attempt":%s,"status":"%s","conclusion":%s,"pull_requests":%s}' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$_sgw_pr"
+  }
+  _sg_list() {   # <key> <item>... -> {"<key>":[item,item,...]}
+    _sgl_k="$1"; shift; _sgl_o=""
+    for _sgl_i in "$@"; do _sgl_o="${_sgl_o:+$_sgl_o,}$_sgl_i"; done
+    printf '{"%s":[%s]}\n' "$_sgl_k" "$_sgl_o"
+  }
+  _sg_gok() { _sg_wr "$1" "$_SGW" pull_request_target "$2" "${3:-1}" completed '"success"' "${4:-main}"; }   # <id> <suite> [<attempt>] [<base>]: a qualifying, green run
+  _sg_stub() {   # <name> -> SG_D, the gh stub dir; the caller writes cr.json, wr.json and optionally cr-after.json (served once a re-run was posted)
+    SG_D="$LROOT/sg-$1"; rm -rf "$SG_D"; mkdir -p "$SG_D"
+    printf '%s\n' '#!/bin/sh' \
+      'd=$(dirname "$0"); a="$*"; jqf=.; prev=' \
+      'for x in "$@"; do if [ "$prev" = --jq ]; then jqf=$x; fi; prev=$x; done' \
+      'case "$a" in' \
+      '  *rerun-failed-jobs*) printf "POST %s\n" "$a" >> "$d/log"; if [ -f "$d/rerun-fail" ]; then exit 1; fi; : > "$d/rerun"; exit 0 ;;' \
+      '  *check-runs*) printf "CR %s\n" "$a" >> "$d/log"; src=$d/cr.json; if [ -f "$d/rerun" ] && [ -f "$d/cr-after.json" ]; then src=$d/cr-after.json; fi; jq -r "$jqf" < "$src"; exit $? ;;' \
+      '  *"actions/runs?head_sha"*) printf "WR %s\n" "$a" >> "$d/log"; jq -r "$jqf" < "$d/wr.json"; exit $? ;;' \
+      '  *) exec "$SG_NEXT" "$@" ;;' \
+      'esac' > "$SG_D/gh"
+    chmod +x "$SG_D/gh"; : > "$SG_D/log"
+  }
+  _sg_fx() {   # <name> <dial line> <workflow 1|0> -> an origin whose main carries the dial (and the installed workflow); LOSHA is that tip
+    mkorigin "$1"
+    ( set -e; cd "$LOA"; mkdir -p .kit; printf '%s\n' "$2" > .kit/dials.conf; git add .kit/dials.conf
+      if [ "$3" = 1 ]; then mkdir -p .github/workflows; printf '# COPY & ADAPT\nname: solo-go\n' > "$_SGW"; git add "$_SGW"; fi
+      git commit -qm "declare"; git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+    LOSHA="$(git -C "$LOA" rev-parse HEAD)"; rm -f "$LAND_MARK"
+    _sg_stub "$1"
+  }
+  _sg_land() {   # <stub dir> -> _ld_out, _ldc: one `land` with the stub ahead of lgh's forge shim
+    _sgl_d="$1"; _sgl_gh="$(lgh "$LOSHA" "solo maintainer")"
+    if _ld_out="$( cd "$LOA" && SG_NEXT="$_sgl_gh/gh" PROMOTION_VERIFY_SG_POLL="${SG_POLL:-2}" PATH="$_sgl_d:$_sgl_gh:$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land \
+          --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA" --approved-by "solo maintainer" --go-by "the owner" \
+          --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land at $LOSHA" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+    case "$_ld_out" in *'merge relationship: '*) _op323=0 ;; esac
+  }
+  _sg_merged() { [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ]; }
+  _sg_refused() { [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -qF -e "$1"; }   # <needle>: refused, nothing merged, and it says why
+  _sg_posts() { grep -c '^POST ' "$SG_D/log" || true; }
+  _f_t16a() {   # red on the head, a late GO: the verb re-runs, re-reads, sees green and merges
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"failure"')" > "$SG_D/cr.json"
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" > "$SG_D/cr-after.json"
+    _sg_list workflow_runs "$(_sg_wr 11 "$_SGW" pull_request_target 101 1 completed '"failure"' main)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_merged && [ "$(_sg_posts)" = 1 ] && [ "$(sed -n '$p' "$SG_D/log" | cut -c1-5)" != 'POST ' ]
+  }
+  _f_t16b() {   # red forever: one re-run, then refused at the bound, naming the run; nothing merged
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"failure"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_wr 11 "$_SGW" pull_request_target 101 1 completed '"failure"' main)" > "$SG_D/wr.json"
+    SG_POLL=1; _sg_land "$SG_D"; SG_POLL=2
+    _sg_refused 'run 11' && [ "$(_sg_posts)" = 1 ] && printf '%s' "$_ld_out" | grep -qF 'Nothing was merged'
+  }
+  _f_t17a() {   # three qualifying runs (opened, ready_for_review, a second attempt), all green: merges
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" "$(_sg_cr 2 github-actions 102 completed '"success"')" "$(_sg_cr 3 github-actions 103 completed '"success"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101)" "$(_sg_gok 12 102)" "$(_sg_gok 13 103 2)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_merged && [ "$(_sg_posts)" = 0 ]
+  }
+  _f_t17b() {   # plus a green job of the same name from another workflow on `pull_request`: refused naming it, no re-run
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" "$(_sg_cr 2 github-actions 104 completed '"success"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101)" "$(_sg_wr 14 .github/workflows/x.yml pull_request 104 1 completed '"success"' main)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_refused 'x.yml' && [ "$(_sg_posts)" = 0 ]
+  }
+  _f_t17c() {   # one check suite that joins two workflow runs is ambiguous: refused
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101)" "$(_sg_gok 12 101)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_refused 'check suite 101'
+  }
+  _f_t17d() {   # a green run whose PR base is not the default branch (S-1 residual): refused naming the base
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101 1 feature)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_refused 'base feature'
+  }
+  _f_t17e() {   # a check run from another app: refused
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 my-bot 101 completed '"success"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101)" > "$SG_D/wr.json"
+    _sg_land "$SG_D"
+    _sg_refused 'my-bot'
+  }
+  _f_t17f() {   # an older green and a newer red on one head, the re-run stays red: refused, only the red run re-run
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"success"')" "$(_sg_cr 2 github-actions 102 completed '"failure"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_gok 11 101)" "$(_sg_wr 12 "$_SGW" pull_request_target 102 1 completed '"failure"' main)" > "$SG_D/wr.json"
+    SG_POLL=1; _sg_land "$SG_D"; SG_POLL=2
+    _sg_refused 'run 12' && [ "$(_sg_posts)" = 1 ] && grep -q '^POST .*runs/12/' "$SG_D/log"
+  }
+  _f_t18() {   # a TEAM base, the same red stubs: the verb never asks about solo-go-bound
+    _sg_fx "$1" MERGE_RELATIONSHIP=team 1
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"failure"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_wr 11 "$_SGW" pull_request_target 101 1 completed '"failure"' main)" > "$SG_D/wr.json"
+    LGH_NOREV=""; SG_POLL=1; _sg_land "$SG_D"; SG_POLL=2; LGH_NOREV=1
+    _sg_merged && [ ! -s "$SG_D/log" ]
+  }
+  _f_t18b() {   # solo but no installed workflow on the tip: one N/A line, nothing read, today's path
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 0
+    _sg_list check_runs "$(_sg_cr 1 github-actions 101 completed '"failure"')" > "$SG_D/cr.json"
+    _sg_list workflow_runs "$(_sg_wr 11 "$_SGW" pull_request_target 101 1 completed '"failure"' main)" > "$SG_D/wr.json"
+    SG_POLL=1; _sg_land "$SG_D"; SG_POLL=2
+    _sg_merged && [ ! -s "$SG_D/log" ] && printf '%s' "$_ld_out" | grep -qF 'solo-go-bound: not installed'
+  }
+  J323_COPY=1; LGH_NOREV=1
+  _j323 T16a _f_t16a - "solo, a red solo-go-bound on the head: the verb re-runs it, re-reads, and merges once it is green"
+  _j323 T16am _f_t16a 's@^    sleep "\$_sgstep"; _sgt=.*$@    return 0@' "returning after the re-run without reading again merges before the forge answered"
+  _j323 T16b _f_t16b - "solo, red forever: one re-run, then refused at the bound naming the run, nothing merged"
+  _j323 T16bm _f_t16b 's@^    if \[ "\$_sgt" -ge "\$_sgb" \]; then@    if [ "$_sgt" -ge "$_sgb" ]; then return 0@' "treating the bound as success merges on a red check"
+  _j323 T16bs _f_t16b 's@^  pv_sg_gate land .*$@  :@' "land without the call site never reads solo-go-bound"
+  _f_t16g() {   # no solo-go-bound run on the head at all (the verdict `none`): the refusal says so, in its own words
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 1
+    _sg_list check_runs > "$SG_D/cr.json"; _sg_list workflow_runs > "$SG_D/wr.json"
+    SG_POLL=1; _sg_land "$SG_D"; SG_POLL=2
+    _sg_refused 'no solo-go-bound run exists on this head' && [ "$(_sg_posts)" = 0 ]
+  }
+  _j323 T16g _f_t16g - "solo, no solo-go-bound run on the head: refused at the bound saying no run exists, not that the GO is missing"
+  _j323 T16gm _f_t16g '/MUT-SG-NONE$/d' "without the verdict-specific wording a missing run reads like a missing GO"
+  _j323 T17a _f_t17a - "three qualifying runs on one head, all green, are not refused for being several"
+  _j323 T17am _f_t17a 's@^      total++$@      if (++total > 1) { print "foreign more than one run"; fin = 1; exit }@' "refusing on more than one run blocks the re-run and the ready_for_review runs"
+  _j323 T17b _f_t17b - "a green same-named job from another workflow on pull_request is refused naming it, and nothing is re-run"
+  _j323 T17bm _f_t17b '/^      if (pth\[\$3\] != /d' "without the path and event rule a spoofing workflow's green merges"
+  _j323 T17c _f_t17c - "one check suite joining two workflow runs is refused"
+  _j323 T17cm _f_t17c '/^      if (cnt\[\$3\] != 1)/d' "without the join rule an ambiguous suite is judged by whichever run came last"
+  _j323 T17d _f_t17d - "a green run whose PR base is a feature branch is refused naming the base"
+  _j323 T17dm _f_t17d '/^      if (bas\[\$3\] != def)/d' "without the base rule a run for another base counts"
+  _j323 T17e _f_t17e - "a check run from an app other than github-actions is refused"
+  _j323 T17em _f_t17e '/^      if (\$2 != "github-actions")/d' "without the app rule a bot's check counts"
+  _j323 T17f _f_t17f - "an older green beside a newer red is red: only the red run is re-run, and it is refused at the bound"
+  _j323 T17fm _f_t17f 's@^      if (\$4 != "completed") pend = 1$@      if ($5 == "success") ok1 = 1; if ($4 != "completed") pend = 1@;s@^      else if (red) print "red " ids$@      else if (red \&\& !ok1) print "red " ids@' "accepting any green run beside a red one merges on the older head state"
+  _j323 T18 _f_t18 - "a team base: the verb never reads solo-go-bound, runs nothing, and merges as before"
+  _j323 T18m _f_t18 '/^  \[ "\$PV_REL" = solo \] || return 0$/d' "without the solo gate a team repository is asked about solo-go-bound"
+  _j323 T18b _f_t18b - "solo with no installed workflow on the tip: one N/A line and today's path, nothing read"
+  _j323 T18bm _f_t18b 's@^  if ! pv_sg_installed; then$@  if false; then@' "without the installed test a solo repository without the workflow is refused for want of a run"
+  # SWAS-901 slice B, HO4: a solo `land` prints the handover line twice (after the relationship line, before the success text) and its success text no
+  # longer says "authenticated non-author forge approval" (nothing authenticated a solo GO); HO4m1-m3 each undo one of the three on a COPY of the gate.
+  _HO4='land: From here the agent merges on your recorded GO; the owner'"'"'s per-PR act is the GO only.'
+  _f_ho4() {
+    _sg_fx "$1" MERGE_RELATIONSHIP=solo 0
+    _sg_land "$SG_D"
+    _sg_merged && [ "$(printf '%s\n' "$_ld_out" | grep -cxF -e "$_HO4")" = 2 ] && printf '%s' "$_ld_out" | grep -qF 'merged on your recorded GO' \
+      && ! printf '%s' "$_ld_out" | grep -qF 'authenticated non-author'
+  }
+  _j323 HO4 _f_ho4 - "a solo land prints the handover line twice and a success text that does not claim a forge approval"
+  _j323 HO4m1 _f_ho4 's@^  pv_handover land .*MUT-HO-REL$@  :@' "without the print after the relationship line the count is one"
+  _j323 HO4m2 _f_ho4 's@^  pv_handover land .*MUT-HO-OK$@  :@' "without the print before the success text the count is one"
+  _j323 HO4m3 _f_ho4 's@merged on your recorded GO, bound to the head sha@merged on an authenticated non-author forge approval@' "reverting the solo success text claims a forge approval that no forge gave"
+  J323_COPY=0; LGH_NOREV=""
 
   # FXS: the skip count is load-bearing. A skip call raises it by exactly one, and the note carries the number (0 prints as "0 SKIPPED").
   _fxs0="$FX_SKIPS"; fx_skip "FXS-probe" >/dev/null; _fxs1="$FX_SKIPS"; FX_SKIPS="$_fxs0"

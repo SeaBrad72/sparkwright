@@ -1110,6 +1110,9 @@ AA_KS_EXPECTED_IN
 # over-denies the design pins). They are `deny` cells, so only ALLOW->DENY is permitted for them. The allow cells (SC-A) and the
 # fall-through pair (SC-F1) are deliberately NOT listed: any movement of those is UNEXPECTED.
 # SWAS-355a (2ac73d58, cherry-picked to #912 as bdd15318): the two Bash cells on .kit/boundary-optout.conf are deny cells that move ALLOW->DENY; each entry equals a whole label but still matches as a prefix, so a new label extending either must be checked against it.
+# SWAS-903: the three `SWAS903-GT-W2b`, `SWAS903-GT-W3b` and `SWAS903-GT-W4a` entries are deny cells that move ALLOW->DENY on a CASE-SENSITIVE filesystem (the Linux delta leg): the
+# Tier 1 name entry for scripts/gh-tls.sh closes the case variant (`Scripts/GH-TLS.sh`) there (on a case-insensitive filesystem the filesystem probe already denied it, so macOS sees no move).
+# That is the intended tightening of this slice; each entry equals a whole label.
 AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [T2R3 API READ refunded]
 [T2R4 read-only flag takes the expansion as its VALUE]
@@ -1166,6 +1169,13 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [ci-pre-approval interpreter python3 -c]
 [ci-pre-approval interpreter UPPERCASE fold]
 [ci-pre-approval glob-spelled cp]
+[SWAS309-C2 ]
+[SWAS309-C3 ]
+[SWAS309-C10 declared over-match face]
+[SWAS309-C12 ]
+[SWAS903-GT-W2b a redirect into the case variant]
+[SWAS903-GT-W3b sed -i on the case variant]
+[SWAS903-GT-W4a printf into the case variant (the pathhit arm)]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -3225,6 +3235,86 @@ assert_deny "S1 sed -i AGENTS.md"        '{"tool_name":"Bash","tool_input":{"com
 assert_deny "S1 Write REQUIRED-CHECKS"   '{"tool_name":"Write","tool_input":{"file_path":"REQUIRED-CHECKS.md","content":"x"}}'
 assert_deny "S1 redirect REQUIRED-CHECKS" '{"tool_name":"Bash","tool_input":{"command":"echo x > REQUIRED-CHECKS.md"}}'
 assert_deny "S1 sed -i REQUIRED-CHECKS"  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ REQUIRED-CHECKS.md"}}'
+# --- SWAS-309: the adopter's ROOT WAIVER-REGISTER.md is a control-plane root leaf (a waiver row is a PERSON's act). ---
+# C1: the file tools deny at the root, at depth and in lowercase. The path-route cells (Write/Edit/MultiEdit/NotebookEdit)
+# are graded live only; --delta replays the Bash cells.
+assert_deny "SWAS309-C1 Write WAIVER-REGISTER.md"          '{"tool_name":"Write","tool_input":{"file_path":"WAIVER-REGISTER.md","content":"x"}}'
+assert_deny "SWAS309-C1 Edit ./WAIVER-REGISTER.md"         '{"tool_name":"Edit","tool_input":{"file_path":"./WAIVER-REGISTER.md","old_string":"a","new_string":"b"}}'
+assert_deny "SWAS309-C1 MultiEdit WAIVER-REGISTER.md"      '{"tool_name":"MultiEdit","tool_input":{"file_path":"WAIVER-REGISTER.md","edits":[{"old_string":"a","new_string":"b"}]}}'
+assert_deny "SWAS309-C1 NotebookEdit WAIVER-REGISTER.md"   '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"WAIVER-REGISTER.md","new_source":"x"}}'
+assert_deny "SWAS309-C1 Write sub/WAIVER-REGISTER.md"      '{"tool_name":"Write","tool_input":{"file_path":"sub/WAIVER-REGISTER.md","content":"x"}}'
+assert_deny "SWAS309-C1 Write waiver-register.md (lower)"  '{"tool_name":"Write","tool_input":{"file_path":"waiver-register.md","content":"x"}}'
+# C2: the shell write spellings deny. The python3 cell is the exact spelling dt_root_corpus_ok proves reachable for every root leaf.
+assert_deny "SWAS309-C2 redirect >> WAIVER-REGISTER.md"    '{"tool_name":"Bash","tool_input":{"command":"echo x >> WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 sed -i WAIVER-REGISTER.md"         '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 cp a WAIVER-REGISTER.md"           '{"tool_name":"Bash","tool_input":{"command":"cp a WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 mv WAIVER-REGISTER.md b"           '{"tool_name":"Bash","tool_input":{"command":"mv WAIVER-REGISTER.md b"}}'
+assert_deny "SWAS309-C2 tee -a WAIVER-REGISTER.md"         '{"tool_name":"Bash","tool_input":{"command":"tee -a WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 git checkout -- WAIVER-REGISTER.md" '{"tool_name":"Bash","tool_input":{"command":"git checkout -- WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 git restore WAIVER-REGISTER.md"    '{"tool_name":"Bash","tool_input":{"command":"git restore WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C2 python3 open WAIVER-REGISTER.md"   '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'WAIVER-REGISTER.md'"'"','"'"'w'"'"')\""}}'
+# C3: a glob spelling and the lowercase spellings deny.
+assert_deny "SWAS309-C3 glob cp a WAIVER-REGISTER.m*"      '{"tool_name":"Bash","tool_input":{"command":"cp a WAIVER-REGISTER.m*"}}'
+assert_deny "SWAS309-C3 python3 open waiver-register.md (lower)" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'waiver-register.md'"'"','"'"'w'"'"')\""}}'
+assert_deny "SWAS309-C3 redirect >> waiver-register.md (lower)"  '{"tool_name":"Bash","tool_input":{"command":"echo x >> waiver-register.md"}}'
+# C4: reads and the validator stay allowed.
+assert_allow "SWAS309-C4 Read WAIVER-REGISTER.md"           '{"tool_name":"Read","tool_input":{"file_path":"WAIVER-REGISTER.md"}}'
+assert_allow "SWAS309-C4 cat WAIVER-REGISTER.md"            '{"tool_name":"Bash","tool_input":{"command":"cat WAIVER-REGISTER.md"}}'
+assert_allow "SWAS309-C4 grep -n gate WAIVER-REGISTER.md"   '{"tool_name":"Bash","tool_input":{"command":"grep -n gate WAIVER-REGISTER.md"}}'
+assert_allow "SWAS309-C4 waivers-valid.sh"                  '{"tool_name":"Bash","tool_input":{"command":"sh conformance/waivers-valid.sh"}}'
+assert_allow "SWAS309-C4 waivers-valid.sh --active"         '{"tool_name":"Bash","tool_input":{"command":"sh conformance/waivers-valid.sh --active board-governance"}}'
+# C5: a person's edit stays committable by the agent, and a message that merely names the file is not over-denied.
+assert_allow "SWAS309-C5 allow git add WAIVER-REGISTER.md"  '{"tool_name":"Bash","tool_input":{"command":"git add WAIVER-REGISTER.md"}}'
+assert_allow "SWAS309-C5 allow git commit -m waiver"        '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"waiver\""}}'
+assert_allow "SWAS309-C5 allow git commit message names the file" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"fill the board-governance row in WAIVER-REGISTER.md\""}}'
+assert_allow "SWAS309-C5 allow gh pr create body names the file"  '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title waiver --body \"adds a row to WAIVER-REGISTER.md\""}}'
+# MEASURED (errata E6): the design predicted an over-deny for a carrier that does not lead the segment (`git -C <dir> commit`);
+# the full battery measured ALLOW, so no over-deny exists for this spelling. Pinned as measured.
+assert_allow "SWAS309-C5 measured allow git -C dir commit message names the file" '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/d commit -m \"x WAIVER-REGISTER.md\""}}'
+# C7: the refusal names the person's act (and the create command, errata E2); the hint is this leaf's only.
+assert_reason_has   "SWAS309-C7 Write deny says a person fills it"        '{"tool_name":"Write","tool_input":{"file_path":"WAIVER-REGISTER.md","content":"x"}}' "filled by a person"
+assert_reason_has   "SWAS309-C7 Write deny names the create command"      '{"tool_name":"Write","tool_input":{"file_path":"WAIVER-REGISTER.md","content":"x"}}' "cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md"
+assert_reason_has   "SWAS309-C7 redirect deny says a person fills it"     '{"tool_name":"Bash","tool_input":{"command":"echo x >> WAIVER-REGISTER.md"}}' "filled by a person"
+assert_reason_has   "SWAS309-C7 redirect deny names the create command"   '{"tool_name":"Bash","tool_input":{"command":"echo x >> WAIVER-REGISTER.md"}}' "cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md"
+assert_reason_lacks "SWAS309-C7 REQUIRED-CHECKS.md deny has no waiver hint" '{"tool_name":"Write","tool_input":{"file_path":"REQUIRED-CHECKS.md","content":"x"}}' "filled by a person"
+# SWAS-309 (Architect ruling a): for THIS leaf the refusal must not send the agent to a dev clone, which would add the same forged row.
+assert_reason_has   "SWAS309-C7 Write deny says a dev clone is no route"       '{"tool_name":"Write","tool_input":{"file_path":"WAIVER-REGISTER.md","content":"x"}}' "A dev clone is not a route either"
+assert_reason_has   "SWAS309-C7 redirect deny says a dev clone is no route"    '{"tool_name":"Bash","tool_input":{"command":"echo x >> WAIVER-REGISTER.md"}}' "A dev clone is not a route either"
+assert_reason_lacks "SWAS309-C7 Write deny does not advise a dev clone"        '{"tool_name":"Write","tool_input":{"file_path":"WAIVER-REGISTER.md","content":"x"}}' "make this change in a dev clone"
+assert_reason_lacks "SWAS309-C7 redirect deny does not advise a dev clone"     '{"tool_name":"Bash","tool_input":{"command":"echo x >> WAIVER-REGISTER.md"}}' "make this change in a dev clone"
+assert_reason_has   "SWAS309-C7 REQUIRED-CHECKS.md deny keeps the dev-clone advice" '{"tool_name":"Write","tool_input":{"file_path":"REQUIRED-CHECKS.md","content":"x"}}' "make this change in a dev clone"
+# reviewer R6: the template peel (the kit's own template is not the register), and the cp target arm and a nested path still carry the hint
+assert_reason_lacks "SWAS309-C7 templates/WAIVER-REGISTER.md deny has no waiver hint" '{"tool_name":"Write","tool_input":{"file_path":"templates/WAIVER-REGISTER.md","content":"x"}}' "filled by a person"
+assert_reason_has   "SWAS309-C7 cp a WAIVER-REGISTER.md (target arm) says a person fills it" '{"tool_name":"Bash","tool_input":{"command":"cp a WAIVER-REGISTER.md"}}' "filled by a person"
+assert_reason_has   "SWAS309-C7 Write sub/WAIVER-REGISTER.md says a person fills it" '{"tool_name":"Write","tool_input":{"file_path":"sub/WAIVER-REGISTER.md","content":"x"}}' "filled by a person"
+# C10, MEASURED (errata E6): the design predicted the SUB-AGENTS.md face (:3105-3110), a shell-route deny for a name that merely ends in
+# WAIVER-REGISTER.md. The full battery measured ALLOW for this redirect, which is the correct verdict (the file is not the register).
+assert_allow "SWAS309-C10 measured allow redirect MY-WAIVER-REGISTER.md" '{"tool_name":"Bash","tool_input":{"command":"echo x > MY-WAIVER-REGISTER.md"}}'
+assert_allow "SWAS309-C10 measured allow Write MY-WAIVER-REGISTER.md (look-alike, path route)"    '{"tool_name":"Write","tool_input":{"file_path":"MY-WAIVER-REGISTER.md","content":"x"}}'
+# C10 declared over-match face (reviewer R4, security F4): the shell route's pathhit reads a look-alike name under an UNRECOGNISED lead verb
+# as the register (the same face `zzunknownverb foo.gitattributes` pins for `.gitattributes`). It ALLOWs on the pristine core, so it is in AA_EXPECTED_DELTA.
+assert_deny "SWAS309-C10 declared over-match face: zzunknownverb MY-WAIVER-REGISTER.md" '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb MY-WAIVER-REGISTER.md"}}'
+# C12 (security F3): forge-side and rename spellings. MEASURED DENY on the built core (the full battery under dash, errata E7);
+# none is a residual. A future change that ALLOWs one must flip the cell knowingly and name it in THREAT-MODEL.md T1.
+assert_deny "SWAS309-C12 MEASURE git mv x WAIVER-REGISTER.md" '{"tool_name":"Bash","tool_input":{"command":"git mv notes.md WAIVER-REGISTER.md"}}'
+assert_deny "SWAS309-C12 MEASURE gh api PUT contents" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER.md -f message=x -f content=eA=="}}'
+assert_deny "SWAS309-C12 MEASURE gh api PUT contents percent-encoded" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER%2Emd -f message=x -f content=eA=="}}'
+# C12 reason parity (Architect ruling 2026-11-14, G309-S6FIRST): the forge-contents write to the register is judged by S6R, as on
+# the pristine core (S6R's reason, no R30 pointer), so guard-delta's kill-switch half sees no move. Local routes keep R30 (C7).
+assert_reason_has   "SWAS309-C12 forge contents write keeps S6R's reason"            '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER.md -f message=x -f content=eA=="}}' "escape card R35 admin-merge"
+assert_reason_lacks "SWAS309-C12 forge contents write carries no R30 pointer"        '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER.md -f message=x -f content=eA=="}}' "escape card R30 cp-write"
+assert_reason_has   "SWAS309-C12 percent-encoded forge write keeps S6R's reason"     '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER%2Emd -f message=x -f content=eA=="}}' "escape card R35 admin-merge"
+assert_reason_lacks "SWAS309-C12 percent-encoded forge write carries no R30 pointer" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER%2Emd -f message=x -f content=eA=="}}' "escape card R30 cp-write"
+# C11 (errata E1): THE DRIFT-CONTROL CEILING, SWAS-892. Each git write route below names no control-plane path (or none the guard grades),
+# so each is written as a declared ALLOW. Each is MEASURED at build; a cell that actually denies is flipped to assert_deny with a note,
+# and a later rule that flips one must change its cell knowingly.
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git apply --index"    '{"tool_name":"Bash","tool_input":{"command":"git apply --index /tmp/p.diff"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git am"               '{"tool_name":"Bash","tool_input":{"command":"git am /tmp/p.mbox"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git cherry-pick"      '{"tool_name":"Bash","tool_input":{"command":"git cherry-pick abc1234"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git merge"            '{"tool_name":"Bash","tool_input":{"command":"git merge feature"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git stash pop"        '{"tool_name":"Bash","tool_input":{"command":"git stash pop"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git switch"           '{"tool_name":"Bash","tool_input":{"command":"git switch feature"}}'
+assert_allow "SWAS309-C11 drift-control ceiling, SWAS-892, MEASURED: git update-index --index-info" '{"tool_name":"Bash","tool_input":{"command":"git update-index --index-info < /tmp/x"}}'
 assert_deny "S1 Write .gitattributes"    '{"tool_name":"Write","tool_input":{"file_path":".gitattributes","content":"x"}}'
 assert_deny "S1 redirect .gitattributes" '{"tool_name":"Bash","tool_input":{"command":"echo x > .gitattributes"}}'
 assert_deny "S1 sed -i .gitattributes"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .gitattributes"}}'
@@ -4958,6 +5048,151 @@ if [ "${GPAB_G:-}" != "" ]; then
     elif [ "$_mv" = "$4" ]; then echo "PASS mutant : $1 ($_pv -> $_mv, killed the leg as required)"
     else echo "FAIL mutant : $1 — got $_mv, wanted $4"; fail=1; fi
   }
+
+  # === SWAS-903 (design 2026-11-15-sandbox-github-lockout-903, plan §4.3, errata E4) — the guard is NOT widened, two lists are tightened ======
+  # Every command here is a PLACEHOLDER shape (no real owner, repository or login). The refusals R32, R13, H3a and arm 13 are PINNED: the fix
+  # for the sandbox x509 failure is that the kit's own verbs set the trust store themselves, never that the guard admits a prefix.
+  # R32 tip (text) and the Tier 1 / Tier 2 / pathhit entries for scripts/gh-tls.sh are the only guard changes.
+  assert_deny         "SWAS903-R32-T1 an SSL_CERT_FILE= prefix on a kit verb is DENIED (the guard admits no prefix)" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}'
+  assert_reason_has   "SWAS903-R32-T1b the refusal still names its row" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}' "escape card R32 unvetted-prefix"
+  assert_reason_has   "SWAS903-R32-T1c the tip says a KIT_ name is never put in front of a command and points to the sandbox section" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}' 'Never put a `KIT_*` name in front of a command'
+  assert_reason_lacks "SWAS903-R32-T1d the tip no longer teaches the set-it-in-its-own-tool-call shape" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}' "in its own tool call"
+  assert_deny         "SWAS903-R32-T2 a KIT_ prefix is DENIED" \
+    '{"tool_name":"Bash","tool_input":{"command":"KIT_LEASE_FRONT_DOOR=1 sh scripts/checkout-lease.sh status"}}'
+  assert_reason_has   "SWAS903-R32-T2b its tip carries the never-a-KIT_-name sentence" \
+    '{"tool_name":"Bash","tool_input":{"command":"KIT_LEASE_FRONT_DOOR=1 sh scripts/checkout-lease.sh status"}}' 'Never put a `KIT_*` name in front of a command'
+  assert_reason_lacks "SWAS903-R32-T2c and no longer says to set the variable in its own call" \
+    '{"tool_name":"Bash","tool_input":{"command":"KIT_LEASE_FRONT_DOOR=1 sh scripts/checkout-lease.sh status"}}' "set the variable"
+  assert_deny         "SWAS903-R13-T1 an export on the same line stays DENIED (line-poison)" \
+    '{"tool_name":"Bash","tool_input":{"command":"export SSL_CERT_FILE=/private/etc/ssl/cert.pem; sh scripts/promotion-verify.sh log"}}'
+  assert_reason_has   "SWAS903-R13-T1b and keeps its line-poison row" \
+    '{"tool_name":"Bash","tool_input":{"command":"export SSL_CERT_FILE=/private/etc/ssl/cert.pem; sh scripts/promotion-verify.sh log"}}' "escape card R13 line-poison"
+  assert_allow        "SWAS903-P3-CELL the plain SSL_CERT_FILE= prefix on a gh read is ALLOWED today (measured; documented as the ad-hoc route)" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem gh pr checks 5"}}'
+  assert_deny         "SWAS903-H3A-T1 a prefixed gh read piped into a read verb is DENIED (H3a, the .pem token)" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem gh run view 1 --log | grep x"}}'
+  assert_allow        "SWAS903-CILOG-T1 a CI log redirected to a temp file is ALLOWED (the documented route)" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh run view 1 --job 2 --log-failed > /private/tmp/x.log"}}'
+  assert_deny         "SWAS903-CILOG-T2 a CI log piped into a read verb with a secrets/ pattern is DENIED (H3a, its liveness pair)" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh run view 1 --log | grep -n secrets/"}}'
+  # E4: the four shapes of run A, STILL REFUSED. If any would need to turn ALLOW the build stops (the guard would be weakened).
+  assert_deny         "SWAS903-RUNA-1 run A entry 21: SSL_CERT_FILE=<path> in front of a kit conformance script stays DENIED" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/etc/ssl/cert.pem sh conformance/inception-done.sh"}}'
+  assert_reason_has   "SWAS903-RUNA-1b by R32 unvetted-prefix" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/etc/ssl/cert.pem sh conformance/inception-done.sh"}}' "escape card R32 unvetted-prefix"
+  assert_deny         "SWAS903-RUNA-2 run A entry 59 retry: export SSL_CERT_FILE=<path> && actuate stays DENIED" \
+    '{"tool_name":"Bash","tool_input":{"command":"export SSL_CERT_FILE=/etc/ssl/cert.pem && sh scripts/promotion-verify.sh actuate --ref 1"}}'
+  assert_reason_has   "SWAS903-RUNA-2b by R13 line-poison" \
+    '{"tool_name":"Bash","tool_input":{"command":"export SSL_CERT_FILE=/etc/ssl/cert.pem && sh scripts/promotion-verify.sh actuate --ref 1"}}' "escape card R13 line-poison"
+  assert_deny         "SWAS903-RUNA-3 run A entry 59 attempt 1: GH_CONFIG_DIR=<dir> in front of actuate stays DENIED" \
+    '{"tool_name":"Bash","tool_input":{"command":"GH_CONFIG_DIR=/fixture/gh sh scripts/promotion-verify.sh actuate --ref 1"}}'
+  assert_reason_has   "SWAS903-RUNA-3b by R32 unvetted-prefix" \
+    '{"tool_name":"Bash","tool_input":{"command":"GH_CONFIG_DIR=/fixture/gh sh scripts/promotion-verify.sh actuate --ref 1"}}' "escape card R32 unvetted-prefix"
+  # RUNA-4 and RUNA-4b, MEASURED (cells1 and the final battery): with PLACEHOLDER names both shapes (a --jq .url read, and run A's --jq object with the
+  # required_status_checks fields) read ALLOW, on the guard before this slice and after it. Run A's arm-13 pathhit refusal (the denial log) was recorded with the real
+  # repository name; it is NOT reproduced here with either jq shape (cause unknown; a P3 card bisects it from run A's full line, errata E5). Both are pinned as CURRENT
+  # BEHAVIOUR, MEASURED (they fail if the guard's verdict on the shape ever moves), not as policy, and they admit nothing this slice adds. No guard change.
+  assert_allow        "SWAS903-RUNA-4b CURRENT BEHAVIOUR, MEASURED ALLOW: run A's --jq object shape with placeholder names reads ALLOW (run A's refusal not reproduced, errata E5)" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/fixture/cert.pem gh api repos/example-owner/example-repo/branches/main/protection --jq '"'"'{checks: .required_status_checks.contexts, strict: .required_status_checks.strict}'"'"'"}}'
+  assert_allow        "SWAS903-RUNA-4 CURRENT BEHAVIOUR, MEASURED ALLOW: the --jq .url shape with placeholder names reads ALLOW (run A's refusal not reproduced, errata E5)" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/fixture/cert.pem gh api repos/example-owner/example-repo/branches/main/protection --jq .url"}}'
+  # The new kit-owned name: no write route to scripts/gh-tls.sh, by any tool, in either case spelling.
+  assert_deny "SWAS903-GT-W1a Write tool on scripts/gh-tls.sh" \
+    '{"tool_name":"Write","tool_input":{"file_path":"scripts/gh-tls.sh","content":"x"}}'
+  assert_deny "SWAS903-GT-W1b Edit tool on scripts/gh-tls.sh" \
+    '{"tool_name":"Edit","tool_input":{"file_path":"scripts/gh-tls.sh","old_string":"a","new_string":"b"}}'
+  assert_deny "SWAS903-GT-W1c Write tool on the case variant Scripts/GH-TLS.sh" \
+    '{"tool_name":"Write","tool_input":{"file_path":"Scripts/GH-TLS.sh","content":"x"}}'
+  assert_deny "SWAS903-GT-W1d Edit tool on the case variant" \
+    '{"tool_name":"Edit","tool_input":{"file_path":"Scripts/GH-TLS.sh","old_string":"a","new_string":"b"}}'
+  assert_deny "SWAS903-GT-W2a a redirect into scripts/gh-tls.sh" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/gh-tls.sh"}}'
+  assert_deny "SWAS903-GT-W2b a redirect into the case variant" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo x > Scripts/GH-TLS.sh"}}'
+  assert_deny "SWAS903-GT-W3a sed -i on scripts/gh-tls.sh" \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/gh-tls.sh"}}'
+  assert_deny "SWAS903-GT-W3b sed -i on the case variant" \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ Scripts/GH-TLS.sh"}}'
+  assert_deny "SWAS903-GT-W4a printf into the case variant (the pathhit arm)" \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > Scripts/GH-TLS.sh"}}'
+  assert_deny "SWAS903-GT-W4b python3 -c writing scripts/gh-tls.sh (the pathhit arm)" \
+    '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('scripts/gh-tls.sh','w')\""}}'
+  # --- the mutants: each cell above binds to ONE change, on a copy of the core (the sed must apply, the copy must parse, the verdict must flip) ---
+  gh903_tip_mutant() {  # <label> <sed> <json> <substr> <pristine|mutant: which side carries the substring> — a TEXT mutant on the R32 tip
+    aa_cell_skip "$1" && return 0
+    _g9_p=$(printf '%s' "$3" | sh "$GPAB_G" 2>/dev/null | sed -n 's/.*"permissionDecisionReason":"\(.*\)".*/\1/p')
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    _g9_m=$(printf '%s' "$3" | sh "$GPAB_G" 2>/dev/null | sed -n 's/.*"permissionDecisionReason":"\(.*\)".*/\1/p')
+    _g9_cmp=1; cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC" && _g9_cmp=0
+    _g9_parse=1; sh -n "$GPAB_GC" 2>/dev/null || _g9_parse=0   # a copy that does not parse emits no reason at all: that is a lockout, not a kill
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    _g9_ph=0; printf '%s' "$_g9_p" | grep -qF -- "$4" && _g9_ph=1
+    _g9_mh=0; printf '%s' "$_g9_m" | grep -qF -- "$4" && _g9_mh=1
+    if [ "$_g9_cmp" = 0 ]; then echo "FAIL mutant : $1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1
+    elif [ "$_g9_parse" = 0 ]; then echo "FAIL mutant : $1 - the mutant does not parse (sh -n); a no-reason 'flip' is a lockout, not a kill"; fail=1
+    elif [ -z "$_g9_p" ] || [ -z "$_g9_m" ]; then echo "FAIL mutant : $1 - an empty reason (pristine or mutant): the leg grades nothing"; fail=1
+    elif [ "$5" = pristine ] && [ "$_g9_ph" = 1 ] && [ "$_g9_mh" = 0 ]; then echo "PASS mutant : $1 (the tip text flipped, killed the leg as required)"
+    elif [ "$5" = mutant ] && [ "$_g9_ph" = 0 ] && [ "$_g9_mh" = 1 ]; then echo "PASS mutant : $1 (the tip text flipped, killed the leg as required)"
+    else echo "FAIL mutant : $1 - substring seen pristine=$_g9_ph mutant=$_g9_mh, wanted it on the $5 side only"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  gh903_tip_mutant "SWAS903-MR32-T1: the new sentence put back as the old one -> R32-T1d reads the own-tool-call text" \
+    's/Never put a `KIT_\*` name in front of a command/set the variable in its own tool call/' \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}' "in its own tool call" mutant
+  gh903_tip_mutant "SWAS903-MR32-T2: the tip's sentence reworded to teach the old shape -> R32-T2c reads set the variable" \
+    's/Never put a `KIT_\*` name in front of a command/set the variable in its own tool call/' \
+    '{"tool_name":"Bash","tool_input":{"command":"KIT_LEASE_FRONT_DOOR=1 sh scripts/checkout-lease.sh status"}}' "Never put a" pristine
+  gpab_mutant "SWAS903-MR32-V1: SSL_CERT_FILE added to the vetted-assignment list -> R32-T1 flips to ALLOW (the guard would admit the prefix)" \
+    "s/^_CP8B_VETTED_ASSIGN='SELFTEST LC_ALL'\$/_CP8B_VETTED_ASSIGN='SELFTEST LC_ALL SSL_CERT_FILE'/" \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem sh scripts/promotion-verify.sh log"}}' allow
+  gpab_mutant "SWAS903-MR13-T1: export dropped from the resolve-leads set -> R13-T1 flips to ALLOW" \
+    "s/^_CP8B_RESOLVE_LEADS='export /_CP8B_RESOLVE_LEADS='/" \
+    '{"tool_name":"Bash","tool_input":{"command":"export SSL_CERT_FILE=/private/etc/ssl/cert.pem; sh scripts/promotion-verify.sh log"}}' allow
+  gpab_mutant "SWAS903-MP3: gh added to H3a's verb list -> P3-CELL flips to DENY" \
+    's/|digest)\[\[:space:\]\]|openssl/|digest|gh)[[:space:]]|openssl/' \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem gh pr checks 5"}}' deny
+  gpab_mutant "SWAS903-MH3A-T1: the .pem leg dropped from H3a's token list -> H3A-T1 flips to ALLOW" \
+    's/\\\.(pem|key)(/\\.(key)(/' \
+    '{"tool_name":"Bash","tool_input":{"command":"SSL_CERT_FILE=/private/etc/ssl/cert.pem gh run view 1 --log | grep x"}}' allow
+  gpab_mutant "SWAS903-MCILOG-T2: the secrets/ leg dropped from H3a -> CILOG-T2 flips to ALLOW" \
+    's/|(^|\[\[:space:\]\/;|&\])secrets?\///' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh run view 1 --log | grep -n secrets/"}}' allow
+  # GT-W Tier 1 mutant, PAIRED (Q-5): on a case-sensitive runner the case variant is denied by the Tier 1 name alone; on a case-insensitive one the
+  # filesystem probe also denies it. So the mutant drops BOTH name entries AND forces the probe to 0 in the same copy; the control (the probe forced to
+  # 0 with the entries kept) must still DENY, so the flip is the entries' and nothing else's.
+  gpab_mutant "SWAS903-MGT-W: the scripts/gh-tls.sh name entries dropped and the fs-case probe forced to 0 -> the case-variant Write flips to ALLOW" \
+    's/^_kit_fs_ci=""$/_kit_fs_ci=0/;/^    scripts\/gh-tls\.sh|\*\/scripts\/gh-tls\.sh|\\$/d' \
+    "$(gpab_write "$GPAB_ROOT/Scripts/GH-TLS.sh")" allow
+  aa_cell_skip "SWAS903-MGT-W-ctl" || {
+    sed 's/^_kit_fs_ci=""$/_kit_fs_ci=0/' "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC" || ! sh -n "$GPAB_GC" 2>/dev/null; then echo "FAIL mutant : SWAS903-MGT-W-ctl - the probe-forcing mutation matched nothing or does not parse"; fail=1
+    elif denied_at "$GPAB_G" "$(gpab_write "$GPAB_ROOT/Scripts/GH-TLS.sh")"; then echo "PASS deny : SWAS903-MGT-W-ctl with only the probe forced to 0 the case variant stays DENIED (the Tier 1 entry holds it)"
+    else echo "FAIL (wanted deny): SWAS903-MGT-W-ctl the case variant is not held by the Tier 1 entry alone"; fail=1; fi
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  # F4, MEASURED (final battery): ONE cause only, the gh-tls token removed from BOTH pathhit regexes (T1 and T1_LC) with the name lists kept, does NOT flip GT-W4b: the
+  # python3 -c write is still DENIED without the pathhit tokens (the pre-fix verdict equals the mutant verdict), so the name lists and the interpreter-argument arm already
+  # catch this shape. The single-cause mutant therefore proves nothing and is turned into a CONTROL (standing rule, Architect): it shows the shape stays DENIED with the
+  # T1 tokens gone. The pathhit tokens are bound by MGT-W4 (the case-variant printf, with the name entries dropped and the probe forced to 0). The fourth argument below
+  # is the verdict the hoped-for mutant would have read (allow); the control ignores it.
+  gh903_ctl() {  # <label> <sed> <json> <ignored> - the sed on a core copy; the verdict must STAY deny
+    aa_cell_skip "$1" && return 0
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC" || ! sh -n "$GPAB_GC" 2>/dev/null; then echo "FAIL mutant : $1 - the control's mutation matched nothing or does not parse"; fail=1
+    elif denied_at "$GPAB_G" "$3"; then echo "PASS deny : $1 (still DENIED without the T1 tokens: held by the name lists and the interpreter-argument arm)"
+    else echo "FAIL (wanted deny): $1 - the shape is NOT held without the T1 tokens"; fail=1; fi
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"; AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  gh903_ctl "SWAS903-MGT-W4b-ctl CONTROL: with the scripts/gh-tls.sh token removed from both pathhit regexes only, the python3 -c write stays DENIED (no flip measured)" \
+    '/^_CP8B_PATHHIT_T1=/s/|scripts\/gh-tls\\\.sh//;/^_CP8B_PATHHIT_T1_LC=/s/|scripts\/gh-tls\\\.sh//' \
+    '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('scripts/gh-tls.sh','w')\""}}' allow
+  gpab_mutant "SWAS903-MGT-W4: the token dropped from the lowercased pathhit regex and the probe forced to 0 -> the case-variant printf flips to ALLOW" \
+    's/^_kit_fs_ci=""$/_kit_fs_ci=0/;/^_CP8B_PATHHIT_T1_LC=/s/|scripts\/gh-tls\\\.sh//;/^    scripts\/gh-tls\.sh|\*\/scripts\/gh-tls\.sh|\\$/d' \
+    "$(printf '{"tool_name":"Bash","tool_input":{"command":"printf x > %s/Scripts/GH-TLS.sh"}}' "$GPAB_ROOT")" allow
 
   # === SWAS-332 GUARD-SECRET-COPY-THEN-READ — the fixture cells and the mutants (design section 5) ==============================
   # The fixtures are planted fakes under $GPAB_ROOT (a non-temp root, so no dev-clone relaxation): scp-sl holds a `.env` with a
@@ -7684,6 +7919,19 @@ if [ "${GPAB_G:-}" != "" ]; then
   # M-ROOT11 — a governing document dropped from _CP8B_PATHHIT_T1 (CLAUDE.md, the §5 A1 family).
   corp_mutant "M-ROOT11: CLAUDE.md removed from _CP8B_PATHHIT_T1 -> the root gate REDs" \
     '/^_CP8B_PATHHIT_T1=/ s@(^|.^a-zA-Z..)CLAUDE\\\.md|@@' FAIL dt_root_corpus_ok '[pathhit_t1]' 'CLAUDE.md'
+  # SWAS-309 mutants M2, M4, M6 (the root WAIVER-REGISTER.md leaf). M2 and M4 are killed by this gate, not by the
+  # path cells, because the path classifier still denies the redirect and `sed -i` spellings.
+  # M2 — the leaf dropped from _CP8B_PATHHIT_T1 (the T1 anchor is `(^|[^a-zA-Z.])`, matched here as `(^|.^a-zA-Z..)`).
+  corp_mutant "M-ROOT-W2: WAIVER-REGISTER.md removed from _CP8B_PATHHIT_T1 -> the root gate REDs" \
+    '/^_CP8B_PATHHIT_T1=/ s@(^|.^a-zA-Z..)WAIVER-REGISTER\\\.md|@@' FAIL dt_root_corpus_ok '[pathhit_t1]' 'WAIVER-REGISTER.md'
+  # M4 — the leaf dropped from _CP8B_PATHHIT_T1_LC (the lowercase anchor is `(^|[^a-z.])`).
+  corp_mutant "M-ROOT-W4: waiver-register.md removed from _CP8B_PATHHIT_T1_LC -> the root gate REDs" \
+    '/^_CP8B_PATHHIT_T1_LC=/ s@(^|.^a-z..)waiver-register\\\.md|@@' FAIL dt_root_corpus_ok '[pathhit_t1_lc]' 'WAIVER-REGISTER.md'
+  # M6 — the leaf removed from _ROOT_LEAF_CORPUS ONLY. The corpus no longer lists it, so the root loop stops grading it
+  # and direction 2 reports the two leaf-list sites that still carry it as UNLISTED (not MISSING: that is the shape of a
+  # corpus-only removal, as M-ROOT7 is the shape of a leaf-list-only addition).
+  corp_mutant "M-ROOT-W6: WAIVER-REGISTER.md removed from _ROOT_LEAF_CORPUS only -> the root gate REDs (direction 2)" \
+    '/^_ROOT_LEAF_CORPUS=/ s@ WAIVER-REGISTER\.md@@' FAIL dt_root_corpus_ok 'UNLISTED: site [globleaves] carries WAIVER-REGISTER.md'
   # --- GUARD-FASTPATH-LOCALE (SWAS-715) -------------------------------------------------------------
   # M-ROOT12 — the item-2 scan removed: an all-lowercase glob returns 1 again without consulting
   # _CP8B_GLOB_LEAVES_LC, so `codeowne*` ALLOWs. Only the all-lowercase glob probe sees it.
@@ -7923,7 +8171,9 @@ if [ "${GPAB_G:-}" != "" ]; then
     "$(gpab_read "$GPAB_ROOT/hle/.env.example")"
   assert_allow_at "$GPAB_G" "F over-deny pin: ordinary nlink>1, all-ordinary siblings (write)" \
     "$(gpab_write "$GPAB_ROOT/hlf/a.txt")"
-  assert_allow_at "$GPAB_G" "G: dev-clone control-plane hardlink, affordance ON -> relaxes" \
+  # SWAS-885 slice 1 (the Architect's nlink ruling, errata c1): under the dev-clone relax a write to an existing file with
+  # more than one hard link is now refused, so this leg's relaxed multi-link write moves ALLOW -> DENY (relabelled, as H3).
+  assert_deny_at "$GPAB_G" "G: dev-clone control-plane hardlink, affordance ON -> refused by the SWAS-885 nlink rule" \
     "$(gpab_write "$GPAB_TMP/clone/hlg/benign.sh")"
 
   # H — fail-safe to DENY when stat/find cannot run inside the nlink>1 branch. A JSON-subject flip is
@@ -8318,7 +8568,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   # F2 CLASS ORACLE (vet condition 3) — the clause must land on ALL FOUR fail-safe reason sites (read, CP-write, secret-write and, since
   # SWAS-278a, the relaxed dev-clone path's hardlink search), the M1 genuine-vs-fail-safe distinction must survive, and NO fail-safe
   # wording may suggest KIT_GUARD_SELFEDIT. A per-site leg protects only its site; this pins the class, including a FIFTH fail-safe site
-  # added later without a signpost.
+  # added later without a signpost. The GENUINE count below (hardlink reasons that name a file) is 3. SWAS-885 slice 1's fix rounds
+  # briefly added a fourth (a relaxed narrow search); its fix round 3 replaced that search with the nlink rule, whose reason names
+  # no other link, so the count is 3 again.
   _f2fs=$(grep -c -e "could not verify the target" -e "could not verify the dev-clone path" "$_CORE") || _f2fs=0
   _f2rm=$(grep -c 'Remedy: usually an unreadable directory under the repo root' "$_CORE") || _f2rm=0
   if [ "$_f2fs" = 4 ] && [ "$_f2rm" = 4 ]; then
@@ -9601,7 +9853,7 @@ assert_reason_has  "T6 python3 -c too" \
 # ⚠️ THE ESCAPE TEXT WAS REWRITTEN BY K-3a face 2: the old half ("`export` as a separate statement")
 # recommended precisely the shape face 2 now denies (B13). A guard must never teach a shape it refuses.
 assert_reason_has  "T7 unvetted env prefix names the own-tool-call escape (K-3a rewrite)" \
-  '{"tool_name":"Bash","tool_input":{"command":"KIT_C6_DUMP=1 sh conformance/verify.sh"}}' "in its own tool call"
+  '{"tool_name":"Bash","tool_input":{"command":"KIT_C6_DUMP=1 sh conformance/verify.sh"}}' "run the command without the prefix"   # SWAS-903: the tip no longer teaches the set-in-its-own-tool-call shape (a KIT_ name is a person's switch)
 # T8 — NO TIP NOISE. Each new tip must stay off unrelated denials (the DRIFT-2 (iii) discipline: an
 # unconditional tip turns these RED). Their deny-ANCHORS are the byte-identical assert_deny legs above.
 assert_reason_lacks "T8 rm deny carries no heredoc tip" \
@@ -9645,7 +9897,7 @@ assert_deny         "F-h R7 unvetted env prefix on a read (deny anchor)" \
 assert_reason_lacks "F-h R7 unvetted env prefix drops the kill-switch sentence" \
   '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
 assert_reason_has   "F-h R7 keeps its own escape (own tool call; K-3a rewrite)" \
-  '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "in its own tool call"
+  '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "run the command without the prefix"   # SWAS-903: the R32 tip's escape, re-worded (see T7)
 # R3's offending segment is the QUOTE-ORPHANED tail of the over-split (`READONLY" <cp>`), which is the
 # shape the fragment rule recognises; these three legs assert that its MESSAGE is honest (no kill-switch
 # advertisement on a read-shaped denial, and its own escape named).
@@ -10053,6 +10305,11 @@ if [ "${GPAB_G:-}" != "" ]; then
   noh_mut_has "NOH-I1m2 the read-shaped gate removed puts R10 on a write refusal" \
     '/^_cp8b_message_tip() {/,/^}/ s@if _cp8b_seg_read_shaped "\$_mt_seg" "\$_mt_raw"; then@if :; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"cp $SRC conformance/verify.sh"}}' 'escape card R10 interpreter-args'
+  # SWAS-309 G309-S6FIRST: deleting the early S6R arm lets the control-plane arm judge the forge-contents write first,
+  # so its reason gains the R30 pointer (the move guard-delta's kill-switch half reported on PR #1067). Kills the C12 parity cells.
+  noh_mut_has "SWAS309-MS6 the G309-S6FIRST arm removed puts R30 on the forge-contents write" \
+    '/# G309-S6FIRST: pristine parity/,/^    esac$/d' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/WAIVER-REGISTER.md -f message=x -f content=eA=="}}' 'escape card R30 cp-write'
   # Review security round: NOH-L2 also catches a sentinel, an `=off` dial, a "NOT covered" ceiling and an `export KIT_` / `KIT_x=` shape.
   for _nl in 'FRONT_DOOR|use the FRONT_DOOR sentinel' '=off|set the dial =off' 'NOT covered|NOT covered: alias indirection' \
              'export KIT_|export KIT_X' 'KIT_x=|KIT_FOO=1'; do
@@ -11188,7 +11445,7 @@ assert_reason_has "K-3a-R2b a poisoned deny NAMES the peeled lead that closed th
   '(`export`)'
 assert_reason_has "K-3a-R3 the unvetted-prefix tip now recommends the OWN-TOOL-CALL escape" \
   '{"tool_name":"Bash","tool_input":{"command":"NOTAVETTEDNAME=1 sh conformance/verify.sh"}}' \
-  'set the variable in its own tool call'
+  'run the command without the prefix'   # SWAS-903: re-worded; the own-tool-call sentence is gone from the R32 tip
 assert_reason_lacks "K-3a-R3b the unvetted-prefix tip no longer teaches the shape face 2 denies" \
   '{"tool_name":"Bash","tool_input":{"command":"NOTAVETTEDNAME=1 sh conformance/verify.sh"}}' \
   'as a separate statement'
@@ -15181,7 +15438,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   gx_a "SWAS278A-P7 [root] G5: semgrep, scratch redirect" "$gx_R" "cd $gx_C && pipx run semgrep==1.181.0 --config p/default --metrics=off --json conformance/x.sh > $gx_S/s.json"
   gx_a "SWAS278A-P7b [clone] G5: scan --error with two targets" "$gx_C" "pipx run semgrep==1.181.0 scan --config p/default --metrics=off --error conformance/x.sh conformance/y.sh"
   ln "$gx_cl/out.json" "$gx_cl/out-b.json" 2>/dev/null || :
-  assert_allow_at "$GX_G" "SWAS278A-H3 [edit] an Edit to a clone file with two names, both inside the clone (no over-deny)" "$(gpab_write "$gx_cl/out.json")"
+  assert_deny_at "$GX_G" "SWAS278A-H3 [edit] an Edit to a clone file with two names, both inside the clone: DENIED since SWAS-885 (the nlink rule; was ALLOWED, relabelled)" "$(gpab_write "$gx_cl/out.json")"
 
   # --- DENY X1-X4: lead, wrappers, exact arity ---
   gx_d "SWAS278A-X1a [root] G1 then rm -rf <root>/conformance (the rm segment is judged alone)" "$gx_R" "cd $gx_C && sh scripts/sparkwright prepush; rm -rf $gx_R/conformance"
@@ -15690,11 +15947,14 @@ if [ "${GPAB_G:-}" != "" ]; then
       '/# H-RELAXED-HL$/s/.*/  if false; then/' "$(gpab_write "$gx_cl/x1.sh")" allow
     gx_mw "SWAS278A-MH2: the same -> H2 (a hardlink to an ordinary root file) flips to ALLOW" \
       '/# H-RELAXED-HL$/s/.*/  if false; then/' "$(gpab_write "$gx_cl/y.md")" allow
-    gx_mw "SWAS278A-MH4b: the object store pruned from the root search -> H4b flips to ALLOW" \
-      's/if \[ "\${3:-}" = noprune \]; then   # H4-NOPRUNE/if false; then   # H4-NOPRUNE/' "$(gpab_write "$gx_cl/zobj.dat")" allow
+    # SWAS-885 (Architect ruling 2026-11-14): MH4b (the object store pruned from the root search) and, below, MH4a (the H4-OBJECTS arm), MLA (the lfs
+    # prune) and MLB (the unconfirmable-name fail-safe) are PRE-EMPTED and have no leg: each bound wall denies only a relaxed target with more than one
+    # link, and the nlink rule (G885-NLINK, inside the same H-RELAXED-HL block, after these walls) now denies every such target, so a single mutation of
+    # any one of those walls leaves the cell DENIED by the nlink rule and cannot flip it. Their CELLS (H4b, H4a, LA, LB) stay and still pass, each held
+    # by its own wall first (LB also pins its reason text); MH and MH2 still flip because their mutation turns the whole block off, the nlink rule included.
   fi
-  gx_mw "SWAS278A-MH4a: the outright deny of a multi-link object dropped -> H4a flips to ALLOW" \
-    '/# H4-OBJECTS$/s/.*/        if false; then/' "$(gpab_write "$gx_cl/.git/objects/ab/o2")" allow
+  # SWAS-885: MH4a is pre-empted twice over: the .git relax-off (G885-FLIP) denies a write under <clone>/.git/ before the H4-OBJECTS arm is reached,
+  # and the nlink rule would deny the multi-link object anyway. No leg (see the note above).
   # === SWAS-875 G6: `sparkwright new <fresh temp dest> ...` in a dev clone (design docs/architecture/2026-11-13-dev-clone-g6-new-875-design.md rev 3a) ===
   # Labels are all `SWAS875-`. The cells use this section's fixture (the root gx_R under /var/tmp, the clone gx_C, the non-repository home stand-in gx_home
   # outside every temp root). Every fresh dest is a name that does not exist; the repositories, the symlink, the gitfile and the existing log the deny cells
@@ -16034,14 +16294,289 @@ if [ "${GPAB_G:-}" != "" ]; then
   printf '[includeIf "gitdir:/x/"]\n\tpath = %s\n' "${gx8_b}f14g-none" > "$gx8_h/.gitconfig"
   gx8_w "SWAS883-F14g [root] an includeIf key in the GLOBAL config" "$gx_R" "git -C $gx8_f14g push -u origin main" config
   gx8_gc ''
-  # F17: the hook and core paths of a P outside the session project: the cp command form denies; the Write form is allowed today (below)
-  # Residual R1 (the Write form is ALLOWED today, documented): a concurrent sibling Write between the admission and the push can replace the hook, and the swapped hook lacks the inline main check.
-  assert_allow_at "$GX_G" "SWAS883-F17a [edit] a Write to P/.git/hooks/pre-push is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.git/hooks/pre-push")"
-  assert_allow_at "$GX_G" "SWAS883-F17b [edit] a Write to P/hooks/pre-push is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1d/hooks/pre-push")"
-  assert_allow_at "$GX_G" "SWAS883-F17c [edit] a Write to P/.claude/hooks/guard-core.sh is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.claude/hooks/guard-core.sh")"
-  assert_allow_at "$GX_G" "SWAS883-F17f [edit] a Write to P/.git/config is ALLOWED (residual R1, documented; SWAS-885 owns it)" "$(gpab_write "$gx8_f1/.git/config")"
+  # F17: the hook and core paths of a P outside the session project: the cp command form denies; the Write form for .git/ and a live hooks directory
+  # denies too since SWAS-885 slice 1 (design docs/architecture/2026-11-14-guard-git-dir-home-dotfiles-885-design.md rev 3 + errata c1-c4; the SWAS885- cells below).
+  # Residual R1 (narrowed by SWAS-885): a route this slice does not grade (an include.path config command, a hooks path elsewhere, a bare or separate git directory) can still reach the hook.
+  gx85_b="$GPAB_TMP/gx85-"
+  gx85_ej() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"a","new_string":"b"}}' "$1"; }   # <path> — an Edit call
+  gx85_mj() { printf '{"tool_name":"MultiEdit","tool_input":{"file_path":"%s","edits":[{"old_string":"a","new_string":"b"}]}}' "$1"; }   # <path> — a MultiEdit call
+  gx85_h() {   # <label> <json> <text> — a refusal that carries the named act
+    aa_cell_skip "$1" && return 0
+    aa_shard_nest   # the hla_deny_has below is a gate inside this one
+    hla_deny_has "$GX_G" "$1" "$2" "$3"
+    aa_shard_unnest
+  }
+  gx85_txt='with a file tool is denied in every repository'
+  # fixtures: every one a kit-shaped repository under temp (gx8_mk), so the dev-clone relax applies to it exactly as it applies to a throwaway
+  gx8_mk s885u; gx85_u="${gx8_b}s885u"; mkdir -p "$gx85_u/hooks"                                  # hooks/ exists, core.hooksPath unset: not live
+  gx8_mk s885bad; gx85_bad="${gx8_b}s885bad"; mkdir -p "$gx85_bad/hooks"; printf '[core\n\tbroken = \n' >> "$gx85_bad/.git/config"   # git fails on every read (rc 128)
+  gx8_mk s885nl; gx85_nl="${gx8_b}s885nl"; mkdir -p "$gx85_nl/hooks"; printf '[core]\n\thooksPath = "hooks\\nx"\n' >> "$gx85_nl/.git/config"   # one value holding a newline; its last line is NOT hooks
+  gx8_mk s885t1; gx85_t1="${gx8_b}s885t1"; mkdir -p "$gx85_t1/hooks"; gx_cfg "$gx85_t1" core.hooksPath "${gx8_b}s885t1-else"; gx_cfg "$gx85_t1" --add core.hooksPath hooks   # two values, the LAST is hooks
+  gx8_mk s885t2; gx85_t2="${gx8_b}s885t2"; mkdir -p "$gx85_t2/hooks"; gx_cfg "$gx85_t2" core.hooksPath hooks; gx_cfg "$gx85_t2" --add core.hooksPath "${gx8_b}s885t2-else"   # two values, the first is hooks, the LAST is elsewhere
+  gx8_mk s885ev; gx85_ev="${gx8_b}s885ev"; mkdir -p "$gx85_ev/hooks"; gx_cfg "$gx85_ev" core.hooksPath ''   # an EMPTY value: the read gives rc 0 and an empty string (fail closed)
+  gx85_n=0
+  for gx85_v in ./hooks hooks/ link absolute; do
+    gx85_n=$((gx85_n + 1)); gx8_mk "s885id$gx85_n"; gx85_q="${gx8_b}s885id$gx85_n"; mkdir -p "$gx85_q/hooks"
+    case "$gx85_v" in
+      link) ln -s "$gx85_q/hooks" "${gx8_b}s885id$gx85_n-lnk"; gx_cfg "$gx85_q" core.hooksPath "${gx8_b}s885id$gx85_n-lnk" ;;
+      absolute) gx_cfg "$gx85_q" core.hooksPath "$gx85_q/hooks" ;;
+      *) gx_cfg "$gx85_q" core.hooksPath "$gx85_v" ;;
+    esac
+  done
+  gx85_ci=no; [ -d "$gx8_f1d/HOOKS" ] && gx85_ci=yes   # a case-INSENSITIVE filesystem resolves HOOKS to hooks (the identity cells; the .GIT cells are textual and run everywhere)
+  mkdir -p "$gx8_f1/sub"
+  # S1-a: a file-tool write into a temp throwaway's .git/ denies (F17a and F17f flipped from ALLOW)
+  gx85_h "SWAS883-F17a [edit] a Write to P/.git/hooks/pre-push is DENIED (SWAS-885 closed residual R1's file-tool route)" "$(gpab_write "$gx8_f1/.git/hooks/pre-push")" "$gx85_txt"
+  assert_deny_at "$GX_G" "SWAS883-F17f [edit] a Write to P/.git/config is DENIED (SWAS-885 closed residual R1's file-tool route)" "$(gpab_write "$gx8_f1/.git/config")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-1 [edit] a Write to P/.git/hooks/reference-transaction" "$(gpab_write "$gx8_f1/.git/hooks/reference-transaction")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-2 [edit] a Write to P/.git/hooks/post-checkout" "$(gpab_write "$gx8_f1/.git/hooks/post-checkout")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-3 [edit] a Write to P/.git/info/attributes" "$(gpab_write "$gx8_f1/.git/info/attributes")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-4 [edit] a Write to P/.git/config.worktree" "$(gpab_write "$gx8_f1/.git/config.worktree")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-5 [edit] an Edit of P/.git/hooks/pre-push" "$(gx85_ej "$gx8_f1/.git/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1a-6 [edit] a MultiEdit of P/.git/hooks/pre-push" "$(gx85_mj "$gx8_f1/.git/hooks/pre-push")"
+  # S1-b: the same in a dev clone (the dev-clone relax is for the clone's working files, never for its git directory)
+  gx85_c="$GPAB_TMP/gx85-clone"; gx_mkclone "$gx85_c"; mkdir -p "$gx85_c/hooks"
+  assert_deny_at "$GX_G" "SWAS885-S1b-1 [edit] a Write to C/.git/hooks/pre-push in a dev clone" "$(gpab_write "$gx85_c/.git/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1b-2 [edit] a Write to C/.git/config in a dev clone" "$(gpab_write "$gx85_c/.git/config")"
+  # S1-c: case is folded (the match is textual, so these run on every filesystem)
+  assert_deny_at "$GX_G" "SWAS885-S1c-1 [edit] a Write to P/.GIT/hooks/pre-push" "$(gpab_write "$gx8_f1/.GIT/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1c-2 [edit] a Write to P/.Git/config" "$(gpab_write "$gx8_f1/.Git/config")"
+  # S1-d: the gitfile (a linked worktree's or a submodule's .git file points git elsewhere)
+  mkdir -p "$gx85_b""gf/sub"; printf 'gitdir: /nonexistent/gx85-gf\n' > "$gx85_b""gf/.git"; printf 'gitdir: /nonexistent/gx85-gfs\n' > "$gx85_b""gf/sub/.git"
+  printf 'gitdir: /nonexistent/gx85-gfc\n' > "$gx85_c/sub/.git"
+  assert_deny_at "$GX_G" "SWAS885-S1d-1 [edit] a Write to P/.git when .git is a gitfile (a temp throwaway)" "$(gpab_write "$gx85_b""gf/.git")"
+  assert_deny_at "$GX_G" "SWAS885-S1d-2 [edit] a Write to P/sub/.git (a gitfile file) in a temp throwaway" "$(gpab_write "$gx85_b""gf/sub/.git")"
+  assert_deny_at "$GX_G" "SWAS885-S1d-3 [edit] a Write to C/sub/.git (a gitfile file) in a dev clone" "$(gpab_write "$gx85_c/sub/.git")"
+  # S1-e: a live tracked hooks directory (core.hooksPath resolves to P/hooks): F17b's old target (F1d's P) is now live
+  assert_deny_at "$GX_G" "SWAS883-F17b [edit] a Write to P/hooks/pre-push is DENIED when core.hooksPath is P/hooks (live: git runs it; SWAS-885)" "$(gpab_write "$gx8_f1d/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1e-1 [edit] a Write to P/hooks/reference-transaction when core.hooksPath is P/hooks" "$(gpab_write "$gx8_f1d/hooks/reference-transaction")"
+  assert_deny_at "$GX_G" "SWAS885-S1e-2 [edit] a Write to P/hooks/post-checkout when core.hooksPath is P/hooks" "$(gpab_write "$gx8_f1d/hooks/post-checkout")"
+  assert_allow_at "$GX_G" "SWAS885-S1e-3 [edit] a Write to P/hooks/pre-push with core.hooksPath unset is ALLOWED (not live: the installed copy runs)" "$(gpab_write "$gx85_u/hooks/pre-push")"
+  assert_allow_at "$GX_G" "SWAS885-S1e-4 [edit] a Write to P/hooks/reference-transaction with core.hooksPath unset is ALLOWED (not live)" "$(gpab_write "$gx85_u/hooks/reference-transaction")"
+  if [ "$gx85_ci" = yes ]; then
+    assert_deny_at "$GX_G" "SWAS885-S1e-5 [edit] a Write to P/HOOKS/pre-push when core.hooksPath is P/hooks (case-insensitive filesystem: identity, not spelling)" "$(gpab_write "$gx8_f1d/HOOKS/pre-push")"
+    assert_deny_at "$GX_G" "SWAS885-S1e-6 [edit] a Write to P/Hooks/reference-transaction when core.hooksPath is P/hooks (case-insensitive filesystem)" "$(gpab_write "$gx8_f1d/Hooks/reference-transaction")"
+  else
+    echo "SKIP SWAS885-S1e-5, S1e-6 (case-SENSITIVE filesystem) — HOOKS names no directory here; the identity cells S1e3-* prove the device-and-inode compare everywhere"
+  fi
+  # errata c2: the live-hooks deny runs in the PROTECTED ROOT too (the root's own core.hooksPath=hooks is set for these cells only, then removed)
+  mkdir -p "$gx_rt/hooks"; gx_cfg "$gx_rt" core.hooksPath hooks
+  assert_deny_at "$GX_G" "SWAS885-S1e-root [edit] a Write to <root>/hooks/post-checkout with core.hooksPath=hooks in the root (c2: whatever the relax)" "$(gpab_write "$gx_rt/hooks/post-checkout")"
+  # S1-e2: the hooks-path read fails closed, takes the LAST value, and refuses a value holding a newline
+  assert_deny_at "$GX_G" "SWAS885-S1e2-1 [edit] a Write to P/hooks/post-checkout when git cannot read P's config (rc 128: fail closed)" "$(gpab_write "$gx85_bad/hooks/post-checkout")"
+  assert_deny_at "$GX_G" "SWAS885-S1e2-2 [edit] a Write to P/hooks/post-checkout when core.hooksPath holds a newline (hooks, newline, x)" "$(gpab_write "$gx85_nl/hooks/post-checkout")"
+  assert_deny_at "$GX_G" "SWAS885-S1e2-3 [edit] a Write to P/hooks/post-checkout with two hooksPath values where the LAST is hooks" "$(gpab_write "$gx85_t1/hooks/post-checkout")"
+  assert_allow_at "$GX_G" "SWAS885-S1e2-4 [edit] a Write to P/hooks/post-checkout with two hooksPath values where the first is hooks and the LAST is elsewhere" "$(gpab_write "$gx85_t2/hooks/post-checkout")"
+  assert_deny_at "$GX_G" "SWAS885-S1e2-5 [edit] a Write to P/hooks/post-checkout when core.hooksPath is an empty value (fail closed)" "$(gpab_write "$gx85_ev/hooks/post-checkout")"
+  assert_allow_at "$GX_G" "SWAS885-S1e-7 [edit] a Write to P/.claude/hooks/x.sh when core.hooksPath=hooks is ALLOWED (the live-hooks deny is the hooks directory only)" "$(gpab_write "$gx8_f1d/.claude/hooks/x.sh")"
+  # S1-e3: identity, not spelling (./hooks, hooks/, a symlink to P/hooks, an absolute path)
+  gx85_n=0
+  for gx85_v in ./hooks hooks/ link absolute; do
+    gx85_n=$((gx85_n + 1))
+    assert_deny_at "$GX_G" "SWAS885-S1e3-$gx85_n [edit] a Write to P/hooks/post-checkout when core.hooksPath is spelled: $gx85_v" "$(gpab_write "${gx8_b}s885id$gx85_n/hooks/post-checkout")"
+  done
+  # Architect ruling 2026-11-15 (F1): the .claude/projects|plans relief no longer exempts a `.git` component; a memory or plan file still passes.
+  assert_deny_at "$GX_G" "SWAS885-RL1 [edit] a Write to <root>/.claude/projects/r/.git/hooks/pre-push is DENIED (the relief does not exempt a .git component)" "$(gpab_write "$gx_rt/.claude/projects/r/.git/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-RL2 [edit] a Write to C/.claude/plans/r/.git/config in a dev clone is DENIED" "$(gpab_write "$gx85_c/.claude/plans/r/.git/config")"
+  assert_allow_at "$GX_G" "SWAS885-RL3 [edit] a Write to <root>/.claude/projects/r/memory/note.md is ALLOWED (the relief still holds for memory files)" "$(gpab_write "$gx_rt/.claude/projects/r/memory/note.md")"
+  assert_allow_at "$GX_G" "SWAS885-RL4 [edit] a Write to C/.claude/plans/r/plan.md in a dev clone is ALLOWED" "$(gpab_write "$gx85_c/.claude/plans/r/plan.md")"
+  assert_deny_at "$GX_G" "SWAS885-RL5 [edit] a Write to <root>/.CLAUDE/PROJECTS/r/.GIT/hooks/post-checkout is DENIED (both names case-varied: the backstop folds as the classifier does; the leaf is not pre-push, which the literal pass's */hooks/pre-push would decide first)" "$(gpab_write "$gx_rt/.CLAUDE/PROJECTS/r/.GIT/hooks/post-checkout")"
+  # RL6 (the security read's RB2): a symlink outside the relief that points into a relief repository's .git/hooks is judged on its resolved path.
+  gx85_rr="${gx85_b}rr/.claude/projects/r"; mkdir -p "$gx85_rr"; git init -q "$gx85_rr" >/dev/null 2>&1 || :; ln -s "$gx85_rr/.git/hooks" "${gx85_b}rlnk" 2>/dev/null || :
+  assert_deny_at "$GX_G" "SWAS885-RL6 [edit] a Write through a temp symlink to <tmp>/rr/.claude/projects/r/.git/hooks/pre-push is DENIED (the resolved path is in the relief)" "$(gpab_write "${gx85_b}rlnk/pre-push")"
+  # S1-e4 (F-b, F-c): the work tree is git's own answer (a decoy .git entry cannot steer it), and the hooks directory need not exist yet
+  gx8_mk s885dc; gx85_dc="${gx8_b}s885dc"; mkdir -p "$gx85_dc/hooks"; printf 'garbage\n' > "$gx85_dc/hooks/.git"; gx_cfg "$gx85_dc" core.hooksPath hooks
+  gx8_mk s885dd; gx85_dd="${gx8_b}s885dd"; mkdir -p "$gx85_dd/hooks/.git"; gx_cfg "$gx85_dd" core.hooksPath hooks
+  gx8_mk s885nh; gx85_nh="${gx8_b}s885nh"; rmdir "$gx85_nh/hooks" 2>/dev/null || :; gx_cfg "$gx85_nh" core.hooksPath hooks
+  assert_deny_at "$GX_G" "SWAS885-S1e4-1 [edit] a Write to P/hooks/pre-push with a decoy .git FILE planted in P/hooks and core.hooksPath=hooks (F-b)" "$(gpab_write "$gx85_dc/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1e4-2 [edit] a Write to P/hooks/pre-push with a decoy .git DIRECTORY planted in P/hooks and core.hooksPath=hooks (F-b)" "$(gpab_write "$gx85_dd/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1e4-3 [edit] a Write creating P/hooks/pre-push when core.hooksPath=hooks and P/hooks does not exist yet (F-c)" "$(gpab_write "$gx85_nh/hooks/pre-push")"
+  # S1-g: a dotted, normalised or linked spelling cannot escape
+  assert_deny_at "$GX_G" "SWAS885-S1g-1 [edit] a Write to P/sub/../.git/hooks/pre-push" "$(gpab_write "$gx8_f1/sub/../.git/hooks/pre-push")"
+  assert_deny_at "$GX_G" "SWAS885-S1g-2 [edit] a Write to P/./.git/config" "$(gpab_write "$gx8_f1/./.git/config")"
+  ln -s "$gx8_f1/.git/hooks" "${gx85_b}lnk"
+  assert_deny_at "$GX_G" "SWAS885-S1g-3 [edit] a Write through a symlink in temp that points at P/.git/hooks (the resolved spelling)" "$(gpab_write "${gx85_b}lnk/pre-push")"
+  # S1-g2 + the NL cells (Architect ruling 2026-11-14, replacing errata c1 and c4): under the relax, a Write to an EXISTING regular file whose link count
+  # is above one is REFUSED, with one reason, and no search of any kind. The old S1g2-2 ALLOW cell (C/y hardlinked to C/conformance/x.sh in a dev clone) is
+  # now a DENY (relabelled below); its C/conformance/x.sh no longer has a second link, so SWAS885-S1f-2 keeps writing a one-link file.
+  gx8_mk s885hl; gx85_hl="${gx8_b}s885hl"; gx85_hlok=0
+  if ln "$gx85_hl/.git/hooks/pre-push" "$gx85_hl/x" 2>/dev/null; then gx85_hlok=1; fi
+  printf 'x\n' > "$gx85_c/nl1a"; printf 'x\n' > "$gx85_c/nl2"; printf 'x\n' > "$gx85_c/ylink-src"
+  if ln "$gx85_c/nl1a" "$gx85_c/nl1b" 2>/dev/null && ln "$gx85_c/ylink-src" "$gx85_c/y" 2>/dev/null; then gx85_nlok=1; else gx85_nlok=0; fi
+  mkdir -p "${gx85_b}norepo"; printf 'x\n' > "${gx85_b}norepo/a"
+  if ln "${gx85_b}norepo/a" "${gx85_b}norepo/b" 2>/dev/null; then gx85_c4=1; else gx85_c4=0; fi
+  if [ "$gx85_hlok" = 1 ]; then
+    assert_deny_at "$GX_G" "SWAS885-S1g2-1 [edit] a Write to P/x, a hardlink made outside .git to P/.git/hooks/pre-push: DENIED (held by the nlink rule since the Architect ruling)" "$(gpab_write "$gx85_hl/x")"
+  else
+    echo "SKIP SWAS885-S1g2-1 (a hardlink is not creatable here)"
+  fi
+  if [ "$gx85_nlok" = 1 ]; then
+    assert_deny_at "$GX_G" "SWAS885-S1g2-2 [edit] a Write to C/y, a 2-link ordinary file in a dev clone: was ALLOWED under errata c1, now DENIED by the nlink rule (relabelled)" "$(gpab_write "$gx85_c/y")"
+    assert_deny_at "$GX_G" "SWAS885-NL1 [edit] a Write to an existing 2-link regular file in a dev clone is DENIED" "$(gpab_write "$gx85_c/nl1a")"
+    hla_deny_has "$GX_G" "SWAS885-NL1r [edit] the nlink refusal names the other hard links" "$(gpab_write "$gx85_c/nl1a")" "this file has other hard links"
+  else
+    echo "SKIP SWAS885-S1g2-2, NL1, NL1r (a hardlink is not creatable here)"
+  fi
+  assert_allow_at "$GX_G" "SWAS885-NL2 [edit] a Write to an existing 1-link regular file in a dev clone is ALLOWED" "$(gpab_write "$gx85_c/nl2")"
+  assert_allow_at "$GX_G" "SWAS885-NL3 [edit] a Write to a not-yet-existing file in a dev clone is ALLOWED" "$(gpab_write "$gx85_c/nl3-not-yet")"
+  # NL4 (the fail-closed leg of the nlink rule): a PATH `stat` stand-in, the same device the tr-fold legs use (a stub dir first on PATH for the guard call
+  # ONLY, built here at run time; nothing in the shipped guard reads it). Two ungated arms read the link count of the SAME file before the G885-NLINK
+  # block (_hardlink_alias_hit_secret, then _hardlink_root_alias_hit), and each fails closed with its OWN reason when the count is unreadable, so a
+  # shim that fails every count read is refused by one of THEM and never reaches the NLINK arm. The shim therefore answers the first K count reads
+  # (every `stat -c %h`, then its BSD twin `stat -f %l`, counts once per _nlink_of) with the real stat and fails the rest: the `-c` form exits 1 with no
+  # output and the `-f` form prints `x`. _nlink_of declines the non-digit `x` itself (guard-core.sh `_nlink_of`), so the arm at G885-NLINK sees the
+  # EMPTY string: NL4 reads the arm's empty leg. The `*[!0-9]*` leg is defence in depth that _nlink_of's own filter keeps every input from reaching,
+  # so no cell can bind it (named, not built). K is MEASURED, not assumed: one run with K out of reach counts the reads the guard makes for this file,
+  # and K is that count less one. That assumes the NLINK read is the last count read on the pristine path; if a later read is ever added, NL4 or NL4r
+  # fail, they do not pass silently. Only modes that grade cells (run, scoped, shard) measure K; in the other modes (oracle, list, dims, join) no cell
+  # spawns a guard, so the fallback of 3 is never graded. The wrapper (the "guard" the cells name) resets the count and puts the stub on PATH for each
+  # guard spawn, so gx_mw's two spawns each start at zero.
+  # NL4r grades the REASON text, so NL4 cannot pass on an earlier arm's refusal; MNLU (below) flips NL4 only if the arm at G885-NLINK was the one that denied.
+  gx85_nls="$GPAB_TMP/gx85-nlshim"; mkdir -p "$gx85_nls/bin"; printf 'x\n' > "$gx85_c/nl4"
+  gx85_nlj=$(gpab_write "$gx85_c/nl4")
+  gx85_nlreal=$(command -v stat) || gx85_nlreal=''
+  if [ -n "$gx85_nlreal" ]; then
+    printf '%s\n' '#!/bin/sh' 'D=${0%/bin/stat}' 'case "$1 $2" in' \
+      '  -c\ %h) n=$(cat "$D/n" 2>/dev/null) || n=0; n=$((n + 1)); printf "%s" "$n" > "$D/n" ;;' \
+      '  -f\ %l) n=$(cat "$D/n" 2>/dev/null) || n=0 ;;' \
+      '  *) exec "$(cat "$D/real")" "$@" ;;' 'esac' \
+      'if [ "$n" -le "$(cat "$D/k")" ]; then exec "$(cat "$D/real")" "$@"; fi' \
+      'case "$1" in -c) exit 1 ;; *) printf "x" ;; esac' 'exit 0' > "$gx85_nls/bin/stat"
+    printf '%s\n' '#!/bin/sh' 'D=${0%/wrap.sh}' 'printf 0 > "$D/n"' 'PATH="$D/bin:$PATH"; export PATH' 'exec sh "$(cat "$D/guard")" "$@"' > "$gx85_nls/wrap.sh"
+    chmod +x "$gx85_nls/bin/stat"
+    printf '%s' "$gx85_nlreal" > "$gx85_nls/real"; printf '%s' "$GX_G" > "$gx85_nls/guard"; printf '%s' 999999 > "$gx85_nls/k"
+    gx85_nln=3
+    case "$AA_MODE" in
+      run|scoped|shard)
+        printf '%s' "$gx85_nlj" | sh "$gx85_nls/wrap.sh" >/dev/null 2>&1 || :
+        gx85_nln=$(cat "$gx85_nls/n" 2>/dev/null) || gx85_nln=0 ;;
+    esac
+    printf '%s' "$((gx85_nln - 1))" > "$gx85_nls/k"
+    if [ "$gx85_nln" -lt 1 ]; then echo "FAIL SWAS885-NL4: the stat stand-in was never reached by the guard (0 link-count reads counted); NL4, NL4r and MNLU would prove nothing"; fail=1; fi
+    gx85_nlg=$GX_G; GX_G="$gx85_nls/wrap.sh"
+    assert_deny_at "$GX_G" "SWAS885-NL4 [edit] a Write to an existing 1-link file in a dev clone whose link count cannot be read (stat shimmed) is DENIED (fail-closed)" "$gx85_nlj"
+    hla_deny_has "$GX_G" "SWAS885-NL4r [edit] the refusal for an unreadable link count is the nlink refusal (names the other hard links), not an earlier arm's" "$gx85_nlj" "this file has other hard links"
+    GX_G=$gx85_nlg
+  else
+    echo "SKIP SWAS885-NL4, NL4r, MNLU (no stat on PATH to stand in for)"
+  fi
+  if [ "$gx85_c4" = 1 ]; then
+    assert_deny_at "$GX_G" "SWAS885-C4 [edit] a Write to an existing multi-link file under temp with no repository above it: DENIED (c4's own search is gone; the nlink rule holds it)" "$(gpab_write "${gx85_b}norepo/a")"
+  else
+    echo "SKIP SWAS885-C4 (a hardlink is not creatable here)"
+  fi
+  # S1-ga / S1-gc / S1-gu (fix round 2): G-a (a symlinked parent), G-c (every enclosing work tree) and the unreadable-repository rule's reach.
+  # Bound to M14 and M15 (MPS) below.
+  # shellcheck disable=SC1090  # the core path is an argument (the pristine core or a mutated copy)
+  gx85_lh() { ( set +eu; . "$1" >/dev/null 2>&1; _g885_live_hooks_hit "$2" ); }   # <core file> <path> — rc 0 iff that core judges the path a live hook
+  gx8_mk s885sy; gx85_sy="${gx8_b}s885sy"; mkdir -p "$gx85_sy/hooks"; gx_cfg "$gx85_sy" core.hooksPath hooks; ln -s "$gx85_sy/hooks" "$gx85_sy/myhooks"
+  assert_deny_at "$GX_G" "SWAS885-S1ga-1 [edit] a Write to P/myhooks/pre-push, myhooks being a symlink to P/hooks, when core.hooksPath=hooks (G-a)" "$(gpab_write "$gx85_sy/myhooks/pre-push")"
+  aa_cell_skip "SWAS885-S1ga-2" || {
+    if gx85_lh "$GX_GC" "$gx85_sy/myhooks/pre-push"; then echo "PASS deny : SWAS885-S1ga-2 the helper itself judges the LITERAL spelling P/myhooks/pre-push live (its prefilter reads the resolved parent too)"
+    else echo "FAIL (wanted live): SWAS885-S1ga-2 the helper did not judge P/myhooks/pre-push live"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    sed '/# G885-PSYM$/s/.*/      return 1   # G885-PSYM/' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.g885a"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/gc.g885a" || ! sh -n "$GPAB_TMP/gc.g885a" 2>/dev/null; then echo "FAIL mutant : SWAS885-MPS — the mutation matched nothing or does not parse"; fail=1
+    elif gx85_lh "$GPAB_TMP/gc.g885a" "$gx85_sy/myhooks/pre-push"; then echo "FAIL mutant : SWAS885-MPS — the resolved-parent arm dropped and S1ga-2 still read live; the leg proves nothing"; fail=1
+    else echo "PASS mutant : SWAS885-MPS (the prefilter reads the literal parent only: S1ga-2 reads not live)"; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  }
+  gx8_mk s885nest; gx85_ne="${gx8_b}s885nest"; mkdir -p "$gx85_ne/hooks"; gx_cfg "$gx85_ne" core.hooksPath hooks; ( cd "$gx85_ne/hooks" && git init -q ) >/dev/null 2>&1
+  assert_deny_at "$GX_G" "SWAS885-S1gc-1 [edit] a Write to P/hooks/pre-push where P/hooks holds a repository of its own (git init) and the OUTER P has core.hooksPath=hooks (G-c: every enclosing work tree is read)" "$(gpab_write "$gx85_ne/hooks/pre-push")"
+  mkdir -p "${gx85_b}nogit/hooks"
+  assert_allow_at "$GX_G" "SWAS885-S1gu-1 [edit] a Write to <tmp>/nogit/hooks/post-checkout with no .git entry anywhere above is ALLOWED (the unreadable-repository rule needs a .git entry)" "$(gpab_write "${gx85_b}nogit/hooks/post-checkout")"
+  mkdir -p "$gx85_bad/src"
+  assert_allow_at "$GX_G" "SWAS885-S1gu-2 [edit] a Write to P/src/x in the repository whose config git cannot read is ALLOWED (the rule is for a hooks/ parent only)" "$(gpab_write "$gx85_bad/src/x")"
+  # S1-f: the relax still works for everything else in a dev clone (F17c, and the tracked hooks/ with the hooks path unset)
+  assert_allow_at "$GX_G" "SWAS883-F17c [edit] a Write to P/.claude/hooks/guard-core.sh is ALLOWED in a dev clone (the core cannot admit a main line, T6; builders edit it there)" "$(gpab_write "$gx8_f1/.claude/hooks/guard-core.sh")"
+  assert_allow_at "$GX_G" "SWAS885-S1f-1 [edit] a Write to C/hooks/pre-push with the hooks path unset stays ALLOWED in a dev clone" "$(gpab_write "$gx85_c/hooks/pre-push")"
+  assert_allow_at "$GX_G" "SWAS885-S1f-2 [edit] a Write to C/conformance/x.sh stays ALLOWED in a dev clone" "$(gpab_write "$gx85_c/conformance/x.sh")"
+  assert_allow_at "$GX_G" "SWAS885-S1f-3 [edit] a Write to C/scripts/x.sh stays ALLOWED in a dev clone" "$(gpab_write "$gx85_c/scripts/x.sh")"
+  # S1-i: the named residuals, declared (design §2): no `.git` component, so this rule does not recognise a git directory
+  mkdir -p "${gx85_b}bare.git/hooks" "${gx85_b}sep"
+  ( cd "${gx85_b}sep" && git init -q --separate-git-dir "${gx85_b}sep.gd" . ) >/dev/null 2>&1 || mkdir -p "${gx85_b}sep.gd/hooks"
+  assert_allow_at "$GX_G" "SWAS885-S1i-1 [edit] a Write to <tmp>/P.git/hooks/pre-push (a bare repository) is ALLOWED: residual, SWAS-885 §2" "$(gpab_write "${gx85_b}bare.git/hooks/pre-push")"
+  assert_allow_at "$GX_G" "SWAS885-S1i-2 [edit] a Write to a separate git directory's hooks/pre-push is ALLOWED: residual, SWAS-885 §2" "$(gpab_write "${gx85_b}sep.gd/hooks/pre-push")"
   gx_d "SWAS883-F17d [root] cp over P/hooks/pre-push" "$gx_R" "cp $gx_S/t.txt $gx8_f1d/hooks/pre-push"
   gx_d "SWAS883-F17e [root] cp over P/.claude/hooks/guard-core.sh" "$gx_R" "cp $gx_S/t.txt $gx8_f1/.claude/hooks/guard-core.sh"
+  # --- MUTANTS (SWAS-885 slice 1): each flips its bound cell (gx_mw asserts the flip and that the sed matched) ---
+  gx_mw "SWAS885-M1: the .git component test never matches -> SWAS885-S1a-1 (P/.git/hooks/reference-transaction) flips to ALLOW" \
+    '/# G885-DOTGIT$/s/.*/    __g885_never__) return 0 ;;   # G885-DOTGIT/' "$(gpab_write "$gx8_f1/.git/hooks/reference-transaction")" allow
+  gx_mw "SWAS885-M1b: the same -> SWAS885-S1b-2 (C/.git/config in a dev clone) flips to ALLOW" \
+    '/# G885-DOTGIT$/s/.*/    __g885_never__) return 0 ;;   # G885-DOTGIT/' "$(gpab_write "$gx85_c/.git/config")" allow
+  gx_mw "SWAS885-M2: the case fold dropped -> SWAS885-S1c-1 (P/.GIT/hooks/pre-push) flips to ALLOW" \
+    '/# G885-FOLD$/s/.*/    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;   # G885-FOLD/' "$(gpab_write "$gx8_f1/.GIT/hooks/pre-push")" allow
+  gx_mw "SWAS885-M3: .git and */.git dropped from _cpp_kitowned and _cpp_match -> SWAS885-S1d-2 (P/sub/.git, a gitfile) flips to ALLOW" \
+    's#\*/\.git/\*|\.git/\*|\.git|\*/\.git|#*/.git/*|.git/*|#g' "$(gpab_write "$gx85_b""gf/sub/.git")" allow
+  gx_mw "SWAS885-M3b: the same -> SWAS885-S1d-3 (C/sub/.git in a dev clone) flips to ALLOW" \
+    's#\*/\.git/\*|\.git/\*|\.git|\*/\.git|#*/.git/*|.git/*|#g' "$(gpab_write "$gx85_c/sub/.git")" allow
+  gx_mw "SWAS885-M4: the live-hooks deny dropped -> SWAS883-F17b (P/hooks/pre-push with hooksPath=P/hooks) flips to ALLOW" \
+    '/# G885-LIVE$/s/.*/    :/' "$(gpab_write "$gx8_f1d/hooks/pre-push")" allow
+  gx_mw "SWAS885-M4b: the same -> SWAS885-S1e-2 (P/hooks/post-checkout) flips to ALLOW" \
+    '/# G885-LIVE$/s/.*/    :/' "$(gpab_write "$gx8_f1d/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M4c: the same -> SWAS885-S1e-root (<root>/hooks/post-checkout, errata c2) flips to ALLOW" \
+    '/# G885-LIVE$/s/.*/    :/' "$(gpab_write "$gx_rt/hooks/post-checkout")" allow
+  gx_cfg "$gx_rt" --unset core.hooksPath
+  # SWAS-885 fix round 2: a corrupt config makes `git rev-parse --show-toplevel` itself fail (rc 128), so S1e2-1 is held by the UNREADABLE-repository
+  # rule (a `.git` entry whose top level git cannot report, parent == its hooks/), which sits BEFORE the config read; no fixture makes rev-parse
+  # succeed and `git config --get-all core.hooksPath` fail (both read the same files), so the G885-RC arm has no cell of its own. M5 therefore
+  # drops BOTH (COMPOUND); M5c drops the unreadable-repository rule alone.
+  gx_mw "SWAS885-M5 (COMPOUND with G885-UNREAD): a failed config read treated as unset (fail open) and the unreadable-repository rule dropped -> SWAS885-S1e2-1 (rc 128) flips to ALLOW" \
+    '/# G885-RC$/s/.*/  [ "$_g885_rc" = 0 ] || return 1   # G885-RC/;/# G885-UNREAD$/s/.*/      _g885_ur=1   # G885-UNREAD/' "$(gpab_write "$gx85_bad/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M5c: the unreadable-repository rule dropped (a repository git cannot read is treated as no repository) -> SWAS885-S1e2-1 (rc 128) flips to ALLOW" \
+    '/# G885-UNREAD$/s/.*/      _g885_ur=1   # G885-UNREAD/' "$(gpab_write "$gx85_bad/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M5b: the empty-or-newline value refusal dropped -> SWAS885-S1e2-2 (a value holding a newline) flips to ALLOW" \
+    "/# G885-ONE\$/s/.*/    ''|__g885_never__) return 0 ;;   # G885-ONE/" "$(gpab_write "$gx85_nl/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M8: the FIRST hooksPath value taken, not the last -> SWAS885-S1e2-3 (last is hooks) flips to ALLOW" \
+    '/# G885-LAST$/s/.*/  _g885_val=${_g885_all%%"$_g885_nl"*}   # G885-LAST/' "$(gpab_write "$gx85_t1/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M8b: the same -> SWAS885-S1e2-4 (first is hooks, last is elsewhere) flips to DENY" \
+    '/# G885-LAST$/s/.*/  _g885_val=${_g885_all%%"$_g885_nl"*}   # G885-LAST/' "$(gpab_write "$gx85_t2/hooks/post-checkout")" deny
+  gx_mw "SWAS885-M9: the configured hooks path and P/hooks compared as strings, not physically -> SWAS885-S1e3-1 (./hooks) flips to ALLOW" \
+    '/# G885-HPCMP$/s/.*/  _g885_hr=1; [ "$_g885_hp" = "$_g885_w\/hooks" ] \&\& _g885_hr=0   # G885-HPCMP/' "$(gpab_write "${gx8_b}s885id1/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M9b: the same -> SWAS885-S1e3-3 (a symlink to P/hooks) flips to ALLOW" \
+    '/# G885-HPCMP$/s/.*/  _g885_hr=1; [ "$_g885_hp" = "$_g885_w\/hooks" ] \&\& _g885_hr=0   # G885-HPCMP/' "$(gpab_write "${gx8_b}s885id3/hooks/post-checkout")" allow
+  gx_mw "SWAS885-M11 (F-c): the early return on a missing hooks directory restored -> SWAS885-S1e4-3 (hooksPath=hooks, no hooks directory) flips to ALLOW" \
+    '/# G885-WT$/s/.*/  [ -n "$_g885_w" ] \&\& [ -d "$_g885_w\/hooks" ] || return 1   # G885-WT/' "$(gpab_write "$gx85_nh/hooks/pre-push")" allow
+  # M12 is COMPOUND since fix round 2: the walk now continues past the first top level (G-c), so the decoy P/hooks/.git is passed over to the real P
+  # even when the first top level is wrong; the leg stops the walk at the first top level too (G885-NEXT), as the single-top-level code did.
+  gx_mw "SWAS885-M12 (F-b, COMPOUND with G885-NEXT): the work tree taken as the nearest .git entry, not git's own answer, and the walk stopped at the first top level -> SWAS885-S1e4-2 (a decoy .git directory in P/hooks) flips to ALLOW" \
+    '/# G885-GITTOP$/s/.*/    if [ -e "$_g885_wd\/.git" ]; then _g885_wt=$_g885_wd; else _g885_wt=""; fi   # G885-GITTOP/;/# G885-NEXT$/s/.*/      return 1   # G885-NEXT/' "$(gpab_write "$gx85_dd/hooks/pre-push")" allow
+  gx_mw "SWAS885-M6: the relax forced off for every path -> SWAS883-F17c (C/.claude/hooks/guard-core.sh in a dev clone) flips to DENY" \
+    '/# G885-FLIP$/s/.*/  _cp8c_relax=0; _g885_flip=1   # G885-FLIP/' "$(gpab_write "$gx8_f1/.claude/hooks/guard-core.sh")" deny
+  gx_mw "SWAS885-M6b: the same -> SWAS885-S1f-2 (C/conformance/x.sh) flips to DENY" \
+    '/# G885-FLIP$/s/.*/  _cp8c_relax=0; _g885_flip=1   # G885-FLIP/' "$(gpab_write "$gx85_c/conformance/x.sh")" deny
+  gx_mw "SWAS885-M6c: the same -> SWAS885-S1f-1 (C/hooks/pre-push, hooks path unset) flips to DENY" \
+    '/# G885-FLIP$/s/.*/  _cp8c_relax=0; _g885_flip=1   # G885-FLIP/' "$(gpab_write "$gx85_c/hooks/pre-push")" deny
+  gx_mw "SWAS885-M7: only the literal path tested for a .git component -> SWAS885-S1g-3 (a symlink in temp to P/.git/hooks) flips to ALLOW" \
+    '/# G885-ANY$/d' "$(gpab_write "${gx85_b}lnk/pre-push")" allow
+  gx_mw "SWAS885-MRL: the relief backstop dropped -> SWAS885-RL1 (<root>/.claude/projects/r/.git/hooks/pre-push) flips to ALLOW" \
+    '/# G885-RELIEF$/d' "$(gpab_write "$gx_rt/.claude/projects/r/.git/hooks/pre-push")" allow
+  gx_mw "SWAS885-MRF: the relief backstop's case fold dropped -> SWAS885-RL5 (<root>/.CLAUDE/PROJECTS/r/.GIT/hooks/post-checkout) flips to ALLOW" \
+    '/# G885-RFOLD$/s/.*/      *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;;   # G885-RFOLD/' "$(gpab_write "$gx_rt/.CLAUDE/PROJECTS/r/.GIT/hooks/post-checkout")" allow
+  gx_mw "SWAS885-MRR: the relief backstop judges only the literal and normalised spellings (the resolved one dropped) -> SWAS885-RL6 (a temp symlink into a relief repository's .git/hooks) flips to ALLOW" \
+    's/for _g885_rp in "\$1" "\$2" "\$3"; do/for _g885_rp in "$1" "$2"; do/' "$(gpab_write "${gx85_b}rlnk/pre-push")" allow
+  # SWAS885-M10 (the narrow search root), SWAS885-MW (errata c1's wide classifier), M13, M16 and M17 (the count machinery) are REMOVED: the Architect ruling
+  # 2026-11-14 replaced the narrow search and its count with the nlink rule, so the code they mutated no longer exists.
+  # MNL: the nlink test admits a count above one (-gt 1 -> -gt 999) -> NL1 (a 2-link file in a dev clone) flips to ALLOW. The cell and its mutant are bound
+  # to the second leg only (a count above one). The other leg, a count that cannot be read, is bound to NL4 by MNLU below (a PATH `stat` stand-in reaches it).
+  if [ "$gx85_nlok" = 1 ]; then
+    gx_mw "SWAS885-MNL: the nlink test admits a count above one (-gt 1 -> -gt 999) -> SWAS885-NL1 (a Write to an existing 2-link file in a dev clone) flips to ALLOW" \
+      '/# G885-NLINK$/,/^    fi$/s/-gt 1 ]/-gt 999 ]/' "$(gpab_write "$gx85_c/nl1a")" allow
+  fi
+  # MNLU: the fail-closed arm becomes a fall-through (`''|*[!0-9]*) : ;;`); the next test then reads `[ "" -gt 1 ]`, an error the `if` takes as false, so the
+  # write is admitted. It runs with the NL4 stand-in (gx_mw judges GX_G, so the wrapper stands in for it for this one call, exactly as for NL4).
+  # MNLU drops both legs at once; MNLE (below) drops the empty leg alone, which is the one NL4 reads.
+  if [ -n "${gx85_nlreal:-}" ]; then
+    gx85_nlg=$GX_G; GX_G="$gx85_nls/wrap.sh"
+    gx_mw "SWAS885-MNLU: the fail-closed arm for an unreadable link count becomes a fall-through -> SWAS885-NL4 (a Write to an existing 1-link file, stat shimmed) flips to ALLOW" \
+      '/# G885-NLINK$/,/^    fi$/s/\(\[!0-9\]\*)\) _g885_nlink_reason; return 1 ;;/\1 : ;;/' "$gx85_nlj" allow
+    gx_mw "SWAS885-MNLE: the empty leg of the fail-closed arm dropped (''| removed; an unreadable count reaches _nlink_of's caller as '') -> SWAS885-NL4 (a Write to an existing 1-link file, stat shimmed) flips to ALLOW" \
+      "/# G885-NLINK\$/,/^    fi\$/s/''|\(\*\[!0-9\]\*)\) _g885_nlink_reason/\1 _g885_nlink_reason/" "$gx85_nlj" allow
+    GX_G=$gx85_nlg
+  fi
+  # fix round 2 mutant. M14: the walk stops at the first work tree (G-c). MPS (the symlinked-parent prefilter) is a direct-call leg beside S1ga-2.
+  gx_mw "SWAS885-M14 (G-c): the walk stopped at the first work tree -> SWAS885-S1gc-1 (a repository inside P/hooks, the outer P has the hooks path) flips to ALLOW" \
+    '/# G885-NEXT$/s/.*/      return 1   # G885-NEXT/' "$(gpab_write "$gx85_ne/hooks/pre-push")" allow
   # --- MUTANTS: each flips its bound deny to ALLOW (gx_m asserts the flip and that the sed matched); all but MC also drop CORECMP (see above) ---
   gx_m "SWAS883-MH (COMPOUND with CORECMP): the hook byte-compare dropped -> F7b flips to ALLOW" \
     "/# MUT-883-HOOKCMP\$/s/.*/  :/;$gx8_cc" "$gx_R" "git -C $gx8_f7b push -u origin main" allow
@@ -16272,12 +16807,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   if [ "$gx_hl" = 1 ]; then
     mkdir -p "$gx_rt/.git/lfs/objects/ab"; printf 'lfs\n' > "$gx_rt/.git/lfs/objects/ab/lfs-obj"; ln "$gx_rt/.git/lfs/objects/ab/lfs-obj" "$gx_cl/zlfs.dat"
     assert_deny_at "$GX_G" "SWAS278A-LA [edit] a clone path that is a hardlink to a file under <root>/.git/lfs/objects" "$(gpab_write "$gx_cl/zlfs.dat")"
-    gx_mw "SWAS278A-MLA: the lfs prune restored to the any-name search -> LA flips to ALLOW" \
-      's/^        \\( -type d -name node_modules \\) -prune \\$/        \\( -type d \\( -name node_modules -o -path "*\/.git\/lfs" \\) \\) -prune \\/' "$(gpab_write "$gx_cl/zlfs.dat")" allow
+    # SWAS278A-MLA (the lfs prune) is pre-empted by the nlink rule since SWAS-885 (see the note at MH): no leg.
     printf 'lb\n' > "$gx_cl/zlb.dat"; gx_nlname="$gx_rt/$(printf 'nl\nname')"; ln "$gx_cl/zlb.dat" "$gx_nlname"
     hla_deny_has "$GX_G" "SWAS278A-LB [edit] a clone path hardlinked to a root file whose name holds a newline (a name the confirm loop cannot stat) fails safe" "$(gpab_write "$gx_cl/zlb.dat")" "could not verify the dev-clone path"
-    gx_mw "SWAS278A-MLB: the unconfirmable-name fail-safe restored to the old 'no alias' -> LB flips to ALLOW" \
-      '/# H-LB-FAILSAFE$/d' "$(gpab_write "$gx_cl/zlb.dat")" allow
+    # SWAS278A-MLB (the unconfirmable-name fail-safe) is pre-empted by the nlink rule since SWAS-885 (see the note at MH): no leg.
     rm -f "$gx_nlname"
   fi
 
@@ -16320,7 +16853,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     if [ -z "$gx_dr" ]; then echo "PASS deny : SWAS278A-X12f the G4 table names every sibling script its table files source or run"
     else echo "FAIL (drift): SWAS278A-X12f a table file uses a sibling script the table lacks: $(printf '%s' "$gx_dr" | tr '\n' ' ')"; fail=1; fi
     AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
-    sed 's/^_CP8B_G4_TABLE=.*$/_CP8B_G4_TABLE='"'"'scripts\/board.sh scripts\/board-claim.sh scripts\/checkout-lease.sh scripts\/tracker-conf.sh scripts\/tracker-cred.sh scripts\/tracker-read.sh scripts\/runaway-guard.sh conformance\/backlog-lib.sh .kit\/budget.conf'"'"'/' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.drift"
+    sed 's/^_CP8B_G4_TABLE=.*$/_CP8B_G4_TABLE='"'"'scripts\/board.sh scripts\/board-claim.sh scripts\/checkout-lease.sh scripts\/gh-tls.sh scripts\/tracker-conf.sh scripts\/tracker-cred.sh scripts\/tracker-read.sh scripts\/runaway-guard.sh conformance\/backlog-lib.sh .kit\/budget.conf'"'"'/' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.drift"
     gx_dm=$(gx_drift "$GPAB_TMP/gc.drift")
     if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/gc.drift"; then echo "FAIL mutant : SWAS278A-MX12f — the mutation matched nothing"; fail=1
     elif [ "$gx_dm" = "tracker-jira.sh" ]; then echo "PASS mutant : SWAS278A-MX12f (the adapter's row dropped from the table: the drift leg reports exactly $gx_dm)"
@@ -17476,7 +18009,10 @@ case "${1:-}" in --selftest) _aa_top=$fail; selftest; aa_selftest_exit "$_aa_top
 #     Review and security follow-ups (same slice): 13 more counted cells, none behind a skip: 12 predicate cells (P5, P6a, P6b, ONE-a, ONE-b, RM1 to RM3,
 #     LIT-cr, LIT-hi, NS-first, NS-case) and the MUT-842-ONE leg -> 3667 + 13 = 3680. Counted from the diff, not measured.
 #     Security follow-up S842-F1: 1 more counted cell, none behind a skip: the predicate cell P-CAP (the token cap) -> 3680 + 1 = 3681.
-AA_CELL_FLOOR=3681
+#     SWAS-903: 40 more counted cells, none behind a skip: 13 (R32-T1 x4, R32-T2 x3, R13-T1 x2, P3, H3A-T1, CILOG-T1, CILOG-T2), the 7 run-A pins (RUNA-1..4 with
+#     their reason legs), 10 GT-W cells on scripts/gh-tls.sh, and 10 mutant legs (2 tip-text, 7 verdict, 1 paired control) -> 3681 + 40 = 3721. Counted from the diff.
+#     Fix round (same slice): 2 more counted cells, none behind a skip: RUNA-4b and the MGT-W4b control (the pathhit tokens alone, measured not to flip) -> 3721 + 2 = 3723.
+AA_CELL_FLOOR=3723
 # SWAS-374: the bottoms of --list-cells and --shard (the bare path and every other mode never reach these two lines).
 if [ "$AA_MODE" = list ]; then exit 0; fi
 if [ "$AA_MODE" = shard ]; then aa_shard_finish && exit 0; exit 1; fi

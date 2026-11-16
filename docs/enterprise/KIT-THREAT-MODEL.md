@@ -4,7 +4,7 @@
 > kit's security posture — **NOT a template**. Write your own from
 > [`templates/THREAT-MODEL-TEMPLATE.md`](../../templates/THREAT-MODEL-TEMPLATE.md).
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.247.0 · **Date:** 2026-10-23
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.248.0 · **Date:** 2026-10-23
 
 <!-- The phrase "Sparkwright — an agentic SDLC kit" on the line above is the K4 copy-denial
      fingerprint conformance/threat-obligation.sh checks for (OBL_KIT_FINGERPRINT_1) — do not
@@ -47,6 +47,7 @@ system — an adopter's threat model covers the application they build, not this
 | **A fine-grained, read-only forge token** used only to read branch protection / rulesets for the kit's own governance checks | Reconnaissance on which checks bind and where bypass paths remain; it cannot merge, push, or change protection. Exposure route: a same-repo PR can print it via the workflow that consumes it; closing shapes include an environment-scoped secret with a required reviewer, or a branch/org ruleset | a repo Actions secret, consumed only by the branch-protection-liveness workflow |
 | **The agent's tracker credential** — the board token of a dedicated agent account. On macOS it is resolved at use time (no shell exports); on Linux it stays in the environment | Board writes as the agent. Any process running as the operator can read it silently while the keychain is unlocked, so this moves the exposure rather than removing it | The operator's login keychain (macOS) or the process environment (Linux) |
 | **The CI tracker reader credential** — read access to the board for a pull-request check | Board reconnaissance, or board writes under a declared ceiling (see T12) | A forge Environment secret; whether it can write depends on the tracker plan |
+| **The waiver register** (an adopter's root `WAIVER-REGISTER.md`) — tampering | A forged row turns a red gate green with a name nobody gave | The adopter's repository root |
 | **The dev clone as an execution surface** — the place an agent's own code runs when the guard admits a kit script there | Agent-written code runs as the operator | An independent clone under a temp directory |
 
 **Not assets:** the kit stores no customer data, no PII, no payment data. It holds no *production*
@@ -57,9 +58,17 @@ repos and the board that governs them**, not data at rest.
 ## Trust boundaries
 
 1. **Agent → repository.** The agent proposes; the guard is the enforcement boundary. Crossing it
-   without a recorded GO is the central threat.
+   without a recorded GO is the central threat. A repository's git hooks and git internals are
+   written by git or by a person, never by an agent's file tool, in every repository.
 2. **Contributor → control plane.** `conformance/`, `.github/workflows/`, `skills/`, `agents/`,
-   `.kit/` require ratification by a non-author.
+   `.kit/` require ratification by a non-author. The guard refuses an agent's write to the project's root
+   waiver register (a person writes the row; the agent may propose it). It is a drift control, not a
+   boundary: git's other write subcommands (apply, am, merge, cherry-pick, rebase, stash, switch,
+   plumbing), an interpreter or composed file name, a dev clone (a temp clone that adds the row and is
+   pushed), and `git add`/`commit` of a file written outside the guard still reach it. On a free private
+   repository the merge bar is conduct, not a control; the trail check (`promotion-verify.sh trace
+   --recent`) finds a recordless merge after the fact. The waiver validator proves a name was written,
+   not who wrote it.
 3. **Kit → adopter.** The public mirror. Everything crossing it is inherited by trees we never see.
 4. **CI → forge.** Workflow tokens, branch protection, the release tag.
 5. **Untrusted text → verdict.** Board rows, records, commit messages and glob arguments all reach
@@ -78,7 +87,7 @@ residual percentages, live incident narratives) for each row below; this referen
 
 | # | Threat | Vector | Mitigation posture | Residual |
 |---|---|---|---|---|
-| T1 | **Elevation** — agent disarms the guard, or reaches an admin-only forge endpoint without one | A global kill-switch env var; editing the guard's own source; REST endpoints that are the admin acts a CLI wraps (protection changes, ruleset changes, ref force-writes, collaborator grants, repo deletion/transfer) | Kill switch is documented as never-use; control-plane edits are routed to a dev-clone with the guard armed on the real repo; a deny arm derived from the endpoint's HTTP method + path, covering the porcelain CLI, its REST form, and known wrapper/indirection shapes measured against the base tree | **Disclosed, not closed.** An interpreter invocation (Python/Node making the same HTTP call) is the canonical bypass — the guard is a speed bump, not a boundary. The platform's own credential scoping and server-side branch/ruleset protection are the real control |
+| T1 | **Elevation** — agent disarms the guard, or reaches an admin-only forge endpoint without one | A global kill-switch env var; editing the guard's own source; REST endpoints that are the admin acts a CLI wraps (protection changes, ruleset changes, ref force-writes, collaborator grants, repo deletion/transfer); an agent writing the root waiver register | Kill switch is documented as never-use; control-plane edits are routed to a dev-clone with the guard armed on the real repo; a deny arm derived from the endpoint's HTTP method + path, covering the porcelain CLI, its REST form, and known wrapper/indirection shapes measured against the base tree | **Disclosed, not closed.** An interpreter invocation (Python/Node making the same HTTP call) is the canonical bypass — the guard is a speed bump, not a boundary. The platform's own credential scoping and server-side branch/ruleset protection are the real control |
 | T2 | **Tampering** — control-plane change ships without a ratifier | Rename a file out of the control-plane set so class derivation reads `ordinary` | Mitigated at every known derivation site (the CI listings, the classifier, the merge-side parity check), each individually fixture-proven, with a newline/rename-collapse guard on every listing | No class-wide lock observes a **sixth**, not-yet-existing derivation site — disclosed as the largest residual; a governed proposal to close it was built and withdrawn after being defeated three times by increasingly subtle shell-parsing evasions, and is boarded as future work rather than shipped half-working |
 | T3 | **Repudiation** — what merged ≠ what was approved | Push after approval; merge a different tree | Stale-approval dismissal on push; a promotion-verify check asserts shipped tree equals approved tree, on both the branch and the release tag | Requires the operator to actually run the check — it is a step, not an automatic trigger |
 | T4 | **Tampering** — a poisoned or rewritten mirror reaches every downstream tree | A new file ships by allow-by-omission; the mirror's default branch or history refs are force-pushed or deleted | The publish script runs a secret scanner plus a sensitivity scan, fail-closed, before every push; an export-ignore contract strips internal artifacts; the mirror's default branch and archival history refs carry forge-side immutability rulesets with zero bypass actors | New public surface is still allow-by-omission (tracked as future work); ruleset targeting the *symbolic* default branch rather than a literal ref name means a default-branch swap could, in principle, move immutability off the branch everyone merges to — disclosed and unmitigated at the forge layer |

@@ -195,6 +195,12 @@ check_sandbox() {
   echo "  ok   agent OS sandbox: on (the guard files are read-only to the shell; an update that changes them is one terminal git command)"
   if _sreason=$(sandbox_unavailable_reason); then
     echo "  ok   agent OS sandbox can start here"
+    # SWAS-903: inside the macOS sandbox a bare `gh` fails TLS (x509 OSStatus -26276); the kit's own verbs set their own trust store. Informational, never a warn.
+    _sgos=$(uname -s 2>/dev/null) || _sgos=""
+    if [ "${SEAMS:-0}" -eq 1 ]; then _sgos="${PREFLIGHT_SANDBOX_OS:-$_sgos}"; fi
+    if [ "$_sgos" = Darwin ] && [ -z "${SSL_CERT_FILE-}" ] && [ -z "${SSL_CERT_DIR-}" ]; then
+      echo "  info gh: agent gh calls outside kit verbs fail TLS in the sandbox; see runtime-guards, gh inside the sandbox"
+    fi
   else
     printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
     echo "       The sandbox is configured but the default runs WITHOUT it: the guard still runs,"
@@ -4831,6 +4837,25 @@ EOF
   case "$out" in
     *warn*"bubblewrap"*) echo "PASS: sandbox profile [profile-strict-unavailable] -> warn naming bubblewrap" ;;
     *) echo "FAIL: sandbox profile [profile-strict-unavailable] did not warn naming bubblewrap ($out)"; fail=1 ;;
+  esac
+  # SWAS-903: the gh info line shows on macOS with the sandbox on and neither trust variable set; never on Linux, never with a variable set, never a warn.
+  unset SSL_CERT_FILE SSL_CERT_DIR
+  sbx_prof profile-gh-info-darwin on "$_sbx/on.json" "" Darwin "sandbox-exec" 1
+  case "$out" in
+    *"info gh:"*"gh inside the sandbox"*) echo "PASS: sandbox profile [profile-gh-info-darwin] -> the gh info line" ;;
+    *) echo "FAIL: sandbox profile [profile-gh-info-darwin] printed no gh info line ($out)"; fail=1 ;;
+  esac
+  sbx_prof profile-gh-info-linux on "$_sbx/on.json" "" Linux "bwrap socat" 1
+  case "$out" in
+    *"info gh:"*) echo "FAIL: sandbox profile [profile-gh-info-linux] printed the gh info line on Linux ($out)"; fail=1 ;;
+    *) echo "PASS: sandbox profile [profile-gh-info-linux] -> no gh info line" ;;
+  esac
+  SSL_CERT_FILE=/fixture/cert.pem; export SSL_CERT_FILE
+  sbx_prof profile-gh-info-inherited on "$_sbx/on.json" "" Darwin "sandbox-exec" 1
+  unset SSL_CERT_FILE
+  case "$out" in
+    *"info gh:"*) echo "FAIL: sandbox profile [profile-gh-info-inherited] printed the gh info line with SSL_CERT_FILE set ($out)"; fail=1 ;;
+    *) echo "PASS: sandbox profile [profile-gh-info-inherited] -> no gh info line" ;;
   esac
   # WIRED: a real run (seams live) with the sandbox on surfaces the warning, and does not change the exit code (advisory).
   sbx_e2e=$(PREFLIGHT_SANDBOX_SETTINGS="$_sbx/on.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_BOUNDARY_OPTOUT=@absent PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e --boundary-advisory 2>&1) || true

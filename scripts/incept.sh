@@ -753,6 +753,12 @@ if [ "$CI" = "github" ] && [ ! -f profiles/adopter-tracker-gates.yml ]; then
   echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
   exit 1
 fi
+# SWAS-901: the solo GO check (profiles/solo-go.yml) installs for every GitHub adopter, same early refusal as above.
+if [ "$CI" = "github" ] && [ ! -f profiles/solo-go.yml ]; then
+  echo "error: profiles/solo-go.yml is MISSING — cannot install the solo GO check." >&2
+  echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
+  exit 1
+fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
 fi
@@ -1169,8 +1175,8 @@ EOF
       ;;
     enterprise)
       mkdir -p docs/governance
-      for _t in THREAT-MODEL PRIVACY-REVIEW AI-SYSTEM-CARD AI-POLICY AI-TRANSPARENCY-SIGNOFF A11Y-SIGNOFF BIA UAT-SIGNOFF WAIVER-REGISTER; do
-        _src="templates/${_t}-TEMPLATE.md"; [ -f "$_src" ] || _src="templates/${_t}.md"  # WAIVER-REGISTER ships as WAIVER-REGISTER.md (no -TEMPLATE suffix)
+      for _t in THREAT-MODEL PRIVACY-REVIEW AI-SYSTEM-CARD AI-POLICY AI-TRANSPARENCY-SIGNOFF A11Y-SIGNOFF BIA UAT-SIGNOFF; do
+        _src="templates/${_t}-TEMPLATE.md"; [ -f "$_src" ] || _src="templates/${_t}.md"  # the waiver register is NOT stamped here: the root WAIVER-REGISTER.md (created below) is the one the gates read (SWAS-309)
         _dst="docs/governance/${_t}.md"
         [ -f "$_src" ] && [ ! -f "$_dst" ] && cp "$_src" "$_dst"
       done
@@ -1208,6 +1214,11 @@ esac
 # and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
 # of backlog backend (it is not a backlog concern).
 [ -f REQUIRED-CHECKS.md ] || { cp templates/REQUIRED-CHECKS-TEMPLATE.md REQUIRED-CHECKS.md; sedi "s/\[Project Name\]/${ENAME}/g" REQUIRED-CHECKS.md; }
+# WAIVER-REGISTER.md (SWAS-309) — the root register, created on EVERY backend (md included), never
+# overwritten. A person writes its rows (the guard refuses an agent's write), so it must exist from day
+# one for that person to fill. The board-governance row is still stamped only on a non-md backend
+# (stamp_board_governance_waiver below); this line only guarantees the file.
+[ -f WAIVER-REGISTER.md ] || cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md
 # DECLARE WHAT WAS JUST INSTALLED (V1 repair PR 2, ADOPTERS-INSTALL-ZERO-GOVERNANCE-CONTEXTS). Until
 # 2026-08-29 the stamp left the placeholder, so a fresh adopter declared ZERO governance contexts,
 # branch-protection-apply.sh had nothing to bind, and inception-done said "verified protected" with
@@ -1607,6 +1618,16 @@ case "$CI" in
       echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
       exit 1
     fi
+    # SWAS-901: the solo GO check (`solo-go-bound`, pull_request_target), installed unconditionally like the files above. A repository
+    # that is not solo-declared reads a green `na`; it is REQUIRED only in a solo-declared repository after
+    # `branch-protection-apply.sh --replace`. conformance/adopter-gates-parity.sh (SG8-SG9) locks this install and the early refusal.
+    if [ -f profiles/solo-go.yml ]; then
+      cp_kit_replace profiles/solo-go.yml .github/workflows/solo-go.yml 'COPY & ADAPT|Sparkwright'
+    else
+      echo "incept: profiles/solo-go.yml is MISSING — cannot install the solo GO check." >&2
+      echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
+      exit 1
+    fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       install_pipeline "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
@@ -1707,7 +1728,7 @@ fi
 # stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
 # (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/adopter-gates.yml,
 # profiles/adopter-tracker-gates.yml (TBG-TRUSTED-JOB — same top-level, non-stack asset shape as
-# ratification.yml/adopter-gates.yml, B6), profiles/adopter-trunk-trace.yml (SWAS-258 — same shape), profiles/_TEMPLATE.md,
+# ratification.yml/adopter-gates.yml, B6), profiles/adopter-trunk-trace.yml (SWAS-258 — same shape), profiles/solo-go.yml (SWAS-901 — same shape), profiles/_TEMPLATE.md,
 # profiles/.gitignore (the tree-level build-output ignore file — CP7R5-K4-IGNORE; it MUST outlive the prune)
 # (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
 # capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps

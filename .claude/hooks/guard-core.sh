@@ -9,6 +9,15 @@
 
 selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }
 
+# SWAS-309 - S6R's admin-deny reason, printed from ONE place so the late S6R arm and the early G309-S6FIRST arm speak
+# the same bytes. Prints the dot-segment/percent reason when _S6_API_DQ=1, else the admin-merge reason; unsets _S6_API_DQ.
+_s6_admin_reason() {
+  if [ "${_S6_API_DQ:-0}" = 1 ]; then
+    unset _S6_API_DQ; printf '%s' "13: this gh api endpoint carries a dot-segment, or a percent-encoding that does not decode, under a MUTATING method - the guard cannot certify which route it reaches, and GitHub resolves both, so it is not certified and denies (trigger=api-endpoint). Spell the endpoint plainly: no %XX, no . or .. segment. A query string is fine (it is truncated), and capitals in an owner, repo or label name are normalised, not refused. (escape card R18b api-endpoint)"; return 0
+  fi
+  unset _S6_API_DQ; printf '%s' '13: gh pr merge --admin bypasses branch protection (incl. control-plane-ratification) - human-gated. The agent actuates via a NORMAL merge on a recorded authenticated GO (scripts/promotion-verify.sh actuate); the --admin bypass is a keystroke only the owner types. (escape card R35 admin-merge) The REST forms (gh api PUT/POST .../pulls/N/merge, protection or ruleset edits, repo DELETE) are the same bypass.'
+}
+
 # SWAS-301a - a refusal names ITS escape-card retry (`escape card R<n> <slug>`, or `escape card F-<x>`) or says "stop and
 # escalate", and never names the override (the human-only switch lives in docs/operations/runtime-guards.md, for a human
 # at their own terminal). The two kinds of pointer are emitted at the refusal's OWN site: a family with a sanctioned
@@ -227,7 +236,7 @@ _cpp_kitowned() {
   case "$1" in
     .claude/projects/*|*/.claude/projects/*|.claude/plans/*|*/.claude/plans/*) return 1 ;;
     .claude/*|*/.claude/*|\
-    */.github/workflows/*|.github/workflows/*|*/.git/*|.git/*|\
+    */.github/workflows/*|.github/workflows/*|*/.git/*|.git/*|.git|*/.git|\
     .kit/budget.conf|*/.kit/budget.conf|.kit/roster.conf|*/.kit/roster.conf|\
     .kit/model-tiers.conf|*/.kit/model-tiers.conf|.kit/model-map.conf|*/.kit/model-map.conf|\
     .kit/dials.conf|*/.kit/dials.conf|\
@@ -241,6 +250,7 @@ _cpp_kitowned() {
     development-process.md|*/development-process.md|\
     agents.md|*/agents.md|\
     required-checks.md|*/required-checks.md|\
+    waiver-register.md|*/waiver-register.md|\
     .gitattributes|*/.gitattributes|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
     .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|.publish-identifiers|*/.publish-identifiers|\
@@ -311,6 +321,7 @@ _cpp_kitowned() {
     scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
     scripts/release-tag.sh|*/scripts/release-tag.sh|\
     scripts/promotion-verify.sh|*/scripts/promotion-verify.sh|\
+    scripts/gh-tls.sh|*/scripts/gh-tls.sh|\
     adapters/*/adapter.json|*/adapters/*/adapter.json|\
     conformance/claims.tsv|*/conformance/claims.tsv|\
     conformance/aggregate-exclusions.txt|*/conformance/aggregate-exclusions.txt|\
@@ -438,7 +449,7 @@ _cpp_match() {
     templates/field-report-template.md|*/templates/field-report-template.md|\
     templates/restore-drill-template.md|*/templates/restore-drill-template.md|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
-    */.github/workflows/*|.github/workflows/*|*/codeowners|codeowners|*/.git/*|.git/*|\
+    */.github/workflows/*|.github/workflows/*|*/codeowners|codeowners|*/.git/*|.git/*|.git|*/.git|\
     .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|.publish-identifiers|*/.publish-identifiers|\
     .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
     .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
@@ -448,6 +459,7 @@ _cpp_match() {
     profiles/*|*/profiles/*|\
     agents.md|*/agents.md|\
     required-checks.md|*/required-checks.md|\
+    waiver-register.md|*/waiver-register.md|\
     .gitattributes|*/.gitattributes|\
     scripts/fixtures/*|*/scripts/fixtures/*|\
     scripts/incept.sh|*/scripts/incept.sh|scripts/dora.sh|*/scripts/dora.sh|\
@@ -485,6 +497,7 @@ _cpp_match() {
     scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
     scripts/release-tag.sh|*/scripts/release-tag.sh|\
     scripts/promotion-verify.sh|*/scripts/promotion-verify.sh|\
+    scripts/gh-tls.sh|*/scripts/gh-tls.sh|\
     agents/*.agent.md|*/agents/*.agent.md|\
     development-standards.md|*/development-standards.md|\
     development-process.md|*/development-process.md|\
@@ -576,6 +589,8 @@ _under_temp() {
 # a CI checkout), a path escaping the root lands as a temp-SIBLING that satisfies 1+2 — condition 3
 # disables the affordance there, where there is no live control plane to protect anyway. A real
 # repo (~/Development/…) is never under temp, so the dev-clone case is unaffected.
+# SWAS-885 slice 1: two exclusions live in the CALLER, not here: guard_check_path turns the relax off for a path with a `.git`
+# component (_g885_dotgit_any) and runs the live-hooks-directory deny whatever the relax (_g885_live_hooks_hit).
 # Empty protected_root => 1 (fail-safe). A surviving `..` in the resolved path => 1 (an unresolved
 # tail that could escape back into root). Only the CALLER (guard_check_path) uses this, only to skip
 # the control-plane deny — never the secret or destructive denies.
@@ -1225,7 +1240,7 @@ _KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats c
 # the six sites (every listed leaf reachable at every site; every `_CP8B_GLOB_LEAVES` /
 # `_CP8B_GLOB_LEAVES_LC` token belongs to one of the three corpora), so a root name dropped from any one
 # site reds the battery. It lives HERE, in the control plane, so no agent widens or shrinks it silently.
-_ROOT_LEAF_CORPUS='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml agents/*.agent.md'
+_ROOT_LEAF_CORPUS='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md WAIVER-REGISTER.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml agents/*.agent.md'
 # === GOVERNANCE-SOURCE-FILES corpus (CONTROL-PLANE-COVERAGE slice 3c) ============================
 # The kit's OWN governing SOURCE files: the templates `incept`/`postmortem` stamp into an adopter's
 # charter, the templates a LIVE gate reads by path at runtime, and the three named governance
@@ -1237,8 +1252,8 @@ _ROOT_LEAF_CORPUS='hooks/pre-push docs/governance/meta-control-log.md docs/gover
 # shrink coverage. `.kit/tracker.conf` is NOT here — it rides the `.kit/*.conf` corpus (`_KIT_CONF_CORPUS`
 # + `dt_corpus_ok`) with the other confs. It lives HERE, in the control plane, so no agent widens it silently.
 _GOV_SUBJECT_CORPUS='docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md'
-_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
-_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md claude.md development-standards.md development-process.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/model-map-template.conf templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md WAIVER-REGISTER.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/MODEL-MAP-TEMPLATE.conf templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md waiver-register.md claude.md development-standards.md development-process.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf .kit/boundary-optout.conf .kit/ci-pre-approval.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/model-map-template.conf templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
 
 # _cp8b_glob_scan "<token>" "<leaf-list>": 0 iff <token> (a glob pattern, already normalized/folded)
 # segment-safe intersects a leaf. Slash-count equality per leaf (pure parameter-expansion counter, no
@@ -3108,8 +3123,8 @@ _cp8b_redirect_hits_cp() {
 # introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
 # because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
 # fixtures and its own monotonicity run — not a tidy-up to ride along here.
-_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^a-zA-Z.])CLAUDE\.md|(^|[^a-zA-Z.])DEVELOPMENT-STANDARDS\.md|(^|[^a-zA-Z.])DEVELOPMENT-PROCESS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md|(^|[^A-Za-z0-9._-])templates/MODEL-MAP-TEMPLATE\.conf)'
-_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^a-z.])claude\.md|(^|[^a-z.])development-standards\.md|(^|[^a-z.])development-process\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md|(^|[^A-Za-z0-9._-])templates/model-map-template\.conf)'
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^a-zA-Z.])WAIVER-REGISTER\.md|(^|[^a-zA-Z.])CLAUDE\.md|(^|[^a-zA-Z.])DEVELOPMENT-STANDARDS\.md|(^|[^a-zA-Z.])DEVELOPMENT-PROCESS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/gh-tls\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md|(^|[^A-Za-z0-9._-])templates/MODEL-MAP-TEMPLATE\.conf)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^a-z.])waiver-register\.md|(^|[^a-z.])claude\.md|(^|[^a-z.])development-standards\.md|(^|[^a-z.])development-process\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/gh-tls\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|\.kit/boundary-optout\.conf|\.kit/ci-pre-approval\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md|(^|[^A-Za-z0-9._-])templates/model-map-template\.conf)'
 # TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
 # `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
 # and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
@@ -3285,7 +3300,7 @@ _cp8b_message_tip() {
     *=*)
       # K-3a: the old half of this tip recommended exactly the shape face 2 now denies ("Set the
       # variable with `export` as a separate statement"). A guard must never teach a shape it refuses.
-      printf ' TIP: an UNVETTED `NAME=value` prefix is not peeled before the scan (the vetted-name allowlist is deliberately closed — widening it per false positive is enumeration creep). Use a vetted name, or set the variable in its own tool call (an `export` earlier on the same line closes the read lane). (escape card R32 unvetted-prefix)'
+      printf ' TIP: an UNVETTED `NAME=value` prefix is not peeled before the scan (the vetted-name allowlist is deliberately closed — widening it per false positive is enumeration creep). Use a vetted name, or run the command without the prefix. Never put a `KIT_*` name in front of a command: those are a person'"'"'s switches, set outside the session. In Claude Code the environment does not carry from one tool call to the next, so an earlier `export` does not help. For `gh` and TLS under the macOS sandbox, the kit'"'"'s verbs set their own trust store; see runtime-guards, *gh inside the sandbox*. (escape card R32 unvetted-prefix)'
       return ;;
   esac
   # SWAS-301a: two fragments no lead above names, each given its row so that no refusal is left without a pointer.
@@ -3645,6 +3660,53 @@ _cp8b_write_route_hint() {
   _cp8b_seg_read_shaped "$1" "${2:-}" && return 0
   [ -z "${_CP8B_G_NOTE:-}" ] || return 0
   printf ' Next: make this change in a dev clone (escape card R30 cp-write).'
+}
+# SWAS-309: the refusal reason for the adopter's root waiver register. A waiver row is a PERSON's act, so for
+# this leaf alone the generic "make this change in a dev clone" cure is the wrong one, and a dev clone that
+# adds a row is the same forged waiver. Prints the FULL reason: $2 (the original reason) unchanged, unless
+# $2 is a write-route refusal (it carries `escape card R30 cp-write`) AND the target or segment in $1 names
+# `waiver-register.md` (case-folded); then the "Next: make this change in a dev clone (escape card R30
+# cp-write)." sentence is replaced by the person-writes sentence, which ends with the escape-card id so the
+# deny log still classifies it. A `templates/waiver-register.md` mention is the kit's own template, not the
+# register, so it is peeled first; a prefix ending in `templates/` (e.g. `mytemplates/WAIVER-REGISTER.md`)
+# is denied but gets no hint (message only). Keyed whole-command: a command that names the register and is
+# R30-denied for another segment still gets the hint (disclosed). REASON TEXT ONLY: no verdict moves. Plain
+# POSIX sh (no heredoc, no one-line case, no IFS). Called at every refusal site that can fire on this leaf:
+# the shell route (both call sites of `_cp8b_control_plane_denied` / `_cp8b_target_arm_denied`, which carry
+# the git-write reason too) and the three path-route reasons in `guard_check_path` (literal, resolved,
+# hardlink-named).
+_cp8b_waiver_hint() {
+  _wrh_s=$1
+  _wrh_r=$2
+  case "$_wrh_r" in
+    *'escape card R30 cp-write'*) ;;
+    *) printf '%s' "$_wrh_r"; return 0 ;;
+  esac
+  case "$_wrh_s" in
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*)
+      _wrh_s=$(printf '%s' "$_wrh_s" | LC_ALL=C tr 'A-Z' 'a-z') || { printf '%s' "$_wrh_r"; return 0; } ;;
+  esac
+  while :; do
+    case "$_wrh_s" in
+      *templates/waiver-register.md*)
+        _wrh_s=${_wrh_s%%templates/waiver-register.md*}${_wrh_s#*templates/waiver-register.md} ;;
+      *) break ;;
+    esac
+  done
+  case "$_wrh_s" in
+    *waiver-register.md*) ;;
+    *) printf '%s' "$_wrh_r"; return 0 ;;
+  esac
+  _wrh_sent=' Next: make this change in a dev clone (escape card R30 cp-write).'
+  _wrh_pre=$_wrh_r
+  _wrh_post=''
+  case "$_wrh_r" in
+    *"$_wrh_sent"*)
+      _wrh_pre=${_wrh_r%%"$_wrh_sent"*}
+      _wrh_post=${_wrh_r#*"$_wrh_sent"} ;;
+  esac
+  printf '%s%s%s' "$_wrh_pre" ' The waiver register is filled by a person, not the agent: propose the row in the conversation (gate, owner, ratified-by, opened, expires, plan) and ask the person to paste it into WAIVER-REGISTER.md. If the file does not exist yet, the person creates it: cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md. A dev clone is not a route either: a clone that adds a row is the same forged waiver. (escape card R30 cp-write)' "$_wrh_post"
+  return 0
 }
 _cp8b_deny_reason() {
   _dr=$(printf '%s' "$1" | cut -c1-160)
@@ -5451,7 +5513,7 @@ _cp8b_g_hooks_ok() {
 
 # The ROOT's board code table (design §3.6, C3): every file G4 runs, sources or reads from the root. Closed; a drift leg in
 # conformance/agent-autonomy.sh (SWAS278A-X12f) reds when a table file names a computed sibling-script path that is not here.
-_CP8B_G4_TABLE='scripts/board.sh scripts/board-claim.sh scripts/checkout-lease.sh scripts/tracker-conf.sh scripts/tracker-cred.sh scripts/tracker-jira.sh scripts/tracker-read.sh scripts/runaway-guard.sh conformance/backlog-lib.sh .kit/budget.conf'
+_CP8B_G4_TABLE='scripts/board.sh scripts/board-claim.sh scripts/checkout-lease.sh scripts/gh-tls.sh scripts/tracker-conf.sh scripts/tracker-cred.sh scripts/tracker-jira.sh scripts/tracker-read.sh scripts/runaway-guard.sh conformance/backlog-lib.sh .kit/budget.conf'
 
 # _cp8b_g_root_main_ok: design §3.6 (C1, N6). 0 iff every table file of the ROOT worktree hashes equal to `refs/remotes/origin/main:<path>`.
 # `rev-parse` and `hash-object` without `-w` write nothing (a `git diff` would refresh and rewrite the root's index). The baseline is the
@@ -10688,6 +10750,18 @@ guard_check_command() {
   # Monotone: every relaxation inside the predicate is an allow-back gated on POSITIVE recognition, so a
   # bug there over-denies and cannot over-allow.
   if ! selfedit_allowed; then
+    # G309-S6FIRST: pristine parity (Architect ruling 2026-11-14). A `gh api` command that S6R's REST-admin arm
+    # denies and that names the root waiver register was judged by S6R on the pristine core (S6R's reason, no R30
+    # pointer); the control-plane arms below would now deny it earlier with R30. So S6R judges again here, same
+    # reason text. Scope: ONLY gh api admin-denied commands naming the register; every other route (git mv, cp,
+    # redirects...) falls through to the arms below and keeps its R30 pointer. `_s6_gh_api_admin` is untouched.
+    case "$cmd" in
+      *[Ww][Aa][Ii][Vv][Ee][Rr]-[Rr][Ee][Gg][Ii][Ss][Tt][Ee][Rr].[Mm][Dd]*)
+        if _s6_gh_api_admin "$cmd"; then
+          _s6_admin_reason; return 1
+        fi
+        ;;
+    esac
     # GUARD-QUOTED-EXEC-INTERMITTENT: a deny predicate's rc is 0 (denied) or 1 (not denied) and NOTHING else
     # (audited: both predicates end `return 1`, every other return is 0). rc >= 2 at this boundary is a FAULT:
     # dash aborts the shell that attempted a failed fork, so the `$(…)` dies rc 2 with no output, which a bare
@@ -10699,7 +10773,7 @@ guard_check_command() {
       # _cp8b_deny_reason / _cp8b_git_write_denied, but a blank reason must NEVER reach the adapter (it
       # would surface as an empty permissionDecisionReason - a blocked agent with no guidance). Default it.
       [ -n "$_cp8b_reason" ] || _cp8b_reason='13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity). Next: make this change in a dev clone (escape card R30 cp-write).'
-      printf '%s' "$_cp8b_reason"; return 1
+      _cp8b_waiver_hint "$cmd" "$_cp8b_reason"; return 1
     fi
     # GUARD-BASENAME-AFTER-CD-BYPASS + GUARD-INTERPRETER-FAMILY-BYPASS: the resolved-target arm.
     # UNION with the old arm above (deny = old-verb-arm ∨ new-target-arm). The old arm is retained
@@ -10708,7 +10782,7 @@ guard_check_command() {
     [ "$_cp8b_prc" -le 1 ] || _guard_fault target-arm   # rc >= 2 is a fault, as above
     if [ "$_cp8b_prc" = 0 ]; then
       [ -n "$_cp8b_reason" ] || _cp8b_reason='13: writes against a resolved control-plane target via shell is denied (control-plane integrity). Next: make this change in a dev clone (escape card R30 cp-write).'
-      printf '%s' "$_cp8b_reason"; return 1
+      _cp8b_waiver_hint "$cmd" "$_cp8b_reason"; return 1
     fi
   fi
   # H3a: secret-in-context (shell) — a content-read verb (cat/grep/strings/diff/awk/...; also
@@ -11064,10 +11138,7 @@ guard_check_command() {
   # deny at all. A reason cell would otherwise move without any verdict moving.
   if [ "${_phit:-0}" = 1 ] || _s6_gh_api_admin "$cmd"; then
     unset _phit _pav _pbv _pcv 2>/dev/null || :
-    if [ "${_S6_API_DQ:-0}" = 1 ]; then
-      { unset _S6_API_DQ; printf '%s' "13: this gh api endpoint carries a dot-segment, or a percent-encoding that does not decode, under a MUTATING method - the guard cannot certify which route it reaches, and GitHub resolves both, so it is not certified and denies (trigger=api-endpoint). Spell the endpoint plainly: no %XX, no . or .. segment. A query string is fine (it is truncated), and capitals in an owner, repo or label name are normalised, not refused. (escape card R18b api-endpoint)"; return 1; }
-    fi
-    { unset _S6_API_DQ; printf '%s' '13: gh pr merge --admin bypasses branch protection (incl. control-plane-ratification) - human-gated. The agent actuates via a NORMAL merge on a recorded authenticated GO (scripts/promotion-verify.sh actuate); the --admin bypass is a keystroke only the owner types. (escape card R35 admin-merge) The REST forms (gh api PUT/POST .../pulls/N/merge, protection or ruleset edits, repo DELETE) are the same bypass.'; return 1; }
+    _s6_admin_reason; return 1
   fi
   if [ "${_pav:-0}" = 1 ]; then
     unset _phit _pav _pbv _pcv 2>/dev/null || :
@@ -11320,6 +11391,170 @@ guard_check_mcp() {
   esac
 }
 
+# SWAS-885 slice 1 — no file-tool write into any repository's git directory, or into a tracked hooks directory git runs, in EVERY
+# repository (the dev-clone relax never reaches them). Design docs/architecture/2026-11-14-guard-git-dir-home-dotfiles-885-design.md
+# (rev 3) + its errata c1-c4. The helpers below, all plain POSIX sh, prefixed _g885_ so they cannot clash with the globals the sourced
+# helpers above share. Named residuals (declared, pinned by SWAS885-S1-i cells): a bare repository, a separate git directory, a GIT_DIR in
+# the environment and a core.hooksPath pointing anywhere other than <work tree>/hooks.
+_g885_reason() {
+  printf '%s' '13: writing a repository'\''s git hooks or .git internals with a file tool is denied in every repository (they run code at git time). Use git'\''s own commands; a person edits them by hand if needed (escape card R30 cp-write).'
+}
+
+# _g885_dotgit_path "<path>": rc 0 iff the path has a `.git` component (a git dir, or the gitfile of a worktree/submodule), judged
+# case-folded (a case-insensitive filesystem resolves `.GIT`). The fork to `tr` happens only when an uppercase byte is present.
+_g885_dotgit_path() {
+  _g885_p=$1
+  [ -n "$_g885_p" ] || return 1
+  case "$_g885_p" in
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) _g885_p=$(printf '%s' "$_g885_p" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault dotgit-fold ;;   # G885-FOLD
+  esac
+  case "$_g885_p" in
+    .git|.git/*|*/.git|*/.git/*) return 0 ;;   # G885-DOTGIT
+  esac
+  return 1
+}
+
+# _g885_dotgit_any "<literal>" "<normalised>" "<resolved>": the UNION, as every other path arm judges it.
+_g885_dotgit_any() {
+  _g885_dotgit_path "$1" && return 0
+  _g885_dotgit_path "$2" && return 0   # G885-ANY
+  _g885_dotgit_path "$3" && return 0   # G885-ANY
+  return 1
+}
+
+# _g885_relief_dotgit "<literal>" "<normalised>" "<resolved>": rc 0 iff one of them lies under the .claude/projects or .claude/plans relief
+# (the early `return 1` in _cpp_kitowned and _cpp_match) AND has a `.git` component. Architect ruling 2026-11-15: the relief is for
+# memory and plan files, never for a repository's git directory, so it no longer exempts one.
+# Judged case-folded, as the classifier's second pass folds: a `.CLAUDE/PROJECTS/r/.GIT` spelling reaches the relief folded, so it must reach this test folded too.
+_g885_relief_dotgit() {
+  for _g885_rp in "$1" "$2" "$3"; do
+    [ -n "$_g885_rp" ] || continue
+    case "$_g885_rp" in
+      *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) _g885_rp=$(printf '%s' "$_g885_rp" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault relief-fold ;;   # G885-RFOLD
+    esac
+    case "$_g885_rp" in
+      .claude/projects/*|*/.claude/projects/*|.claude/plans/*|*/.claude/plans/*)
+        _g885_dotgit_path "$_g885_rp" && return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# _g885_dir_abs "<path>": echo the absolute, PHYSICAL spelling of a directory that may not exist yet: an existing one by `cd -P`, otherwise
+# its longest existing prefix resolved physically with the rest appended textually. A `..` left in the not-yet-existing tail cannot be
+# judged, so it returns rc 1 (the callers fail closed). The input is copied to its own variable first so that no line here matches the
+# K-COUPLE greps for the two composed-path seds (conformance/agent-autonomy.sh) - that check must keep finding exactly one line each.
+_g885_dir_abs() {
+  _g885_in=$1
+  _g885_da=$(printf '%s' "$_g885_in" | sed -e 's#//*#/#g' -e 's#/*$##' -e ':b' -e 's#/\./#/#' -e 'tb' -e 's#/\.$##' -e 's#/*$##') || return 1
+  [ -n "$_g885_da" ] || _g885_da=/
+  if [ -d "$_g885_da" ]; then ( CDPATH='' cd -P "$_g885_da" 2>/dev/null && pwd -P ); return; fi
+  _g885_da=$(_resolve_physical "$_g885_da") || return 1
+  case "/$_g885_da/" in
+    *"/../"*|*"/./"*) return 1 ;;
+  esac
+  printf '%s' "$_g885_da"
+}
+
+# _g885_same_dir "<a>" "<b>": rc 0 = the same directory (physical text, or device+inode when both exist), 1 = different, 2 = cannot tell.
+_g885_same_dir() {
+  _g885_s1=$(_g885_dir_abs "$1") || return 2
+  _g885_s2=$(_g885_dir_abs "$2") || return 2
+  [ "$_g885_s1" = "$_g885_s2" ] && return 0
+  if [ -d "$1" ] && [ -d "$2" ]; then
+    _g885_i1=$(_devino_of "$1") || return 2
+    _g885_i2=$(_devino_of "$2") || return 2
+    [ "$_g885_i1" = "$_g885_i2" ] && return 0
+  fi
+  return 1
+}
+
+# _g885_hooks_cfg_hit "<work tree>" "<target parent>": rc 0 (DENY) iff that work tree's effective core.hooksPath resolves to the
+# work tree's `hooks/` directory AND the target's parent is that same directory (physical paths; device+inode when both exist; the directory
+# need not exist yet). rc 1 = not live (including hooksPath unset). The config read keeps its rc: 1 = unset; 0 = the LAST value; any other rc,
+# an empty value or a value holding a newline FAILS CLOSED.
+_g885_hooks_cfg_hit() {
+  _g885_w=$1; _g885_ctp=$2
+  [ -n "$_g885_w" ] || return 1   # G885-WT
+  _g885_nl='
+'
+  _g885_rc=0; _g885_all=$(git -C "$_g885_w" config --get-all core.hooksPath 2>/dev/null) || _g885_rc=$?
+  [ "$_g885_rc" = 1 ] && return 1
+  [ "$_g885_rc" = 0 ] || return 0   # G885-RC
+  [ -n "$_g885_all" ] || return 0
+  _g885_rc=0; _g885_one=$(git -C "$_g885_w" config --get core.hooksPath 2>/dev/null) || _g885_rc=$?
+  [ "$_g885_rc" = 0 ] || return 0
+  case "$_g885_one" in
+    ''|*"$_g885_nl"*) return 0 ;;   # G885-ONE
+  esac
+  _g885_val=${_g885_all##*"$_g885_nl"}   # G885-LAST
+  case "$_g885_val" in
+    /*) _g885_hp=$_g885_val ;;
+    \~/*) _g885_tl=${_g885_val#\~/}; _g885_hp="${HOME:-/nonexistent}/$_g885_tl" ;;
+    \~*) return 0 ;;
+    *) _g885_hp="$_g885_w/$_g885_val" ;;
+  esac
+  # F-c: decided from the CONFIGURED value, so a hooks directory that does not exist yet is judged too (the configured directory and the
+  # target's parent must each be the work tree's hooks/ directory, physically). rc 2 (cannot tell) fails closed.
+  _g885_hr=0; _g885_same_dir "$_g885_hp" "$_g885_w/hooks" || _g885_hr=$?   # G885-HPCMP
+  [ "$_g885_hr" = 1 ] && return 1
+  [ "$_g885_hr" = 0 ] || return 0   # G885-HPFAIL
+  _g885_hr=0; _g885_same_dir "$_g885_ctp" "$_g885_w/hooks" || _g885_hr=$?   # G885-HPSAME
+  [ "$_g885_hr" = 1 ] && return 1
+  return 0
+}
+
+# _g885_live_hooks_hit "<absolute path>": rc 0 (DENY) iff the path's parent directory is the `hooks/` directory of ANY work tree that encloses
+# it AND that work tree's effective core.hooksPath resolves to that same directory (_g885_hooks_cfg_hit). rc 1 = not a live hook (including: no
+# work tree above it, hooksPath unset everywhere).
+# The walk goes UP from the nearest existing ancestor through EVERY enclosing work tree (G-c: a nested repository in P/hooks reports P/hooks
+# as its top level, and git never reads the outer P's hooksPath for it, so the walk continues from the parent of each top level), and a
+# directory that has a `.git` entry but whose top level git cannot report (an unreadable or corrupt config: rc 128) fails CLOSED when the
+# target's parent is its hooks/ (the config could not be read, so it cannot be shown unset). No `.git` entry anywhere above: it does not fire.
+# The cheap prefilter keeps the git forks off other writes: the parent must be spelled hooks (any case), or be a SYMLINK that resolves to a
+# directory spelled hooks (G-a: P/myhooks -> P/hooks). Errata c2: the caller runs this whatever the relax.
+_g885_live_hooks_hit() {
+  _g885_tp=${1%/*}
+  _g885_pb=${_g885_tp##*/}
+  case "$_g885_pb" in
+    [Hh][Oo][Oo][Kk][Ss]) : ;;
+    *)
+      [ -L "$_g885_tp" ] || return 1   # G885-PSYM
+      _g885_pr=$(_g885_dir_abs "$_g885_tp") || return 0
+      case "${_g885_pr##*/}" in
+        [Hh][Oo][Oo][Kk][Ss]) : ;;
+        *) return 1 ;;
+      esac ;;
+  esac
+  _g885_wd=$_g885_tp
+  while [ -n "$_g885_wd" ] && [ ! -d "$_g885_wd" ]; do _g885_wd=${_g885_wd%/*}; done
+  [ -n "$_g885_wd" ] || _g885_wd=/
+  _g885_wp=$(CDPATH='' cd -P "$_g885_wd" 2>/dev/null && pwd -P) && _g885_wd=$_g885_wp
+  _g885_n=0
+  while [ "$_g885_n" -lt 256 ]; do
+    _g885_n=$((_g885_n + 1))
+    _g885_wt=$(git -C "$_g885_wd" rev-parse --show-toplevel 2>/dev/null </dev/null) || _g885_wt=''   # G885-GITTOP
+    if [ -n "$_g885_wt" ]; then
+      _g885_wt=$(CDPATH='' cd -P "$_g885_wt" 2>/dev/null && pwd -P) || return 0
+      _g885_hooks_cfg_hit "$_g885_wt" "$_g885_tp" && return 0
+      _g885_wd=$_g885_wt   # G885-NEXT
+    elif [ -e "$_g885_wd/.git" ]; then
+      _g885_ur=0; _g885_same_dir "$_g885_tp" "$_g885_wd/hooks" || _g885_ur=$?   # G885-UNREAD
+      [ "$_g885_ur" = 1 ] || return 0
+    fi
+    [ "$_g885_wd" != / ] || return 1
+    _g885_wd=${_g885_wd%/*}
+    [ -n "$_g885_wd" ] || _g885_wd=/
+  done
+  return 0
+}
+
+# _g885_nlink_reason: the one refusal for a relaxed write to an existing multi-link regular file (Architect ruling 2026-11-14).
+_g885_nlink_reason() {
+  printf '%s' '13: this file has other hard links; a dev-clone write to it is refused (control-plane integrity). Copy the file instead of linking it (escape card R30 cp-write).'
+}
+
 # guard_check_path "<path>": print reason + return 1 if denied, else 0.
 # Moved from the PRE-SPLIT guard.sh (drop the jq line — caller passes the path); the line range that
 # stood here died with the split, so this cites the file and the change, not a dead offset.
@@ -11346,6 +11581,10 @@ guard_check_path() {
   _res=''; _resok=0
   _res=$(_resolve_physical "$fp") && _resok=1 || _resok=0
   _rbase=''; [ "$_resok" = 1 ] && _rbase=$(basename "$_res" 2>/dev/null || printf '%s' "$_res")
+  # SWAS-885 slice 1 (design §2 item 2): the dev-clone relax is OFF for a `.git` component — literal, normalised or resolved, case-folded.
+  # The control-plane denies below (now carrying `.git` and the gitfile) then apply in every repository, with the refusal that names the act.
+  _g885_flip=0
+  if [ "$_cp8c_relax" = 1 ] && _g885_dotgit_any "$fp" "$fpn" "$_res"; then _cp8c_relax=0; _g885_flip=1; fi   # G885-FLIP
   if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 0 ]; then
     printf '13: path (%s) could not be resolved - refusing to write to a target that cannot be identified.%s' "$fp" "$(_guard_stop_pointer unresolvable-path)"; return 1
   fi
@@ -11353,14 +11592,19 @@ guard_check_path() {
     # A dev-clone addressed through a symlink from OUTSIDE temp gets the real remedy, not the kill
     # switch. Naming KIT_GUARD_SELFEDIT here would tell an operator to disarm the guard globally to
     # do work the guard is happy to allow by its real path — the endorsed-bypass class.
+    if [ "$_g885_flip" = 1 ]; then _g885_reason; return 1; fi
     if [ "${_cp8c_hint:-}" = symlinked-clone ]; then
       printf '%s' '13: this dev-clone was addressed through a symlink from outside the temp root, so the clone affordance does not apply (control-plane integrity). Address it by its real path — `cd <clone> && pwd -P` — and the same edit is allowed. (escape card R30 cp-write)'; return 1
     fi
-    printf '%s' '13: modifying the guard / its config / CI gates is denied (control-plane integrity). Next: make this change in a dev clone (escape card R30 cp-write).'; return 1
+    _cp8b_waiver_hint "$fp" '13: modifying the guard / its config / CI gates is denied (control-plane integrity). Next: make this change in a dev clone (escape card R30 cp-write).'; return 1
   fi
   if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 1 ] && is_control_plane_path "$_res"; then
-    printf '13: this path resolves to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes. Next: make this change in a dev clone (escape card R30 cp-write).' "$_res"; return 1
+    if [ "$_g885_flip" = 1 ]; then _g885_reason; return 1; fi
+    _cp8b_waiver_hint "$_res" "$(printf '13: this path resolves to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes. Next: make this change in a dev clone (escape card R30 cp-write).' "$_res")"; return 1
   fi
+  # SWAS-885 (Architect ruling 2026-11-15, the reviewer's F1): the relief above exempts .claude/projects and .claude/plans by subtree name, so a
+  # `.git` component inside them matched no control-plane arm and was allowed. The backstop refuses it, relaxed or not; nothing else changes.
+  if ! selfedit_allowed && _g885_relief_dotgit "$fp" "$fpn" "$_res"; then _g885_reason; return 1; fi   # G885-RELIEF
   # GUARD-CP-HARDLINK-ALIAS (§2b): the CP-INODE disjunct, immediately after the resolved-CP arm and
   # UNDER THE SAME dev-clone relax gate that arm carries (Leg G). A non-empty name => a genuine CP
   # hardlink; empty => the engine's fail-safe (M1: a DISTINCT reason, true for an ordinary file).
@@ -11369,12 +11613,24 @@ guard_check_path() {
     [ "$_hlrc" -le 1 ] || _guard_fault hardlink-cp
     if [ "$_hlrc" = 0 ]; then
       if [ -n "$_hlnamed" ]; then
-        printf '13: this path is a hardlink to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes. Next: make this change in a dev clone (escape card R30 cp-write).' "$_hlnamed"
+        _cp8b_waiver_hint "$_hlnamed" "$(printf '13: this path is a hardlink to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes. Next: make this change in a dev clone (escape card R30 cp-write).' "$_hlnamed")"
       else
         printf '13: could not verify the target'\''s hardlink aliases (stat/find unavailable, timed out, or an ambiguous root) - denied fail-safe (control-plane integrity). Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget - the owner may make that directory searchable or raise the find budget (escape card R34 hardlink-unverified)'
       fi
       return 1
     fi
+  fi
+  # SWAS-885 slice 1 (design §2 item 3, errata c2): a write into a work tree's LIVE tracked hooks directory (its effective core.hooksPath IS
+  # <work tree>/hooks, by device and inode) is refused WHATEVER the relax, the protected root included. `hooks/<name>` other than pre-push is not
+  # control-plane, so the arms above cannot see it. The resolved and the literal spellings are both judged (a symlinked leaf or hooks directory).
+  if ! selfedit_allowed && [ "$_resok" = 1 ]; then
+    _g885_lit=$fpn
+    case "$_g885_lit" in
+      /*) : ;;
+      *) _g885_lit="$(pwd -P)/$_g885_lit" ;;
+    esac
+    [ "$_g885_lit" != "$_res" ] || _g885_lit=''
+    if _g885_live_hooks_hit "$_res" || { [ -n "$_g885_lit" ] && _g885_live_hooks_hit "$_g885_lit"; }; then _g885_reason; return 1; fi   # G885-LIVE
   fi
   # WS1: validate by basename when the NORMALIZED path has no real parent directory — either it is a
   # bare name, OR it still ESCAPES its root (a leading/unresolved `..` the fixpoint could not consume),
@@ -11425,8 +11681,9 @@ guard_check_path() {
   fi
   # SWAS-278a (design §3.5, Sec-M5, N7): the hardlink precondition for a RELAXED path. The CP-inode arm above is skipped for a dev-clone path, so
   # a clone name that is a hardlink to a root file reached the ROOT's inode. For an existing relaxed file with more than one link, any other
-  # name under the protected root denies (control-plane or not), the object store included; a multi-link file under `<clone>/.git/objects`
-  # denies outright. Intra-clone hardlinks (every name inside the clone) stay allowed. A device mismatch answers "no alias". It sits after the
+  # name under the protected root denies (control-plane or not), the object store included. Since SWAS-885 neither arm decides a verdict: a `.git`
+  # path turns the relax off before this block, so H4-OBJECTS cannot be reached, and every multi-link file the root search denies the nlink rule
+  # at the end of this block denies too. Their mutants (MH4a, MH4b, MLA, MLB) are retired; SWAS-898 carries remove-or-re-prove. A device mismatch answers "no alias". It sits after the
   # secret-inode arm (whose own fail-safe wording the F2 legs pin) and BEFORE the template allowlist, which can return. A fault denies.
   if ! selfedit_allowed && [ "$_cp8c_relax" = 1 ] && [ "$_resok" = 1 ]; then   # H-RELAXED-HL
     case "$_res" in
@@ -11444,6 +11701,16 @@ guard_check_path() {
         printf '13: could not verify the dev-clone path'\''s hardlink aliases (stat/find unavailable, timed out, or an ambiguous root) - denied fail-safe (control-plane integrity). Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget - the owner may make that directory searchable or raise the find budget (escape card R34 hardlink-unverified)'
       fi
       return 1
+    fi
+    # SWAS-885 slice 1 (Architect ruling 2026-11-14, replacing errata c1): under the relax, a write to an EXISTING regular file whose link
+    # count is above one is refused. No inode search and no count: a name for the file may lie anywhere (a git directory, a live hooks
+    # directory, another repository), and this rule needs none of them. A count that cannot be read on an existing file fails CLOSED.
+    if [ -f "$_res" ]; then   # G885-NLINK
+      _g885_nlk=$(_nlink_of "$_res") || _g885_nlk=''
+      case "$_g885_nlk" in
+        ''|*[!0-9]*) _g885_nlink_reason; return 1 ;;
+      esac
+      if [ "$_g885_nlk" -gt 1 ]; then _g885_nlink_reason; return 1; fi
     fi
   fi
   # The template allowlist is the SECOND predicate that turns denies off, so it takes the

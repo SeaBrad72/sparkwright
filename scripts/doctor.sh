@@ -41,7 +41,9 @@
 # Merge relationship and branch protection (SWAS-207b): two more INFO-only reads. The default run reads `.kit/dials.conf` and `CLAUDE.md`
 # from origin's default branch with git (`ls-remote` against origin, run from `/` so this checkout's git config does not apply to it, and not at all while the checkout-git row has a finding; no forge call and no credential beyond git's own) to print the
 # `merge relationship:` lines, and makes two more `gh api` reads (the default branch, then its protection) for the `branch protection:`
-# line. The two merge-relationship lines never warn, fail or change the exit code. The protection line reads the SAME protection body (no new
+# line. When origin's default branch reads solo, the merge-relationship line is followed by the handover line (SWAS-901: from the declaring merge on the agent
+# merges on the recorded GO and the owner's per-PR act is the GO only; the merge verbs print the same words; the protection line, from the SAME body, adds an INFO line when
+# a solo tree still requires one approval, since the agent then cannot merge). The two merge-relationship lines never warn, fail or change the exit code. The protection line reads the SAME protection body (no new
 # call) and WARNs, naming the setting, when `dismiss_stale_reviews` is not true (SWAS-361, 352g F11): a push after approval then keeps the approval.
 # Guardrails: exit 1 when a GATING dimension FAILs or is UNVERIFIED under --require/CI; the git dimension is advisory (WARN-only, never hard-fails alone).
 set -eu
@@ -700,6 +702,8 @@ case "$1 $2" in
           plain403) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
           norule) echo '{"url":"fixture"}'; exit 0 ;;
           staleoff) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":false}}'; exit 0 ;;
+          count1) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":1}}'; exit 0 ;;
+          count0) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":true,"required_approving_review_count":0}}'; exit 0 ;;
           *) echo '{"url":"fixture","required_pull_request_reviews":{"dismiss_stale_reviews":true}}'; exit 0 ;;
         esac ;;
     esac
@@ -986,6 +990,60 @@ FSTUB
   printf '%s\n' "$_o" | grep -qF "merge relationship: unknown - could not read .kit/dials.conf at origin's tip here" \
     || { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf did not read as unknown for the tip/file cause)"; sfail=1; }
   rm -rf "$_rd" "$_rdo" "$_rdh" 2>/dev/null || true
+
+  # SWAS-901 slice B (D1-D4): once origin's default branch reads solo, doctor prints the handover line (the declaring merge is a person's act;
+  # from then on the agent merges on the recorded GO). It never prints it for team, undeclared or a Governance-team override, and its text is
+  # the one the merge verbs print (a plain-text match in scripts/promotion-verify.sh). Seam runs; each mutant is a sed COPY of this script.
+  _ho="From here the agent merges on your recorded GO; the owner's per-PR act is the GO only."
+  printf 'MERGE_RELATIONSHIP=solo\n' > "$_fgd/ho-solo.dials"; printf 'MERGE_RELATIONSHIP=team\n' > "$_fgd/ho-team.dials"
+  printf -- '- **Governance** (§ solo/team): team — non-author approval\n' > "$_fgd/ho-team.gov"
+  _ho_run() {  # <doctor script> <dials file|''> <CLAUDE.md file|''> [<protection answer> = 200]: one seam run, output in _o
+    : > "$_fgd/flog"; printf '%s' push > "$_fgd/fmode"; printf '%s' "${4:-200}" > "$_fgd/fprot"
+    _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="$_gh_o" DOCTOR_FORGE_TODAY=2026-10-12 \
+      DOCTOR_FORGE_SEATCONF="$_fgd/seat.conf" DOCTOR_FORGE_DIALS="$2" DOCTOR_FORGE_GOV="$3" \
+      GH_TOKEN='' GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' \
+      sh "$1" --selftest-e2e 2>&1) || true
+  }
+  _ho_has() { printf '%s\n' "$_o" | grep -qxF "$_ho"; }
+  _ho_d1() { _ho_run "$1" "$_fgd/ho-solo.dials" ''; _ho_has; }
+  _ho_d2() { _ho_run "$1" "$_fgd/ho-team.dials" ''; ! _ho_has; }
+  _ho_d3() { _ho_run "$1" "$_fgd/ho-solo.dials" "$_fgd/ho-team.gov"; ! _ho_has; }
+  _ho_d4() { grep -qF "\"$_ho\"" "$1" && grep -qF "\"$_ho\"" scripts/promotion-verify.sh; }   # both carry the whole line, double-quoted, as plain text
+  _ho_cell() {  # <label> <fn> <desc>: the cell on the real script must hold
+    if "$2" "$0"; then :; else echo "doctor --selftest: FAIL ($1: $3)"; sfail=1; fi
+  }
+  _ho_mut() {  # <label> <fn> <sed> <desc>: the same cell against a sed copy must NOT hold
+    _hom="$_fgd/ho-mut-$1"; rm -rf "$_hom"; mkdir -p "$_hom/scripts"; sed "$3" "$0" > "$_hom/scripts/doctor.sh"
+    if cmp -s "$0" "$_hom/scripts/doctor.sh"; then echo "doctor --selftest: FAIL ($1: the mutant did not apply)"; sfail=1; return 0; fi
+    if "$2" "$_hom/scripts/doctor.sh"; then echo "doctor --selftest: FAIL ($1: $4 -- the mutant survived)"; sfail=1; fi
+  }
+  _ho_cell D1 _ho_d1 "a solo default branch did not print the handover line"
+  _ho_mut D1m _ho_d1 '/# MUT-HANDOVER$/d' "without the print the solo cell is not load-bearing"
+  _ho_cell D2 _ho_d2 "a team default branch printed the handover line"
+  _ho_mut D2m _ho_d2 's/^  case "\$FG_REL_DIAL:\$FG_REL_GOV" in$/  case "solo:$FG_REL_GOV" in/' "reading every dial as solo prints the line for team"
+  _ho_cell D3 _ho_d3 "a Governance team line over a solo dial printed the handover line"
+  _ho_mut D3m _ho_d3 's/^    solo:team)$/    xsolo:team)/' "without the Governance override a team line cannot hold the handover back"
+  # D5-D7: a solo tree whose protection still requires ONE approval can never let the agent merge: doctor says so (INFO, never a warn or an exit change).
+  _ho_adv='branch protection: solo-declared but approvals=1'
+  _ho_d5() { _ho_run "$1" "$_fgd/ho-solo.dials" '' count1; printf '%s\n' "$_o" | grep -qF "$_ho_adv"; }
+  _ho_d6() { _ho_run "$1" "$_fgd/ho-team.dials" '' count1; ! printf '%s\n' "$_o" | grep -qF "$_ho_adv"; }
+  _ho_d7() { _ho_run "$1" "$_fgd/ho-solo.dials" '' count0; ! printf '%s\n' "$_o" | grep -qF "$_ho_adv"; }
+  _ho_cell D5 _ho_d5 "a solo tree at approvals=1 got no advisory"
+  _ho_mut D5m _ho_d5 '/# MUT-SOLOADV$/d' "without the advisory a locked-out solo tree reads clean"
+  _ho_cell D6 _ho_d6 "a team tree at approvals=1 got the solo advisory"
+  _ho_mut D6m _ho_d6 's/ \&\& \[ "\${FG_REL_DIAL:-}" = solo \]//' "an advisory that ignores the dial speaks to team repositories"
+  _ho_cell D7 _ho_d7 "a solo tree at approvals=0 got the approvals=1 advisory"
+  _ho_mut D7m _ho_d7 's/\[ "\${FG_PROT_COUNT:-}" = 1 \]/[ "${FG_PROT_COUNT:-}" -le 1 ]/' "an advisory that fires at 0 as well speaks to a repository that is already unlocked"
+  # D8 (E6 S-1): a repository that no longer reads solo but whose protection requires ZERO approvals (it left solo without --replace --team) is told so (WARN).
+  _ho_d8() { _ho_run "$1" "$_fgd/ho-team.dials" '' count0; printf '%s\n' "$_o" | grep -qF 'branch protection: WARN — zero required approvals'; }
+  _ho_d9() { _ho_run "$1" "$_fgd/ho-solo.dials" '' count0; ! printf '%s\n' "$_o" | grep -qF 'branch protection: WARN — zero required approvals'; }
+  _ho_cell D8 _ho_d8 "a team tree at approvals=0 got no WARN"
+  _ho_mut D8m _ho_d8 '/# MUT-ZEROWARN$/d' "without the WARN a repository that left solo keeps a required check that passes for everyone"
+  _ho_cell D9 _ho_d9 "a solo tree at approvals=0 (the intended state) got the zero-approvals WARN"
+  _ho_cell D4 _ho_d4 "the handover line differs between doctor and the merge verbs"
+  _ho_mut D4m _ho_d4 's/the owner'"'"'s per-PR act is the GO only/the owner'"'"'s per-PR act is the GO alone/' "a changed word in doctor's copy is not caught"
+  rm -f "$_fgd"/ho-*.dials "$_fgd/ho-team.gov" 2>/dev/null || true
 
   # --as agent: the gate
   _fg_run admin "$_gh_o" '--as agent'
@@ -2422,7 +2480,9 @@ _fg_rel_lines() {
     team:solo)
       printf 'merge relationship: CLAUDE.md says Governance: solo, .kit/dials.conf says team — reads team%s\n' "$FG_GO_TAIL" ;;
     solo:*)
-      printf "merge relationship: solo — the owner's recorded GO, bound to the head sha, is the merge control for every class\n" ;;
+      printf "merge relationship: solo — the owner's recorded GO, bound to the head sha, is the merge control for every class\n"
+      printf '%s\n' "From here the agent merges on your recorded GO; the owner's per-PR act is the GO only."   # MUT-HANDOVER
+      ;;
     team:*)
       printf "merge relationship: team — a non-author forge approval plus the owner's recorded GO%s\n" "$FG_GO_TAIL" ;;
     *)
@@ -2443,7 +2503,7 @@ _fg_prot_stale() {
   case "$_ps_flat" in *'"required_pull_request_reviews"'*) echo off ;; *) echo norule ;; esac
 }
 _fg_prot_line() {
-  FG_PROT_WARN=0
+  FG_PROT_WARN=0; FG_PROT_COUNT=""
   case "$FG_STATE" in
     noorigin) printf 'branch protection: N/A — no origin remote\n'; return 0 ;;
     nohost) printf 'branch protection: N/A — no forge adapter for %s\n' "$FG_HOST"; return 0 ;;
@@ -2470,6 +2530,12 @@ _fg_prot_line() {
     else
       printf 'branch protection: enforced on %s\n' "$_fp_b"
     fi
+    # SWAS-901: the same body (no new call). A solo-declared repository whose protection still requires ONE approval cannot be merged by the agent on a recorded GO: say so (INFO, no warn).
+    FG_PROT_COUNT=$(tr -d ' \t\r\n' < "$_fp_d/body" | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    # E6 S-1: ZERO approvals on a repository that does not read solo (it left solo without `--replace --team`) holds only a check that passes for everyone: WARN.
+    _fz_solo=0; if [ "${FG_REL_DIAL:-}" = solo ] && [ "${FG_REL_GOV:-}" != team ]; then _fz_solo=1; fi
+    if [ "${FG_PROT_COUNT:-}" = 0 ] && [ "${FG_REL_READ:-0}" = 1 ] && [ "$_fz_solo" = 0 ]; then FG_PROT_WARN=1; printf '%s\n' "branch protection: WARN — zero required approvals, but this repository does not read solo: nothing then holds a merge. Run sh scripts/branch-protection-apply.sh --replace --team (or --replace) in the same step that leaves solo"; fi   # MUT-ZEROWARN
+    if [ "${FG_PROT_COUNT:-}" = 1 ] && [ "${FG_REL_READ:-0}" = 1 ] && [ "${FG_REL_DIAL:-}" = solo ] && [ "${FG_REL_GOV:-}" != team ]; then printf '%s\n' "branch protection: solo-declared but approvals=1 — the agent cannot merge on a recorded GO while one approval is required; run sh scripts/branch-protection-apply.sh --replace (an admin act at a terminal) once solo-go-bound is declared, installed and live"; fi   # MUT-SOLOADV
   elif grep -q 'Upgrade to GitHub Pro' "$_fp_d/err" 2>/dev/null; then
     printf 'branch protection: unprotected: convention tier — this plan cannot enforce protection on a private repository (a public repository or a paid plan can)\n'
   elif grep -q 'Branch not protected' "$_fp_d/err" 2>/dev/null; then

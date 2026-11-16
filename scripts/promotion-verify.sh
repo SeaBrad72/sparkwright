@@ -110,8 +110,10 @@
 #
 # POSIX sh; dash-clean (no `local`, no bashisms). Operates on the current working tree's git repo.
 # The notes ref name is overridable with PROMOTION_NOTES_REF (default: promotions) for testing.
-# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real ordinary/sensitive PR merge (default `gh pr merge --squash --match-head-commit <sha>`, swappable via a vetted, pinned --merge-cmd) bound to the approved SHA, and points a control-plane note at `land`; `sync` reconciles a diverged local ledger with origin's by tree content and publishes it (fast-forward only, never rewriting a published note; it moves refs/notes/promotions and leaves a local refs/kit/promotions-presync-<UTC> backup when it drops local content); `log`, `check` and `trace` are read-only.
-# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound GO exists on origin and the declared merge relationship's bar holds (team, the default: [authenticated: <forge>-review] and approver != author; solo, declared in .kit/dials.conf on origin's default branch: the named, sha- and tree-bound owner GO), rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge. `record` derives `kit-row:` from the approved commit's own trailer (never a flag), records `(none)` rather than inventing one, and sanitises it with every other free-text field; `trace` matches a trunk commit to its note by TREE (never ancestry, which a squash breaks), reds on any recordless commit in a `--recent` window, and fails closed on an empty window. `sync` publishes only local-only notes that re-validate as exactly what `record` would write NOW (never a label it could not derive), never rewrites, forces or merges, refuses a note origin once held and removed (voids visible in origin's history). Operator-only by policy (the script does not detect CI or a subagent): never CI, never a subagent.
+# SOLO-GO-BOUND (SWAS-901): in a solo-declared repository whose origin tip carries the installed .github/workflows/solo-go.yml, `actuate` and `land` first read
+# the head's `solo-go-bound` check runs (gh api GETs), refuse a run that is not the base's own workflow, and re-run a red one (the one POST: actions/runs/<id>/rerun-failed-jobs) and wait for it.
+# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real ordinary/sensitive PR merge (default `gh pr merge --squash --match-head-commit <sha>`, swappable via a vetted, pinned --merge-cmd) bound to the approved SHA, and points a control-plane note at `land`; `sync` reconciles a diverged local ledger with origin's by tree content and publishes it (fast-forward only, never rewriting a published note; it moves refs/notes/promotions and leaves a local refs/kit/promotions-presync-<UTC> backup when it drops local content); `log`, `check`, `trace`, `evidence` and `go-bound` are read-only.
+# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound GO exists on origin and the declared merge relationship's bar holds (team, the default: [authenticated: <forge>-review] and approver != author; solo, declared in .kit/dials.conf on origin's default branch: the named, sha- and tree-bound owner GO), rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge. `record` derives `kit-row:` from the approved commit's own trailer (never a flag), records `(none)` rather than inventing one, and sanitises it with every other free-text field; `trace` matches a trunk commit to its note by TREE (never ancestry, which a squash breaks), reds on any recordless commit in a `--recent` window, and fails closed on an empty window. `sync` publishes only local-only notes that re-validate as exactly what `record` would write NOW (never a label it could not derive), never rewrites, forces or merges, refuses a note origin once held and removed (voids visible in origin's history). Operator-only by policy (the script does not detect CI or a subagent): never CI, never a subagent, except the read-only `trace` and `go-bound` (the solo-go-bound workflow runs `go-bound` from the base branch).
 set -eu
 # A `refs/replace/*` ref can make every object read (tree, blob, trailer, author) of an approved sha return a
 # crafted commit; the metering gate reads the approved commit, so it must read the REAL object.
@@ -121,6 +123,12 @@ export GIT_NO_REPLACE_OBJECTS=1
 # by `land`'s A9 hygiene re-read (design §8) to locate conformance/backlog-lib.sh, .kit/tracker.conf,
 # and scripts/tracker-read.sh regardless of the caller's cwd within the working tree.
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
+
+# SWAS-903: the gh-reaching verbs set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; the probe runs once, at dispatch,
+# below). A missing library means no probe: today's behaviour.
+_pv_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_pv_ghtls" ]; then . "$_pv_ghtls"; fi
 
 NOTES_REF="${PROMOTION_NOTES_REF:-promotions}"
 # VALIDATE THE REF NAME AT THE FRONT DOOR (security review SEC-M2). `PROMOTION_NOTES_REF` is a
@@ -389,6 +397,10 @@ usage() {
   echo "        --recent also runs a DETECTIVE evidence leg (SWAS-537): with a forge credential, a trunk commit merged without a completed light-or-full CI run on its approved head prints a FLAG line and is counted (the exit code is unchanged); the FIRST failed forge read turns it off with ONE 'evidence leg: UNVERIFIED' line, a later failed read is that commit's own UNVERIFIED line (summary PARTIAL); outside the kit pipeline it prints one N/A line." >&2
   echo "  promotion-verify.sh evidence --pr <n> --approved-sha <sha>" >&2
   echo "        READ-ONLY: would land find exact-head CI evidence for that head now? Exit 0 yes, 1 refused (the token and the wait are printed), 2 usage." >&2
+  echo "  promotion-verify.sh go-bound --approved-sha <40-hex> --pr <n> --base-ref <name> --default-branch <name>" >&2
+  echo "        READ-ONLY (SWAS-901; the solo-go-bound workflow runs it from the checked-out BASE branch): prints exactly ONE line, go-bound: na|ok|missing|error [reason]." >&2
+  echo "        na = the base reads team; ok = one merge-gate GO record scoped to this PR binds exactly this head; missing = none does; error = it could not be judged." >&2
+  echo "        Exit 0 for na, ok and missing; 2 for error. It reads the note from the LOCAL notes ref (it never fetches) and writes no ref, no note and no file." >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
   echo "  promotion-verify.sh actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
   echo "        --ref is the PR's head branch, fetched, and must equal <sha> (refused before any merge otherwise); a" >&2
@@ -770,6 +782,36 @@ _pv_scope_shape() {
   esac
   return 0
 }
+# _pv_placeholder_span <value> — SWAS-902. rc 0 and the last matched span on stdout (cut to 40 bytes) when the value holds template text
+# in angle brackets: `<`, one character that is not a space, digit, `=`, `<`, `>` or `-`, a run without `<`, `>` or `@`, then `>`.
+# rc 1 when it does not. An ERE under LC_ALL=C, NOT a case glob (a glob cannot exclude `@` in a run, so it would refuse
+# `Name <email>`). The span is pulled out with sed, not `grep -o` (which differs across GNU, BSD and ugrep). Shared by `record`
+# and `sync`, so what one refuses the other refuses.
+_pv_placeholder_span() {
+  printf '%s' "$1" | LC_ALL=C grep -Eq '<[^[:space:]0-9=<>-][^<>@]*>' || return 1
+  printf '%s' "$1" | LC_ALL=C sed -n 's/^.*\(<[^[:space:]0-9=<>-][^<>@]*>\).*$/\1/p' | LC_ALL=C cut -c1-40
+  return 0
+}
+# _pv_placeholder_msg <verb> <field> <span> [file] — SWAS-902. The refusal text, to stderr; the caller returns rc 2. A token sends the owner's
+# words back to the owner (the kit never re-spells a token); every other field says to write the value without the brackets. With a 4th
+# argument `file` (a token read from --token-file) no span is echoed: a refusal never prints a byte of the file.
+_pv_placeholder_msg() {
+  # printf, never echo: the span is operator text (dash's echo expands a backslash)
+  if [ "$2" = token ]; then
+    if [ "${4:-}" = file ]; then
+      echo "$1: --token-file holds text in angle brackets, which reads as an unfilled template." >&2
+    else
+      printf '%s\n' "$1: --token (or --token-file) holds text in angle brackets ('$3'), which reads as an unfilled template." >&2
+    fi
+    echo "        Copied a template? Put the real value in its place." >&2
+    echo "        The owner's own words? Ask the owner to give the GO again without '<' and '>';" >&2
+    echo "        never edit their words yourself. Nothing was written." >&2
+    return 0
+  fi
+  printf '%s\n' "$1: --$2 holds text in angle brackets ('$3'), which reads as an unfilled template." >&2
+  echo "        Copied a template? Put the real value in its place." >&2
+  echo "        Write the value without '<' and '>'. Nothing was written." >&2
+}
 
 # pv_token_file_load <path> — SWAS-724. Reads the owner's GO words from a file into $token, or refuses (rc 2,
 # ONE fixed sentence, no byte of the file or its path echoed). The rules are board.sh's file-form rules,
@@ -998,6 +1040,13 @@ do_record() {
     _fn="${_p%%=*}"; _fv="${_p#*=}"
     if [ "$(printf '%s' "$_fv" | LC_ALL=C tr -d '[:cntrl:]')" != "$_fv" ]; then
       echo "record: --$_fn contains a control character (newline/CR/tab/etc.) — rejected (fail closed)" >&2
+      return 2
+    fi
+    # SWAS-902: template text in angle brackets is a paste, not a value; refuse before anything is written.
+    if _pv_placeholder_span "$_fv" >/dev/null; then   # PV-PLACEHOLDER-RECORD
+      # a token read from --token-file never has a byte of the file echoed (pv_token_file_load's contract): no span, source "file"
+      if [ "$_fn" = token ] && [ "$tok_file" = 1 ]; then _pv_placeholder_msg record token "" file
+      else _pv_placeholder_msg record "$_fn" "$(_pv_placeholder_span "$_fv")"; fi
       return 2
     fi
   done
@@ -2449,6 +2498,13 @@ pv_rel_team() {
 PV_REL=team
 PV_REL_TIP=""; PV_REL_DIALRC=1; PV_REL_DIALTXT=""
 PV_GO_ACT=absent; PV_GO_GIVERS=""
+# SWAS-901: the handover line. The declaring merge is a person's act; from it on the agent merges on the owner's recorded GO. Printed by `actuate` and `land`
+# after the relationship line and before the success line, in a SOLO reading only (never team or undeclared); `doctor` prints the same words (a cell locks the two).
+PV_HANDOVER_LINE="From here the agent merges on your recorded GO; the owner's per-PR act is the GO only."
+pv_handover() {  # <verb>
+  [ "$PV_REL" = solo ] || return 0
+  printf '%s: %s\n' "$1" "$PV_HANDOVER_LINE"
+}
 pv_merge_relationship() {
   _mrv="$1"; PV_REL=team; PV_REL_TIP=""; PV_REL_DIALRC=1; PV_REL_DIALTXT=""
   _mrhd="$(GIT_TERMINAL_PROMPT=0 git -C "$ROOT" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)"
@@ -2467,6 +2523,15 @@ pv_merge_relationship() {
   if ! git -C "$ROOT" cat-file -e "${_mrtip}^{commit}" 2>/dev/null; then
     pv_rel_team "$_mrv" "origin/$_mrbr tip not fetched, so the declaration is unreadable and reads team until: git fetch origin"; return 0
   fi
+  pv_rel_from_tip "$_mrv" "$_mrtip" "$_mrbr"
+  return 0
+}
+
+# pv_rel_from_tip <verb> <tip-sha> <branch-name> -> the merge relationship read from the commit <tip-sha> (the dial and CLAUDE.md
+# AT that commit), set and said exactly as pv_merge_relationship does (SWAS-901: factored out so `go-bound` reads the default branch's tip
+# (refs/kit/solo-go-default) with the SAME grammar and no ls-remote). Sets PV_REL, PV_REL_TIP, PV_REL_DIALRC and PV_REL_DIALTXT; prints ONE line.
+pv_rel_from_tip() {
+  _mrv="$1"; _mrtip="$2"; _mrbr="$3"; PV_REL=team; PV_REL_TIP=""; PV_REL_DIALRC=1; PV_REL_DIALTXT=""
   _mrrc=0; _mrdial="$(pv_rel_blob "$_mrtip" .kit/dials.conf)" || _mrrc=$?
   PV_REL_TIP="$_mrtip"; PV_REL_DIALRC="$_mrrc"; PV_REL_DIALTXT="$_mrdial"
   if [ "$_mrrc" = 2 ]; then
@@ -2834,6 +2899,125 @@ pv_ci_evidence() {
   return 1
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# THE SOLO-GO-BOUND STEP (SWAS-901 slice B). In a solo-declared repository whose origin tip carries the installed workflow
+# (.github/workflows/solo-go.yml, COPY & ADAPT), `actuate` and `land` read the HEAD's `solo-go-bound` check runs before they merge:
+# every run must be the base's own workflow (path solo-go.yml, event pull_request_target, one run per check suite, run for the default
+# branch as the PR's base, app github-actions) or the verb REFUSES at once and re-runs nothing; a red run is re-run once (a late GO
+# turns it green: the job reads the live ledger) and waited for, 15 s at a time, up to 600 s. The reads are `gh api` GETs and the one
+# POST is the re-run of a failed run; no `--admin`, no write to a ref, a note or a file. In team and undeclared repositories it is a no-op.
+# pv_sg_installed -> 0 when the workflow is on the origin tip the relationship was read from (PV_REL_TIP) and carries the kit marker.
+pv_sg_installed() {
+  [ -n "$PV_REL_TIP" ] || return 1
+  _sgi_rc=0; _sgi_txt="$(pv_rel_blob "$PV_REL_TIP" .github/workflows/solo-go.yml)" || _sgi_rc=$?
+  [ "$_sgi_rc" = 0 ] || return 1
+  printf '%s\n' "$_sgi_txt" | grep -qF 'COPY & ADAPT'
+}
+
+# pv_sg_refuse <verb> <why> -> prints the one refusal line (control bytes stripped) and returns 1.
+pv_sg_refuse() {
+  printf '%s REFUSED (solo-go-bound): %s. Nothing was merged.\n' "$(printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z')" "$(printf '%s' "$2" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-300)" >&2
+  return 1
+}
+
+# pv_sg_read <pr> <sha> <default-branch> <dir> -> sets _sg_verdict (ok | red | pending | none | foreign | unreadable), _sg_why (foreign) and
+# _sg_failed (the failed workflow-run ids). Two GETs, then one awk join of each check run to its workflow run by check-suite id.
+pv_sg_read() {
+  _sgr_pr="$1"; _sgr_sha="$2"; _sgr_def="$3"; _sgr_d="$4"
+  _sg_verdict=unreadable; _sg_why=""; _sg_failed=""
+  gh api "repos/{owner}/{repo}/commits/$_sgr_sha/check-runs?check_name=solo-go-bound&per_page=100" --paginate \
+    --jq '.check_runs[] | [.id, (.app.slug // ""), (.check_suite.id | tostring), .status, (.conclusion // "")] | @tsv' >"$_sgr_d/cr.tsv" 2>/dev/null || return 0
+  gh api "repos/{owner}/{repo}/actions/runs?head_sha=$_sgr_sha&per_page=100" --paginate \
+    --jq '.workflow_runs[] | [.id, .path, .event, (.check_suite_id | tostring), (.run_attempt | tostring), .status, (.conclusion // ""), ([.pull_requests[]? | select(.number == '"$_sgr_pr"') | .base.ref] | join(","))] | @tsv' >"$_sgr_d/wr.tsv" 2>/dev/null || return 0
+  _sgr_v="$(awk -F '\t' -v def="$_sgr_def" '
+    FILENAME == ARGV[1] { cnt[$4]++; rid[$4] = $1; pth[$4] = $2; evt[$4] = $3; bas[$4] = $8; next }
+    {
+      total++
+      if ($2 != "github-actions") { print "foreign app " $2; fin = 1; exit }
+      if (cnt[$3] != 1) { print "foreign check suite " $3 " joins " cnt[$3] " workflow runs, not one"; fin = 1; exit }
+      if (pth[$3] != ".github/workflows/solo-go.yml" || evt[$3] != "pull_request_target") { print "foreign run " rid[$3] " " pth[$3] " " evt[$3]; fin = 1; exit }
+      if (bas[$3] != def) { print "foreign base " bas[$3] " (run " rid[$3] ")"; fin = 1; exit }
+      if ($4 != "completed") pend = 1
+      else if ($5 != "success") { red = 1; ids = ids ((ids == "") ? "" : " ") rid[$3] }
+    }
+    END {
+      if (fin) exit
+      if (total == 0) print "none"
+      else if (red) print "red " ids
+      else if (pend) print "pending"
+      else print "ok"
+    }' "$_sgr_d/wr.tsv" "$_sgr_d/cr.tsv")" || return 0
+  case "$_sgr_v" in
+    none|pending|ok) _sg_verdict="$_sgr_v" ;;
+    "red "*)     _sg_verdict=red; _sg_failed="${_sgr_v#red }" ;;
+    "foreign "*) _sg_verdict=foreign; _sg_why="${_sgr_v#foreign }" ;;
+  esac
+}
+
+# pv_sg_gate <verb> <pr> <sha> <default-branch> -> 0 = proceed (not solo, not installed, or the check is green), 1 = refused (printed).
+# PROMOTION_VERIFY_SG_POLL (digits) can only SHORTEN the 600 s wait, and a shorter wait can only end in a refusal, never a merge.
+pv_sg_gate() {
+  _sgv="$1"; _sgp="$2"; _sgs="$3"; _sgdef="$4"
+  [ "$PV_REL" = solo ] || return 0
+  if ! pv_sg_installed; then
+    printf '%s: solo-go-bound: not installed on origin/%s; this step does not apply (the forge'"'"'s protection is what binds)\n' "$_sgv" "$_sgdef"
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    pv_sg_refuse "$_sgv" "solo-go-bound is installed here and gh and jq are needed to read it, and one is missing"; return 1
+  fi
+  case "$_sgp" in
+    ''|*[!0-9]*) pv_sg_refuse "$_sgv" "the GO note's scope names no pull request, so its solo-go-bound runs cannot be read"; return 1 ;;
+  esac
+  _sgs="$(git -C "$ROOT" rev-parse -q --verify "${_sgs}^{commit}" 2>/dev/null || true)"
+  if [ -z "$_sgs" ]; then pv_sg_refuse "$_sgv" "the approved head is not a commit in this clone"; return 1; fi
+  # E6 S-5: `actuate` passes its --ref; the PR the note's scope names must be the pull request whose head IS that ref at the approved sha (`land` binds scope == ref itself).
+  if [ -n "${5:-}" ] && [ "$5" != "$_sgp" ] && [ "$(gh api "repos/{owner}/{repo}/pulls/$_sgp" --jq '[.head.ref, .head.sha] | @tsv' 2>/dev/null || true)" != "$(printf '%s\t%s' "$5" "$_sgs")" ]; then pv_sg_refuse "$_sgv" "the GO note's PR #$_sgp is not the pull request whose head is '$5' at the approved sha"; return 1; fi   # MUT-SG-BIND
+  _sgb=600
+  case "${PROMOTION_VERIFY_SG_POLL:-}" in
+    ''|*[!0-9]*) ;;
+    *) if [ "${#PROMOTION_VERIFY_SG_POLL}" -le 3 ] && [ "$PROMOTION_VERIFY_SG_POLL" -lt 600 ]; then _sgb="$PROMOTION_VERIFY_SG_POLL"; fi ;;
+  esac
+  _sgstep=15; if [ "$_sgb" -lt "$_sgstep" ]; then _sgstep="$_sgb"; fi
+  _sgd="$(mktemp -d 2>/dev/null)" || { pv_sg_refuse "$_sgv" "no temporary directory for the forge reads"; return 1; }
+  _sgt=0; _sgrr=""
+  while :; do
+    pv_sg_read "$_sgp" "$_sgs" "$_sgdef" "$_sgd"
+    case "$_sg_verdict" in
+      ok)
+        rm -rf "$_sgd"
+        printf '%s: solo-go-bound: green on the head, from the base'"'"'s own workflow\n' "$_sgv"
+        return 0 ;;
+      foreign)
+        rm -rf "$_sgd"
+        pv_sg_refuse "$_sgv" "a solo-go-bound check on this head is not the base's own workflow ($_sg_why), so nothing was re-run and the check is not trusted"; return 1 ;;
+      unreadable)
+        rm -rf "$_sgd"
+        pv_sg_refuse "$_sgv" "the forge could not be read for the head's solo-go-bound runs (a failed, partial or non-TSV answer), so nothing proves the GO binds it"; return 1 ;;
+      red)
+        for _sgi in $_sg_failed; do
+          case "$_sgi" in
+            ''|*[!0-9]*) continue ;;
+          esac
+          case " $_sgrr " in
+            *" $_sgi "*) continue ;;
+          esac
+          if ! gh api -X POST "repos/{owner}/{repo}/actions/runs/$_sgi/rerun-failed-jobs" >/dev/null 2>&1; then
+            rm -rf "$_sgd"
+            pv_sg_refuse "$_sgv" "solo-go-bound run $_sgi is red and the forge refused its re-run, so the check cannot turn green by itself"; return 1
+          fi
+          _sgrr="$_sgrr $_sgi"
+        done ;;
+    esac
+    if [ "$_sgt" -ge "$_sgb" ]; then
+      rm -rf "$_sgd"
+      if [ "$_sg_verdict" = none ]; then pv_sg_refuse "$_sgv" "no solo-go-bound run exists on this head after ${_sgt}s: trigger one (push, or close and reopen the PR), then re-run this command"; return 1; fi   # MUT-SG-NONE
+      pv_sg_refuse "$_sgv" "the recorded GO on origin does not bind this head (solo-go-bound is ${_sg_verdict}${_sg_failed:+, run $_sg_failed} after ${_sgt}s): read the run's log, record the GO on this head, then re-run this command"; return 1
+    fi
+    sleep "$_sgstep"; _sgt=$((_sgt + _sgstep))
+  done
+}
+
 # do_evidence — the READ-ONLY verb behind the leg (SWAS-537, D4): `evidence --pr <n> --approved-sha <sha>` prints whether `land` would find
 # exact-head CI evidence for that head right now, so an agent checks BEFORE a GO ask. Exit 0 = evidenced, 1 = refused (the token and
 # the wait are printed), 2 = usage. It writes nothing, records nothing and merges nothing. It asks `land`'s question, the gate job included.
@@ -2859,6 +3043,100 @@ do_evidence() {
   pv_ci_evidence evidence "$_ev_pr" "${_ev_full:-$_ev_sha}" 1 || return 1
   if [ "$_pv_ev_na" = 1 ]; then return 0; fi
   echo "OK: exact-head CI evidence on ${_ev_full:-$_ev_sha} (PR #$_ev_pr): reason=$_pv_ev_reason run=$_pv_ev_run gate=$_pv_ev_gate - read-only, nothing was recorded or merged."
+}
+
+# pv_go_bound_pick <note> <pr-digits> -> prints the ONE merge-gate GO record scoped to that PR; rc 1 when there is not exactly one (SWAS-901).
+# `go-bound` keeps only records of type `record` that are not a typed design or plan gate (pv_go_gate_typed) and whose `scope:` reads, as PR
+# digits (pv_ev_pr_number), to <pr>. Zero or several are rc 1, never a guess. It is NOT pv_actuate_pick: no `gh` call and no one-record
+# shortcut, so a lone record scoped to another PR is not judged here.
+pv_go_bound_pick() {
+  _gp_n="$(printf '%s\n' "$1" | kit_note_records n)"; _gp_i=0; _gp_kept=0; _gp_rec=""
+  while [ "$_gp_i" -lt "$_gp_n" ]; do
+    _gp_i=$((_gp_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_gp_i")" = record ] || continue
+    _gp_r="$(printf '%s\n' "$1" | kit_note_records body "$_gp_i")"
+    if pv_go_gate_typed "$(_pv_rec_field "$_gp_r" gate)"; then continue; fi
+    [ "$(pv_ev_pr_number "$(_pv_rec_field "$_gp_r" scope)" 2>/dev/null || true)" = "$2" ] || continue
+    _gp_kept=$((_gp_kept + 1))
+    if [ "$_gp_kept" = 1 ]; then _gp_rec="$_gp_r"; fi
+  done
+  [ "$_gp_kept" = 1 ] || return 1
+  printf '%s\n' "$_gp_rec"
+}
+
+# _gb_say <word> [<reason>] -> THE one `go-bound:` line (control bytes stripped from the reason, 160 characters at most).
+_gb_say() {
+  if [ -n "${2:-}" ]; then printf 'go-bound: %s %s\n' "$1" "$(printf '%s' "$2" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-160)"
+  else printf 'go-bound: %s\n' "$1"; fi
+}
+
+# pv_gb_declared <tip> -> 0 when REQUIRED-CHECKS.md at <tip> declares solo-go-bound on a line of its own (E6 S-1): protection then holds that check, so a default
+# branch that stopped reading solo must not read a green `na`. Absent or unreadable reads "not declared" (a team adopter that never declared it stays `na`).
+pv_gb_declared() {   # rc 0 = declared | 1 = not declared (absent included) | 2 = present but not a regular file, or unreadable (reads as declared by the caller: fail closed)
+  _gd_rc=0; _gd_t="$(pv_rel_blob "$1" REQUIRED-CHECKS.md)" || _gd_rc=$?
+  if [ "$_gd_rc" = 1 ]; then return 1; fi
+  if [ "$_gd_rc" != 0 ]; then return 2; fi
+  # the declaration is the FIRST fenced block only, as every declaration reader reads it (a later block is a usage example), one name per line, comments ignored
+  printf '%s\n' "$_gd_t" | awk '/^```/ { if (done) next; if (inb) { done = 1; inb = 0 } else inb = 1; next } inb { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l); if (l == "solo-go-bound") f = 1 } END { exit f ? 0 : 1 }'
+}
+
+# FOR CI: the solo-go-bound workflow fetches refs/kit/solo-go-default itself. Run locally, the verb reads whatever that ref holds in YOUR clone.
+# do_go_bound — SWAS-901: the READ-ONLY check behind the solo-go-bound workflow (profiles/solo-go.yml), run from the checked-out BASE branch.
+# `go-bound --approved-sha <40-hex> --pr <digits> --base-ref <name> --default-branch <name>` prints exactly ONE line on stdout,
+# `go-bound: na|ok|missing|error [reason]`, rc 0 for na, ok and missing and rc 2 for error. It reads the merge relationship from the DEFAULT branch's tip, which the
+# workflow fetched as objects into refs/kit/solo-go-default (never the PR head, never the PR's own base, which a PR can retarget), and the GO note from the LOCAL notes ref (the workflow fetched it; this verb never fetches, so it needs no
+# credential), judges it with pv_solo_go_ok, and writes no ref, no note and no file. na = the base reads team; ok = one merge-gate GO record
+# scoped to this PR binds exactly this head; missing = it does not; error = it could not be judged (red).
+do_go_bound() {
+  _gb_sha=""; _gb_pr=""; _gb_base=""; _gb_def=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --approved-sha|--pr|--base-ref|--default-branch)
+        [ $# -ge 2 ] || { _gb_say error "usage: $1 needs a value"; return 2; }
+        case "$1" in
+          --approved-sha)   _gb_sha="$2" ;;
+          --pr)             _gb_pr="$2" ;;
+          --base-ref)       _gb_base="$2" ;;
+          --default-branch) _gb_def="$2" ;;
+        esac
+        shift 2 ;;
+      *) _gb_say error "usage: unknown arg '$1'"; return 2 ;;
+    esac
+  done
+  case "$_gb_sha" in
+    ''|*[!0-9a-f]*) _gb_say error "usage: --approved-sha takes a lowercase hex commit id (40 characters)"; return 2 ;;
+  esac
+  if [ "${#_gb_sha}" != 40 ]; then _gb_say error "usage: --approved-sha takes a lowercase hex commit id (40 characters)"; return 2; fi
+  case "$_gb_pr" in
+    ''|*[!0-9]*) _gb_say error "usage: --pr takes a PR number (digits only)"; return 2 ;;
+  esac
+  for _gb_n in "$_gb_base" "$_gb_def"; do
+    case "$_gb_n" in
+      ''|-*|*[!A-Za-z0-9._/-]*) _gb_say error "usage: --base-ref and --default-branch take a branch name (allowed chars: A-Za-z0-9._/-)"; return 2 ;;
+    esac
+  done
+  _gb_tip="$(git -C "$ROOT" rev-parse -q --verify "refs/kit/solo-go-default^{commit}" 2>/dev/null || true)"
+  if [ -z "$_gb_tip" ]; then _gb_say error "the default branch tip is not fetched (refs/kit/solo-go-default)"; return 2; fi
+  pv_rel_from_tip go-bound "$_gb_tip" "$_gb_def" >/dev/null
+  _gb_dr=1; if [ "$PV_REL" != solo ]; then _gb_dr=0; pv_gb_declared "$_gb_tip" || _gb_dr=$?; fi
+  if [ "$_gb_dr" != 1 ]; then _gb_say error "the default branch declares solo-go-bound (or its declaration is unreadable) but no longer reads solo; leaving solo needs --replace --team in the same step"; return 2; fi   # E6 S-1
+  if [ "$PV_REL" != solo ]; then _gb_say na; return 0; fi
+  if [ "$_gb_base" != "$_gb_def" ]; then
+    _gb_say error "solo merges target the default branch ($_gb_def), and this PR targets $_gb_base"; return 2
+  fi
+  if ! git -C "$ROOT" cat-file -e "${_gb_sha}^{commit}" 2>/dev/null; then
+    _gb_say error "head commit not fetched ($(printf '%s' "$_gb_sha" | cut -c1-8))"; return 2
+  fi
+  _gb_note="$(git -C "$ROOT" notes --ref="$NOTES_REF" show "$_gb_sha" 2>/dev/null || true)"
+  if [ -z "$_gb_note" ]; then _gb_say missing "no GO note on $(printf '%s' "$_gb_sha" | cut -c1-8)"; return 0; fi
+  if ! _gb_rec="$(pv_go_bound_pick "$_gb_note" "$_gb_pr")"; then
+    _gb_say missing "no single merge-gate GO record scoped to PR #$_gb_pr in the note on $(printf '%s' "$_gb_sha" | cut -c1-8)"; return 0
+  fi
+  if _gb_err="$(pv_solo_go_ok go-bound "$_gb_rec" "$_gb_sha" 2>&1 >/dev/null)"; then
+    echo "go-bound: ok"; return 0
+  fi
+  _gb_say missing "$(printf '%s\n' "$_gb_err" | head -n 1)"
+  return 0
 }
 
 do_actuate() {
@@ -2975,6 +3253,7 @@ do_actuate() {
 
   # 1c. THE MERGE RELATIONSHIP (D-241014-1), read from origin's default branch and said in ONE line before anything merges.
   pv_merge_relationship actuate
+  pv_handover actuate   # MUT-HO-REL
   #     SWAS-727: the merge GO's act. In REVIEW mode `actuate` merges NOTHING: it trusts a label `record` wrote earlier and never re-reads
   #     the forge, so only `land` (which reads it live) can honour a later Request changes as the NO-GO. A design or plan gate stays typed
   #     in every mode, so it is judged as before. SEPARATE adds G1 and G2 below, in the team arm, once the approver id is known.
@@ -3060,6 +3339,10 @@ do_actuate() {
   #     workflow on the exact approved head must have graded at least the light set. Before the merge, so a refusal attempts none.
   _act_pr="$(pv_ev_pr_number "$(printf '%s\n' "$note" | sed -n 's/^scope: //p' | head -1)")" || _act_pr=""
   pv_ci_evidence actuate "$_act_pr" "$asha" 0 "$ref" || return 1
+  #     SWAS-901: solo only (a no-op elsewhere): the head's solo-go-bound runs, before the lease so a long wait never holds it.
+  pv_sg_gate actuate "$_act_pr" "$asha" "${_mrhd#refs/heads/}" "$ref" || return 1
+  #     E6 R2-4: in solo the DEFAULT merge goes by the bound PR's own number, so a second PR from the same head branch cannot be the one merged (--match-head-commit still pins the sha).
+  if [ "$PV_REL" = solo ] && [ "$_act_caller" = 0 ] && pv_sg_installed; then merge_cmd="gh pr merge \"$_act_pr\" --squash --match-head-commit \"$asha\""; fi   # MUT-SG-MERGE
 
   # 3d. THE LAND LEASE (SWAS-192 slice B, B7), as `land` takes it: only in a checkout that opted in; HELD is rc 5 before any merge.
   pv_land_lease_take actuate || return $?
@@ -3095,10 +3378,11 @@ do_actuate() {
 
   # Honest success line: the note is RECORDED, not necessarily AUTHENTICATED — a git note is
   # self-authorable (the label bar is audit + defense-in-depth over it). Where the plan can enforce it, server-side
-  # branch protection is what binds; in a solo-declared repo there is NO server-side kill-switch and the GO is
+  # branch protection is what binds; in a solo-declared repo the server-side block is the required check `solo-go-bound` once `branch-protection-apply.sh --replace` has written the solo-agent profile (before that, none), and the GO is
   # self-asserted by name, so the control is the recorded GO bound to the sha + the forge's --match-head-commit pin,
   # and only after-the-fact review of the trail (trace --recent) catches a fabricated one. Do not imply the label authenticates.
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
+  pv_handover actuate   # MUT-HO-OK
   if [ "$crc" -eq 0 ]; then
     echo "OK: actuated $ref on recorded GO (approved-sha $asha) — head ref carries the approved tree (shipped == approved on the trunk: run promotion-verify.sh trace --recent on main yourself; the kit's own CI runs it, an adopter's does not)"
   else
@@ -3378,6 +3662,7 @@ do_land() {
   #     both relationships: --go-by, scope == ref, the whole-note match, --no-push refused, the origin confirm, the vet and the
   #     pin. TEAM (the default, and every undeclared or unreadable case) is exactly what it always was.
   pv_merge_relationship land
+  pv_handover land   # MUT-HO-REL
   #     SWAS-727: the merge GO's act (GO_ACT / GO_GIVERS), from the same origin tip; absent under solo and for a design or plan gate
   #     (those stay typed in every mode). `_land_mode` is the mode THIS land runs under.
   pv_go_dials land
@@ -3746,6 +4031,9 @@ do_land() {
     esac
   fi
 
+  # 2c. SWAS-901: solo only (a no-op elsewhere): the head's solo-go-bound runs. The note is already on origin, so a re-run sees it.
+  pv_sg_gate land "$_land_sn" "${_land_full:-$asha}" "${_land_bref#refs/heads/}" || return 1
+
   # 3. Default merge = the CP-safe direct path, PINNED to the approved sha; never --admin, never
   #    --delete-branch. Swappable via --merge-cmd (tests pass a stub). --match-head-commit binds the
   #    merge to the exact reviewed head, so a race that advanced the PR branch is rejected server-side.
@@ -3802,11 +4090,15 @@ do_land() {
   # recoverable by this verb — not that recordless merges are impossible (they are detected later by
   # the CI backstop, which stays the friction-test gate).
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
+  pv_handover land   # MUT-HO-OK
   echo "OK: land recorded the GO note on $asha, CONFIRMED it on origin, and merged $ref — $_land_cls_lc"
   if [ "$_land_rkind" = oneact ]; then
     printf '%s\n' "    GO = forge review $PV_FR_ID by $(printf '%s' "$land_aby" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80) (go-act: review): the approval on the exact head was the GO; no typed GO."
   fi
-  if [ "$_land_rkind" = oneact ]; then
+  if [ "$PV_REL" = solo ]; then
+    echo "    merged on your recorded GO, bound to the head sha (solo); the GO-giver is recorded by name,"
+    echo "    self-asserted, and nothing authenticated it. The record was published BEFORE the merge and verified on origin, so this merge"
+  elif [ "$_land_rkind" = oneact ]; then
     echo "    merged on an authenticated non-author forge approval; go-by is that same login, authenticated (github-review), not self-asserted."
     echo "    The record was published BEFORE the merge and verified on origin, so this merge"
   else
@@ -4355,6 +4647,23 @@ _pv_vc_goact() {
   [ "$(printf '%s' "$_vc_gow" | wc -c | tr -d ' ')" -le 1002 ] || { _pv_vc_fail go-words "more than 1000 bytes"; return 1; }
   return 0
 }
+# V6b — template text in angle brackets (SWAS-902). `record` refuses it in eight fields, so a LOCAL-ONLY note holding it is not one
+# `record` could write NOW. Each stored field is read back to what `record` screened: the token without its quotes, go-by without
+# ` [self-asserted]`, approved-by as the id only. Never go-words or kit-row (`record` screens neither). The same shared predicate.
+_pv_vc_placeholder() {
+  _vp_tok="${_vc_tok#'"'}"; _vp_tok="${_vp_tok%'"'}"
+  _vp_goby="${_vc_goby%' [self-asserted]'}"
+  _vp_by="${_vc_by%% \[*}"
+  # The note's own keys name the field (as the other V legs do); _pv_vc_fail's line and remedies stand alone, no flag-style message.
+  for _vp_p in "approval-token=$_vp_tok" "basis=$_vc_basis" "approved-by=$_vp_by" "go-by=$_vp_goby" "scope=$_vc_scope" \
+               "gate=$_vc_gate" "rung=$_vc_rung" "change-class=$_vc_cls"; do
+    _vp_fn="${_vp_p%%=*}"; _vp_fv="${_vp_p#*=}"
+    if _pv_placeholder_span "$_vp_fv" >/dev/null; then
+      _pv_vc_fail "$_vp_fn" "template text in angle brackets (record would refuse it)"; return 1
+    fi
+  done
+  return 0
+}
 # V7 — approved-by: `<id> [<label>]`; the label must equal one `record` could derive NOW. Runs LAST (I5):
 # the forge derivation interpolates the note's untrusted scope into an API path, so V1-V6 sanitize first.
 _pv_vc_by() {
@@ -4400,6 +4709,7 @@ _pv_validate_candidate() { # <object-sha> <note-blob>
   _pv_class_ok "$_vc_cls" || { _pv_vc_fail change-class "not one of ordinary | sensitive | control-plane"; return 1; }                          # V5
   _vc_sc=0; _pv_scope_shape "$_vc_scope" || _vc_sc=$?
   [ "$_vc_sc" = 0 ] || { _pv_vc_fail scope "record would refuse this scope (branch/ rules)"; return 1; }                                         # V6
+  _pv_vc_placeholder || return 1   # PV-PLACEHOLDER-SYNC (SWAS-902: the shared predicate, local-only notes only)
   _pv_vc_by || return 1                                                                                                                          # V7
 }
 # Validate every candidate (all of them, so one run names every failure). Failures count as refusals.
@@ -4631,6 +4941,13 @@ do_sync() {
 cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
 
+# SWAS-903: ONE probe per gh-reaching verb, in this parent shell, BEFORE the lease gate (so the gate child and every `eval "$merge_cmd"` inherit the
+# result). It exports SSL_CERT_FILE only on the macOS sandbox's x509 signature and only when the root-owned system bundle passes its checks.
+case "$cmd" in
+  record|land|actuate|trace|evidence)
+    if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi ;;
+esac
+
 # ── THE CHECKOUT LEASE (SWAS-192 slice A; scripts/checkout-lease.sh) ───────────────────────────────
 # `record`, `land` and `actuate` push refs/notes/promotions (and `land`/`actuate` merge), which is custody of the main
 # checkout. In a checkout that opted in (`kit.checkoutLease`) each needs the holder's `--lease-token <sha>`, stripped from
@@ -4669,6 +4986,8 @@ case "$cmd" in
   actuate) if do_actuate "$@"; then rc=0; else rc=$?; fi ;;
   land)    if do_land    "$@"; then rc=0; else rc=$?; fi ;;
   evidence) if do_evidence "$@"; then rc=0; else rc=$?; fi ;;
+  # KIT-MODE: go-bound
+  go-bound) if do_go_bound "$@"; then rc=0; else rc=$?; fi ;;
   -h|--help) usage; rc=2 ;;
   *) usage; rc=2 ;;
 esac

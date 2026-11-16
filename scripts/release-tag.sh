@@ -301,7 +301,8 @@ GATE_DISP_FILE="conformance/gate-dispositions.txt"
 # ⚠️ "not GitHub" is NOT an N/A arm once `gh` is INSTALLED: gh errors on a tree whose remotes it
 # cannot resolve, so that lands in rc 3. Such a forge answers this gate through the seam.
 # The seam mirrors these arms exactly (`exit 7` <-> query failed, `true` <-> empty success,
-# `printf` data <-> healthy), which is what makes every arm testable without mocking gh.
+# `printf` data <-> healthy), which makes every arm testable through the seam. The default gh path
+# is the exception: the PG-PAGED cells stub gh on PATH to reach it (SWAS-924).
 # NOTE the ordering rule: a nonzero rc is returned even when stdout carried lines. Health is never
 # inferred from data — see provenance_gate's "health outranks data" branch.
 #
@@ -323,8 +324,8 @@ GATE_DISP_FILE="conformance/gate-dispositions.txt"
 #     "3 attempts failed" and "one-shot failed" are different operational facts.
 # The bound is a CONSTANT, not an env var: this is a control-plane script and a caller-tunable retry
 # bound would be a new environment surface on a gate whose whole point is that the environment cannot
-# soften it. The seam is retried too, because it mirrors the gh arms exactly — that is what lets every
-# arm be tested without mocking gh, and it does not widen the seam's trust boundary (the same single
+# soften it. The seam is retried too, because it mirrors the gh arms exactly — that is what lets the
+# arms be tested through the seam (the default gh path is stubbed by the PG-PAGED cells), and it does not widen the seam's trust boundary (the same single
 # `sh -c` of the same trusted-invocation-only string, just re-run).
 _PP_ATTEMPTS=3
 _PP_BACKOFF=1
@@ -345,8 +346,9 @@ _PP_TRIES_FILE=""
 # used in _PP_TRIES *and*, when the caller allocated one, in $_PP_TRIES_FILE (the channel the rc-3
 # cure text actually reads — see above). stderr of the command is discarded exactly as the one-shot
 # form discarded it; the retry's OWN announcement goes to stderr.
-# When prov_probe makes TWO queries, the LAST write wins — which is the query whose rc decided the
-# verdict, so the count the operator is shown is the count that produced the refusal.
+# prov_probe makes the repository lookup, the run list and one query per page of jobs; the LAST write
+# wins — which is the failing call (or the last call made), so the count the operator is shown is the
+# count that produced the refusal.
 _prov_gh_retry() {
   _pgr_i=0; _pgr_rc=0; _pgr_out=""
   while :; do
@@ -380,15 +382,62 @@ prov_probe() {
   # CP-10: probe the PINNED release sha, not a fresh HEAD read (same rule as ci_probe).
   _sha=${RELEASE_SHA:-$(git rev-parse HEAD 2>/dev/null)} || return 0
   [ -n "$_sha" ] || return 0                    # no resolvable sha -> honest N/A
+  # SWAS-924: the default gh arm names its repository explicitly and reads the run's jobs in pages
+  # of 30. `gh run view --json jobs` asks for per_page=100, and GitHub answered HTTP 502 for a run of
+  # about 95 jobs, every time, so the unanswered probe refused the v3.248.0 tag under enforce. The
+  # repository is resolved once so the run id and its jobs come from the same repository.
   _pp_rc=0
-  _run=$(_prov_gh_retry gh run list --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty') || _pp_rc=$?
+  _pp_repo=$(_prov_gh_retry gh repo view --json nameWithOwner --jq .nameWithOwner) || _pp_rc=$?
+  if [ "$_pp_rc" != 0 ] || [ -z "$_pp_repo" ]; then return 3; fi   # repository unresolved -> the QUERY failed
+  # The repository is interpolated into an API path: it must be exactly one owner/name (SWAS-924 security S1).
+  # A segment that is exactly `.` is refused too; a name that merely starts with a dot (.github) is a real repository.
+  case "$_pp_repo" in */*/*|*[!A-Za-z0-9._/-]*|*..*|/*|*/|./*|*/.) return 3 ;; */*) ;; *) return 3 ;; esac   # MUT-REPOSHAPE
+  _pp_rc=0
+  _run=$(_prov_gh_retry gh run list --repo "$_pp_repo" --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty') || _pp_rc=$?
   if [ "$_pp_rc" != 0 ]; then return 3; fi      # the QUERY failed — network/auth/unreachable forge
   [ -n "$_run" ] || return 0                    # query worked, no run for this SHA -> honest N/A (NEVER retried)
-  _pp_rc=0
+  case "$_run" in *[!0-9]*) return 3 ;; esac    # the run id is interpolated into an API path: digits only (S1)
+  _prov_jobs_paged "$_pp_repo" "$_run" || return 3
+  return 0
+}
+
+# _prov_jobs_paged <repo> <run-id> -> prints "<job-name>\t<conclusion>" lines (plus the attest line)
+# for every job of the run, read in pages of 30 (SWAS-924, design 2026-11-16-release-tag-probe-paging-924).
+# Page 1 prints `.total_count` as its FIRST line, removed here by POSITION (never by prefix: a job
+# may be named anything). The page count is ceil(total/30), capped by a CONSTANT (no env var: the
+# gate's environment must not soften it, the same reason the retry bound is a constant). Each page is
+# its own `_prov_gh_retry` invocation; the loop STOPS at the first failing page, so the attempt count
+# the cure text shows is the failing page's. The collected job lines, counted without the attest
+# line, must equal the total or the answer is incomplete (rc 3). Output is printed ONCE, at the end.
+_PP_PAGE_CAP=34
+_prov_jobs_paged() {
+  _pp_nl='
+'
   # SWAS-813 E7: also the conclusion of the image attest STEP (a job that ran can still have skipped its attest step), as one more line `image-provenance/attest<TAB><conclusion>`.
-  _pp_out=$(_prov_gh_retry gh run view "$_run" --json jobs --jq '.jobs[] | (.name + "\t" + .conclusion), (select(.name == "image-provenance") | .steps[]? | select(.name == "Attest image provenance (digest-bound)") | "image-provenance/attest\t" + (.conclusion // ""))') || _pp_rc=$?
-  if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
+  _pp_jq_jobs='.jobs[] | (.name + "\t" + .conclusion), (select(.name == "image-provenance") | .steps[]? | select(.name == "Attest image provenance (digest-bound)") | "image-provenance/attest\t" + (.conclusion // ""))'
+  _pp_rc=0
+  _pp_p1=$(_prov_gh_retry gh api "repos/$1/actions/runs/$2/jobs?per_page=30&page=1" --jq ".total_count, ($_pp_jq_jobs)") || _pp_rc=$?
   if [ "$_pp_rc" != 0 ]; then return 3; fi
+  _pp_total=$(printf '%s\n' "$_pp_p1" | sed -n 1p)
+  _pp_all=$(printf '%s\n' "$_pp_p1" | sed 1d)
+  case "$_pp_total" in
+    ''|*[!0-9]*|0?*) return 3 ;;                # missing / non-numeric / leading-zero total
+  esac
+  [ "${#_pp_total}" -le 6 ] || return 3
+  if [ "$_pp_total" = 0 ]; then return 0; fi    # a run with no jobs: honest N/A, prints nothing
+  _pp_pages=$(( (_pp_total + 29) / 30 ))   # MUT-PAGEONE
+  if [ "$_pp_pages" -gt "$_PP_PAGE_CAP" ]; then return 3; fi
+  _pp_p=2
+  while [ "$_pp_p" -le "$_pp_pages" ]; do
+    _pp_rc=0
+    _pp_pg=$(_prov_gh_retry gh api "repos/$1/actions/runs/$2/jobs?per_page=30&page=$_pp_p" --jq "$_pp_jq_jobs") || _pp_rc=$?
+    if [ "$_pp_rc" != 0 ]; then return 3; fi   # first failing page ends the read
+    if [ -z "$_pp_all" ]; then _pp_all=$_pp_pg; elif [ -n "$_pp_pg" ]; then _pp_all="$_pp_all$_pp_nl$_pp_pg"; fi
+    _pp_p=$((_pp_p + 1))
+  done
+  _pp_cnt=$(printf '%s\n' "$_pp_all" | awk -F'\t' '$0 != "" && $1 != "image-provenance/attest" { n++ } END { print n + 0 }')
+  [ "$_pp_cnt" = "$_pp_total" ] || return 3   # MUT-PAGESUM
+  printf '%s\n' "$_pp_all"
   return 0
 }
 
@@ -1306,7 +1355,9 @@ selftest() {
   # FAILED" (ruling D-240811-2.1: the forge-unreachable arm must degrade LOUD). stdout stays the
   # data channel; the RETURN CODE becomes the health channel (0 = healthy, 3 = query failed).
   # Every arm is seam-drivable — the seam mirrors the gh arms exactly (`exit 7` <-> query failed,
-  # `true` <-> empty-success/N/A, `printf` data <-> a healthy probe) — so no fixture mocks gh.
+  # `true` <-> empty-success/N/A, `printf` data <-> a healthy probe). The PG-PAGED* cells further down
+  # are the exception: they use a stub `gh` first on PATH, in a subshell, because the defect (SWAS-924,
+  # the HTTP 502 on a ~95-job run) was in the default gh path, which the seam cells cannot reach.
   #
   # PG-PROBE-RC: the protocol itself, asserted directly on prov_probe.
   _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE='exit 7' prov_probe ) || _pprc=$?
@@ -1413,6 +1464,216 @@ selftest() {
     echo "FAIL: PG-PROBE-RETRY-envcontrol — the override banner changed:"; printf '  got:  %s\n  want: %s\n' "$_pbout" "$_pbwant"; st=1
   fi
   rm -rf "$_rt" 2>/dev/null || true
+
+  # ── PG-PAGED* (SWAS-924): the DEFAULT gh arm of prov_probe, which the seam cells above cannot reach.
+  # `gh run view --json jobs` asked for per_page=100 and GitHub answered HTTP 502 for a ~95-job run,
+  # so the probe read pages of 30 instead. These cells put a STUB `gh` first on PATH, inside a
+  # subshell (the stub never leaks to a later cell). The stub CHECKS ITS OWN ARGUMENTS: `repo view`;
+  # `run list --repo owner/repo`; and `api` with exactly `per_page=30&page=N`. It answers from per-cell
+  # fixture files, ALREADY FILTERED (a stub cannot run the real --jq, which is proved live only: page 1
+  # starts with the total line), and logs each page asked for in `calls` so a cell can assert "no
+  # page 3 call". The stub exits 9 on any argument it did not expect, so a wrong call reads as rc 3.
+  _pgs="$t/pgs"; mkdir -p "$_pgs/bin"
+  _pgs_tab=$(printf '\t')
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'd=$PGSTUB_DIR' \
+    'case "$1 $2" in' \
+    '  "repo view") cat "$d/repo"; exit 0 ;;' \
+    '  "run list")' \
+    '    shift 2; want=0; echo x >> "$d/runlist"' \
+    '    while [ "$#" -gt 0 ]; do' \
+    '      if [ "$1" = --repo ] && [ "${2:-}" = owner/repo ]; then want=1; fi' \
+    '      shift' \
+    '    done' \
+    '    [ "$want" = 1 ] || exit 9' \
+    '    if [ -f "$d/runid" ]; then cat "$d/runid"; else echo 4242; fi; exit 0 ;;' \
+    'esac' \
+    '[ "$1" = api ] || exit 9' \
+    'echo "$2" >> "$d/apiargs"' \
+    'case "$2" in' \
+    '  "repos/owner/repo/actions/runs/4242/jobs?per_page=30&page="*) n=${2##*page=} ;;' \
+    '  *) exit 9 ;;' \
+    'esac' \
+    'echo "$n" >> "$d/calls"' \
+    'if [ "$(cat "$d/failpage" 2>/dev/null)" = "$n" ]; then' \
+    '  if [ "$(cat "$d/failmode")" = always ] || [ ! -f "$d/failed" ]; then : > "$d/failed"; exit 22; fi' \
+    'fi' \
+    'cat "$d/page$n" || exit 9' \
+    > "$_pgs/bin/gh"
+  chmod +x "$_pgs/bin/gh"
+  _pgs_jobs() { awk -v a="$1" -v b="$2" 'BEGIN { for (i = a; i <= b; i++) printf "job-%d\tsuccess\n", i }'; }
+  _pgs_fx() { _pgs_d="$_pgs/$1"; mkdir -p "$_pgs_d"; printf 'owner/repo\n' > "$_pgs_d/repo"; : > "$_pgs_d/calls"; }
+  # 65 jobs in three pages; `provenance`, `image-provenance` and the attest line sit on page 3.
+  _pgs_full() {
+    { echo 65; _pgs_jobs 1 30; } > "$1/page1"
+    _pgs_jobs 31 60 > "$1/page2"
+    { _pgs_jobs 61 63; printf 'provenance\tsuccess\nimage-provenance\tsuccess\nimage-provenance/attest\tsuccess\n'; } > "$1/page3"
+  }
+  # a total of 65 but page 2 returns only 20 jobs; `provenance` is on page 1 (so a probe that skips the sum check still sees it).
+  _pgs_short() {
+    { echo 65; printf 'provenance\tsuccess\n'; _pgs_jobs 2 30; } > "$1/page1"
+    _pgs_jobs 31 50 > "$1/page2"
+    _pgs_jobs 61 63 > "$1/page3"
+  }
+  _pgs_probe() { # <fixture-dir> -> _pgs_rc, _pgs_out
+    _pgs_rc=0
+    _pgs_out=$( unset RELEASE_TAG_PROV_PROBE; PATH="$_pgs/bin:$PATH"; PGSTUB_DIR="$1"; export PGSTUB_DIR; RELEASE_SHA=0123456789abcdef; _PP_BACKOFF=0; prov_probe 2>/dev/null ) || _pgs_rc=$?
+  }
+  _pgs_calls() { tr '\n' ' ' < "$1/calls"; }
+  _pgs_nlines() { printf '%s\n' "$1" | awk 'NF { n++ } END { print n + 0 }'; }
+  _pgs_dups() { printf '%s\n' "$1" | awk 'NF' | cut -f1 | sort | uniq -d; }
+
+  # PG-PAGED: 65 jobs over three pages -> 65 job lines + the attest line, each name once, rc 0.
+  _pgs_fx pgp; _pgs_full "$_pgs_d"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 0 ] && [ "$(_pgs_nlines "$_pgs_out")" = 66 ] && [ -z "$(_pgs_dups "$_pgs_out")" ] \
+     && printf '%s\n' "$_pgs_out" | grep -qx "provenance${_pgs_tab}success" \
+     && printf '%s\n' "$_pgs_out" | grep -qx "image-provenance/attest${_pgs_tab}success" \
+     && [ "$(_pgs_calls "$_pgs_d")" = "1 2 3 " ]; then
+    echo "PASS: prov_probe — a 65-job run is read in three pages of 30 (65 jobs + the attest line, each name once, rc 0)"
+  else
+    echo "FAIL: PG-PAGED (rc=$_pgs_rc lines=$(_pgs_nlines "$_pgs_out") calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-60: an exact multiple of 30 -> two pages, no third call.
+  _pgs_fx pgp60
+  { echo 60; _pgs_jobs 1 30; } > "$_pgs_d/page1"; _pgs_jobs 31 60 > "$_pgs_d/page2"
+  _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 0 ] && [ "$(_pgs_nlines "$_pgs_out")" = 60 ] && [ "$(_pgs_calls "$_pgs_d")" = "1 2 " ]; then
+    echo "PASS: prov_probe — 60 jobs (an exact multiple of 30) read in two pages, no third call"
+  else
+    echo "FAIL: PG-PAGED-60 (rc=$_pgs_rc lines=$(_pgs_nlines "$_pgs_out") calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-FAIL: page 2 fails every time -> rc 3 and the loop STOPS (no page 3 call).
+  _pgs_fx pgpf; _pgs_full "$_pgs_d"; printf '2\n' > "$_pgs_d/failpage"; printf 'always\n' > "$_pgs_d/failmode"
+  _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 3 ] && ! grep -qx 3 "$_pgs_d/calls" && [ "$(_pgs_calls "$_pgs_d")" = "1 2 2 2 " ]; then
+    echo "PASS: prov_probe — a page that keeps failing returns rc 3 and no later page is asked for"
+  else
+    echo "FAIL: PG-PAGED-FAIL (rc=$_pgs_rc calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-TRANSIENT: page 2 fails once, then answers -> all 65 jobs, each name once, rc 0.
+  _pgs_fx pgpt; _pgs_full "$_pgs_d"; printf '2\n' > "$_pgs_d/failpage"; printf 'once\n' > "$_pgs_d/failmode"
+  _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 0 ] && [ "$(_pgs_nlines "$_pgs_out")" = 66 ] && [ -z "$(_pgs_dups "$_pgs_out")" ] \
+     && [ "$(_pgs_calls "$_pgs_d")" = "1 2 2 3 " ]; then
+    echo "PASS: prov_probe — a page that fails once and then answers is retried on its own (65 jobs, each name once)"
+  else
+    echo "FAIL: PG-PAGED-TRANSIENT (rc=$_pgs_rc lines=$(_pgs_nlines "$_pgs_out") calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-SHORT: page 2 returns 20 jobs, not 30 -> the sum check refuses (rc 3).
+  _pgs_fx pgps; _pgs_short "$_pgs_d"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 3 ]; then
+    echo "PASS: prov_probe — pages that do not sum to the total are refused (rc 3, the sum check)"
+  else
+    echo "FAIL: PG-PAGED-SHORT (rc=$_pgs_rc out='$_pgs_out') — an incomplete read was accepted"; st=1
+  fi
+  # PG-PAGED-CAP: a total of 1021 (past the 34-page cap) -> rc 3, only page 1 was asked for.
+  _pgs_fx pgpc; { echo 1021; _pgs_jobs 1 30; } > "$_pgs_d/page1"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 3 ] && [ "$(_pgs_calls "$_pgs_d")" = "1 " ]; then
+    echo "PASS: prov_probe — a total past the page cap is rc 3 with no page call beyond page 1"
+  else
+    echo "FAIL: PG-PAGED-CAP (rc=$_pgs_rc calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-ZERO: a total of 0 -> empty output, rc 0 (the honest N/A).
+  _pgs_fx pgpz; echo 0 > "$_pgs_d/page1"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 0 ] && [ -z "$_pgs_out" ] && [ "$(_pgs_calls "$_pgs_d")" = "1 " ]; then
+    echo "PASS: prov_probe — a run with a total of 0 jobs is an empty rc 0 (honest N/A)"
+  else
+    echo "FAIL: PG-PAGED-ZERO (rc=$_pgs_rc out='$_pgs_out' calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-REPO: `repo view` answers empty -> rc 3, and no jobs query was made.
+  _pgs_fx pgpr; : > "$_pgs_d/repo"; _pgs_full "$_pgs_d"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 3 ] && [ -z "$_pgs_out" ] && [ ! -s "$_pgs_d/calls" ]; then
+    echo "PASS: prov_probe — an unresolved repository is rc 3 (no jobs query made)"
+  else
+    echo "FAIL: PG-PAGED-REPO (rc=$_pgs_rc out='$_pgs_out' calls='$(_pgs_calls "$_pgs_d")')"; st=1
+  fi
+  # PG-PAGED-RUNID (SWAS-924 security S1): a run id that is not all digits -> rc 3, and no `api` call.
+  _pgs_fx pgpi; _pgs_full "$_pgs_d"; printf '12a\n' > "$_pgs_d/runid"; _pgs_probe "$_pgs_d"
+  if [ "$_pgs_rc" = 3 ] && [ -z "$_pgs_out" ] && [ ! -e "$_pgs_d/apiargs" ] && [ -s "$_pgs_d/runlist" ]; then
+    echo "PASS: prov_probe — a non-numeric run id is rc 3 (no api call made)"
+  else
+    echo "FAIL: PG-PAGED-RUNID (rc=$_pgs_rc out='$_pgs_out')"; st=1
+  fi
+  # PG-PAGED-REPOSHAPE (S1): a repository that is not exactly one owner/name -> rc 3, and no `run list` call.
+  # One bad value per pattern of the check; the stub logs `run list` BEFORE it matches its args, so a
+  # bad repo that reached `run list` is seen even though the stub then exits 9.
+  _pgs_n=0
+  for _pgs_bad in 'owner/repo/x' 'o/..' '/o' 'o/' 'o/r?x' 'or' './x' 'o/.'; do
+    _pgs_n=$((_pgs_n + 1))
+    _pgs_fx "pgpx$_pgs_n"; _pgs_full "$_pgs_d"; printf '%s\n' "$_pgs_bad" > "$_pgs_d/repo"; _pgs_probe "$_pgs_d"
+    if [ "$_pgs_rc" = 3 ] && [ -z "$_pgs_out" ] && [ ! -e "$_pgs_d/runlist" ] && [ ! -e "$_pgs_d/apiargs" ]; then
+      echo "PASS: prov_probe — repository '$_pgs_bad' is rc 3 (no run list call made)"
+    else
+      echo "FAIL: PG-PAGED-REPOSHAPE '$_pgs_bad' (rc=$_pgs_rc out='$_pgs_out')"; st=1
+    fi
+  done
+  # ...and the positive face: a name that merely starts with a dot is a real repository and proceeds to `run list`.
+  _pgs_fx pgpxok; _pgs_full "$_pgs_d"; printf 'owner/.github\n' > "$_pgs_d/repo"; _pgs_probe "$_pgs_d"
+  if [ -s "$_pgs_d/runlist" ]; then
+    echo "PASS: prov_probe — repository 'owner/.github' passes the shape check (run list reached)"
+  else
+    echo "FAIL: PG-PAGED-REPOSHAPE-dot — 'owner/.github' was refused by the shape check"; st=1
+  fi
+  # M-PAGED-ONE / M-PAGED-NOSUM: copies of this script with one marked line replaced, run as the real
+  # --provenance-only route under enforce with the stub gh. The intact route and the mutant must
+  # DISAGREE: ONE reads page 1 only (PG-PAGED's 65 jobs then fail the sum, so the route refuses);
+  # NOSUM drops the sum check (PG-PAGED-SHORT's incomplete read is then accepted).
+  d="$t/pgsmut"; _pg_mk "$d" 0 apply n/a apply n/a
+  mkdir -p "$d/.kit"; printf 'RELEASE_TAG_PROVENANCE=enforce\n' > "$d/.kit/dials.conf"
+  _pgs_route() { # <script> <fixture-dir> -> _pgs_rc
+    _pgs_rc=0
+    ( cd "$d" && unset RELEASE_TAG_PROV_PROBE && PATH="$_pgs/bin:$PATH" PGSTUB_DIR="$2" RELEASE_TAG_CI_GATES="$here/../conformance/ci-gates.sh" sh "$1" --provenance-only >/dev/null 2>&1 ) || _pgs_rc=$?
+  }
+  sed '/# MUT-PAGEONE$/s/.*/  _pp_pages=1/' "$here/release-tag.sh" > "$t/relmut-pgone.sh"
+  sed '/# MUT-PAGESUM$/s/.*/  :/' "$here/release-tag.sh" > "$t/relmut-pgsum.sh"
+  if cmp -s "$here/release-tag.sh" "$t/relmut-pgone.sh" || cmp -s "$here/release-tag.sh" "$t/relmut-pgsum.sh"; then
+    echo "FAIL: M-PAGED-ONE/M-PAGED-NOSUM did not apply (the sed expression matched nothing)"; st=1
+  elif ! sh -n "$t/relmut-pgone.sh" 2>/dev/null || ! sh -n "$t/relmut-pgsum.sh" 2>/dev/null; then
+    echo "FAIL: M-PAGED-ONE/M-PAGED-NOSUM does not parse (a mutant that cannot run would read as killed)"; st=1
+  else
+    _pgs_fx m1a; _pgs_full "$_pgs_d"; _pgs_route "$here/release-tag.sh" "$_pgs_d"; _pgs_irc=$_pgs_rc
+    _pgs_fx m1b; _pgs_full "$_pgs_d"; _pgs_route "$t/relmut-pgone.sh" "$_pgs_d"; _pgs_mrc=$_pgs_rc
+    if [ "$_pgs_irc" = 0 ] && [ "$_pgs_mrc" = 1 ]; then
+      echo "PASS: M-PAGED-ONE — the intact route passes a 3-page run (rc 0); the mutant that reads page 1 only is refused (rc 1)"
+    else
+      echo "FAIL: M-PAGED-ONE (intact rc=$_pgs_irc, mutant rc=$_pgs_mrc; want 0 and 1)"; st=1
+    fi
+    _pgs_fx m2a; _pgs_short "$_pgs_d"; _pgs_route "$here/release-tag.sh" "$_pgs_d"; _pgs_irc=$_pgs_rc
+    _pgs_fx m2b; _pgs_short "$_pgs_d"; _pgs_route "$t/relmut-pgsum.sh" "$_pgs_d"; _pgs_mrc=$_pgs_rc
+    if [ "$_pgs_irc" = 1 ] && [ "$_pgs_mrc" = 0 ]; then
+      echo "PASS: M-PAGED-NOSUM — the intact route refuses a short read (rc 1); the mutant without the sum check accepts it (rc 0)"
+    else
+      echo "FAIL: M-PAGED-NOSUM (intact rc=$_pgs_irc, mutant rc=$_pgs_mrc; want 1 and 0)"; st=1
+    fi
+    # M-PAGED-REPOSHAPE: the shape check deleted. A bad repo then reaches `run list`; the intact route
+    # never gets there (compared on the stub's `runlist` log, since both routes refuse with rc 1).
+    sed '/# MUT-REPOSHAPE$/s/.*/  :/' "$here/release-tag.sh" > "$t/relmut-pgrepo.sh"
+    if cmp -s "$here/release-tag.sh" "$t/relmut-pgrepo.sh" || ! sh -n "$t/relmut-pgrepo.sh" 2>/dev/null; then
+      echo "FAIL: M-PAGED-REPOSHAPE did not apply or does not parse"; st=1
+    else
+      _pgs_fx m4a; _pgs_full "$_pgs_d"; printf 'owner/repo/x\n' > "$_pgs_d/repo"; _pgs_route "$here/release-tag.sh" "$_pgs_d"; _pgs_irl=0; [ -e "$_pgs_d/runlist" ] && _pgs_irl=1
+      _pgs_fx m4b; _pgs_full "$_pgs_d"; printf 'owner/repo/x\n' > "$_pgs_d/repo"; _pgs_route "$t/relmut-pgrepo.sh" "$_pgs_d"; _pgs_mrl=0; [ -e "$_pgs_d/runlist" ] && _pgs_mrl=1
+      if [ "$_pgs_irl" = 0 ] && [ "$_pgs_mrl" = 1 ]; then
+        echo "PASS: M-PAGED-REPOSHAPE — the intact route never reaches run list with a bad repo; the mutant without the shape check does"
+      else
+        echo "FAIL: M-PAGED-REPOSHAPE (intact reached run list=$_pgs_irl, mutant=$_pgs_mrl; want 0 and 1)"; st=1
+      fi
+    fi
+    # M-PAGED-ONE-NOSUM: both lines mutated, so nothing refuses the page-1-only read; the route must
+    # STILL refuse because `provenance` sits on page 3 (the verdict machinery's absent-job arm).
+    sed -e '/# MUT-PAGEONE$/s/.*/  _pp_pages=1/' -e '/# MUT-PAGESUM$/s/.*/  :/' "$here/release-tag.sh" > "$t/relmut-pgboth.sh"
+    if cmp -s "$here/release-tag.sh" "$t/relmut-pgboth.sh" || ! sh -n "$t/relmut-pgboth.sh" 2>/dev/null; then
+      echo "FAIL: M-PAGED-ONE-NOSUM did not apply or does not parse"; st=1
+    else
+      _pgs_fx m3b; _pgs_full "$_pgs_d"; _pgs_route "$t/relmut-pgboth.sh" "$_pgs_d"
+      if [ "$_pgs_rc" = 1 ]; then
+        echo "PASS: M-PAGED-ONE-NOSUM — page 1 only with no sum check is still refused (rc 1): provenance on page 3 is missing"
+      else
+        echo "FAIL: M-PAGED-ONE-NOSUM (mutant rc=$_pgs_rc; want 1)"; st=1
+      fi
+    fi
+  fi
 
   # PG-QFAIL-OBS / PG-QFAIL-ENF (THE RULED PRE-CHECK, both faces): the measured NO-OP cured. A
   # provenance query that FAILS is LOUD in observe (rc unchanged) and REFUSES in enforce.

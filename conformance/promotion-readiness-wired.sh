@@ -1391,7 +1391,7 @@ PATH_EOF
     _gov_mut "GOV-M1: a subject's glob leaf removed from _CP8B_GLOB_LEAVES" core '/^_CP8B_GLOB_LEAVES=/ s@ templates/DECISIONS-TEMPLATE\.md@@'
     _gov_mut "GOV-M2: the _LC pathhit leg for a subject removed (the fold direction)" core '/^_CP8B_PATHHIT_T1_LC=/ s@decisions-template|@@'
     _gov_mut "GOV-M3: a phantom subject appended to _GOV_SUBJECT_CORPUS that no site carries" core "/^_GOV_SUBJECT_CORPUS=/ s@'\$@ templates/PHANTOM-TEMPLATE.md'@"
-    _gov_mut "GOV-M4: a phantom name appended to the incept 'for _t in …' loop -> re-derivation REDs" incept '/for _t in / s@ WAIVER-REGISTER;@ WAIVER-REGISTER PHANTOM-GOV;@'
+    _gov_mut "GOV-M4: a phantom name appended to the incept 'for _t in …' loop -> re-derivation REDs" incept '/for _t in / s@ UAT-SIGNOFF;@ UAT-SIGNOFF PHANTOM-GOV;@'
     _gov_mut "GOV-M5: a subject's tool-route arm removed from _cpp_kitowned" core '/^    templates\/decisions-template\.md|\*\/templates\/decisions-template\.md|\\$/d'
     # Set-3 derivation mutants: prove the oracle READS its two sources. A phantom templates/* row on a
     # COPY of doc-markers.tsv (M6) and a phantom name on a COPY of _cm_named (M7) each derive a member

@@ -133,7 +133,7 @@ A repo-only rule that sent the public kit URL to a mirror no longer applies to `
 
 ## Progress, the estimate and `--quick`
 
-A full run on a real tree takes tens of minutes, so doctor says where it is. **Everything below is on stderr**; stdout is
+A full run takes 25-50 min on an adopter tree [estimate, the 2026-10-14 field run; it may be low], so doctor says where it is. **Everything below is on stderr**; stdout is
 byte-identical to a run without it. A `--selftest-e2e` run stays silent.
 
 ```
@@ -157,12 +157,12 @@ doctor: finished in 41m31s
   `conformance FAIL`, never PASS.
 - **The estimate is a dated sentence, not a computation.** Doctor mutates nothing, so it cannot remember an earlier run. The
   figures are 25-50 min on an adopter tree (verify alone) and 55-95 min on the kit's own tree (verify, then a claims registry
-  that runs the guard battery again). **Re-measure them at each MINOR** from the `done in` lines of a real run and change the
+  that runs the guard battery again). Neither has been re-measured since 2026-10-14 (adopter tree) and 2026-10-15 (kit tree); they may be low (one measured CI run with the full battery took 69 min 24 s [measured on a cold adoption of v3.247.0, 2026-11-15 UTC, n = 1]). **Re-measure them at each MINOR** from the `done in` lines of a real run and change the
   sentence in `scripts/doctor.sh` (`_pg_announce`) and the figures here together.
 
 **`--quick`** skips exactly two steps, conformance and claims, and still runs git, kit-update, permissions, the tracker
-credential line and the forge identity line. It prints its own estimate (`doctor: --quick: N steps; estimate under 1 min
-(plus up to about 20 s of bounded tracker reads); conformance and claims are NOT run.`).
+credential line and the forge identity line. It took 3 s in one measured run [measured on a cold adoption of v3.247.0, 2026-11-15 UTC, n = 1, on a markdown-board project with no tracker reads]. It prints its own estimate (`doctor: --quick: N steps; estimate under 1 min
+(plus up to about 20 s of bounded tracker reads); conformance and claims are NOT run.`). The 20 s is a timeout limit, not a measurement.
 
 - The conformance row reads `UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)`. So does the
   claims row on a kit-marked tree. On an unmarked (adopter) tree claims stays `N/A (kit-self…)`, because the dimension does

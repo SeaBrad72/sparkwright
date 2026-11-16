@@ -15,7 +15,9 @@ Where setups differ, a line starts with Solo:, Team: or Jira:.
 
 Only a person does these. Each is one line.
 
-- `sh scripts/preflight.sh`, then `sh scripts/sparkwright doctor`.
+- `sh scripts/preflight.sh`, `sh scripts/sparkwright doctor`: full 25-50 min [estimate, 2026-10-14,
+  may be low]. `--quick`: status lines in 3 s [measured 2026-11-15, v3.247.0, n = 1], plus up to
+  about 20 s of tracker reads [timeout limit]; skips conformance. See `docs/operations/doctor.md`.
 - `/hooks` and `/status`, once per session: the guard hook is listed, Project settings is on.
 - The egress merge that preflight prints, into `~/.claude/settings.json`, once per machine.
 - `gh auth refresh -h github.com -s workflow`, so the agent may push workflow files.

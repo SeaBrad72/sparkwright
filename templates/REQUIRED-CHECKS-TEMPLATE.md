@@ -32,7 +32,7 @@ the five contexts it just installed — `ci` (every profile's CI job key), `cont
 (`adopter-gates.yml`) — so the gates the kit installs are the gates your protection requires. Bind
 them once after the first CI run with `sh scripts/branch-protection-apply.sh --replace` on an unprotected `main` (first time), `--apply` once it is protected; until then
 `inception-done` names the unbound ones. Adding this file by hand in a brownfield GitHub repo?
-Declare the same five if you installed those workflows. On GitLab this file stays a placeholder — its
+Declare the same five if you installed those workflows. A solo-declared repository (`MERGE_RELATIONSHIP=solo`) adds a sixth, `solo-go-bound` (`solo-go.yml`, installed too), by hand in a PR: with it declared and installed, `--replace` can write the solo-agent profile (`docs/adoption/vc-hosts.md`). On GitLab this file stays a placeholder — its
 names are GitHub check contexts; the protected-branch equivalent is adopter-owned
 (`docs/operations/ci-platforms.md`).
 
