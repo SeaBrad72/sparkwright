@@ -21,7 +21,7 @@ Only a person does these. Each is one line.
 - `/hooks` and `/status`, once per session: the guard hook is listed, Project settings is on.
 - The egress merge that preflight prints, into `~/.claude/settings.json`, once per machine.
 - `gh auth refresh -h github.com -s workflow`, so the agent may push workflow files.
-- `sh scripts/branch-protection-apply.sh --replace`, in a real terminal.
+- Admin, real terminal: `sh scripts/branch-protection-apply.sh --replace` (team: add `--team`).
 - Jira: make the two accounts and the token, then set the `KIT_TRACKER_USER` and
   `KIT_TRACKER_TOKEN` Actions secrets. If your own token is the CI reader, the tracker setup
   check prints FAIL by design: create the agent account.

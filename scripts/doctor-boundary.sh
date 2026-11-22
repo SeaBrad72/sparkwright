@@ -159,6 +159,8 @@ selftest() {
   _has "wired [doctor.sh --boundary]" 'sparkwright doctor --boundary (static leg'
   _has "wired [preflight leg]" 'FAIL boundary: OFF and UNDECLARED [static]'
   _has "wired [grader leg]" 'FAIL: boundary: denyRead lacks'
+  # SWAS-945 LB-D2: every grader line names the file or scope it graded, so a committed PASS and a merged FAIL cannot read as a contradiction. Red on the code before this PR (the line ended at its message).
+  _has "wired [grader leg names its file]" 'in the committed .claude/settings.json]'
   _has "wired [overall]" 'Overall: FAIL'
   _no "wired [overall]" 'Universal prerequisites'
   # M1 (R2): run from INSIDE scripts/ with a relative path, so a doctor.sh that forgot to cd to the project root before it routes would fail here

@@ -32,6 +32,12 @@
 #   are asserted globally regardless. Missing adapter.json / jq absent / unreadable level => FAIL
 #   (fail-closed — never a silent PASS).
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). Before run_gate's cd. No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 # B6 rider (a): resolve_backend is the shared, non-vacuous backend reader (conformance/backlog-lib.sh)
 # — sourced here the way its siblings (backlog-current.sh, backlog-presence.sh) already do, so this
 # gate's backlog leg reads the same declaration the board gates read, rather than a second, looser
@@ -56,6 +62,11 @@ CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
 # another directory uses the kit's copy.
 # Read only on the plan-limit path of the branch-protection leg, as `--active branch-protection-plan`.
 WAIVERS_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/waivers-valid.sh"
+# SWAS-945: the repo-class and repo-variable reads reach gh; they set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in run_gate's
+# parent shell, above the branch-protection leg, so its --raw child and the later reads inherit the pin). Resolved by $0's own dirname BEFORE run_gate's `cd`. A missing library means no probe: today's behaviour.
+_ID_GHTLS="$(dirname "$0")/../scripts/gh-tls.sh"
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_ID_GHTLS" ]; then . "$_ID_GHTLS"; fi
 
 # ── SWAS-769 — the two-stage Inception split. START-HERE.md's checklist is two lists, "Before your first slice" and
 # "Before your first production deploy"; every line there carries one `(id: …)` tag, and these two lists name the same
@@ -69,6 +80,9 @@ ID_FIRST_DEPLOY_IDS="slo envs oncall bia rb-deploy rb-rollback rb-dr rb-monitor"
 # ── SWAS-779 — the draft banner. Hard-coded HERE and never read from templates/INCEPTION-DRAFT-TEMPLATE.md, because an agent can edit that
 # template; selftest cell dr8 locks the two together. A ratified file that still carries this whole line was moved into place unread.
 ID_DRAFT_BANNER='> **DRAFT: inferred from the repository by an agent. Not ratified. A person reviews it and moves what is right into place.**'
+# SWAS-907 — the second banner, for the one greenfield draft written from the owner's words (docs/inception-draft/PROJECT-CLAUDE.md). The first line stays
+# unchanged, so no in-flight brownfield draft fails open. Double-quoted because the text holds an apostrophe; dr8 locks it against the template too.
+ID_DRAFT_BANNER_OWNER="> **DRAFT: written by an agent from the owner's words in session. Not ratified. A person reviews it and moves what is right into place.**"
 
 # _id_owed_spec <id> : sets _id_owf (the file the item lives in) and _id_owt (the template placeholder that, still
 # present, means the item is owed; empty = a presence read of the file alone). rc 1 for an id outside the first-deploy
@@ -456,6 +470,9 @@ fi
 #    -> a recorded CLAUDE.md attestation. No remote -> outstanding/fatal per mode. exit 1
 #    (verified-unprotected) is fatal in BOTH modes; unverifiable is fatal only in strict.
 MODE="${MODE:-strict}"
+# SWAS-945: the probe, once, in the parent shell, BEFORE the first gh read of the gate: the branch-protection.sh --raw child below inherits the pin, and so do the
+# gate-provenance reads after it (not when the INCEPTION_DONE_GH_CMD seam stands in for gh).
+if [ "$is_repo" -eq 1 ] && [ -z "${INCEPTION_DONE_GH_CMD:-}" ] && command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
 if [ "$is_repo" -ne 1 ]; then
   echo "SKIP: branch-protection leg — not a git repository (see the repo failure above)"
 else
@@ -600,6 +617,7 @@ else
     # repo/PR content, and there is no code path that lets a repository's own files set it. Same
     # tier as PREFLIGHT_GH_CMD (trusted-invocation-only; see that script's own SECURITY header).
     _id_gh_json=""
+    # SWAS-945: the pin was set once, above the branch-protection leg, so these reads inherit it.
     if [ -n "${INCEPTION_DONE_GH_CMD:-}" ] || command -v gh >/dev/null 2>&1; then
       _id_gh_json=$(${INCEPTION_DONE_GH_CMD:-gh repo view --json isPrivate} 2>/dev/null) || _id_gh_json=""
     fi
@@ -703,7 +721,7 @@ for _id_drf in CLAUDE.md docs/architecture/ADR-000-stack.md RUNBOOK.md BACKLOG.m
   [ -e "$_id_drf" ] || [ -L "$_id_drf" ] || continue
   _id_drr=0
   if [ ! -r "$_id_drf" ]; then _id_drr=2
-  else tr -d '\r' < "$_id_drf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -e "$ID_DRAFT_BANNER" || _id_drr=$?   # MUT-DRBANNER
+  else tr -d '\r' < "$_id_drf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -e "$ID_DRAFT_BANNER" -e "$ID_DRAFT_BANNER_OWNER" || _id_drr=$?   # MUT-DRBANNER
   fi
   case "$_id_drr" in
     0) _id_dremit "$_id_drf still carries the draft banner line; a person reviews it, edits it and removes the banner" ;;
@@ -1108,8 +1126,32 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_has "Verify now: sh conformance/inception-done.sh --surface"
   st_has "Verify when a protected remote exists: sh conformance/inception-done.sh"
   st_hasnt "Verify: sh conformance/inception-done.sh"
+  # SWAS-907 C4: each pre-baseline step names its actor and the one draft; the push names the agent and the read-back.
+  st_has "One draft carries CLAUDE.md §1 (charter: problem, vision, success metrics, scope), §3 (per-project config: autonomy tiers, SLO, operator fluency, review routing, WIP) and §4 (roles): the agent writes docs/inception-draft/PROJECT-CLAUDE.md from your words; a person pastes all three into CLAUDE.md before the baseline commit"
+  st_has "the agent commits the baseline after your paste, then runs git push origin main and reads it back with git ls-remote --heads origin main"
+  st_has "done in step 1's draft and pasted before the baseline commit"
+  st_has "the guard refuses the agent's own write to CLAUDE.md (Edit, Write or a shell write); later edits go through a dev clone and a PR"
+  # SWAS-907 R1 order: the draft-and-paste text comes before the baseline commit step.
+  _ln_draft=$(printf '%s\n' "$OUT" | grep -n "a person pastes all three into CLAUDE.md before the baseline commit" | head -n 1 | cut -d: -f1)
+  _ln_commit0=$(printf '%s\n' "$OUT" | grep -n "Commit the incepted baseline" | head -n 1 | cut -d: -f1)
+  if [ -n "$_ln_draft" ] && [ -n "$_ln_commit0" ] && [ "$_ln_draft" -lt "$_ln_commit0" ]; then
+    echo "GOOD: epilogue order — draft-and-paste ($_ln_draft) < baseline commit ($_ln_commit0)"
+  else
+    echo "BAD : epilogue ORDER wrong — draft=$_ln_draft commit=$_ln_commit0 (the draft-and-paste text must precede the baseline commit)"
+    st_fail=1
+  fi
+  # SWAS-907 R2: the protect step branches on the governance answer, as new.sh's owed line does.
+  _OUT_SAVE=$OUT
+  OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --team team 2>&1 )
+  st_has "scripts/branch-protection-apply.sh --replace --team on an unprotected main"
+  st_has "in a real terminal, with an admin credential (docs/operations/forge-identity-switch.md, step 5)"
+  OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --team solo 2>&1 )
+  st_has "scripts/branch-protection-apply.sh --replace on an unprotected main"
+  st_hasnt "--replace --team"
+  OUT=$_OUT_SAVE
   # SWAS-316: the closing output tells the person where to launch the agent session (the guard loads only from the launch directory).
-  st_has "Start your agent session here: cd "
+  # SWAS-934 E1: the label is a whole line of its own; the command is the next line (the cells below read it).
+  if printf '%s\n' "$OUT" | grep -qxF "Start your agent session here:"; then echo "    ok  : the launch label is a line of its own"; else echo "    FAIL: the closing output lacks the whole line 'Start your agent session here:'"; st_fail=1; fi
   # Review Minor 1: ORDER is part of the claim ("says the right things in the right ORDER") — the
   # commit step must precede "Verify now", which must precede the strict line. Presence alone
   # passed a mutation that relocated the commit step after the verify lines; these line-number
@@ -1124,6 +1166,92 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
     echo "BAD : epilogue ORDER wrong — commit=$_ln_commit verify-now=$_ln_snow strict=$_ln_strict (commit step must come first, staged verify lines after, strict last)"
     st_fail=1
   fi
+  # SWAS-934: the relaunch line. Every cell drives the same argument-borne seam (--names, --root); no environment variable selects a form.
+  _rl_has() {
+    case "$OUT" in
+      *"$2"*) echo "PASS: $1: $3" ;;
+      *) echo "FAIL: $1: $3 (missing '$2')"; st_fail=1 ;;
+    esac
+  }
+  _rl_hasnt() {
+    case "$OUT" in
+      *"$2"*) echo "FAIL: $1: $3 (found '$2')"; st_fail=1 ;;
+      *) echo "PASS: $1: $3" ;;
+    esac
+  }
+  _rl_cmdline() {  # -> the line right after the whole-line label, exactly as printed
+    printf '%s\n' "$OUT" | awk 'p { print; exit } $0 == "Start your agent session here:" { p = 1 }'
+  }
+  _rl_split() {  # <id> <command-shape> : the label is its own line, the next line holds only the command, and the note follows it
+    if printf '%s\n' "$OUT" | grep -qxF "Start your agent session here:"; then echo "PASS: $1: the label is a line of its own"; else echo "FAIL: $1: the label is not a line of its own"; st_fail=1; fi
+    _rs_cmd=$(_rl_cmdline)
+    case "$_rs_cmd" in
+      "  cd '"*"$2") echo "PASS: $1: the next line holds only the command" ;;
+      *) echo "FAIL: $1: the line under the label is not only the command ('$_rs_cmd')"; st_fail=1 ;;
+    esac
+    _rs_note=$(printf '%s\n' "$OUT" | awk 'p { print; exit } $0 == "Start your agent session here:" { getline; p = 1 }')
+    case "$_rs_note" in
+      "(Not a parent or a subfolder: the guard loads only from the launch directory.)") echo "PASS: $1: the note follows the command" ;;
+      *) echo "FAIL: $1: the note does not follow the command ('$_rs_note')"; st_fail=1 ;;
+    esac
+  }
+  _rl_paste() {  # <id> <names, space list or empty> : the command line under the label, exactly as printed, parses and runs for real into a stub claude (E1)
+    _pb=$(mktemp -d); mkdir -p "$_pb/bin" "$_pb/cwd"
+    printf '%s\n' '#!/bin/sh' 'pwd -P' 'for _n in CLAUDE_CONFIG_DIR GH_CONFIG_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM; do' '  eval "_v=\${$_n:-}"' '  if [ -n "$_v" ]; then printf "set:%s\n" "$_n"; fi' 'done' > "$_pb/bin/claude"; chmod +x "$_pb/bin/claude"
+    _pr="$_pb/it's \"q\" \$(touch PWNED) \`touch PWNED2\`"; mkdir -p "$_pr"
+    if [ -n "$2" ]; then OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --root "$_pr" --names "$2" 2>&1 ); else OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --root "$_pr" 2>&1 ); fi
+    _rl_cmdline > "$_pb/line.sh"
+    if [ -s "$_pb/line.sh" ] && sh -n "$_pb/line.sh" 2>/dev/null; then echo "PASS: $1: the command line, as printed, parses"; else echo "FAIL: $1: the command line, as printed, does not parse"; st_fail=1; fi
+    _pout=$( cd "$_pb/cwd" && env PATH="$_pb/bin:$PATH" CLAUDE_CONFIG_DIR=sentinel-p-1 GH_CONFIG_DIR=sentinel-p-2 sh "$_pb/line.sh" 2>&1 ) || true
+    _pwant=$( cd "$_pr" && pwd -P )
+    case "$_pout" in
+      "$_pwant"*) echo "PASS: $1: run for real, it lands in the hostile root" ;;
+      *) echo "FAIL: $1: it did not land in the root (stub says '$_pout')"; st_fail=1 ;;
+    esac
+    if [ -n "$2" ]; then
+      case "$_pout" in
+        *"set:CLAUDE_CONFIG_DIR"*"set:GH_CONFIG_DIR"*) echo "PASS: $1: the recorded names arrive set" ;;
+        *) echo "FAIL: $1: the recorded names did not arrive set ('$_pout')"; st_fail=1 ;;
+      esac
+    fi
+    if [ ! -e "$_pb/cwd/PWNED" ] && [ ! -e "$_pb/cwd/PWNED2" ]; then echo "PASS: $1: no command inside the root's name ran"; else echo "FAIL: $1: a command inside the root's name ran"; st_fail=1; fi
+    rm -rf "$_pb"
+  }
+  echo "--- (m-relaunch) the plain form: the label on its own line, then only the command ---"
+  _rl_split relaunch-plain " && claude"
+  _rl_has relaunch-plain "Then check, once: /hooks lists a PreToolUse hook running .claude/hooks/guard.sh, and /status shows Project settings on its Setting sources line." "the /hooks and /status line follows"
+  _rl_hasnt relaunch-plain "env -i" "no redirected form without names"
+  echo "--- (m-relaunch) the redirected form: references, never values ---"
+  OUT=$( env CLAUDE_CONFIG_DIR=sentinel-c-5d2f GH_CONFIG_DIR=sentinel-g-5d2f sh "$ROOT/scripts/incept.sh" __emit-epilogue --names "CLAUDE_CONFIG_DIR GH_CONFIG_DIR" 2>&1 )
+  _rl_split relaunch-redirected " && env -i HOME=\"\$HOME\" PATH=\"\$PATH\" TERM=\"\$TERM\" CLAUDE_CONFIG_DIR=\"\$CLAUDE_CONFIG_DIR\" GH_CONFIG_DIR=\"\$GH_CONFIG_DIR\" claude"
+  _rl_has relaunch-redirected "This session runs with a redirected environment: CLAUDE_CONFIG_DIR GH_CONFIG_DIR. Paste the line below" "the sentence names the recorded variables"
+  _rl_has relaunch-redirected "sh scripts/preflight.sh names any of these that the new session lacks." "the check line points at preflight"
+  _rl_hasnt relaunch-redirected "GIT_CONFIG_GLOBAL" "a name that was not recorded is not carried"
+  _rl_hasnt relaunch-redirected "sentinel-" "no variable's value is in the output"
+  echo "--- (m-relaunch) paste: each form's command line, as printed, parses and runs in the hostile root ---"
+  _rl_paste relaunch-paste-plain ""
+  _rl_paste relaunch-paste-redirected "CLAUDE_CONFIG_DIR GH_CONFIG_DIR"
+  echo "--- (m-relaunch) refusal: a root a human cannot read gets a notice, never a line to paste ---"
+  for _rc_case in newline cr bidi; do
+    case "$_rc_case" in
+      newline) _rr=$(printf 'a\nb') ;;
+      cr) _rr=$(printf 'a\rb') ;;
+      bidi) _rr=$(printf 'a\342\200\256b') ;;
+    esac
+    OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --root "$_rr" 2>&1 )
+    _rl_has "relaunch-refuse-$_rc_case" "the project root holds a control, bidi or zero-width character, so no line is printed to paste; cd into it by hand and start the session there." "the notice is printed"
+    _rl_hasnt "relaunch-refuse-$_rc_case" "Start your agent session here: cd " "no line to paste is printed"
+    if [ -z "$(_rl_cmdline)" ]; then echo "PASS: relaunch-refuse-$_rc_case: no command line follows the notice"; else echo "FAIL: relaunch-refuse-$_rc_case: a command line follows a label"; st_fail=1; fi
+    _rl_hasnt "relaunch-refuse-$_rc_case" "  cd '" "no indented command line is printed"
+  done
+  echo "--- (m-relaunch) a root that is not valid UTF-8: the notice or a correct line, never cd '' ---"
+  OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue --root "$(printf 'a\377b')" 2>&1 )
+  _rl_hasnt relaunch-invalid-utf8 "cd ''" "no empty-root line is printed"
+  case "$OUT" in
+    *"the project root holds a control, bidi or zero-width character"*) echo "PASS: relaunch-invalid-utf8 the notice is printed" ;;
+    *"  cd 'a"*) echo "PASS: relaunch-invalid-utf8 a line naming the root is printed" ;;
+    *) echo "FAIL: relaunch-invalid-utf8 neither the notice nor a line naming the root"; st_fail=1 ;;
+  esac
   fi
 
   # (n) B6 rider (a): an UNFILLED CHOICE-LIST backend declaration — CLAUDE.md's field still reads
@@ -1728,6 +1856,7 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   # (dr) SWAS-779 — the inception-drafts leg. Strict fails on a docs/inception-draft/ directory or on the draft banner (a whole line) in any of
   # the four ratified files; --surface reports each as OWED and does not fail on it. A missing file is no banner; an unreadable one fails.
   _dr_ban=$ID_DRAFT_BANNER
+  _dr_ban2=$ID_DRAFT_BANNER_OWNER
   _dr_fix() { # <name> -> a fixture with no draft directory and no banner anywhere
     _drx_p=$(st_mkfix "$1" claude-code); st_install_hook "$_drx_p"; rm -rf "$_drx_p/docs/inception-draft"
     printf '%s' "$_drx_p"
@@ -1781,9 +1910,22 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   if [ ! -f "$_dr_tp" ]; then
     echo "selftest n/a: (dr8) skipped — templates/INCEPTION-DRAFT-TEMPLATE.md is not in this tree"
   else
+    # SWAS-907: the template carries exactly two banner lines, the first then the owner's-words one, each equal to its literal.
     _dr_tl=$(grep -F -e '> **DRAFT:' "$_dr_tp" || true)
-    if [ "$_dr_tl" = "$_dr_ban" ]; then printf '    ok  : the template carries the one banner line, equal to the literal\n'; else printf '    BAD : the template banner [%s] differs from the literal (or it holds more than one such line)\n' "$_dr_tl"; st_fail=1; fi
+    _dr_tw=$(printf '%s\n%s' "$_dr_ban" "$_dr_ban2")
+    if [ "$_dr_tl" = "$_dr_tw" ]; then printf '    ok  : the template carries the two banner lines, each equal to its literal\n'; else printf '    BAD : the template banner lines [%s] differ from the two literals (or it holds another such line)\n' "$_dr_tl"; st_fail=1; fi
   fi
+  echo "--- (dr14) strict: a ratified file carrying the SECOND banner (owner's words) -> FAIL naming that file (SWAS-907 C5) ---"
+  d=$(_dr_fix dr14); printf '%s\n' "$_dr_ban2" >> "$d/CLAUDE.md"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — CLAUDE.md still carries the draft banner line"; st_hasnt "PASS: no inception draft remains"
+  st_has "FAIL: Inception-Done gate not satisfied"; st_rc 1
+  d=$(_dr_fix dr14b); printf '%s\r\n' "$_dr_ban2" > "$d/RUNBOOK.md"
+  st_run "$d" strict
+  st_has "FAIL: inception drafts unratified — RUNBOOK.md still carries the draft banner line"; st_hasnt "PASS: no inception draft remains"; st_rc 1
+  d=$(_dr_fix dr14c); printf 'note: %s\n' "$_dr_ban2" > "$d/RUNBOOK.md"
+  st_run "$d" strict
+  st_has "PASS: no inception draft remains"; st_hasnt "FAIL: inception drafts unratified"
   echo "--- (dr12) strict: a CRLF file carrying the banner, and a banner with spaces around it -> FAIL ---"
   d=$(_dr_fix dr12); printf '%s\r\n' "$_dr_ban" > "$d/RUNBOOK.md"
   st_run "$d" strict

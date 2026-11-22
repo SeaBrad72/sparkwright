@@ -32,6 +32,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# SWAS-945: the ruleset reads set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in check, before the first gh call).
+# We are in the tree root here. A missing library means no probe: today's behaviour.
+_mtp_ghtls=scripts/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_mtp_ghtls" ]; then . "$_mtp_ghtls"; fi
+
 PUBLISH_SCRIPT="scripts/publish-public.sh"
 
 # Single source (mirrors mirror-current.sh): the mirror URL is declared once, in publish-public.sh.
@@ -89,6 +95,7 @@ check() {
   _slug=$(mirror_slug) || return 1
   command -v gh >/dev/null 2>&1 || { echo "UNVERIFIED: gh is not installed — cannot read the tag ruleset on $_slug. This is NOT a pass."; return 2; }
   command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq is not installed — cannot parse rulesets. This is NOT a pass."; return 2; }
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, once, before the first gh call
 
   if ! _list=$(gh api "repos/$_slug/rulesets" 2>/dev/null); then
     echo "UNVERIFIED: could not read rulesets for $_slug (unauthenticated, or no admin scope). This is NOT a pass."

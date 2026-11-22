@@ -68,6 +68,12 @@
 #       (underivable base, unreasoned exclusion, uncommitted target) · 2 = bad usage. POSIX sh.
 #       --face: rc 0 = that face only (PARTIAL); --join gives the verdict.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 
 TAB=$(printf '\t')
 NL='

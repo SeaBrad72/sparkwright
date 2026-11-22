@@ -15,7 +15,7 @@ an older system Gradle would generate a wrapper that then fails every `./gradlew
 
 ```sh
 gradle wrapper --gradle-version 8.10 --distribution-type bin    # needs a local Gradle >= 8.5 to bootstrap
-git add gradlew gradle/ && git commit -m "chore: gradle wrapper"
+git add gradlew gradle/    # run before the baseline commit, so the wrapper is part of it (no separate commit)
 ```
 
 ## Layout

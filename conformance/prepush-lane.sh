@@ -3324,6 +3324,9 @@ tr_seed() {
   printf 'prepush-lane\t--census\t21\t2\n'
   printf 'citation-live\t\t10\t0\n'
   printf 'conformance-mass-budget\t\t48\t0\n'
+  # SWAS-930: ci-gates --selftest, ~124 s standalone [M, n=1, idle Mac, SWAS-903] so its ceiling is 1.5x (186 s) and it runs to its end marker; reds30 0 (a CI red row raises it by the max rule).
+  # Revisit: re-measure when ci-gates' _ST_SECTIONS change, or when a CI-GRADED ceiling row for it appears on any core (a killed run records no local row).
+  printf 'ci-gates\t--selftest\t124\t0\n'
 }
 
 # ---- the time table --------------------------------------------------------------------------------
@@ -3513,16 +3516,18 @@ tr_exec() {
     set -- $_a
     IFS=$_oi; set +f
     run_inv "$_cl" sh "conformance/$_b.sh" "$@"
+    _rcv=$RUN_RC; [ ! -e "${U_CTL:-$WORK/ctl}/wd.fired" ] || _rcv=143   # SWAS-930: the arm's own kill decides the verdict, whatever the killed unit's rc (a TERM trap exits 1 or even 0); report_inv still sees the real RUN_RC
     if [ "$_ncf" -eq 0 ]; then _rem=$((_rem - RUN_S)); if [ "$_rem" -lt 0 ]; then _rem=0; fi; fi
     _caprem=$((_caprem - RUN_S)); if [ "$_caprem" -lt 0 ]; then _caprem=0; fi
     TR_USED=$((TR_USED + RUN_S)); TR_RUNN=$((TR_RUNN+1))
-    case $RUN_RC in
+    _ra="sh $(qtok "conformance/$_b.sh")"; for _t in "$@"; do _ra="$_ra $(qtok "$_t")"; done   # SWAS-930: the standalone command, one quoted token each (as inv_log prints the argv)
+    case $_rcv in
       0) _tr_c=0; crash_ev_run || _tr_c=$?
          if [ "$_tr_c" -ne 1 ]; then report_inv touched-readers "$_lab" 0 "$_cl"   # SWAS-600: a crash-demoted reader reads UNVERIFIED, takes no OK row and seeds no time
          else RAN=$((RAN+1)); printf '  OK    %-18s %-46s %4ss  [%s]\n' touched-readers "$_lab" "$RUN_S" "$_tn"; rl_u touched-readers "$_b" OK run; tr_record "$_b" "$_a" "$RUN_S"; fi ;;
       124|137|143)
-        if [ "$_cap" -eq 1 ] && [ "$_ncf" -eq 0 ] && [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "budget spent: only ${_cl} s of the budget was left (killed at ${RUN_S} s)"   # TRBS
-        elif [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "local ceiling hit at ${RUN_S} s${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}"; [ "$_ncf" -eq 0 ] || { _fv=$((_cl + 1)); [ "$_fv" -le $((TR_CAPE + 1)) ] || _fv=$((TR_CAPE + 1)); tr_record @reader-k "$_lab" "$_fv"; }   # TRREC
+        if [ "$_cap" -eq 1 ] && [ "$_ncf" -eq 0 ] && [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "budget spent: only ${_cl} s of the budget was left (killed at ${RUN_S} s); run it alone: ${_ra}"   # TRBS
+        elif [ "$RUN_S" -ge "$_cl" ]; then tr_ci "$_lab" "$_job" "local ceiling hit at ${RUN_S} s${ARM_CEIL_TXT:+; $ARM_CEIL_TXT}; run it alone: ${_ra}"; [ "$_ncf" -eq 0 ] || { _fv=$((_cl + 1)); [ "$_fv" -le $((TR_CAPE + 1)) ] || _fv=$((TR_CAPE + 1)); tr_record @reader-k "$_lab" "$_fv"; }   # TRREC
         else report_inv touched-readers "$_lab" 0 "$_cl"; fi ;;
       *) report_inv touched-readers "$_lab" 0 "$_cl" ;;
     esac
@@ -3579,6 +3584,15 @@ tr_arm() {
 # invocation by step NAME against the working-tree ci.yml; a red row holds the failure count and the last-red epoch (counted for 30 days).
 tr_refresh() {
   command -v gh >/dev/null 2>&1 || { note "times: gh not found — local rows only"; return 0; }
+  # SWAS-945: the CI-time reads below set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, here in the parent shell, before the
+  # first gh call). Only this --refresh-times route reaches gh. A missing library means no probe: today's behaviour.
+  # Anchored to this script's own location, not $ROOT (the working tree it grades), as every other wired script does.
+  # A failed cd leaves _tr_kit empty: no library is sourced and no probe runs (today's behaviour), never a /scripts fallback.
+  _tr_kit=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P) || _tr_kit=''
+  _tr_ghtls=${_tr_kit:+$_tr_kit/scripts/gh-tls.sh}
+  # shellcheck source=scripts/gh-tls.sh
+  if [ -n "$_tr_ghtls" ] && [ -f "$_tr_ghtls" ]; then . "$_tr_ghtls"; fi
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
   tr_state || return 1
   [ -n "$TR_TIMES" ] || { note "times: no persisted table (PREPUSH_NO_CACHE=1) — nothing to refresh"; return 0; }
   _rel=$(ci_path "$1") || exit $?; ci_exists_or_die "$_rel"
@@ -4813,16 +4827,17 @@ selftest_tbudget() {
   [ -z "$TRM" ] || { _h=$WORK/st-h3f; stt "$_h"; strun "$_h" "$TRM"
     want "B3e mutant: keyed on rc 143 the exit-130 kill reads as a FAIL (the cell is RED)" "^  FAIL  core-selftest "; }
   # R17f — a target that forges the watchdog's marker at once (it can reach $TMPDIR/../ctl) and fails is still a FAIL, with no censored row: the run did not last the ceiling
-  # (a 5 s lane copy: the forger waits for the watchdog's first one-second tick, so its wall time can read 2 s, which would equal a 2 s ceiling)
-  _s5=$WORK/lane-st-ceil5.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=5/' "$LANE" > "$_s5"
-  sfx "roster/R17f: the 5 s lane copy differs" differs "$(cmp -s "$LANE" "$_s5" && echo same || echo differs)"
+  # (a 60 s lane copy: the forger waits for the watchdog's first one-second tick, so its wall time can read 2 s, which would equal a 2 s ceiling (the shared copy's 2 s ceiling))
+  # SWAS-988: 60 s so a short stall on a loaded runner cannot reach the ceiling (docs/architecture/2026-11-20-tr10m-ceiling-988-design.md); the 5 in _s5 and lane-st-ceil5.sh is historical
+  _s5=$WORK/lane-st-ceil5.sh; sed 's/^ST_CEIL=3600$/ST_CEIL=60/' "$LANE" > "$_s5"
+  sfx "roster/R17f: the 60 s lane copy differs" differs "$(cmp -s "$LANE" "$_s5" && echo same || echo differs)"
   stfx "$STFORGE" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh); _rc0=$(git -C "$d" rev-list --max-parents=0 HEAD | sed -n 1p)
   _h=$WORK/st-h17h; stt "$_h"; strun "$_h" "$_s5"
   want "roster/R17f: a forged marker on a fast failure still reads FAIL" "^  FAIL  core-selftest "
   sfx "roster/R17f: and no censored row is recorded" "" "$(awk -F'\t' -v b="$_bx" '$1 == "@selftest-k" && $2 == b { print $3 }' "$_h/.cache/sparkwright/prepush/$_rc0/times.tsv" 2>/dev/null)"
   TRSRC=$_s5 trmut r17f -e '/# STCEIL$/s/ \&\& \[ "\$RUN_S" -ge "\$_st_cl" \]//'
   [ -z "$TRM" ] || { _h=$WORK/st-h17i; stt "$_h"; strun "$_h" "$TRM"
-    want "roster/R17f mutant: without the time conjunct the forged marker reads UNVERIFIED at the ceiling (the cell is RED)" "scripts/x\.sh: killed at the 5 s runaway ceiling"; }
+    want "roster/R17f mutant: without the time conjunct the forged marker reads UNVERIFIED at the ceiling (the cell is RED)" "scripts/x\.sh: killed at the 60 s runaway ceiling"; }
   # B4 — a target already hung on these bytes (a censored row of at least ST_CEIL + 1 s for its blob) is named UNVERIFIED with no call; a lower floor (every row today's 300 s budget left) runs
   stfx "$STREC" scripts/x.sh; _bx=$(git -C "$d" rev-parse HEAD:scripts/x.sh)
   _h=$WORK/st-h4; sttk "$_h" "$_bx=3601"; strun "$_h" "$LANE"
@@ -6026,14 +6041,15 @@ st903_xdg() {   # ST-T4: the lock path is the LITERAL $HOME/.cache, never $XDG_C
 st903_times() {   # ST-T5: the times table is not refused when ~/.local/state is unwritable (kit tree only: it plans the kit's own touched readers)
   [ -f "$KROOT/conformance/agent-autonomy.sh" ] && [ -f "$KROOT/conformance/citation-live.sh" ] && [ -f "$KROOT/conformance/prepush-lane.sh" ] ||
     { echo "PASS: state/T5: N/A - not the kit tree"; return 0; }
-  _pb=$(git -C "$KROOT" rev-parse HEAD~1 2>/dev/null) || { echo "PASS: state/T5: N/A - no parent commit to take a listing from"; return 0; }
-  if tr8_noci "$KROOT"; then echo "PASS: state/T5: N/A - no GitHub CI file to plan from"; return 0; fi
+  _t5=$WORK/st5; { tr8_clone "$_t5" && tr8_commit "$_t5" .claude/hooks/guard-core.sh; } || { echo "FAIL: state/T5: the fixture clone of the real tree could not be built (a FAIL, never an N/A pass)"; SF=1; return 0; }
+  _pb=$(git -C "$_t5" rev-parse HEAD~1)   # a sha of the fixture commit's parent: the plan reads the fixture commit's own diff, not the real tree's last commit
+  if tr8_noci "$_t5"; then echo "PASS: state/T5: N/A - no GitHub CI file to plan from"; return 0; fi
   _h=$(mktemp -d "${TMPDIR:-/tmp}/fx-home-XXXXXX"); mkdir -p "$_h/.local/state" "$_h/.cache"; chmod 500 "$_h/.local/state"
-  DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
+  DVOUT=$( cd "$_t5" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --plan --base "$_pb" 2>&1 ) && DVRC=0 || DVRC=$?
   sfx "state/T5: the plan is rc 0" 0 "$DVRC"
   wantnot "state/T5: with ~/.local/state unwritable the times table is not refused (it lives under ~/.cache)" 'times: refused'
   trmut st903f -e 's|^  _sd=\$HOME/.cache/sparkwright/prepush/\$_r0 |  _sd=$HOME/.local/state/sparkwright/prepush/$_r0 |'
-  [ -z "$TRM" ] || { DVOUT=$( cd "$KROOT" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) || :
+  [ -z "$TRM" ] || { DVOUT=$( cd "$_t5" && unset KIT_CI_FILE && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --plan --base "$_pb" 2>&1 ) || :
     sfx "state/T5 mutant: the table reverted to ~/.local/state -> it is refused (the cell is RED)" yes "$(printf '%s\n' "$DVOUT" | grep -q 'times: refused' && echo yes || echo no)"; }
   chmod 700 "$_h/.local/state"
 }
@@ -6615,6 +6631,7 @@ selftest_tr8_gate() {
 # agent-autonomy.sh, as a PR's merge commit does in CI, made `agent-autonomy --selftest` a core-selftest and not a touched reader, so TR8 (a) read RED). They now plan against a FIXTURE: a shallow,
 # hard-link-free clone of the real tree plus ONE fixture commit that touches guard-core.sh only (the file the readers read), planned with --base <sha of HEAD~1> (the fixture commit's own diff).
 # tr8_clone <dir> -> a shallow clone of the real tree at <dir>; tr8_commit <dir> <path> -> one commit appending a comment line to <path> (a shell file).
+# Callers: TR8 (below) and, since SWAS-909, state/T5 (st903_times). Both helpers sit in ci-gates' TR8P-8 pin, so an edit to either reds it.
 tr8_clone() { git clone -q --no-hardlinks --depth 1 "file://$KROOT" "$1" >/dev/null 2>&1; }
 tr8_commit() { ( cd "$1" && printf '# tr8 fixture\n' >> "$2" && git add "$2" && git -c user.email=f@x -c user.name=f -c commit.gpgsign=false commit -qm "tr8 $2" ) >/dev/null 2>&1; }
 selftest_touched_replay() {
@@ -6694,6 +6711,69 @@ selftest_touched_budget() {
   TRSRC=$_sc trmut tr10 -e 's/if \[ "\$RUN_S" -ge "\$_cl" \]; then tr_ci/if [ "$RUN_S" -lt 0 ]; then tr_ci/'
   [ -z "$TRM" ] || { _h=$WORK/trbh0b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
     want "TR10 mutant: the kill read as a FAIL (the cell is RED)" '^  FAIL  touched-readers'; }
+  # SWAS-930 — the verdict follows the arm's own kill, not the killed unit's rc. TR10t: a unit that traps TERM and exits 1 is killed at the ceiling and reads CI-GRADED with the standalone command.
+  mkcin 'sh conformance/trapx.sh'; commit_fx; mkchk trapx 'trap "exit 1" TERM; sleep 8 & wait'
+  _now=$(date +%s); printf 'trapx\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbt1; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sc" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10t: a TERM-trapping unit that exits 1 under the kill is listed CI-GRADED with the ceiling and the standalone command" '^CI-GRADED: trapx (local ceiling hit at [0-9]* s.*run it alone: sh conformance/trapx.sh'
+  wantnot "TR10t: and it is not a FAIL" '^  FAIL  '
+  sfx "TR10t: and the verdict is rc 0" 0 "$DVRC"
+  TRSRC=$_sc trmut tr10t -e 's/ \[ ! -e "\${U_CTL:-\$WORK\/ctl}\/wd.fired" \] || _rcv=143//'
+  _m10t=$TRM   # kept: the TR10z and TR10bt legs run their fixtures against this marker-blind copy too
+  [ -z "$TRM" ] || { _h=$WORK/trbt1b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10t mutant: the watchdog marker no longer read, the trap's rc 1 reads FAIL (the cell is RED)" '^  FAIL  touched-readers'; }
+  # TR10f: a unit that exits 1 by itself, well under the ceiling, is still a FAIL (a non-kill rc is never mapped to a ceiling).
+  mkcin 'sh conformance/selfx.sh'; commit_fx; mkchk selfx 'exit 1'
+  printf 'selfx\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbt2; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sc" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10f: a unit that exits 1 by itself under the ceiling still reads FAIL" '^  FAIL  touched-readers'
+  wantnot "TR10f: and it is not listed CI-GRADED" '^CI-GRADED: selfx'
+  # Mutant: the status is forced to a kill AND the ceiling-time guard is dropped (that guard alone also keeps a fast self-exit a FAIL, so the status line on its own stays FAIL here); the self-exit then reads CI-GRADED.
+  TRSRC=$_sc trmut tr10f -e '/# SWAS-930: the arm/s/_rcv=\$RUN_RC;/_rcv=143;/' -e 's/elif \[ "\$RUN_S" -ge "\$_cl" \]; then tr_ci/elif [ "$RUN_S" -ge 0 ]; then tr_ci/'
+  [ -z "$TRM" ] || { _h=$WORK/trbt2b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10f mutant: a non-kill rc mapped to a kill reads CI-GRADED, no longer FAIL (the cell is RED)" '^CI-GRADED: selfx'; }
+  # TR10m: a unit that forges the watchdog marker itself and exits 1 at once is still a FAIL (the marker only counts at or past the ceiling).
+  # SWAS-982: its own lane copy (now 60 s and 120 s, SWAS-988 below; the R17f idiom). A forged marker makes run_timed wait for the watchdog's first
+  # one-second tick (run_timed's wd.fired test), so the unit's wall can read 2 s, which would equal a 2 s ceiling (the shared copy's 2 s ceiling) and read CI-GRADED.
+  # SWAS-988: 60 s, not 5 s, so a short stall on a loaded runner cannot reach the ceiling (docs/architecture/2026-11-20-tr10m-ceiling-988-design.md).
+  _sm=$WORK/lane-scaled-m.sh; sed -e 's/^TR_CEIL_MIN=120$/TR_CEIL_MIN=60/' -e 's/^TR_BUDGET_DEFAULT=300$/TR_BUDGET_DEFAULT=120/' "$LANE" > "$_sm"
+  sfx "TR10m: the 60 s lane copy differs" differs "$(cmp -s "$LANE" "$_sm" && echo same || echo differs)"
+  sfx "TR10m: and its ceiling is 60 s" 1 "$(grep -c -e '^TR_CEIL_MIN=60$' "$_sm" || :)"
+  mkcin 'sh conformance/mfx.sh'; commit_fx; mkchk mfx ': > "$TMPDIR/../ctl/wd.fired"; exit 1'
+  printf 'mfx\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbt2c; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sm" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10m: a forged marker under the ceiling still reads FAIL" '^  FAIL  touched-readers  *mfx '
+  wantnot "TR10m: and it is not listed CI-GRADED" '^CI-GRADED: mfx'
+  TRSRC=$_sm trmut tr10m -e 's/elif \[ "\$RUN_S" -ge "\$_cl" \]; then tr_ci/elif [ "$RUN_S" -ge 0 ]; then tr_ci/'
+  [ -z "$TRM" ] || { _h=$WORK/trbt2d; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10m mutant: without the time conjunct the forged marker reads CI-GRADED (the cell is RED)" '^CI-GRADED: mfx'; }
+  # TR10z: a unit that traps TERM and exits 0 under the kill did not finish: never OK.
+  mkcin 'sh conformance/trap0.sh'; commit_fx; mkchk trap0 'trap "exit 0" TERM; sleep 8 & wait'
+  printf 'trap0\t\t1\t0\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbt3; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sc" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10z: a TERM-trapping unit that exits 0 under the kill is listed at the ceiling" '^CI-GRADED: trap0 (local ceiling hit at [0-9]* s'
+  wantnot "TR10z: and it never reads OK" '^  OK    touched-readers  *trap0 '
+  [ -z "$_m10t" ] || { _h=$WORK/trbt3b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_m10t" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10z mutant: with the marker line gone the same fixture reads OK (rc 0 really happened; the marker line is what blocks it) (the cell is RED)" '^  OK    touched-readers  *trap0 '; }
+  # TR10bt: a red-history TERM-trapping unit cut by the shrunk budget reads "budget spent", not FAIL.
+  mkcin 'sh conformance/bt.sh'; commit_fx; mkchk bt 'trap "exit 1" TERM; sleep 8 & wait'
+  printf 'bt\t\t1\t1\tlocal\t%s\n' "$_now" > "$WORK/trtab.rows"; _h=$WORK/trbt4; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$_sb" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TR10bt: a red-history TERM-trapping unit killed by the shrunk budget is listed as budget spent" '^CI-GRADED: bt (budget spent: only 4 s of the budget was left'
+  wantnot "TR10bt: and it is not a FAIL" '^  FAIL  '
+  TRSRC=$_sb trmut tr10bt -e 's/ \[ ! -e "\${U_CTL:-\$WORK\/ctl}\/wd.fired" \] || _rcv=143//'
+  [ -z "$TRM" ] || { _h=$WORK/trbt4b; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TR10bt mutant: with the marker line gone the budget-clipped trap reads FAIL (the cell is RED)" '^  FAIL  touched-readers'; }
+  # TRSEED: the ci-gates --selftest seed reaches the prediction (124 s, no table); the mutant removes the seed row and the prediction falls to the 30 s unknown default.
+  # The fixture is built as B8 is: the script is COMMITTED and an untracked scripts/preflight.sh is the touched path, so ci-gates --selftest is a touched READER, not the touched selftest itself.
+  mkcin 'sh conformance/ci-gates.sh --selftest'; mkchk ci-gates 'exit 0'
+  commit_fx; mkdir -p "$d/scripts"; printf '#!/bin/sh\nexit 0\n' > "$d/scripts/preflight.sh"
+  : > "$WORK/trtab.rows"; _h=$WORK/trbt5; trtab "$_h"
+  DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD --plan 2>&1 ) && DVRC=0 || DVRC=$?
+  want "TRSEED: ci-gates --selftest under an empty table is predicted at its seeded 124 s" '^  PLAN  touched-readers  *ci-gates --selftest  *~ 124s'
+  trmut trseed -e "/^  printf 'ci-gates/d"
+  [ -z "$TRM" ] || { _h=$WORK/trbt5m; trtab "$_h"; DVOUT=$( cd "$d" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base HEAD --plan 2>&1 ) && DVRC=0 || DVRC=$?
+    want "TRSEED mutant: the seed row removed -> the prediction falls to the 30 s default (the cell is RED)" '^  PLAN  touched-readers  *ci-gates --selftest  *~  30s'; }
   # TR11 — the budget is charged with MEASURED wall: a check predicted at 1 s that takes 3 s leaves too little for the next, predicted at 2 s
   mkcin 'sh conformance/ba.sh' 'sh conformance/bb.sh'; commit_fx; mkchk ba 'sleep 3'; mkchk bb 'exit 0'
   _h=$WORK/trbh; _now=$(date +%s)

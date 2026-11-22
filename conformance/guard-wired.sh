@@ -258,26 +258,26 @@ _gw_edit_denies() {
 _gw_sandbox_keys() {
   _sl_rc=0; _sk_j="$1"; _sk_l="$2"
   printf '%s\n' "$_sk_j" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.enabled is not true in $_sk_l — the OS layer under the guard is off"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.enabled is not true in $_sk_l — the OS layer under the guard is off [in $_sk_l]"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '.sandbox.allowUnsandboxedCommands == false' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in $_sk_l — a command could opt out of the sandbox"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in $_sk_l — a command could opt out of the sandbox [in $_sk_l]"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '.sandbox.autoAllowBashIfSandboxed == false' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in $_sk_l — sandboxed Bash would be auto-approved, skipping the permission prompt"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in $_sk_l — sandboxed Bash would be auto-approved, skipping the permission prompt [in $_sk_l]"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '(.sandbox // {}) | ((has("excludedCommands") | not) or (.excludedCommands == []))' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.excludedCommands is set in $_sk_l (it must be absent or exactly []; an empty string, an object or null is not an empty list) — those commands run outside the sandbox"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.excludedCommands is set in $_sk_l (it must be absent or exactly []; an empty string, an object or null is not an empty list) — those commands run outside the sandbox [in $_sk_l]"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '(.sandbox.enableWeakerNestedSandbox // false) == false' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in $_sk_l — the sandbox runs in its weaker nested form"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in $_sk_l — the sandbox runs in its weaker nested form [in $_sk_l]"; _sl_rc=1; }
   printf '%s\n' "$_sk_j" | jq -e '(.sandbox.network.allowAllUnixSockets // false) == false' >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.network.allowAllUnixSockets is true in $_sk_l — every unix socket is reachable from the shell"; _sl_rc=1; }
+    || { echo "FAIL: sandbox.network.allowAllUnixSockets is true in $_sk_l — every unix socket is reachable from the shell [in $_sk_l]"; _sl_rc=1; }
   for _sl_e in $SANDBOX_DENY_REQUIRED; do
     printf '%s\n' "$_sk_j" | jq -e --arg p "$_sl_e" 'any((.sandbox.filesystem.denyWrite // [])[]?; . == $p)' >/dev/null 2>&1 \
-      || { echo "FAIL: sandbox.filesystem.denyWrite lacks $_sl_e in $_sk_l — that part of the enforcement layer is writable from the shell"; _sl_rc=1; }
+      || { echo "FAIL: sandbox.filesystem.denyWrite lacks $_sl_e in $_sk_l — that part of the enforcement layer is writable from the shell [in $_sk_l]"; _sl_rc=1; }
   done
   for _sl_t in /private/var/folders /var/folders; do
     printf '%s\n' "$_sk_j" | jq -e --arg p "$_sl_t" 'any((.sandbox.filesystem.allowWrite // [])[]?; . == $p)' >/dev/null 2>&1 \
-      || { echo "FAIL: sandbox.filesystem.allowWrite lacks $_sl_t in $_sk_l — mktemp fails on macOS (it writes the per-user temp root, not TMPDIR)"; _sl_rc=1; }
+      || { echo "FAIL: sandbox.filesystem.allowWrite lacks $_sl_t in $_sk_l — mktemp fails on macOS (it writes the per-user temp root, not TMPDIR) [in $_sk_l]"; _sl_rc=1; }
   done
-  [ "$_sl_rc" -ne 0 ] || echo "PASS: $_sk_l: sandbox enabled, no opt-out or auto-approve, denyWrite covers the enforcement layer, allowWrite carries the macOS temp root"
+  [ "$_sl_rc" -ne 0 ] || echo "PASS: $_sk_l: sandbox enabled, no opt-out or auto-approve, denyWrite covers the enforcement layer, allowWrite carries the macOS temp root [in $_sk_l]"
   return "$_sl_rc"
 }
 
@@ -671,13 +671,13 @@ _gw_bd_strict() {
 # prototype. Anything non-standard FAILs here, before any grading, so every later test reads a document Claude Code's parser reads the same way.
 _gw_bd_gate() {
   _gt_f="$1"; _gt_l="$2"
-  jq -e . "$_gt_f" >/dev/null 2>&1 || { printf '%s\n' "FAIL: boundary: $_gt_l is not valid JSON"; return 1; }
+  jq -e . "$_gt_f" >/dev/null 2>&1 || { printf '%s\n' "FAIL: boundary: $_gt_l is not valid JSON [in $_gt_l]"; return 1; }
   _gt_docs=$(jq -n '[inputs] | length' "$_gt_f" 2>/dev/null) || _gt_docs=0
-  [ "$_gt_docs" = 1 ] || { printf '%s\n' "FAIL: boundary: $_gt_l holds more than one JSON document (exactly one is read, and a reader sees only the first)"; return 1; }
-  _gw_bd_strict "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l is not strict JSON (a control byte such as NUL, a BOM, or a NaN, Infinity, leading-zero, .5 or +1 number: jq reads it but JSON.parse refuses it, so Claude Code could not parse the file and would apply none of it)"; return 1; }
-  _gw_bd_dupkeys "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l has a duplicate JSON key (jq and Claude Code keep the last copy, a reader sees the first)"; return 1; }
+  [ "$_gt_docs" = 1 ] || { printf '%s\n' "FAIL: boundary: $_gt_l holds more than one JSON document (exactly one is read, and a reader sees only the first) [in $_gt_l]"; return 1; }
+  _gw_bd_strict "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l is not strict JSON (a control byte such as NUL, a BOM, or a NaN, Infinity, leading-zero, .5 or +1 number: jq reads it but JSON.parse refuses it, so Claude Code could not parse the file and would apply none of it) [in $_gt_l]"; return 1; }
+  _gw_bd_dupkeys "$_gt_f" || { printf '%s\n' "FAIL: boundary: $_gt_l has a duplicate JSON key (jq and Claude Code keep the last copy, a reader sees the first) [in $_gt_l]"; return 1; }
   jq -e '[.. | objects | keys_unsorted[] | select(. == "__proto__" or . == "constructor" or . == "prototype")] | length == 0' "$_gt_f" >/dev/null 2>&1 \
-    || { printf '%s\n' "FAIL: boundary: $_gt_l uses the key __proto__, constructor or prototype (a prototype-pollution name: refused anywhere in the settings)"; return 1; }
+    || { printf '%s\n' "FAIL: boundary: $_gt_l uses the key __proto__, constructor or prototype (a prototype-pollution name: refused anywhere in the settings) [in $_gt_l]"; return 1; }
   return 0
 }
 
@@ -695,25 +695,51 @@ _gw_bd_claims() {
   [ "$_bc" -ne 1 ]
 }
 
-# _gw_boundary_grade <settings file> <label> -> PASS/FAIL lines; returns 1 on any gap. jq is already confirmed present by the caller.
+# _gw_lb_since <project-dir> -> prints the date of a local-bind declaration and returns 0; returns 1 when none is read (SWAS-945, D-241119-1). The reader is preflight's own, run on the project:
+# the committed copy on origin's default branch, never the working tree (D-241023-2 item 4 required (b)), with its UNVERIFIED and UNTRUSTED states, so only a declaration it reads as declared counts.
+# The test seams are live only under --selftest-e2e (FLAG-NOT-ENV: _GW_E2E is set from that flag, never from the environment).
+_gw_lb_since() {
+  _ls_pf=$(CDPATH='' cd -- "$(dirname -- "$0")/../scripts" 2>/dev/null && pwd) || return 1
+  _ls_pf="$_ls_pf/preflight.sh"
+  [ -f "$_ls_pf" ] || return 1
+  if [ "${_GW_E2E:-0}" -eq 1 ]; then
+    _ls_o=$(cd "$1" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Darwin PREFLIGHT_SANDBOX_TOOLS=sandbox-exec PREFLIGHT_SANDBOX_BWRAP_OK=1 sh "$_ls_pf" --selftest-e2e --boundary-only --boundary-advisory 2>/dev/null </dev/null) || _ls_o=""   # MUT-LBWT
+  else
+    _ls_o=$(cd "$1" && sh "$_ls_pf" --boundary-only --boundary-advisory 2>/dev/null </dev/null) || _ls_o=""   # MUT-LBWT
+  fi
+  _ls_d=$(printf '%s\n' "$_ls_o" | sed -n 's/^  WARN local-bind: ON .*(granted \([0-9][0-9-]*\), declared in .*$/\1/p' | head -n 1)
+  case "$_ls_d" in
+    20[0-9][0-9]-[01][0-9]-[0-3][0-9]) printf '%s\n' "$_ls_d"; return 0 ;;
+  esac
+  return 1
+}
+
+# _gw_boundary_grade <settings file> <label> [<local-bind date>] -> PASS/FAIL lines, every one naming the file or scope it graded; returns 1 on any gap. jq is already confirmed present by the caller.
+# The third argument is the date of a DECLARED local-bind grant (the merged-local leg only, from _gw_lb_since): a document whose allowLocalBinding is true then reads as the declared WARN instead of the FAIL.
 _gw_boundary_grade() {
-  _bg_f="$1"; _bg_l="$2"; _bg_rc=0
+  _bg_f="$1"; _bg_l="$2"; _bg_rc=0; _bg_lb="${3:-}"; _bg_lbt="no loopback bind"
   _gw_bd_gate "$_bg_f" "$_bg_l" || return 1
-  _bg_msgs=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "${HOME:-}" "$GW_BD_JQ" "$_bg_f" 2>/dev/null) || { printf '%s\n' "FAIL: boundary: the grader could not read $_bg_l"; return 1; }
+  _bg_msgs=$(jq -r --argjson t "$GW_BD_TABLES" --arg home "${HOME:-}" "$GW_BD_JQ" "$_bg_f" 2>/dev/null) || { printf '%s\n' "FAIL: boundary: the grader could not read $_bg_l [in $_bg_l]"; return 1; }
+  if [ -n "$_bg_lb" ] && jq -e '.sandbox.network.allowLocalBinding == true' "$_bg_f" >/dev/null 2>&1; then
+    # The date passed the grammar in _gw_lb_since (digits and dashes), so it is safe in the sed text.
+    _bg_msgs=$(printf '%s\n' "$_bg_msgs" | sed "s/^sandbox\.network\.allowLocalBinding is not false.*/~WARN sandbox.network.allowLocalBinding is true (declared local-bind, $_bg_lb; read from origin's default branch): the agent's processes can bind on 0.0.0.0 and reach every local listener (docs\/operations\/runtime-guards.md, What the sandbox profile allows, and why)/")
+    _bg_lbt="the loopback bind is a declared grant"
+  fi
   if [ -n "$_bg_msgs" ]; then
     # A line starting ~WARN or ~INFO is advice, not a gap: WARN for a setting that does nothing where it is, INFO for a stricter-than-default one.
+    # Every FAIL, WARN and INFO line ends with the file or scope it graded (the PASS line opens with it): the committed file can pass while the merged settings fail, and an unlabelled FAIL read as a contradiction (SWAS-945, LB-D2).
     printf '%s\n' "$_bg_msgs" | while IFS= read -r _bg_m; do
       case "$_bg_m" in
-        "~WARN "*) printf '%s\n' "WARN: boundary: ${_bg_m#"~WARN "}" ;;
-        "~INFO "*) printf '%s\n' "INFO: boundary: ${_bg_m#"~INFO "}" ;;
-        *) printf '%s\n' "FAIL: boundary: $_bg_m" ;;
+        "~WARN "*) printf '%s\n' "WARN: boundary: ${_bg_m#"~WARN "} [in $_bg_l]" ;;
+        "~INFO "*) printf '%s\n' "INFO: boundary: ${_bg_m#"~INFO "} [in $_bg_l]" ;;
+        *) printf '%s\n' "FAIL: boundary: $_bg_m [in $_bg_l]" ;;
       esac
     done
     _bg_gaps=$(printf '%s\n' "$_bg_msgs" | grep -v -e '^~WARN ' -e '^~INFO ' || true)
     [ -z "$_bg_gaps" ] || _bg_rc=1
   fi
   _gw_sandbox_keys "$(jq -c . "$_bg_f")" "$_bg_l" || _bg_rc=1
-  [ "$_bg_rc" -ne 0 ] || echo "PASS: boundary: $_bg_l carries the full agent-boundary default (sandbox on; read-deny paired with Read rules; the template carve-out only; WebFetch denied; no sockets; no loopback bind; the write belt paired with Edit rules)"
+  [ "$_bg_rc" -ne 0 ] || echo "PASS: boundary: $_bg_l carries the full agent-boundary default (sandbox on; read-deny paired with Read rules; the template carve-out only; WebFetch denied; no sockets; $_bg_lbt; the write belt paired with Edit rules)"
   return "$_bg_rc"
 }
 
@@ -727,7 +753,7 @@ _gw_boundary_leg() {
     return 0
   fi
   _bl_rc=0
-  _gw_boundary_grade "$_bl_f" "the committed .claude/settings.json" || _bl_rc=1
+  _gw_boundary_grade "$_bl_f" "the committed .claude/settings.json" || _bl_rc=1   # MUT-LBCOMMITTED: no declaration is ever read for the committed file (G20 stands)
   # The EFFECTIVE document: Claude Code merges settings.local.json over the project file (scalars local over project, the sandbox lists
   # concatenate; _gw_merge_json mirrors that for the sandbox block). A local file that shadows the read-deny, allows unsandboxed commands or
   # adds an excluded command FAILS here. A local `enabled: false` is a human opt-out: WARN (preflight says boundary: OFF), not a failure,
@@ -740,20 +766,23 @@ _gw_boundary_leg() {
     else
       _bl_m=$(mktemp 2>/dev/null) || _bl_m=""
       if [ -z "$_bl_m" ]; then
-        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json (no scratch file could be created), so the effective settings were NOT graded"; _bl_rc=1
+        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json (no scratch file could be created), so the effective settings were NOT graded [in the effective settings (settings.json merged with settings.local.json)]"; _bl_rc=1
       elif ! _gw_merge_clash "$_bl_f" "$_bl_loc"; then
-        printf '%s\n' "FAIL: boundary: settings.local.json replaces a list or object of settings.json with a different type (a scalar, null or another shape): the merge cannot be mirrored, and a replaced list is a dropped deny"; _bl_rc=1
+        printf '%s\n' "FAIL: boundary: settings.local.json replaces a list or object of settings.json with a different type (a scalar, null or another shape): the merge cannot be mirrored, and a replaced list is a dropped deny [in the effective settings (settings.json merged with settings.local.json)]"; _bl_rc=1
       elif ! _gw_merge_json "$_bl_f" "$_bl_loc" > "$_bl_m" 2>/dev/null; then
-        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json, so the effective settings were NOT graded"; _bl_rc=1
+        printf '%s\n' "FAIL: boundary: could not merge settings.json with settings.local.json, so the effective settings were NOT graded [in the effective settings (settings.json merged with settings.local.json)]"; _bl_rc=1
       elif jq -e '.sandbox.enabled == false' "$_bl_m" >/dev/null 2>&1; then
         # L1: a local opt-out that is TRACKED by git reaches every clone, which is no longer a human's own choice on one machine.
         if _gw_git -C "$1" ls-files --error-unmatch .claude/settings.local.json >/dev/null 2>&1; then
-          printf '%s\n' "FAIL: boundary: .claude/settings.local.json is tracked by git and turns the sandbox OFF: a committed opt-out reaches every clone (a local opt-out is untracked)"; _bl_rc=1
+          printf '%s\n' "FAIL: boundary: .claude/settings.local.json is tracked by git and turns the sandbox OFF: a committed opt-out reaches every clone (a local opt-out is untracked) [in .claude/settings.local.json]"; _bl_rc=1
         else
-          echo "WARN: boundary: the effective settings (settings.json merged with settings.local.json) turn the sandbox OFF: a local opt-out. The boundary is not on in this checkout; preflight says boundary: OFF"
+          echo "WARN: boundary: the effective settings (settings.json merged with settings.local.json) turn the sandbox OFF: a local opt-out. The boundary is not on in this checkout; preflight says boundary: OFF [in the effective settings (settings.json merged with settings.local.json)]"
         fi
       else
-        _gw_boundary_grade "$_bl_m" "the effective settings (settings.json merged with settings.local.json)" || _bl_rc=1
+        # SWAS-945: a merged allowLocalBinding true is the declared WARN only when preflight's reader finds a local-bind declaration on origin's default branch; project and local scope only (user and managed are preflight's).
+        _bl_lb=""
+        if jq -e '.sandbox.network.allowLocalBinding == true' "$_bl_m" >/dev/null 2>&1; then _bl_lb=$(_gw_lb_since "$1") || _bl_lb=""; fi
+        _gw_boundary_grade "$_bl_m" "the effective settings (settings.json merged with settings.local.json)" "$_bl_lb" || _bl_rc=1
       fi
       [ -z "$_bl_m" ] || rm -f "$_bl_m"
     fi
@@ -794,7 +823,7 @@ _gw_bp_one() {
   else
     printf '%s\n' "FAIL: boundary patch: $_bo_n touches more than .claude/settings.json, or renames, creates, deletes or changes a mode (Q16: the patch is one file)"; _bo_rc=1
   fi
-  _bo_t=$(mktemp -d 2>/dev/null) || { printf '%s\n' "FAIL: boundary patch: could not create a scratch directory"; return 1; }
+  _bo_t=$(mktemp -d 2>/dev/null) || { printf '%s\n' "FAIL: boundary patch: could not create a scratch directory for $_bo_n"; return 1; }
   mkdir -p "$_bo_t/.claude"
   if ! cp "$_bo_dir/.claude/settings.json" "$_bo_t/.claude/settings.json" 2>/dev/null; then
     printf '%s\n' "FAIL: boundary patch: there is no .claude/settings.json to apply $_bo_n to"; rm -rf "$_bo_t"; return 1
@@ -825,7 +854,7 @@ _gw_bp_one() {
   elif grep -rqF -- "$_bo_sha" "$_bo_dir/docs/plans" "$_bo_dir/docs/reviews" 2>/dev/null; then
     echo "PASS: boundary patch: the sha256 of $_bo_n is recorded under docs/plans or docs/reviews"
   else
-    printf '%s\n' "FAIL: boundary patch: the sha256 is not recorded under docs/plans or docs/reviews (record $_bo_sha in the plan and the review record, so the owner can check the file they apply)"; _bo_rc=1
+    printf '%s\n' "FAIL: boundary patch: the sha256 is not recorded under docs/plans or docs/reviews for $_bo_n (record $_bo_sha in the plan and the review record, so the owner can check the file they apply)"; _bo_rc=1
   fi
   return "$_bo_rc"
 }
@@ -1669,6 +1698,76 @@ selftest() {
     _bd_loc "setting allowUnsandboxedCommands true -> FAIL in the merged document" '{"sandbox":{"allowUnsandboxedCommands":true}}' 1 'in the effective settings (settings.json merged with settings.local.json)'
     _bd_loc "setting enabled false -> WARN, wired (a human opt-out)" '{"sandbox":{"enabled":false}}' 0 'WARN: boundary: the effective settings'
     _bd_loc "that changes nothing -> wired and graded" '{"sandbox":{}}' 0 'PASS: boundary: the effective settings'
+    # ── SWAS-945 PR 3, D-241119-1: the local-bind grant (cells LB-G1 to LB-G6, LB-D2, and the LB-M mutants). The merged-local leg reads a DECLARED grant as a WARN; the committed file and the overlay never do (LB-G3, and the overlay's
+    # ov04 cell above is LB-G4). The declaration is preflight's reader's, run with its test seams (_GW_E2E, live only under the flag): a declaration file, or @absent, or @unreadable. Cells that fail on the code before this PR: LB-G1
+    # (the old grader FAILs a merged true outright), the label checks in LB-G2, LB-G3 and LB-D2 (no FAIL line named its file), and the mutants (they need the new code to mutate).
+    _lb_self=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+    _GW_E2E=1
+    _lb_decl="$base/lb-decl.conf"; printf '%s\n' 'part=local-bind reason=tests listen on a port lost=the agent can bind on 0.0.0.0 since=2026-11-18' > "$_lb_decl"
+    printf '{"sandbox":{"network":{"allowLocalBinding":true}}}\n' > "$base/lb-local.json"
+    _lb_build() {  # <name> <committed true: 0|1> <local true: 0|1> -> $d, the fixture
+      d="$base/lb_$1"
+      if [ "$2" = 1 ]; then mk_bd "$d" '.sandbox.network.allowLocalBinding = true'; else mk_bd "$d" '.'; fi
+      if [ "$3" = 1 ]; then cp "$base/lb-local.json" "$d/.claude/settings.local.json"; fi
+    }
+    _lb_run() {  # <declaration seam: a file, @absent or @unreadable> -> out and rc: check_dir on $d
+      if out=$( PREFLIGHT_BOUNDARY_OPTOUT="$1"; export PREFLIGHT_BOUNDARY_OPTOUT; check_dir "$d" 2>&1 </dev/null ); then rc=0; else rc=$?; fi
+    }
+    _lb_eff='in the effective settings (settings.json merged with settings.local.json)'   # (no bracket here: a bracket is a pattern character to a grep that is not -F)
+    # LB-G1: merged true, declared on origin -> the declared WARN, wired (rc 0), and the PASS line no longer claims "no loopback bind".
+    _lb_build g1 0 1; _lb_run "$_lb_decl"
+    if [ "$rc" -eq 0 ] && _has "$out" 'WARN: boundary: sandbox.network.allowLocalBinding is true (declared local-bind, 2026-11-18' && _has "$out" 'the loopback bind is a declared grant' && ! _has "$out" 'FAIL: boundary'; then echo "selftest PASS: LB-G1 a merged allowLocalBinding true with a declaration read from origin -> the declared WARN, wired"; else echo "selftest FAIL: LB-G1 a merged true with a declaration should read WARN and exit 0 (rc=$rc): $out"; st=1; fi
+    # LB-G2: merged true, undeclared -> FAIL naming the effective settings, while the committed file's PASS stands: no contradiction, because every line names its file (LB-D2).
+    _lb_build g2 0 1; _lb_run @absent
+    if [ "$rc" -eq 1 ] && _has "$out" "FAIL: boundary: sandbox.network.allowLocalBinding is not false" && _has "$out" "$_lb_eff"; then echo "selftest PASS: LB-G2 a merged true with no declaration -> FAIL naming the effective settings"; else echo "selftest FAIL: LB-G2 a merged true with no declaration should FAIL naming the effective settings (rc=$rc): $out"; st=1; fi
+    # LB-D2 (the labelled-lines contradiction, measured 2026-11-19): the committed file passes and the merged settings fail; every FAIL, WARN and INFO line must name the file or scope it graded, and so must the PASS line.
+    _lb_bare=$(printf '%s\n' "$out" | grep -E '^(FAIL|WARN|INFO): boundary: ' | grep -v ']$' || true)
+    if _has "$out" 'PASS: boundary: the committed .claude/settings.json carries' && [ -z "$_lb_bare" ]; then echo "selftest PASS: LB-D2 the committed PASS and the merged FAIL both name their file (no unlabelled boundary line)"; else echo "selftest FAIL: LB-D2 a boundary line names no file (unlabelled: $_lb_bare)"; st=1; fi
+    # the doctor's own leg (--boundary-only) prints the same labelled lines
+    _lb_bo=$( cd "$d" && env -u CI -u GITHUB_ACTIONS PREFLIGHT_BOUNDARY_OPTOUT=@absent sh "$_lb_self" --selftest-e2e --boundary-only "$d" 2>&1 </dev/null ) || :
+    _lb_bare=$(printf '%s\n' "$_lb_bo" | grep -E '^(FAIL|WARN|INFO): boundary: ' | grep -v ']$' || true)
+    if [ -n "$_lb_bo" ] && [ -z "$_lb_bare" ]; then echo "selftest PASS: LB-D2 the doctor's --boundary-only leg prints labelled lines too"; else echo "selftest FAIL: LB-D2 the --boundary-only leg printed an unlabelled line ($_lb_bare)"; st=1; fi
+    # LB-G3: committed true (a repo file that ships the grant) -> FAIL even when a declaration exists: the committed-file G20 is unchanged.
+    _lb_build g3 1 0; _lb_run "$_lb_decl"
+    if [ "$rc" -eq 1 ] && _has "$out" "FAIL: boundary: sandbox.network.allowLocalBinding is not false" && _has "$out" 'in the committed .claude/settings.json'; then echo "selftest PASS: LB-G3 a committed allowLocalBinding true -> FAIL even with a declaration"; else echo "selftest FAIL: LB-G3 a committed true should FAIL naming the committed file (rc=$rc): $out"; st=1; fi
+    # LB-G5: the declaration sits in the working tree only (origin has none): the tree is never read -> FAIL.
+    _lb_build g5 0 1; mkdir -p "$d/.kit"; cp "$_lb_decl" "$d/.kit/boundary-optout.conf"; _lb_run @absent
+    if [ "$rc" -eq 1 ] && _has "$out" "FAIL: boundary: sandbox.network.allowLocalBinding is not false"; then echo "selftest PASS: LB-G5 a declaration in the working tree only declares nothing -> FAIL"; else echo "selftest FAIL: LB-G5 a working-tree declaration must not declare (rc=$rc): $out"; st=1; fi
+    # LB-G6: the declaration cannot be read (UNVERIFIED) -> the FAIL stays.
+    _lb_build g6 0 1; _lb_run @unreadable
+    if [ "$rc" -eq 1 ] && _has "$out" "FAIL: boundary: sandbox.network.allowLocalBinding is not false"; then echo "selftest PASS: LB-G6 an unreadable declaration leaves the FAIL in place"; else echo "selftest FAIL: LB-G6 an unreadable declaration must keep the FAIL (rc=$rc): $out"; st=1; fi
+    # LB-M: each mutant is a COPY of this script beside preflight (the grader locates its reader at ../scripts). The original must print the line; the mutant must lose it.
+    _lb_mut() {  # <name> <sed|awk> <expression> <dir> <declaration seam> <substring the original prints and the mutant must lose>
+      _lm="$base/lbm_$1"; mkdir -p "$_lm/conformance" "$_lm/scripts"; cp "$(dirname -- "$_lb_self")/../scripts/preflight.sh" "$_lm/scripts/preflight.sh"   # left in place with the other fixtures (no rm -rf in this selftest)
+      if [ "$2" = sed ]; then sed "$3" "$_lb_self" > "$_lm/conformance/guard-wired.sh"; else awk -v rep="$3" '/MUT-LBWT/ { print rep; next } { print }' "$_lb_self" > "$_lm/conformance/guard-wired.sh"; fi
+      if cmp -s "$_lb_self" "$_lm/conformance/guard-wired.sh"; then echo "selftest FAIL: mutant $1 did not apply (the expression matched nothing)"; st=1; return 0; fi
+      if ! sh -n "$_lm/conformance/guard-wired.sh" 2>/dev/null; then echo "selftest FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; st=1; return 0; fi
+      _lb_o=$( cd "$4" && env -u CI -u GITHUB_ACTIONS PREFLIGHT_BOUNDARY_OPTOUT="$5" sh "$_lb_self" --selftest-e2e --boundary-only "$4" 2>&1 </dev/null ) || :
+      _lb_m=$( cd "$4" && env -u CI -u GITHUB_ACTIONS PREFLIGHT_BOUNDARY_OPTOUT="$5" sh "$_lm/conformance/guard-wired.sh" --selftest-e2e --boundary-only "$4" 2>&1 </dev/null ) || :
+      case "$_lb_o" in *"$6"*) : ;; *) echo "selftest FAIL: mutant $1 scenario is vacuous (the original does not print '$6': $_lb_o)"; st=1; return 0 ;; esac
+      case "$_lb_m" in *"$6"*) echo "selftest FAIL: mutant $1 survived (it still prints '$6')"; st=1 ;; *) echo "selftest PASS: mutant $1 is killed" ;; esac
+    }
+    # the WARN arm applied to the committed leg: LB-G3's FAIL disappears
+    _lb_mut lb-warn-arm-on-the-committed-leg sed '/MUT-LBCOMMITTED/s/settings.json" ||/settings.json" 2026-11-18 ||/' "$base/lb_g3" "$_lb_decl" 'FAIL: boundary: sandbox.network.allowLocalBinding is not false'
+    # the origin read replaced by a working-tree read: LB-G5's FAIL disappears
+    _lb_rep='  _ls_o="  WARN local-bind: ON [static] (granted $(sed -n "s/.* since=//p" "$1/.kit/boundary-optout.conf" 2>/dev/null | head -n 1), declared in .kit/boundary-optout.conf)"'
+    _lb_mut lb-origin-read-replaced-by-the-tree awk "$_lb_rep" "$base/lb_g5" @absent 'FAIL: boundary: sandbox.network.allowLocalBinding is not false'
+    # an unreadable declaration read as declared: LB-G6's FAIL disappears
+    _lb_rep2='  _ls_o="  WARN local-bind: ON [static] (granted 2026-11-18, declared in .kit/boundary-optout.conf)"'
+    _lb_mut lb-unreadable-declaration-read-as-declared awk "$_lb_rep2" "$base/lb_g6" @unreadable 'FAIL: boundary: sandbox.network.allowLocalBinding is not false'
+    # LB-D2, the other label paths: a merge that cannot be mirrored, and a local file the strict gate refuses, name their scope too
+    _lb_build d2a 0 0; printf '%s\n' '{"sandbox":{"filesystem":{"denyRead":"x"}}}' > "$d/.claude/settings.local.json"; _lb_run @absent
+    _lb_bare=$(printf '%s\n' "$out" | grep -E '^(FAIL|WARN|INFO): boundary: ' | grep -v ']$' || true)
+    if [ "$rc" -eq 1 ] && _has "$out" 'replaces a list or object of settings.json' && [ -z "$_lb_bare" ]; then echo "selftest PASS: LB-D2 the merge-clash FAIL names the effective settings"; else echo "selftest FAIL: LB-D2 the merge-clash FAIL names no scope (rc=$rc, unlabelled: $_lb_bare)"; st=1; fi
+    _lb_build d2b 0 0; printf '%s\n' '{"sandbox":{"network":{"a":1,"a":2}}}' > "$d/.claude/settings.local.json"; _lb_run @absent
+    _lb_bare=$(printf '%s\n' "$out" | grep -E '^(FAIL|WARN|INFO): boundary: ' | grep -v ']$' || true)
+    if [ "$rc" -eq 1 ] && _has "$out" 'duplicate JSON key' && [ -z "$_lb_bare" ]; then echo "selftest PASS: LB-D2 the strict-gate FAIL names the local file"; else echo "selftest FAIL: LB-D2 the strict-gate FAIL names no file (rc=$rc, unlabelled: $_lb_bare)"; st=1; fi
+    # a seam run says so: the banner opens the output under --selftest-e2e and never appears without it (guard-wired reads no declaration there)
+    _lb_bo=$( cd "$base/lb_g2" && env -u CI -u GITHUB_ACTIONS PREFLIGHT_BOUNDARY_OPTOUT=@absent sh "$_lb_self" --selftest-e2e --boundary-only "$base/lb_g2" 2>&1 </dev/null ) || :
+    _lb_nb=$( cd "$base/bd_good" && env -u CI -u GITHUB_ACTIONS sh "$_lb_self" --boundary-only "$base/bd_good" 2>&1 </dev/null ) || :
+    if _has "$_lb_bo" 'NOTE: guard-wired test seams live' && ! _has "$_lb_nb" 'NOTE: guard-wired test seams live'; then echo "selftest PASS: a seam run opens with the NOTE and a plain run does not"; else echo "selftest FAIL: the seam NOTE is missing under --selftest-e2e, or printed without it"; st=1; fi
+    _lb_mut lb-seam-note-dropped sed '/MUT-GWBANNER/d' "$base/lb_g2" @absent 'NOTE: guard-wired test seams live'
+    _GW_E2E=0
     d="$base/bd_empty_dup"; mk_bd "$d" '.'
     { printf '{"sandbox":{},'; tail -n +2 "$d/.claude/settings.json"; } > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
@@ -2050,6 +2149,78 @@ selftest() {
   else
     echo "selftest SKIP: --boundary-only cells (jq absent)"
   fi
+
+  # ── SWAS-900 GW-CRASH: a crash of guard.sh under the canonical hook command blocks the call (exit 2 + the stop line).
+  # The command run is $GW_CANON itself (never retyped), under each outer shell present, with a tool-call JSON on stdin.
+  _gc_in='{"tool_name":"Bash","tool_input":{"command":"true"}}'
+  _gc_stop='the guard hook did not return a decision'
+  _gc_proj="$base/gwcrash"; mkdir -p "$_gc_proj/.claude/hooks"
+  _gc_stub() {  # $1 = the stub's body after the shebang
+    printf '#!/bin/sh\n%s\n' "$1" > "$_gc_proj/.claude/hooks/guard.sh"
+  }
+  _gc_run() {  # $1 shell, $2 canonical command text -> sets _gc_rc and _gc_err
+    _gc_rc=0
+    # the whole pipeline sits in a group whose stderr is captured, so the selftest's own shell cannot print "Segmentation fault" etc.
+    _gc_err=$( { printf '%s' "$_gc_in" | CLAUDE_PROJECT_DIR="$_gc_proj" "$1" -c "$2" >/dev/null; } 2>&1 ) || _gc_rc=$?
+  }
+  _gc_cell() {  # $1 cell id, $2 shell, $3 canonical text, $4 want rc, $5 want stop line (yes|no)
+    _gc_run "$2" "$3"
+    _gc_ok=0
+    if [ "$_gc_rc" -eq "$4" ]; then _gc_ok=1; fi
+    case "$5" in
+      sig) case "$_gc_err" in *"$_gc_stop (rc 13"[5-9]")"*) ;; *) _gc_ok=0 ;; esac ;;
+      no) case "$_gc_err" in *"$_gc_stop"*) _gc_ok=0 ;; esac ;;
+    esac
+    if [ "$_gc_ok" -eq 1 ]; then echo "selftest PASS: $1 -> rc $4"; else echo "selftest FAIL: $1 should give rc $4 (stop line: $5) (rc=$_gc_rc: $_gc_err)"; st=1; fi
+  }
+  _gc_mut_canon_all=$(printf '%s' "$GW_CANON" | sed 's/ || {.*$//')
+  _gc_mut_canon_rc=$(printf '%s' "$GW_CANON" | sed 's/exit 2; }$/exit $rc; }/')
+  _gc_ran=0
+  _gc_bashpath=$(command -v bash 2>/dev/null) || _gc_bashpath=
+  _gc_list="dash bash zsh"
+  if [ -x /bin/bash ] && [ "$_gc_bashpath" != /bin/bash ]; then _gc_list="$_gc_list /bin/bash"; fi
+  _gc_crash_stub() {  # $1 SEGV|BUS|KILL|STDIN
+    case "$1" in
+      STDIN) _gc_stub 'cat >/dev/null
+kill -SEGV $$' ;;
+      *) _gc_stub "kill -$1 \$\$" ;;
+    esac
+  }
+  for _gc_sh in $_gc_list; do
+    case "$_gc_sh" in
+      /*) _gc_bin=$_gc_sh; _gc_tag=bin-bash ;;
+      *) _gc_tag=$_gc_sh
+         if ! _gc_bin=$(command -v "$_gc_sh" 2>/dev/null) || [ -z "$_gc_bin" ]; then
+           echo "selftest SKIP: GW-CRASH-$_gc_sh: $_gc_sh not installed"; continue
+         fi ;;
+    esac
+    _gc_ran=$((_gc_ran + 1))
+    _gc_ver=$("$_gc_bin" --version 2>&1 | head -1) || _gc_ver=unknown
+    echo "selftest INFO: GW-CRASH-$_gc_tag ran under $_gc_bin ($_gc_ver)"
+    for _gc_sig in SEGV BUS KILL; do
+      _gc_crash_stub "$_gc_sig"
+      _gc_cell "GW-CRASH-$_gc_tag-$_gc_sig" "$_gc_bin" "$GW_CANON" 2 sig
+    done
+    _gc_crash_stub STDIN
+    _gc_cell "GW-CRASH-STDIN-$_gc_tag" "$_gc_bin" "$GW_CANON" 2 sig
+    _gc_stub 'exit 0'
+    _gc_cell "GW-CRASH-CTL0-$_gc_tag" "$_gc_bin" "$GW_CANON" 0 no
+    _gc_stub 'exit 2'
+    _gc_cell "GW-CRASH-CTL2-$_gc_tag" "$_gc_bin" "$GW_CANON" 2 no
+    # mutants: every crash stub must go red (rc not 2) under each mutant
+    for _gc_mut in M-GW-CRASH:"$_gc_mut_canon_all" M-GW-CRASH-RC:"$_gc_mut_canon_rc"; do
+      _gc_mname=${_gc_mut%%:*}; _gc_mtext=${_gc_mut#*:}
+      if [ "$_gc_mtext" = "$GW_CANON" ]; then echo "selftest FAIL: mutant $_gc_mname did not change GW_CANON"; st=1; continue; fi
+      _gc_surv=
+      for _gc_sig in SEGV BUS KILL STDIN; do
+        _gc_crash_stub "$_gc_sig"
+        _gc_run "$_gc_bin" "$_gc_mtext"
+        if [ "$_gc_rc" -eq 2 ]; then _gc_surv="$_gc_surv $_gc_sig"; fi
+      done
+      if [ -z "$_gc_surv" ]; then echo "selftest PASS: $_gc_mname-$_gc_tag is killed on all four crash stubs (rc not 2)"; else echo "selftest FAIL: mutant $_gc_mname survived under $_gc_tag on:$_gc_surv"; st=1; fi
+    done
+  done
+  if [ "$_gc_ran" -eq 0 ]; then echo "selftest FAIL: GW-CRASH ran under no shell"; st=1; fi
 
   d="$base/full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: full matcher -> wired"; else echo "selftest FAIL: full matcher should be wired"; st=1; fi
@@ -2963,9 +3134,11 @@ mode=full
 proj_dir="."
 enforce=0
 bonly=0
+_GW_E2E=0   # set only by the flag below, never read from the environment (FLAG-NOT-ENV): the declaration seam of _gw_lb_since
 while [ $# -gt 0 ]; do
   case "$1" in
     --selftest) selftest; exit $? ;;
+    --selftest-e2e) _GW_E2E=1 ;;
     --rung1-only) mode=rung1only ;;
     --sandbox-enforce) enforce=1 ;;
     --boundary-only) bonly=1 ;;
@@ -2973,6 +3146,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ "$_GW_E2E" -ne 1 ] || echo "NOTE: guard-wired test seams live — not a report on this machine"   # MUT-GWBANNER: a seam run says so, as doctor-boundary.sh does
 if [ "$enforce" -eq 1 ]; then sandbox_enforce "$proj_dir"; exit $?; fi
 if [ "$bonly" -eq 1 ]; then
   if _gw_boundary_only "$proj_dir"; then exit 0; else exit $?; fi

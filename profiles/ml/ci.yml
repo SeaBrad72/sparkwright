@@ -94,6 +94,8 @@ jobs:
         # a schedule or any unknown. --kit-selftests-on-change makes a run with no listing skip the kit's own
         # selftests (rows N-A, one notice); a listing that names a control-plane path still runs them all.
         # Keep this ONE line (verify-enforced-wired reads it).
+        env:
+          SW_ANNOTATE: '1'
         run: sh conformance/verify.sh --require --kit-selftests-on-change ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
       # <<< kit:owned changed-listing
 

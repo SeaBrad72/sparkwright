@@ -179,25 +179,30 @@ owed_items() {
   printf '%s\n' "- Intent owner: stamped as [owed] in README.md and CLAUDE.md (it seeds no CODEOWNERS rule); a person names the real owner."
   printf '%s\n' "- CI platform: github, the default; change it only on purpose."
   printf '%s\n' "- Mode: lean, the default (incept --mode)."   # not incept's stamped field name: this list is appended to CLAUDE.md, and only incept may name that field (mode-enforcement-blind)
-  printf '%s\n' "- Operator fluency: undeclared; declare it in CLAUDE.md when you know it."   # MUT-OWED
+  printf '%s\n' "- Operator fluency: undeclared; the agent drafts it in docs/inception-draft/PROJECT-CLAUDE.md (CLAUDE.md §3) once the owner states it; a person pastes it into CLAUDE.md."   # MUT-OWED
   printf '%s\n' "- Database archetype: the stack's default; strip or keep the database to match the project."
   printf '%s\n' "- Deploy target: choose one (docs/adoption/DEPLOYMENT-ENVIRONMENT.md)."
-  printf '%s\n' "- Charter: write the problem, vision, success metrics and scope in CLAUDE.md."
+  printf '%s\n' "- Charter: the agent writes docs/inception-draft/PROJECT-CLAUDE.md from the owner's words (problem, vision, success metrics, scope); a person pastes what is right into CLAUDE.md §1 and deletes docs/inception-draft/. The guard refuses the agent's own write to CLAUDE.md; later edits go through a dev clone and a PR."
   printf '%s\n' "- ADR-000: record the real stack decision and its fit rationale in docs/architecture/ADR-000-stack.md."
   printf '%s\n' "- Harness fit: record why the chosen harness fits."
-  printf '%s\n' "- Roles: assign them in CLAUDE.md."
-  printf '%s\n' "- Autonomy tiers: declare them in CLAUDE.md."
-  printf '%s\n' "- SLO: declare the SLO and error-budget posture in CLAUDE.md."
+  printf '%s\n' "- Roles: the agent drafts them in docs/inception-draft/PROJECT-CLAUDE.md (CLAUDE.md §4); a person pastes them into CLAUDE.md."
+  printf '%s\n' "- Autonomy tiers: the agent drafts them in docs/inception-draft/PROJECT-CLAUDE.md (CLAUDE.md §3); a person pastes them into CLAUDE.md."
+  printf '%s\n' "- SLO: the agent drafts the SLO and error-budget posture in docs/inception-draft/PROJECT-CLAUDE.md (CLAUDE.md §3); a person pastes it into CLAUDE.md."
   printf '%s\n' "- SECURITY.md: add the real disclosure channel once the repository exists (there is no origin yet)."
-  printf '%s\n' "- Branch protection: once the repository and its first CI run exist, run sh scripts/branch-protection-apply.sh --replace on an unprotected main."
+  if [ "$TEAM" = team ]; then
+    printf '%s\n' "- Branch protection: once the repository and its first CI run exist, a person runs sh scripts/branch-protection-apply.sh --replace --team on an unprotected main, in a real terminal, with an admin credential (docs/operations/forge-identity-switch.md, step 5). Without --team a team repository gets the solo profile."   # MUT-TEAMPROT
+  else
+    printf '%s\n' "- Branch protection: once the repository and its first CI run exist, a person runs sh scripts/branch-protection-apply.sh --replace on an unprotected main, in a real terminal, with an admin credential (docs/operations/forge-identity-switch.md, step 5)."
+  fi
+  printf '%s\n' "- Relaunch: start the agent session with the line incept printed above (\"Start your agent session here\")."
   printf '%s\n' "- Agent forge account: give the agent its own limited forge account (docs/operations/forge-identity-switch.md)."
-  printf '%s\n' "- First push: a person creates the project's repository on your forge and adds it as origin; then push main. Until then, while any agent-boundary part is off, preflight reports the declaration UNTRUSTED (no origin remote)."   # MUT-FIRSTPUSH
+  printf '%s\n' "- First push: a person creates the project's empty repository on your forge and adds it as origin; the agent commits the baseline after the person's paste, pushes it with git push origin main and reads it back with git ls-remote --heads origin main (the guard admits this first push). Until then, while any agent-boundary part is off, preflight reports the declaration UNTRUSTED (no origin remote)."   # MUT-FIRSTPUSH
   printf '%s\n' "- Agent boundary: if sh scripts/preflight.sh prints any FAIL boundary or FAIL egress line, follow its Fix or Remedy line (a person acts, for example merging the user-level block into ~/.claude/settings.json, or declares an opt-out in .kit/boundary-optout.conf), then re-run it to confirm."   # MUT-BOUNDARYOWED
   if [ "$BOARD" = jira ]; then
     printf '%s\n' "- Tracker conf: set base_url and project in .kit/tracker.conf, and fill the minimum day-one rows of JIRA-SETUP.md."
     printf '%s\n' "- Tracker secrets: A person sets KIT_TRACKER_USER and KIT_TRACKER_TOKEN as repository Actions secrets (and in their own shell, if they use one). See JIRA-SETUP.md, minimum day-one rows. The agent does not set them."
-    printf '%s\n' "- Waiver row: a person fills [owner] and [security-owner] on the board-governance row of WAIVER-REGISTER.md (the agent may propose the text; the guard refuses its write to that file); until a person does, the first PR is red."
-    printf '%s\n' "- Required check: bind tracker-board-gates to branch protection before the first PR."
+    printf '%s\n' "- Waiver row: once tracker-board-gates is bound as a required check, backlog-presence and loop-state step aside and no row is owed. Where branch protection cannot be set (for example a free-plan private repository) a person fills [owner] and [security-owner] on the board-governance row of WAIVER-REGISTER.md instead (the agent may propose the text; the guard refuses its write to that file)."
+    printf '%s\n' "- Required check: bind tracker-board-gates to branch protection before the first PR; that bind is what lets the board gates step aside."
   fi
   if [ "$TEAM" = solo ]; then
     printf '%s\n' "- Declare solo: the repository reads team until this merges. (1) Open a PR that creates .kit/dials.conf with the line MERGE_RELATIONSHIP=solo. (2) Run sh scripts/promotion-verify.sh record on that PR's head sha: class control-plane, your own words in --token, your name in --go-by. (3) Merge that PR yourself, by hand: it is the last merge by hand, because once it has merged sh scripts/sparkwright doctor prints the handover line and from then on actuate and land merge on your recorded GO. See docs/adoption/vc-hosts.md, Solo or team."
@@ -307,6 +312,8 @@ cell_n2() {  # team / jira, tracker variables unset, no network
   has "- Waiver row:" "N2 the waiver-row item is owed"
   has "board-governance" "N2 the board-governance row is named"
   has "tracker-board-gates" "N2 the tracker-board-gates bind is owed"
+  has "once tracker-board-gates is bound as a required check, backlog-presence and loop-state step aside and no row is owed" "N2 the waiver row is the way out only where protection cannot be set (SWAS-907 F8)"
+  hasnt "the first PR is red" "N2 the owed list no longer says the first PR is red"
   hasnt "- Declare solo:" "N2 a team answer owes no declaring PR"
   hasnt "Token:" "N2 no token prompt"
   if grep -E 'Governance' "$_d/CLAUDE.md" 2>/dev/null | grep -Eq '\): team( |$)'; then chk 0 "N2 incept stamped Governance: team"; else chk 1 "N2 incept stamped Governance: team"; fi
@@ -498,6 +505,25 @@ cell_n11() {  # a real step-4 refusal still stops new: the stub refuses only onc
   exists "$_d/ENGINEERING-PRINCIPLES.md" "N11 the project is incepted"
 }
 
+cell_n12() {  # SWAS-907 C1: the protection line names --replace --team for a team repository and not for a solo one; the CLAUDE.md lines name the draft
+  mk_dir; _dt=$MKD/proj-team; mk_dir; _ds=$MKD/proj-solo
+  shim_on
+  nrun "$1" "$HOME_OK" ci /dev/null "$_dt" --stack typescript-node --team team --board md --harness claude-code --name "Team Twelve" --noninteractive
+  rc_is 0 "N12 team run exits 0"
+  has "sh scripts/branch-protection-apply.sh --replace --team on an unprotected main" "N12 a team owed list names --replace --team"
+  has "with an admin credential (docs/operations/forge-identity-switch.md, step 5)" "N12 the protection line names an admin credential and step 5"
+  for _lb in "- Charter:" "- Roles:" "- Autonomy tiers:" "- SLO:" "- Operator fluency:"; do
+    _ln=$(printf '%s\n' "$OUT" | grep -F -- "$_lb" | head -n 1)
+    case "$_ln" in *"docs/inception-draft/PROJECT-CLAUDE.md"*"a person pastes"*) chk 0 "N12 the $_lb line names the draft and the person's paste" ;; *) chk 1 "N12 the $_lb line names the draft and the person's paste (got: $_ln)" ;; esac
+  done
+  has "the agent commits the baseline after the person's paste, pushes it with git push origin main and reads it back with git ls-remote --heads origin main" "N12 the first-push line names the agent, the push and the read-back"
+  nrun "$1" "$HOME_OK" ci /dev/null "$_ds" --stack typescript-node --team solo --board md --harness claude-code --name "Solo Twelve" --noninteractive
+  shim_off
+  rc_is 0 "N12 solo run exits 0"
+  has "sh scripts/branch-protection-apply.sh --replace on an unprotected main" "N12 a solo owed list names --replace"
+  hasnt "--replace --team" "N12 a solo owed list does not name --team"
+}
+
 mutant() {  # <label> <file in the kit> <sed script> <cell>...: the script is applied to a COPY in a fresh kit clone; every named cell must go red
   _ml=$1; _mfl=$2; _msd=$3; shift 3
   mk_kit; _mk=$KITDIR
@@ -549,7 +575,7 @@ selftest() {
   if ! ( cd "$KIT0" && g init -q && g add -A -f && g commit -qm base ) >/dev/null 2>&1; then
     echo "FAIL: the fixture kit could not be built"; return 1
   fi
-  _cells="cell_n1 cell_n2 cell_n3 cell_n4 cell_n5 cell_n6 cell_n7 cell_n8 cell_n9 cell_n10 cell_n11"
+  _cells="cell_n1 cell_n2 cell_n3 cell_n4 cell_n5 cell_n6 cell_n7 cell_n8 cell_n9 cell_n10 cell_n11 cell_n12"
   for _c in $_cells; do
     mk_kit; "$_c" "$KITDIR"
     rm -rf "$KITDIR" "$W"/d[0-9]*   # each cell's dirs go when it ends
@@ -569,6 +595,7 @@ selftest() {
   mutant "sixth-prompt" scripts/new.sh 's| # MUT-SIXTH$|; ask "Anything else?" ""  # MUT-SIXTH|' cell_n3
   mutant "map-1-to-team" scripts/new.sh '/# MUT-MAP1$/s/solo/team/' cell_n3
   mutant "write-a-dial" scripts/new.sh '/# MUT-DIAL$/s|)   # MUT-DIAL$|) \&\& { mkdir -p "$DEST/.kit"; echo MERGE_RELATIONSHIP=solo > "$DEST/.kit/dials.conf"; }   # MUT-DIAL|' cell_n1
+  mutant "team-owed-drops-team-flag" scripts/new.sh '/# MUT-TEAMPROT$/s/--replace --team/--replace/' cell_n12
   mutant "owed-reads-as-filled-owner" conformance/inception-done.sh 's/(who owns|owed)/who owns/' cell_n1
   if [ "$SELFTEST_BAD" -eq 0 ]; then echo "new --selftest: OK"; return 0; fi
   echo "new --selftest: FAIL ($SELFTEST_BAD)" >&2; return 1

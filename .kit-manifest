@@ -994,6 +994,8 @@ scripts/doctor.sh
 scripts/dora.sh
 scripts/escalate.sh
 scripts/explain.sh
+scripts/fail-annotate.json
+scripts/fail-annotate.sh
 scripts/fetch-text.sh
 scripts/fixtures/agent-trace-sample.jsonl
 scripts/fixtures/engineer-fixture.sh

@@ -3841,6 +3841,41 @@ _tj_st_get_issue_perms() {
     fi
   fi
 
+  # --- S-4 negative 1b (SWAS-905): a digit-only id (10001) now passes the guard's row-key grammar, and Jira's REST API resolves a numeric
+  # issue ID, so this adapter's id<->project match is the layer that refuses it: rc 1, before any request (no shim call) ---
+  : > "$argvlog"
+  _tj_fx cloud-issue-good
+  rc=0
+  tj_get_issue https://ex.atlassian.net cloud AB 10001 >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    echo "FAIL: selftest — a digit-only id (10001) was not refused with rc 1 (got rc $rc) (S-4, SWAS-905)"; sfail=1
+  elif [ -s "$argvlog" ]; then
+    echo "FAIL: selftest — a digit-only id (10001) still reached curl (S-4 pre-check bypassed, SWAS-905)"; sfail=1
+  else
+    echo "PASS: selftest — a digit-only id (10001) is refused with rc 1 before any request (S-4, SWAS-905)"
+  fi
+  # ...and on every write path: the guard's key grammar no longer stops a digit-only key, so each write verb must refuse it itself (rc 1, zero curl calls)
+  _tj_s4_digit() {   # <verb label> <stdin text> <command...>: rc 1, the id-grammar sentence on stderr (so the id check, not another check, refused) and zero curl calls
+    _s4_label=$1; _s4_in=$2; shift 2
+    : > "$argvlog"; _tj_fx cloud-issue-good; _s4_rc=0
+    printf '%s' "$_s4_in" | "$@" >/dev/null 2>"$tmpd/.s4.err" || _s4_rc=$?
+    if [ "$_s4_rc" -ne 1 ]; then
+      echo "FAIL: selftest — $_s4_label with a digit-only id (10001) was not refused with rc 1 (got rc $_s4_rc) (S-4, SWAS-905)"; sfail=1
+    elif ! grep -qF 'refused: id does not match project (grammar)' "$tmpd/.s4.err"; then
+      echo "FAIL: selftest — $_s4_label with a digit-only id (10001) was refused, but not by the id check (stderr: $(cat "$tmpd/.s4.err"))"; sfail=1
+    elif [ -s "$argvlog" ]; then
+      echo "FAIL: selftest — $_s4_label with a digit-only id (10001) still reached curl (S-4 pre-check bypassed, SWAS-905)"; sfail=1
+    else
+      echo "PASS: selftest — $_s4_label with a digit-only id (10001) is refused with rc 1 before any request (S-4, SWAS-905)"
+    fi
+  }
+  _tj_s4_digit get-issue '' tj_get_issue https://ex.atlassian.net cloud AB 10001
+  _tj_s4_digit assign-self '' tj_assign_self https://ex.atlassian.net cloud AB 10001
+  _tj_s4_digit transition '' tj_transition https://ex.atlassian.net cloud AB 10001 "In Progress"
+  _tj_s4_digit edit '{"fields":{"summary":"x"}}' tj_edit https://ex.atlassian.net cloud AB 10001 - - - -
+  _tj_s4_digit comment 'x' tj_comment https://ex.atlassian.net cloud AB 10001 -
+  _tj_s4_digit rank '' tj_rank https://ex.atlassian.net cloud AB 10001 before AB-2
+
   # --- S-4 negative 2: spoofed-project response refused AFTER the request (recorded fixture) ---
   _tj_fx cloud-issue-spoofed-project
   err=$(tj_get_issue https://ex.atlassian.net cloud AB AB-7 2>&1 >/dev/null) || true

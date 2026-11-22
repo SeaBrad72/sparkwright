@@ -87,10 +87,14 @@ echo "PASS: symlinked shim-dir spelling resolves the real binary (inode skip; no
 pv="$(CDPATH= cd -- "$(dirname -- "$KG")" && pwd)/promotion-verify.sh"
 if [ -f "$pv" ]; then
   repo="$work/pvrepo"; mkdir -p "$repo"
+  # SWAS-944: record --gate design now refuses a basis the approved commit does not carry,
+  # so c1 commits the design file that --basis names below.
   (
     cd "$repo" && git init -q && git config user.email fixture@example.invalid \
       && git config user.name Fixture && git config commit.gpgsign false \
-      && printf 'x\n' > f.txt && git add f.txt && git commit -qm c1
+      && mkdir -p docs/architecture \
+      && printf '# x design\n\nThe design of the shim-probe fixture.\n' > docs/architecture/x-design.md \
+      && printf 'x\n' > f.txt && git add f.txt docs/architecture/x-design.md && git commit -qm c1
   ) >/dev/null 2>&1
   sha=$( cd "$repo" && git rev-parse HEAD )
   # `--no-push` (RECORD-FETCHES-AND-PUSHES-LEDGER): `record` is now a fetch→write→publish transaction
@@ -101,7 +105,7 @@ if [ -f "$pv" ]; then
   # unchanged, because the write path is identical with or without the publish step.
   set +e
   out=$( cd "$repo" && PATH="$shim_dir:$PATH" sh "$pv" record --no-push --approved-sha "$sha" \
-           --approved-by Fixture --gate design --rung Design --class control-plane \
+           --approved-by Fixture --gate design --rung integration --class control-plane \
            --scope branch/b2fix-shim-probe --token "GO" \
            --basis docs/architecture/x-design.md 2>&1 ); pvrc=$?
   set -e

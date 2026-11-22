@@ -51,7 +51,7 @@ reviewed it, and the forge's `dismiss_stale_reviews` re-gates it.
 
 ## Findings
 Every row needs a disposition **in the grammar**: `fixed <sha>` · `accepted — <reason>` ·
-`waived — WAIVER-<id>` (the id must exist in `WAIVER-REGISTER.md`). A `fixed <sha>` must name a commit
+`waived — WAIVER-<id>` (the id must exist in `WAIVER-REGISTER.md`). `conformance/review-lane.sh` grades the grammar with two limits: `fixed` takes a lowercase hex sha, and `accepted` passes only at **20 characters or more in all** (the whole disposition, `accepted — ` included). A `fixed <sha>` must name a commit
 **inside this PR** — a real commit, an ancestor of the head and not already in the base, or the gate
 refuses it (`RL-FIX-OUTSIDE`): a fix that lives outside the PR is a fix this PR does not carry, and an
 unchecked sha disposes of a finding with a string. An empty table is legal and means *no findings* — a
@@ -120,7 +120,7 @@ shape is unaffected either way.
 ## Human ratification
 - **Ratified by:** ___ *(≠ builder where a second human with write access exists; solo: the accountable maintainer, recorded)*
 - **Date:** ___
-- **Disposition:** findings addressed · accepted-with-reason · waived *(cite exception ID in `WAIVER-REGISTER.md`)*
+- **Ratification note** *(ungraded; not the Findings grammar above)*: findings addressed · accepted-with-reason · waived *(cite exception ID in `WAIVER-REGISTER.md`)*
 
 ## High-risk acknowledgments  *(REQUIRED for the high-risk tier — the anti-theater requirement)*
 For **each material finding**, a *specific* acknowledgment tied to it — never a bare "approved":

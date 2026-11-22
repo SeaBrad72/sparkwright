@@ -276,4 +276,10 @@ while [ $# -gt 0 ]; do
     *)  DIR=$1; shift ;;
   esac
 done
+# SWAS-945: the default probe is `gh api`, which fails TLS inside the macOS agent sandbox; the check sets its own trust store (scripts/gh-tls.sh; one probe, here in the
+# parent shell, before the first gh call). Only the default probe: an operator-supplied --probe-cmd is theirs. A missing library means no probe.
+_scl_ghtls=$(dirname -- "$0")/../scripts/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_scl_ghtls" ]; then . "$_scl_ghtls"; fi
+if [ "$PROBE" = "$PROBE_DEFAULT" ] && command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
 if check_channel "$DIR" "$PROBE"; then exit 0; else exit $?; fi

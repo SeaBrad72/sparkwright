@@ -38,6 +38,11 @@
 # POSIX sh; dash-clean.
 set -eu
 
+# SWAS-945: ensure_release reaches gh; inside the macOS agent sandbox it sets its own trust store (scripts/gh-tls.sh; one probe, before its first gh call).
+_pp_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_pp_ghtls" ]; then . "$_pp_ghtls"; fi
+
 ROOT=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
 PUBLIC_REMOTE_DEFAULT="https://github.com/SeaBrad72/sparkwright.git"
 # Owner-identifier denylist source. Kept OUT of this shipped file so the kit stays identity-neutral
@@ -255,6 +260,7 @@ _pnr_export_ignored() {
 # in step 2b) and runs inside $MIRROR so gh targets the public remote.
 ensure_release() {
   command -v gh >/dev/null 2>&1 || { say "WARNING: gh not installed — $TAG has no GitHub Release. Install gh and create it from the CHANGELOG public block."; return 0; }
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, before the first gh call
   ( cd "$MIRROR" && gh release view "$TAG" >/dev/null 2>&1 ) && return 0   # already exists -> idempotent
   if ( cd "$MIRROR" && gh release create "$TAG" --title "$TAG" --notes-file "$NOTE_DIR/release-notes.md" >/dev/null 2>&1 ); then
     say "      created GitHub Release $TAG with the curated public notes"

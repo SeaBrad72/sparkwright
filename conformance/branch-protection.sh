@@ -262,7 +262,8 @@ valid_login() {
 }
 
 # gh_identity_line — name the account the next `gh` calls act as, on STDERR (never stdout, never the rc).
-# Credential source only; token values are never printed. Under CI no API call is made and no login is named.
+# Credential source only; token values are never printed. Under CI this function makes no `gh api user` call and names no login. (On a Darwin CI runner the TLS probe
+# in run() still makes its one `gh api rate_limit` call just before this function: the probe is not this function's call.)
 gh_identity_line() {
   if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then _gil_src="token in environment"; else _gil_src="gh stored login"; fi
   if [ -n "${CI:-}" ]; then
@@ -277,6 +278,12 @@ gh_identity_line() {
     printf '%s\n' "acting gh identity: not resolved (credential: $_gil_src; gh api user failed, so the next calls will likely fail too)" >&2
   fi
 }
+
+# SWAS-945: the live leg's gh reads set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in run, before the first gh call).
+# A missing library means no probe: today's behaviour.
+_bp_ghtls=$(dirname -- "$0")/../scripts/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_bp_ghtls" ]; then . "$_bp_ghtls"; fi
 
 REQUIRE="${REQUIRE:-0}"
 RAW=0
@@ -750,6 +757,9 @@ gather_team_state() {
 
 run() {
   have_gh || unverifiable "gh not installed"
+  # SWAS-945: every gh call in this script strips these four (SEC M-3, SWAS-198), so the probe's gh does too.
+  unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, once, before the first gh call (on a Darwin CI runner it runs before gh_identity_line, so CI is not call-free)
   gh_identity_line
   REPO="$REPO_ARG"
   if [ -z "$REPO" ]; then REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true); fi

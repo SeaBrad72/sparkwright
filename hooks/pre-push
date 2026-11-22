@@ -54,7 +54,7 @@ if [ "$#" -ne 1 ] || [ "${1:-}" != "--selftest" ]; then   # the selftest is exac
   _kit_inline_reason=$(printf '%s\n' "$_kit_stdin" | _kit_main_scan)   # MUT-883-INLINE
   if [ -n "${_kit_inline_reason:-}" ]; then
     printf '%s\n' "kit guard: $_kit_inline_reason" >&2
-    printf '%s\n' "  override (deliberate): git push --no-verify" >&2
+    printf '%s\n' "  Next: push a feature branch and open a PR instead" >&2
     exit 1
   fi
 fi
@@ -2893,7 +2893,13 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   f_hook "$SELF" "$ROOT/.claude/hooks/guard-core.sh" "refs/heads/main $MHEAD refs/heads/main $MHEAD"
   decl_expect_rc "$f_rc" refuse "F3: a non-zero remote sha for main is denied (real core)"
   decl_expect_contains "F3: the denial names the push-to-main rule" "pushing directly to main" "$f_out"
-  decl_expect_contains "F3: the denial keeps the honesty line" "git push --no-verify" "$f_out"
+  # SWAS-907 C6 (D-240907-1 R-H7): the inline main-push denial names the PR route and teaches no bypass.
+  decl_expect_contains "F3: the denial names the PR route" "Next: push a feature branch and open a PR instead" "$f_out"
+  if printf '%s' "$f_out" | grep -qF -- "--no-verify"; then
+    echo "FAIL: F3: the inline main-push denial names --no-verify (it must teach no bypass)"; fail=1
+  else
+    echo "PASS: F3: the inline main-push denial names no --no-verify bypass"
+  fi
   f_hook "$SELF" "$DECL_CORE" "refs/heads/main $Z refs/heads/main $MHEAD"
   decl_expect_rc "$f_rc" refuse "F3: deleting main is denied before the core is read"
   decl_expect_contains "F3: the delete denial names the delete rule" "deleting main/master" "$f_out"

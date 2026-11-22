@@ -18,6 +18,12 @@
 # Guardrails: A report, not a gate — degrades gracefully on any gh/network failure and ALWAYS exits 0 (never fails a pipeline).
 set -eu
 
+# SWAS-945: the gh reads below set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in report, before the first gh call).
+# A missing library means no probe: today's behaviour.
+_dora_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_dora_ghtls" ]; then . "$_dora_ghtls"; fi
+
 WINDOW="${WINDOW:-30}"
 case "$WINDOW" in ""|*[!0-9]*) echo "WINDOW must be a positive integer" >&2; exit 2 ;; esac
 [ "$WINDOW" -gt 0 ] || { echo "WINDOW must be a positive integer (got 0)" >&2; exit 2; }
@@ -37,6 +43,7 @@ report() {
     echo "  - PR lead time: unavailable (needs gh)"
     echo "  - Review latency: unavailable (needs gh)"
   else
+    if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, once, before the first gh call
     # Release cadence (deployment-frequency proxy): releases published within the window.
     # DORA_FAKE_RELEASES lets --selftest force a deterministic rc with no network (mirrors
     # DORA_FORCE_NO_GH) so the zero-releases branch is exercised without a live gh call.

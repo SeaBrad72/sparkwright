@@ -290,6 +290,13 @@ $(bpd_enum_offenders "$_blc" "$(bpd_enum_ranges "$_blc")")"
 #                                   the working tree and exposes no size value (only dor-size). Reached
 #                                   ONLY after seam_backend confirms md; on any tracker backend the
 #                                   ceiling is owed, never read. Retired by REVIEW-LANE-SIZE-VIA-SEAM.
+#         scripts/start.sh       -- SWAS-947 (erratum E2): reads one row's Size cell from the md board's
+#                                   Ready section via backlog-lib.sh's OWN section_rows/col_index/
+#                                   gfm_cell, only after seam_backend confirms md (any other backend:
+#                                   the size reads as unknown, never read). The seam exposes no Size
+#                                   value. Retired by REVIEW-LANE-SIZE-VIA-SEAM alongside review-lane.sh.
+#                                   Its selftest() line builds a fixture from a FIXTURE board, never the
+#                                   real one. File-scoped; clause (c) curl scoping still binds it.
 #         meta-control-fresh.sh  -- calls the shared `cell()` primitive, but on rows sourced from
 #                                   docs/governance/.meta-control-verdict-log.md -- a DIFFERENT,
 #                                   always-repo-side governance file, never BACKLOG.md and never
@@ -521,7 +528,7 @@ bpd_dc_curl_drop_exact() {
 # from clause (a) (board-content read). See the allowlist comment above for each entry's justification.
 bpd_dc_bc_exempt() {
   case "$1" in
-    */backlog-lib.sh|*/backlog-current.sh|*/backlog-presence.sh|*/board-claim.sh|*/board-drift.sh|*/meta-control-fresh.sh|*/review-lane.sh)
+    */backlog-lib.sh|*/backlog-current.sh|*/backlog-presence.sh|*/board-claim.sh|*/board-drift.sh|*/meta-control-fresh.sh|*/review-lane.sh|*/scripts/start.sh)
       return 0 ;;
     */prepush-lane.sh|*/hooks/pre-push)
       # PLUMBING, not parsing: both materialize a `git show <base>:BACKLOG.md` SNAPSHOT FILE for
@@ -559,6 +566,33 @@ bpd_dc_bc_exempt() {
       return 0 ;;
   esac
   return 1
+}
+
+# bpd_dc_drop_selftest_scope <file> -> stdin "<n>:<text>" hit lines, minus those inside the body of board.sh's
+# `selftest()` (located by bpd_func_range, the same way the enum check scopes its allowlist ranges). Named reason:
+# fixture reads inside board.sh's selftest; no board consumer (SWAS-905). It is SCOPED to that one function of that one
+# file: board.sh's production code stays fully checked, and any other file passes through untouched. The OPEN,
+# SECTION-ROWS and CELL hits are all scoped the same way (the caller filters each tag's lines through this). The range is
+# used only when its end line is exactly `}` and no top-level `name() {` header starts inside it (a selftest() whose closing
+# brace is indented would make bpd_func_range run on into the next function); otherwise nothing is dropped (fail toward RED),
+# as when the function cannot be found.
+bpd_dc_drop_selftest_scope() {
+  _ds_range=""
+  case "$1" in
+    */scripts/board.sh) _ds_range=$(bpd_func_range "$1" selftest 2>/dev/null) || _ds_range="" ;;
+  esac
+  if [ -n "$_ds_range" ]; then
+    _ds_s=${_ds_range% *}; _ds_e=${_ds_range#* }
+    _ds_endtxt=$(sed -n "${_ds_e}p" "$1")
+    _ds_inner=$(sed -n "$((_ds_s + 1)),${_ds_e}p" "$1" | grep -c -E '^[A-Za-z_][A-Za-z0-9_]*\(\) \{' || true)
+    if [ "$_ds_endtxt" != '}' ] || [ "${_ds_inner:-1}" != 0 ]; then _ds_range=""; fi
+  fi
+  if [ -z "$_ds_range" ]; then cat; return 0; fi
+  while IFS= read -r _ds_l; do
+    _ds_n=${_ds_l%%:*}
+    if [ "$_ds_n" -ge "$_ds_s" ] 2>/dev/null && [ "$_ds_n" -le "$_ds_e" ] 2>/dev/null; then continue; fi
+    printf '%s\n' "$_ds_l"
+  done
 }
 
 # bpd_dc_rb_exempt <file> -> rc0 iff <file> is the seam or a named non-board-governance
@@ -634,6 +668,8 @@ bpd_derived_consumer_check() {
     if ! bpd_dc_bc_exempt "$_dc_f"; then
       for _dc_hit in "OPEN:$_dc_open" "SECTION-ROWS:$_dc_sr" "CELL:$_dc_cell"; do
         _dc_tag=${_dc_hit%%:*}; _dc_lines=${_dc_hit#*:}
+        # fixture reads inside board.sh's selftest; no board consumer (SWAS-905): drop only the hits inside that function's body
+        [ -n "$_dc_lines" ] && _dc_lines=$(printf '%s\n' "$_dc_lines" | bpd_dc_drop_selftest_scope "$_dc_f")
         [ -n "$_dc_lines" ] || continue
         printf '%s\n' "$_dc_lines" | while IFS= read -r _dc_l; do
           [ -n "$_dc_l" ] || continue
@@ -1000,6 +1036,76 @@ $W/scripts/seam-plus-curl.sh"
     echo "FAIL: selftest -- curl-only-no-board.sh was wrongly flagged in the H-1 twin run"; sd=1
   else
     echo "PASS: selftest -- a curl-namer with no board read stays unflagged in the H-1 twin run too"
+  fi
+
+  # SWAS-905: board.sh's selftest() body is scoped out of clause (a), and NOTHING else in board.sh is. A literal
+  # BACKLOG.md read inside selftest() must not flag; the same read in a production function of the same file must.
+  mkdir -p "$W/bsin/scripts" "$W/bsout/scripts"
+  cat > "$W/bsin/scripts/board.sh" <<'DCEOF'
+#!/bin/sh
+do_thing() {
+  echo production
+}
+selftest() {
+  awk '{print}' "$1/BACKLOG.md"
+}
+DCEOF
+  cat > "$W/bsout/scripts/board.sh" <<'DCEOF'
+#!/bin/sh
+do_thing() {
+  awk '{print}' "$1/BACKLOG.md"
+}
+selftest() {
+  awk '{print}' "$1/BACKLOG.md"
+}
+DCEOF
+  _dc_bs_in=0
+  _dc_bs_in_out=$(BPD_DC_FILES_OVERRIDE="$W/bsin/scripts/board.sh" bpd_derived_consumer_check 2>&1) || _dc_bs_in=$?
+  if [ "$_dc_bs_in" -eq 0 ] && ! printf '%s\n' "$_dc_bs_in_out" | grep -q 'DERIVED-CONSUMER'; then
+    echo "PASS: selftest -- a literal BACKLOG.md read inside board.sh's selftest() is not flagged (SWAS-905 scope)"
+  else
+    echo "FAIL: selftest -- a read inside board.sh's selftest() was flagged (rc=$_dc_bs_in): $_dc_bs_in_out"; sd=1
+  fi
+  _dc_bs_out=0
+  _dc_bs_out_out=$(BPD_DC_FILES_OVERRIDE="$W/bsout/scripts/board.sh" bpd_derived_consumer_check 2>&1) || _dc_bs_out=$?
+  if [ "$_dc_bs_out" -eq 1 ] && printf '%s\n' "$_dc_bs_out_out" | grep -q 'DERIVED-CONSUMER(OPEN).*board\.sh:3:'; then
+    echo "PASS: selftest -- the same read in a board.sh production function (outside selftest()) still flags, and only that line (non-vacuity, SWAS-905)"
+  else
+    echo "FAIL: selftest -- a read outside selftest() in board.sh was not flagged exactly at line 3 (rc=$_dc_bs_out): $_dc_bs_out_out"; sd=1
+  fi
+  if printf '%s\n' "$_dc_bs_out_out" | grep -q 'board\.sh:6:'; then
+    echo "FAIL: selftest -- the in-selftest read (line 6) was flagged beside the production read"; sd=1
+  else
+    echo "PASS: selftest -- beside the production read, the in-selftest read (line 6) stays unflagged"
+  fi
+  # R6-1 twin: the SAME content under another file name is not scoped, so the filename filter is load-bearing.
+  mkdir -p "$W/bsother/scripts"
+  cp "$W/bsin/scripts/board.sh" "$W/bsother/scripts/other.sh"
+  _dc_bs_oth=0
+  _dc_bs_oth_out=$(BPD_DC_FILES_OVERRIDE="$W/bsother/scripts/other.sh" bpd_derived_consumer_check 2>&1) || _dc_bs_oth=$?
+  if [ "$_dc_bs_oth" -eq 1 ] && printf '%s\n' "$_dc_bs_oth_out" | grep -q 'DERIVED-CONSUMER(OPEN).*other\.sh:6:'; then
+    echo "PASS: selftest -- the same selftest() read under another file name (scripts/other.sh) still flags at line 6 (the filename filter is load-bearing)"
+  else
+    echo "FAIL: selftest -- the read at other.sh:6 was not flagged (rc=$_dc_bs_oth): $_dc_bs_oth_out"; sd=1
+  fi
+  # R6-3: a selftest() whose closing brace is indented makes the function range run on into the next function; the
+  # range is then not used, and the production read after it still flags (here at line 7, and the line-4 read too).
+  mkdir -p "$W/bsindent/scripts"
+  cat > "$W/bsindent/scripts/board.sh" <<'DCEOF'
+#!/bin/sh
+selftest() {
+  awk '{print}' "$1/BACKLOG.md"
+  }
+do_thing() {
+  awk '{print}' "$1/BACKLOG.md"
+}
+DCEOF
+  _dc_bs_ind=0
+  _dc_bs_ind_out=$(BPD_DC_FILES_OVERRIDE="$W/bsindent/scripts/board.sh" bpd_derived_consumer_check 2>&1) || _dc_bs_ind=$?
+  if [ "$_dc_bs_ind" -eq 1 ] && printf '%s\n' "$_dc_bs_ind_out" | grep -q 'DERIVED-CONSUMER(OPEN).*board\.sh:6:'; then
+    echo "PASS: selftest -- with an indented closing brace the selftest() range is not used and the production read after it (line 6) still flags (R6-3)"
+  else
+    echo "FAIL: selftest -- the production read after an indented-brace selftest() was not flagged (rc=$_dc_bs_ind): $_dc_bs_ind_out"; sd=1
   fi
 
   # SWAS-278a exact-line allowlist for the two selftest-tripwire curl lines of conformance/prepush-lane.sh

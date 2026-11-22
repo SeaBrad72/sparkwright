@@ -2129,10 +2129,21 @@ selftest() {
   [ "$st" = 0 ] && { echo "release-tag --selftest: OK"; return 0; } || { echo "release-tag --selftest: FAIL"; return 1; }
 }
 
+# SWAS-945: the CI and provenance probes reach gh (ci_probe, prov_probe, both read in command substitutions, so a pin set inside them would die with the subshell).
+# The probe runs ONCE here, in the parent shell, right before the first route that can reach gh, and only when a gh arm will run (both seams set = no gh call).
+# A missing library means no probe: today's behaviour.
+_rt_ghtls=$here/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_rt_ghtls" ]; then . "$_rt_ghtls"; fi
+rt_pin() {
+  [ -z "${RELEASE_TAG_CI_PROBE:-}" ] || [ -z "${RELEASE_TAG_PROV_PROBE:-}" ] || return 0
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
+}
+
 case "${1:-}" in
   --selftest)        selftest; exit $? ;;
   --dry-run)         run --dry-run; exit $? ;;
-  --provenance-only) provenance_only; exit $? ;;
-  "")                run; exit $? ;;
+  --provenance-only) rt_pin; provenance_only; exit $? ;;
+  "")                rt_pin; run; exit $? ;;
   *)                 echo "usage: release-tag.sh [--dry-run|--provenance-only|--selftest]" >&2; exit 2 ;;
 esac

@@ -6,7 +6,7 @@
 #
 #   sh scripts/board.sh claim   <ROW-ID> [--branch <name>]
 #   sh scripts/board.sh release <ROW-ID> [--stale]
-#   sh scripts/board.sh move    <ROW-ID> <state>
+#   sh scripts/board.sh move    <ROW-ID> <state> [--retro-file <path> | --blocked-on-file <path> | --pr <number>]
 #   (claim and release also take --lease-token <sha>: the checkout lease's token, forwarded to board-claim.sh, which checks it in a
 #    checkout that opted in with `kit.checkoutLease`; see scripts/checkout-lease.sh)
 #   sh scripts/board.sh publish   (md: hand claims recorded before origin existed to origin; run it after the first push)
@@ -70,12 +70,26 @@
 #
 # What it changes: on `md`, claim/release DELEGATE WHOLESALE to board-claim.sh's own claim/
 #   release (which already sequence the git-ref lock with the BACKLOG.md row move) — this file
-#   adds no second md write path. On a tracker backend (today: jira), claim/release compose
+#   adds no second md write path. `move` on a DECLARED md backend (SWAS-905) delegates the same way, to board-claim.sh's
+#   `move` (in-review, done with --retro-file, blocked with --blocked-on-file; the claim-holder test, the table edit
+#   it shares with claim, and a post-read are there; this file owns the cell-text file rule). The edit is left
+#   uncommitted, for the slice's own commit, and the verb prints `board: <absolute path>`.
+#   A move is never made on the default branch or a detached HEAD, and rides the checked-out branch (the default branch is the one
+#   <remote>/HEAD names; with none, main and master are refused by name); the board must be a BACKLOG.md under the toplevel, with no dot component (board-claim.sh move).
+#   `move <ROW> in-review` REQUIRES `--pr <number>` ([1-9][0-9]{0,8}, checked here and in board-claim.sh) and writes the PR cell as `#<number>`
+#   (host-neutral; no URL and no remote read); `--pr` is refused on done and blocked, and on a tracker before any request. THE NUMBER IS DECLARED,
+#   NOT PROVEN: no forge is asked whether that pull request exists (erratum E1 of the 905 design).
+#   RESIDUAL (SWAS-905): `board-claim.sh move` is lease-gated like claim, but `board.sh move` has no `--lease-token` (the
+#   guard's G4 spec admits only --retro-file, --blocked-on-file and --pr for `move`, and this slice does not change the guard), and
+#   no other route to hand it a token exists here. In a checkout that opted in to the checkout lease, `board.sh move` is
+#   therefore refused by the gate until that spec admits the flag. A direct `board-claim.sh move --cell-text` call gets the
+#   cell shape checks but not this file's file checks or secret screen (see that verb's header).
+#   On a tracker backend (today: jira), claim/release compose
 #   board-claim.sh's `claim-ref`/`release-ref` (the git ref IS the lock, on every backend, S-5)
 #   with a tracker-side write via tracker-jira.sh's assign-self/transition, run as claim-ref's/
 #   release-ref's `--then` step so a tracker-side failure is COMPENSATED (the ref is undone) —
-#   this file never pushes a claim ref itself. `move` and `create` write ONLY to a tracker
-#   backend (no md equivalent exists — an md board is hand-edited, by design). Every verb's
+#   this file never pushes a claim ref itself. `create` writes ONLY to a tracker
+#   backend (no md equivalent exists — an md row is added by hand); `move` writes to a tracker or to a declared md board. Every verb's
 #   effect is PROVEN by a post-read (get-issue) before it reports success; a verb that cannot
 #   prove its own effect exits non-zero.
 # Guardrails: writes use the credential tracker-jira.sh's jira_curl_authed already resolves —
@@ -116,7 +130,7 @@ bd_usage() {
   echo "usage:" >&2
   echo "  board.sh claim   <ROW-ID> [--branch <name>] [--lease-token <sha>]" >&2
   echo "  board.sh release <ROW-ID> [--stale] [--lease-token <sha>]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
-  echo "  board.sh move    <ROW-ID> <state>" >&2
+  echo "  board.sh move    <ROW-ID> <state> [--retro-file <path> | --blocked-on-file <path> | --pr <number>]   (md: in-review (needs --pr), done (needs --retro-file), blocked (needs --blocked-on-file); the edit is left uncommitted)" >&2
   echo "  board.sh publish   (md: hand claims recorded before origin existed to origin; run it after the first push)" >&2
   echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>] [--metric <text>]" >&2
   echo "                   (--title-file <path> / --metric-file <path> replace --title / --metric: one line of the title grammar; the metric as a description file)" >&2
@@ -152,15 +166,16 @@ bd_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 # this file must not trust a downstream validator to run before ITS OWN first use of the value).
 bd_row_ok() {
   case "$1" in
-    '')           return 1 ;;
-    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)   return 1 ;;
-    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;;
+    '')            return 1 ;;
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)    return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)  return 1 ;;
   esac
+  [ "${#1}" -le 128 ] || return 1   # SWAS-905: one bound, 1-128, outside the case the twin leg compares
   return 0
 }
 bd_require_row() {
   bd_row_ok "$1" && return 0
-  echo "board: invalid row id '$(printf '%s' "$1" | tr -d '[:cntrl:]')' — a row id must match [A-Z0-9][A-Z0-9-]*." >&2
+  echo "board: invalid row id '$(printf '%s' "$1" | tr -d '[:cntrl:]')' — a row id must match [A-Z0-9][A-Z0-9-]*, 1-128 characters." >&2
   return 2
 }
 
@@ -442,9 +457,101 @@ bd_rejected() {
   echo "board $1: the tracker rejected the credential${_rj_where}; nothing was changed." >&2
 }
 
+# bd_mv_cell <retro|blocked-on> <path> — the text a `move` writes into one board cell (SWAS-905), read from a file the
+# way `create`'s files are (bd_tf_load: a regular non-symlink file under the repo or $TMPDIR, valid UTF-8, no NUL, the
+# secret-shape screen) and held to a stricter cell rule: ONE line, no control byte, 1-300 bytes, no backslash (so the
+# `\|` escape board-claim.sh writes has one reading) and no backtick (so no cell can look like a row id to a looser
+# parser). Sets $_mv_text. rc 2 with one fixed sentence; no byte of the file is echoed.
+bd_mv_cell() {
+  bd_tf_load move "$1" "$2" || return 2
+  _mc_pre="board move: --$1-file"
+  _mv_text=$_tf_val
+  case "$_mv_text" in
+    *"
+"*) _mv_text=""; echo "$_mc_pre must hold exactly one line." >&2; return 2 ;;
+  esac
+  [ "$(printf '%s' "$_mv_text" | wc -c | tr -d ' ')" -le 300 ] || { _mv_text=""; echo "$_mc_pre must be 1..300 bytes." >&2; return 2; }
+  [ "$(printf '%s' "$_mv_text" | LC_ALL=C tr -d '\040-\176\200-\377' | wc -c | tr -d ' ')" = 0 ] \
+    || { _mv_text=""; echo "$_mc_pre must not hold a control byte." >&2; return 2; }
+  case "$_mv_text" in
+    *'\'*) _mv_text=""; echo "$_mc_pre must not hold a backslash (a pipe is written as \\| for you)." >&2; return 2 ;;
+    *'`'*) _mv_text=""; echo "$_mc_pre must not hold a backtick." >&2; return 2 ;;
+  esac
+  # a C1 control (U+0080-U+009F), a bidirectional override or isolate (U+202A-U+202E, U+2066-U+2069) and a line or
+  # paragraph separator (U+2028, U+2029) are refused: valid UTF-8, yet each makes a cell read differently from what it is.
+  # A grep that cannot run (rc 2) is a refusal, never a pass.
+  # and the direction marks U+200E, U+200F and U+061C (zero-width characters stay allowed)
+  _mc_c1=$(printf '\302[\200-\237]'); _mc_ls=$(printf '\342\200[\250-\256]'); _mc_iso=$(printf '\342\201[\246-\251]')
+  _mc_dm=$(printf '\342\200[\216\217]'); _mc_al=$(printf '\330\234')
+  _mc_rc=0
+  printf '%s' "$_mv_text" | LC_ALL=C grep -Eq -e "$_mc_c1" -e "$_mc_ls" -e "$_mc_iso" -e "$_mc_dm" -e "$_mc_al" || _mc_rc=$?
+  [ "$_mc_rc" = 1 ] || { _mv_text=""; echo "$_mc_pre must not hold a C1 control, a bidirectional override, isolate or direction mark, or a line or paragraph separator." >&2; return 2; }
+  # a hard-linked file is a second name for something else: the file read for move needs link count 1 (create is unchanged)
+  _mc_n=$(ls -ld -- "$_df_phys" 2>/dev/null | awk '{print $2}')
+  [ "$_mc_n" = 1 ] || { _mv_text=""; echo "$_mc_pre must have link count 1 (a hard-linked file is refused)." >&2; return 2; }
+  [ -n "$(printf '%s' "$_mv_text" | tr -d ' ')" ] || { _mv_text=""; echo "$_mc_pre holds no content." >&2; return 2; }
+  return 0
+}
+
+# bd_pr_ok <value> -> rc 0 when it is [1-9][0-9]{0,8}: 1-9 ASCII digits, no leading zero (errata E1). The PR number is DECLARED, NOT PROVEN:
+# no forge is asked whether the pull request exists.
+bd_pr_ok() {
+  case "$1" in
+    ''|0*|*[!0123456789]*) return 1 ;;
+  esac
+  [ "${#1}" -le 9 ]
+}
+
+# bd_move_md — `move` on a DECLARED md backend (SWAS-905): in-review, done (Retro/outcome from --retro-file) and blocked
+# (Blocked on from --blocked-on-file). Reads $_row $_state $_retrof $_blockf from do_move. The table edit, the claim
+# holder test and the post-read are board-claim.sh's `move`; this front door owns the file rule and the flag pairing.
+bd_move_md() {
+  _mv_text=""
+  case "$_state" in
+    in-review)
+      { [ -z "$_retrof" ] && [ -z "$_blockf" ]; } || { echo "board move: \`in-review\` takes no cell file (--retro-file is for \`done\`, --blocked-on-file for \`blocked\`)." >&2; return 2; }
+      [ -n "$_prn" ] || { echo "board move: In Review needs the PR: add --pr <number> (the PR cell is written as #<number>)." >&2; return 2; }
+      bd_pr_ok "$_prn" || { echo "board move: --pr must be 1 to 9 digits with no leading zero ([1-9][0-9]{0,8})." >&2; return 2; } ;;
+    done)
+      [ -z "$_prn" ] || { echo "board move: --pr belongs to \`in-review\`; \`done\` takes no PR number." >&2; return 2; }
+      [ -z "$_blockf" ] || { echo "board move: --blocked-on-file belongs to \`blocked\`; \`done\` takes --retro-file." >&2; return 2; }
+      [ -n "$_retrof" ] || { echo "board move: \`done\` needs --retro-file <path>: the Retro/outcome cell comes from a file, and no stub is written." >&2; return 2; }
+      bd_mv_cell retro "$_retrof" || return 2 ;;
+    blocked)
+      [ -z "$_prn" ] || { echo "board move: --pr belongs to \`in-review\`; \`blocked\` takes no PR number." >&2; return 2; }
+      [ -z "$_retrof" ] || { echo "board move: --retro-file belongs to \`done\`; \`blocked\` takes --blocked-on-file." >&2; return 2; }
+      [ -n "$_blockf" ] || { echo "board move: \`blocked\` needs --blocked-on-file <path>: the Blocked on cell comes from a file." >&2; return 2; }
+      bd_mv_cell blocked-on "$_blockf" || return 2 ;;
+    *)
+      { [ -z "$_retrof" ] && [ -z "$_blockf" ] && [ -z "$_prn" ]; } || { echo "board move: \`$_state\` takes no cell file and no PR number (--retro-file is for \`done\`, --blocked-on-file for \`blocked\`, --pr for \`in-review\`)." >&2; return 2; } ;;
+  esac
+  set -- move "$_row" "$_state"
+  [ -z "$_mv_text" ] || set -- "$@" --cell-text "$_mv_text"
+  [ -z "$_prn" ] || set -- "$@" --pr "$_prn"
+  sh "$BD_CLAIM_SH" "$@"
+}
+
 do_move() {
-  [ $# -eq 2 ] || { echo "board move: usage: board.sh move <ROW-ID> <state>" >&2; return 2; }
-  _row=$1; _state=$2
+  _row=""; _state=""; _retrof=""; _blockf=""; _prn=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)              [ $# -ge 2 ] || { echo "board move: --pr needs a value" >&2; return 2; }
+                         [ -z "$_prn" ] || { echo "board move: --pr is given twice" >&2; return 2; }
+                         _prn=$2; shift 2 ;;
+      --retro-file)      [ $# -ge 2 ] || { echo "board move: --retro-file needs a value" >&2; return 2; }
+                         [ -z "$_retrof" ] || { echo "board move: --retro-file is given twice" >&2; return 2; }
+                         _retrof=$2; shift 2 ;;
+      --blocked-on-file) [ $# -ge 2 ] || { echo "board move: --blocked-on-file needs a value" >&2; return 2; }
+                         [ -z "$_blockf" ] || { echo "board move: --blocked-on-file is given twice" >&2; return 2; }
+                         _blockf=$2; shift 2 ;;
+      -*)                echo "board move: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; return 2 ;;
+      *)                 if [ -z "$_row" ]; then _row=$1
+                         elif [ -z "$_state" ]; then _state=$1
+                         else echo "board move: usage: board.sh move <ROW-ID> <state> [--retro-file <path> | --blocked-on-file <path> | --pr <number>]" >&2; return 2; fi
+                         shift ;;
+    esac
+  done
+  [ -n "$_row" ] && [ -n "$_state" ] || { echo "board move: usage: board.sh move <ROW-ID> <state> [--retro-file <path> | --blocked-on-file <path> | --pr <number>]" >&2; return 2; }
   bd_require_row "$_row" || return 2
   bd_state_ok "$_state" || {
     echo "board move: '$_state' is not one of the §4.1 states ($BD_STATES)." >&2
@@ -453,6 +560,10 @@ do_move() {
   _be=$(bd_backend)
   case "$_be" in
     jira)
+      if [ -n "$_retrof" ] || [ -n "$_blockf" ] || [ -n "$_prn" ]; then
+        echo "board move: --retro-file / --blocked-on-file / --pr are for the md backend; a tracker transition carries no cell text and the tracker links the PR itself (the retro rides the PR)." >&2
+        return 2
+      fi
       bd_tracker_ctx || return 1
       _target=$(bd_tc_get "state.$_state")
       [ -n "$_target" ] || { echo "board move: .kit/tracker.conf has no state.$_state mapping." >&2; return 2; }
@@ -476,7 +587,8 @@ do_move() {
       fi
       echo "board move: the transition ran but the post-read did NOT prove status '$_target'." >&2
       return 1 ;;
-    md|'') echo "board move: no write adapter for backend '$_be' — hand-edit BACKLOG.md." >&2; return 2 ;;
+    md)    bd_move_md; return $? ;;
+    '')    echo "board move: no backend is declared, so there is no write adapter - declare \`Backlog backend: md\` in the project CLAUDE.md (incept writes it for every md project) and \`move\` edits BACKLOG.md for you." >&2; return 2 ;;
     *)     echo "board move: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
   esac
 }
@@ -1840,6 +1952,204 @@ BOARD_EOF
   if [ "$bd_rc2" -eq 0 ]; then bd_pass "leg md/release: an md-backend release delegates to board-claim.sh and succeeds"
   else bd_fail_ "leg md/release: rc=$bd_rc2 out=[$bd_out2]"; fi
 
+  # ── md `move` legs (SWAS-905): a DECLARED md board, a real bare remote, real claims. Rows MV-3..MV-6 are planted in
+  # In Progress with no claim ref (an absent claim is movable by anyone); MV-4 also carries another claimant's ref, so
+  # the holder test has a real holder to name. Every refusal leg snapshots the board and proves it byte-unchanged. ──────
+  bd_mvc="$bd_base/mv-clone"
+  git clone -q "$bd_remote" "$bd_mvc" 2>/dev/null
+  (
+    cd "$bd_mvc"
+    git config user.name "Fixture Dev"; git config user.email "dev@example.com"; git config commit.gpgsign false
+    git checkout -q -b feat/mv
+    printf '# CLAUDE.md\n\nBacklog backend: md\n' > CLAUDE.md
+    cat > BACKLOG.md <<'MV_EOF'
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| `MV-1` — claim, then close by verbs | because | it closes | S | low | feature | agent | — | the row reaches Done with no hand edit |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| `MV-3` — planted, no claim ref | Fixture Dev | 2026-11-01 | branch `feat/mv` · planted |
+| `MV-4` — planted, held by another claimant | Other Dev | 2026-11-01 | branch `feat/other` · planted |
+| `MV-5` — planted, to be blocked | Fixture Dev | 2026-11-01 | branch `feat/mv` · planted |
+| `MV-6` — a\|b in the title | Fixture Dev | 2026-11-01 | branch `feat/mv` · planted |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+
+## Released
+
+| Item | Released | Success metric / hypothesis |
+|------|----------|------------------------------|
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+
+## Blocked
+
+| Item | Blocked on | Since | Event-retro link |
+|------|-----------|-------|------------------|
+MV_EOF
+    git add -A
+    git commit -q -m "fixture: md board"
+  )
+  bd_mvblob=$(printf 'row: MV-4\nclaimant: Other Dev <o@example.com>\nbranch: feat/other\nclaimed-at: 2026-11-01T00:00:00Z\nsession: s-20261101-aaaabbbb (declared)\n' | git --git-dir="$bd_remote" hash-object -w --stdin)
+  bd_mvtree=$(printf '100644 blob %s\tCLAIM\n' "$bd_mvblob" | git --git-dir="$bd_remote" mktree)
+  bd_mvcommit=$(printf 'claim\n' | git --git-dir="$bd_remote" -c user.name=x -c user.email=x@example.com commit-tree "$bd_mvtree")
+  git --git-dir="$bd_remote" update-ref refs/claims/MV-4 "$bd_mvcommit"
+  bd_mvr() { # <dir> <args…>: board.sh move, spawned; stderr folded in
+    _mv_dir=$1; shift
+    bd_out=$(cd "$_mv_dir" && sh "$BD_SELF" move "$@" 2>&1); bd_rc=$?
+  }
+  bd_in_sec() { # <dir> <section> <ROW> -> how many rows of that section carry the id
+    awk -v s="## $2" -v r="\`$3\`" '$0 == s { f = 1; next } /^## / { f = 0 } f && index($0, r) { n++ } END { print n + 0 }' "$1/BACKLOG.md"
+  }
+  bd_mv_refuse() { # <label> <needle> <args…>: refused, the sentence carries <needle>, no file byte echoed, the board byte-unchanged
+    _mr_label=$1; _mr_needle=$2; shift 2
+    cp "$bd_mvc/BACKLOG.md" "$bd_base/mv.snap"
+    bd_mvr "$bd_mvc" "$@"
+    if [ "$bd_rc" -ne 0 ] && printf '%s' "$bd_out" | grep -qF -e "$_mr_needle" && ! printf '%s' "$bd_out" | grep -qF TOPSECRET \
+       && cmp -s "$bd_mvc/BACKLOG.md" "$bd_base/mv.snap"; then
+      bd_pass "leg md/move-$_mr_label: refused (rc $bd_rc), the sentence names the cause, the board is byte-unchanged"
+    else bd_fail_ "leg md/move-$_mr_label: rc=$bd_rc out=[$bd_out]"; fi
+  }
+  # the three targets that are not md moves, and the move of a row nobody claimed
+  bd_mv_refuse in-progress 'use `claim`' MV-3 in-progress
+  bd_mv_refuse ready 'hand-edit the row back to Ready and run `release`' MV-3 ready
+  bd_mv_refuse released 'hand-edit it in the release PR' MV-3 released
+  bd_mv_refuse backlog 'not an md move target' MV-3 backlog
+  bd_mv_refuse source-ready 'sits in Ready' MV-1 in-review --pr 1087
+  bd_mv_refuse not-found 'no row `NOPE-1`' NOPE-1 in-review --pr 1087
+  bd_mv_refuse holder 'Other Dev' MV-4 in-review --pr 1087
+  bd_mv_refuse pr-missing 'add --pr <number>' MV-3 in-review
+  bd_mv_refuse pr-zero '[1-9][0-9]{0,8}' MV-3 in-review --pr 0
+  bd_mv_refuse pr-leading-zero '[1-9][0-9]{0,8}' MV-3 in-review --pr 012
+  bd_mv_refuse pr-ten-digits '[1-9][0-9]{0,8}' MV-3 in-review --pr 1234567890
+  bd_mv_refuse pr-non-digit '[1-9][0-9]{0,8}' MV-3 in-review --pr 12a
+  bd_mv_refuse pr-on-done 'belongs to `in-review`' MV-3 'done' --retro-file "$bd_base/none.txt" --pr 12
+  bd_mv_refuse pr-on-blocked 'belongs to `in-review`' MV-3 blocked --blocked-on-file "$bd_base/none.txt" --pr 12
+  bd_mv_refuse pr-twice 'given twice' MV-3 in-review --pr 12 --pr 13
+  bd_mv_refuse done-needs-file '--retro-file' MV-3 'done'
+  bd_mv_refuse blocked-needs-file '--blocked-on-file' MV-3 blocked
+  bd_mv_refuse wrong-flag '--retro-file' MV-3 blocked --retro-file "$bd_base/none.txt"
+  bd_mv_refuse in-review-flag 'takes no cell file' MV-3 in-review --retro-file "$bd_base/none.txt"
+  # each rule of the cell text, one file each; none may echo a byte of its file
+  bd_mvf="$bd_base/mvf"; mkdir -p "$bd_mvf"
+  printf 'TOPSECRET first line\nsecond line\n' > "$bd_mvf/twolines.txt"
+  printf 'TOPSECRET\033[31m red\n' > "$bd_mvf/ctrl.txt"
+  printf 'TOPSECRET\ttab\n' > "$bd_mvf/tab.txt"
+  awk 'BEGIN { printf "TOPSECRET"; for (i = 0; i < 292; i++) printf "T"; print "" }' > "$bd_mvf/b301.txt"
+  printf 'TOPSECRET back\\slash\n' > "$bd_mvf/bslash.txt"
+  printf 'TOPSECRET back`tick\n' > "$bd_mvf/btick.txt"
+  printf 'TOPSECRET gh''p_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$bd_mvf/key.txt"
+  printf 'TOPSECRET real\n' > "$bd_mvf/real.txt"
+  ln -s real.txt "$bd_mvf/link.txt"
+  : > "$bd_mvf/empty.txt"
+  printf '   \n' > "$bd_mvf/blank.txt"
+  printf 'TOPSECRET c1 \302\205 control\n' > "$bd_mvf/c1.txt"
+  printf 'TOPSECRET bidi \342\200\256 override\n' > "$bd_mvf/bidi.txt"
+  printf 'TOPSECRET isolate \342\201\247 here\n' > "$bd_mvf/isolate.txt"
+  printf 'TOPSECRET separator \342\200\250 here\n' > "$bd_mvf/ls.txt"
+  printf 'TOPSECRET paragraph \342\200\251 here\n' > "$bd_mvf/ps.txt"
+  printf 'TOPSECRET bad \377\376 utf8\n' > "$bd_mvf/badutf8.txt"
+  printf 'TOPSECRET lrm \342\200\216 mark\n' > "$bd_mvf/lrm.txt"
+  printf 'TOPSECRET rlm \342\200\217 mark\n' > "$bd_mvf/rlm.txt"
+  printf 'TOPSECRET alm \330\234 mark\n' > "$bd_mvf/alm.txt"
+  printf 'TOPSECRET linked\n' > "$bd_mvf/hardsrc.txt"
+  ln "$bd_mvf/hardsrc.txt" "$bd_mvf/hard.txt"
+  bd_mv_refuse two-lines 'exactly one line' MV-3 'done' --retro-file "$bd_mvf/twolines.txt"
+  bd_mv_refuse control-byte 'control byte' MV-3 'done' --retro-file "$bd_mvf/ctrl.txt"
+  bd_mv_refuse tab 'control byte' MV-3 'done' --retro-file "$bd_mvf/tab.txt"
+  bd_mv_refuse over-300 '1..300 bytes' MV-3 'done' --retro-file "$bd_mvf/b301.txt"
+  bd_mv_refuse backslash 'backslash' MV-3 'done' --retro-file "$bd_mvf/bslash.txt"
+  bd_mv_refuse backtick 'backtick' MV-3 'done' --retro-file "$bd_mvf/btick.txt"
+  bd_mv_refuse key-shape 'token shape' MV-3 'done' --retro-file "$bd_mvf/key.txt"
+  bd_mv_refuse symlink 'symlink' MV-3 'done' --retro-file "$bd_mvf/link.txt"
+  bd_mv_refuse hard-link 'link count 1' MV-3 'done' --retro-file "$bd_mvf/hard.txt"
+  bd_mv_refuse c1-control 'C1 control' MV-3 'done' --retro-file "$bd_mvf/c1.txt"
+  bd_mv_refuse bidi-override 'bidirectional override' MV-3 'done' --retro-file "$bd_mvf/bidi.txt"
+  bd_mv_refuse bidi-isolate 'bidirectional override' MV-3 'done' --retro-file "$bd_mvf/isolate.txt"
+  bd_mv_refuse line-separator 'line or paragraph separator' MV-3 'done' --retro-file "$bd_mvf/ls.txt"
+  bd_mv_refuse paragraph-separator 'line or paragraph separator' MV-3 'done' --retro-file "$bd_mvf/ps.txt"
+  bd_mv_refuse invalid-utf8 'valid UTF-8' MV-3 'done' --retro-file "$bd_mvf/badutf8.txt"
+  bd_mv_refuse lrm 'direction mark' MV-3 'done' --retro-file "$bd_mvf/lrm.txt"
+  bd_mv_refuse rlm 'direction mark' MV-3 'done' --retro-file "$bd_mvf/rlm.txt"
+  bd_mv_refuse alm 'direction mark' MV-3 'done' --retro-file "$bd_mvf/alm.txt"
+  bd_mv_refuse empty 'bytes' MV-3 blocked --blocked-on-file "$bd_mvf/empty.txt"
+  bd_mv_refuse blank 'no content' MV-3 blocked --blocked-on-file "$bd_mvf/blank.txt"
+  bd_mv_refuse outside-containment 'repo root' MV-3 'done' --retro-file /etc/hosts
+  bd_mv_refuse missing-file 'regular file' MV-3 'done' --retro-file "$bd_mvf/absent.txt"
+  # the happy path with no hand edit: claim, in-review, done (the claim is a real ref on the fixture remote)
+  bd_mvtop=$(cd "$bd_mvc" && git rev-parse --show-toplevel)
+  bd_out=$(cd "$bd_mvc" && sh "$BD_SELF" claim MV-1 2>&1); bd_rc=$?
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_in_sec "$bd_mvc" 'In Progress' MV-1)" = 1 ] && printf '%s\n' "$bd_out" | grep -qxF "board: $bd_mvtop/BACKLOG.md"; then
+    bd_pass "leg md/e2e-claim: claim moves MV-1 to In Progress and prints the absolute board path"
+  else bd_fail_ "leg md/e2e-claim: rc=$bd_rc out=[$bd_out]"; fi
+  bd_mvr "$bd_mvc" MV-1 in-review --pr 1087
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_in_sec "$bd_mvc" 'In Review' MV-1)" = 1 ] && [ "$(bd_in_sec "$bd_mvc" 'In Progress' MV-1)" = 0 ] \
+     && printf '%s\n' "$bd_out" | grep -qxF "board: $bd_mvtop/BACKLOG.md"; then
+    bd_pass "leg md/e2e-in-review: move in-review puts MV-1 in In Review once, out of In Progress, and prints the absolute board path"
+  else bd_fail_ "leg md/e2e-in-review: rc=$bd_rc out=[$bd_out]"; fi
+  # erratum E1: the board is graded WHILE the verb-moved row sits In Review (the gate fails an In Review row whose PR cell is not a real value)
+  bd_cur=$(sh "$(dirname "$BD_LIB_SH")/backlog-current.sh" "$bd_mvc" 2>&1); bd_crc=$?
+  if [ "$bd_crc" -eq 0 ] && grep -qF '| `MV-1` — claim, then close by verbs | — | #1087 |' "$bd_mvc/BACKLOG.md" \
+     && printf '%s' "$bd_cur" | grep -qF 'In Review→PR' && printf '%s' "$bd_cur" | grep -qF 'OK' && ! printf '%s' "$bd_cur" | grep -qF 'NOT ENFORCED'; then
+    bd_pass "leg md/e2e-in-review-gate: backlog-current.sh passes the board while the verb-moved row sits In Review with PR cell #1087, and its trace names the In Review PR gate"
+  else bd_fail_ "leg md/e2e-in-review-gate: backlog-current rc=$bd_crc out=[$bd_cur]"; fi
+  if [ -n "$(git -C "$bd_mvc" status --porcelain -- BACKLOG.md)" ]; then bd_pass "leg md/uncommitted: the move left the edit uncommitted"
+  else bd_fail_ "leg md/uncommitted: BACKLOG.md shows no working-tree change after the moves"; fi
+  bd_retro1='Shipped by verbs with no hand edit: claim, in-review and done each moved the row. L1 retro: the loop closed on the md board and the gate read it. Disposition: none — fixture.'
+  printf '%s\n' "$bd_retro1" > "$bd_mvf/retro1.txt"
+  bd_mvr "$bd_mvc" MV-1 'done' --retro-file "$bd_mvf/retro1.txt"
+  bd_today=$(date -u +%Y-%m-%d)
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_in_sec "$bd_mvc" Done MV-1)" = 1 ] && [ "$(bd_in_sec "$bd_mvc" 'In Review' MV-1)" = 0 ] \
+     && grep -qF "| $bd_today | $bd_retro1 |" "$bd_mvc/BACKLOG.md"; then
+    bd_pass "leg md/e2e-done: move done writes Closed = today (UTC) and the Retro/outcome from the file, once, in Done"
+  else bd_fail_ "leg md/e2e-done: rc=$bd_rc out=[$bd_out]"; fi
+  # a pipe in the text is written escaped; planted rows (no claim ref) move, and a Blocked row gets Since and Blocked on
+  printf 'Shipped a|b with no hand edit: the pipe in this text is escaped by the verb so the row keeps its columns. L1 retro: the escape held. Disposition: none — fixture.\n' > "$bd_mvf/pipe.txt"
+  bd_mvr "$bd_mvc" MV-6 in-review --pr 1088
+  bd_mvr "$bd_mvc" MV-6 'done' --retro-file "$bd_mvf/pipe.txt"
+  if [ "$bd_rc" -eq 0 ] && grep -qF 'Shipped a\|b with no hand edit' "$bd_mvc/BACKLOG.md" && grep -qF '`MV-6` — a\|b in the title | '"$bd_today"' |' "$bd_mvc/BACKLOG.md"; then
+    bd_pass "leg md/pipe: a pipe in the text is written as \\| and the escaped Item cell is carried whole"
+  else bd_fail_ "leg md/pipe: rc=$bd_rc out=[$bd_out]"; fi
+  # 21 + 3 (a zero-width space, U+200B, which stays allowed) + 276 = 300 bytes
+  awk 'BEGIN { printf "Waiting on the vendor"; printf "\342\200\213"; for (i = 0; i < 276; i++) printf "w"; print "" }' > "$bd_mvf/b300.txt"
+  bd_mvr "$bd_mvc" MV-5 blocked --blocked-on-file "$bd_mvf/b300.txt"
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_in_sec "$bd_mvc" Blocked MV-5)" = 1 ] && grep -F '`MV-5`' "$bd_mvc/BACKLOG.md" | grep -qF "| Waiting on the vendor" \
+     && grep -F '`MV-5`' "$bd_mvc/BACKLOG.md" | grep -qF "| $bd_today |"; then
+    bd_pass "leg md/blocked: move blocked writes Blocked on (a 300-byte line is admitted) and Since = today"
+  else bd_fail_ "leg md/blocked: rc=$bd_rc out=[$bd_out]"; fi
+  bd_mvr "$bd_mvc" MV-3 in-review --pr 1089
+  bd_mvr "$bd_mvc" MV-3 'done' --retro-file "$bd_mvf/retro1.txt"
+  bd_cur=$(sh "$(dirname "$BD_LIB_SH")/backlog-current.sh" "$bd_mvc" 2>&1); bd_crc=$?
+  # the success must be a REAL grade, not an N/A route: the trace names the Blocked gate (Blocked on + Since) it read on the
+  # row the verb moved, and the line says OK (a "NOT ENFORCED" or N/A stand-aside carries neither)
+  if [ "$bd_rc" -eq 0 ] && [ "$bd_crc" -eq 0 ] && printf '%s' "$bd_cur" | grep -qF 'Blocked→Blocked on+Since' \
+     && printf '%s' "$bd_cur" | grep -qF 'OK' && ! printf '%s' "$bd_cur" | grep -qF 'NOT ENFORCED'; then
+    bd_pass "leg md/e2e-backlog-current: after claim -> in-review -> done (and a blocked row) with no hand edit, backlog-current.sh passes the board and its trace names the gates it graded"
+  else bd_fail_ "leg md/e2e-backlog-current: move rc=$bd_rc, backlog-current rc=$bd_crc out=[$bd_cur]"; fi
+  git --git-dir="$bd_remote" update-ref -d refs/claims/MV-1 2>/dev/null || true
+  git --git-dir="$bd_remote" update-ref -d refs/claims/MV-4 2>/dev/null || true
+  # an UNDECLARED backend keeps its refusal, and the sentence names the fix
+  bd_mvu="$bd_base/mv-undeclared"
+  cp -R "$bd_mvc" "$bd_mvu"
+  printf '# CLAUDE.md\n' > "$bd_mvu/CLAUDE.md"
+  bd_mvr "$bd_mvu" MV-4 in-review
+  if [ "$bd_rc" -eq 2 ] && printf '%s' "$bd_out" | grep -qF 'declare `Backlog backend: md`'; then
+    bd_pass "leg md/undeclared: an undeclared backend keeps the refusal (rc 2) and names the fix"
+  else bd_fail_ "leg md/undeclared: rc=$bd_rc out=[$bd_out]"; fi
+
   # ── jira-backend legs: BD_JIRA_SH repointed at a STUB adapter (mirrors start.sh's ST_CLASSIFIER
   # stub pattern) so this file's OWN orchestration (order, proof, refusal) is proven without a real
   # HTTP fixture — tracker-jira.sh's own selftest already proves the adapter's request/response
@@ -2476,7 +2786,7 @@ second line"; bd_cm_cur="$bd_cmdir"
   bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/b.md
   bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/e.md
   bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/big.md
-  for bd_k in XY-1 AB-07 'AB-1;x'; do
+  for bd_k in XY-1 AB-07 'AB-1;x' 10001; do
     bd_cmt "$bd_cclone" "$bd_k" --from-record docs/reviews/x.md
     [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cl" ] || bd_bad=1
   done
@@ -2566,6 +2876,7 @@ second line"; bd_cm_cur="$bd_cmdir"
   # refused before any request
   bd_x_off key-other-project 1 'not a card key' XY-7 --title x
   bd_x_off key-leading-zero 1 'not a card key' AB-07 --title x
+  bd_x_off key-digit-only 1 'not a card key' 10001 --title x
   bd_x_off key-bad-grammar 2 'invalid row id' 'AB-7;x' --title x
   bd_x_off label-both 2 "in both --label-add and --label-remove" AB-7 --label-add a --label-remove a
   bd_x_off parent-other-project 1 'never re-parented under another project' AB-7 --parent XY-5
@@ -2606,6 +2917,19 @@ second line"; bd_cm_cur="$bd_cmdir"
   if [ "$bd_rc" -eq 2 ] && [ "$bd_rc2" -eq 2 ] && [ ! -s "$bd_cr_log" ] && printf '%s' "$bd_out" | grep -qF 'needs a tracker backend'; then
     bd_pass "leg jira/edit-md: on an md backend edit and show refuse rc 2 with zero requests"
   else bd_fail_ "leg jira/edit-md: rc=$bd_rc/$bd_rc2 out=[$bd_out] out2=[$bd_out2]"; fi
+  # SWAS-905 (905-G): CLAUDE.md declares jira but the clone has NO .kit/tracker.conf (the shape conf-pin's equal-absence now admits at the guard):
+  # show and edit refuse (rc non-zero) with zero requests, because the tracker context has no base_url or project to call.
+  bd_nc="$bd_base/jira-noconf"
+  cp -R "$bd_jclone" "$bd_nc"
+  rm -f "$bd_nc/.kit/tracker.conf"
+  printf 'Backlog backend: jira\n' > "$bd_nc/CLAUDE.md"
+  : > "$bd_cr_log"
+  bd_out=$(cd "$bd_nc" && STUB_LOG="$bd_cr_log" do_show AB-7 2>&1); bd_rc=$?
+  bd_out2=$(cd "$bd_nc" && STUB_LOG="$bd_cr_log" do_edit AB-7 --title x 2>&1); bd_rc2=$?
+  if [ -d "$bd_nc" ] && [ ! -e "$bd_nc/.kit/tracker.conf" ] && [ "$bd_rc" -ne 0 ] && [ "$bd_rc2" -ne 0 ] && [ ! -s "$bd_cr_log" ] \
+     && printf '%s' "$bd_out" | grep -qF 'missing base_url and/or project' && printf '%s' "$bd_out2" | grep -qF 'missing base_url and/or project'; then
+    bd_pass "leg jira/noconf: a jira-declared clone with no tracker.conf refuses show and edit (rc non-zero) naming the missing base_url/project, with zero requests"
+  else bd_fail_ "leg jira/noconf: rc=$bd_rc/$bd_rc2 log=[$(cat "$bd_cr_log")] out=[$bd_out] out2=[$bd_out2]"; fi
 
   # dry run: every flag validated, the plan printed, ZERO requests, and no credential needed
   bd_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN KIT_TRACKER_AUTH JIRA_EMAIL JIRA_TOKEN; : > "$bd_cr_log"; cd "$bd_cc" && STUB_LOG="$bd_cr_log" do_edit AB-7 --title T --size S --description-file "$bd_df" --label-add x --label-remove y --parent AB-5 --dry-run 2>&1) ); bd_rc=$?
@@ -3326,6 +3650,17 @@ create.parent=AB-1'; bd_conf - - cloud; bd_cr --title x; bd_cx=""
   else
     bd_fail_ "leg row-grammar/move: rc=$bd_rc, dispatched=$([ -s "$bd_base/.badrowlog2" ] && echo yes || echo no)"
   fi
+
+  # leg (jira/move-flags, SWAS-905): the guard admits --retro-file / --blocked-on-file on every backend, so board.sh
+  # itself refuses them on a tracker, before any adapter call
+  : > "$bd_base/.flaglog"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_base/.flaglog" do_move ROW-JIRA-9 'done' --retro-file "$bd_mvf/real.txt" 2>&1); bd_rc=$?
+  bd_out2=$(cd "$bd_jclone" && STUB_LOG="$bd_base/.flaglog" do_move ROW-JIRA-9 blocked --blocked-on-file "$bd_mvf/real.txt" 2>&1); bd_rc2=$?
+  bd_out3=$(cd "$bd_jclone" && STUB_LOG="$bd_base/.flaglog" do_move ROW-JIRA-9 in-review --pr 1087 2>&1); bd_rc3=$?
+  if [ "$bd_rc3" -ne 2 ] || [ -s "$bd_base/.flaglog" ] || ! printf '%s' "$bd_out3" | grep -qF -e '--pr'; then bd_rc=9; fi
+  if [ "$bd_rc" -eq 2 ] && [ "$bd_rc2" -eq 2 ] && [ ! -s "$bd_base/.flaglog" ] && printf '%s' "$bd_out" | grep -qF 'md backend' && ! printf '%s' "$bd_out" | grep -qF TOPSECRET; then
+    bd_pass "leg jira/move-flags: --retro-file and --blocked-on-file are refused on a tracker (rc 2), with no adapter call and no file byte echoed"
+  else bd_fail_ "leg jira/move-flags: rc=$bd_rc/$bd_rc2 log=[$(cat "$bd_base/.flaglog")] out=[$bd_out]"; fi
 
   # leg (exact-match, MEDIUM-1): a status "Done Deal" must NOT satisfy a target of "Done" via a
   # SUBSTRING match — the pre-fix shape (`*"status-name\t$_target"*`) would have wrongly matched,

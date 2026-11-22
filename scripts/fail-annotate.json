@@ -1,0 +1,14 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "sparkwright-fail",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(FAIL[: ].*)$",
+          "message": 1
+        }
+      ]
+    }
+  ]
+}

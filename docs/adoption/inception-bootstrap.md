@@ -20,11 +20,18 @@ From a kit checkout, `sh scripts/sparkwright new <dest-dir>` runs the whole fron
 ```
 clone the kit
   → run incept            (git init + in-place transform + guard install + ADR-000 stamp)
-  → commit the incepted baseline   ← THE FIRST COMMIT (carries charter + ADR-000)
-  → protect main · green CI on the empty project
+  → person: create the empty repository, add it as origin
+  → agent:  write docs/inception-draft/PROJECT-CLAUDE.md from the owner's words
+  → person: paste what is right into CLAUDE.md, delete docs/inception-draft/
+  → agent:  commit the incepted baseline   ← THE FIRST COMMIT (carries charter + ADR-000)
+  → agent:  git push origin main, read it back with git ls-remote --heads origin main
+  → person: protect main (--replace solo, --replace --team team; real terminal, admin credential) · green CI on the empty project
+  → person: where branch protection cannot be set, fill the waiver row (see the owed list)
   → enter the loop: the first feature branches from the committed incepted baseline
                     and runs the full design → plan → build gates
 ```
+
+The agent cannot write `CLAUDE.md` before the first push (control-plane; the guard refuses it by any route), which is why the charter, config and roles reach it through the one draft and a person's paste. The first push is the guard's own admission for a push that creates `main` on an empty remote; no documented bypass is involved. The agent may commit a baseline that is mostly control-plane because the baseline commit is part of Inception (the exception above).
 
 ## The three traps
 
@@ -68,7 +75,9 @@ exempt from the loop's repo-presupposing *machinery*, not from the kit's ethos.
 ## Inception vocabulary — derive, don't block
 
 A cold operator's routine inception values are usually **derivable from the charter and repo context** — the
-agent should explain or derive them, not surface them as unexplained required inputs (K2). Two that recur:
+agent should explain or derive them, not surface them as unexplained required inputs (K2). The agent **drafts**
+these values in `docs/inception-draft/PROJECT-CLAUDE.md`; a person reviews the draft and ratifies it by pasting
+it into `CLAUDE.md` (the agent never writes the ratified file). Two that recur:
 
 - **Intent owner** (`--intent-owner`) — *the human who accepts the outcome and signs off on the project's
   "why."* For a certification/field test it is whoever accepts the result; for a product it is the sponsor.

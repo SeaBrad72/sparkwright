@@ -9,11 +9,12 @@ endpoint and its test. (Maintainer-authored, **not** executed here — see *Veri
 ## One-time lockfile step
 
 `gate-install` runs `dotnet restore --locked-mode`, which requires a committed
-`packages.lock.json` per project. Generate them once and commit:
+`packages.lock.json` per project. Generate them once, before the baseline commit, so they
+are part of it (no separate commit):
 
 ```sh
 dotnet restore            # writes src/App/packages.lock.json + tests/packages.lock.json
-git add **/packages.lock.json && git commit -m "chore: lockfiles"
+git add **/packages.lock.json
 ```
 
 ## Layout

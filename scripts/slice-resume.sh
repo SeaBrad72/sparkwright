@@ -42,6 +42,17 @@
 #   REFUSES (rc 2) rather than rendering a slice state nobody could look up.
 set -eu
 
+# SWAS-945: the two optional gh reads below (the label check and the PR state) set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh).
+# sr_pin runs the probe once, in this shell, right before the first gh call; a missing library means no probe: today's behaviour.
+_sr_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_sr_ghtls" ]; then . "$_sr_ghtls"; fi
+sr_pin() {
+  [ "${_sr_pinned-}" != 1 ] || return 0
+  _sr_pinned=1
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
+}
+
 SR_REMOTE="${BOARD_CLAIM_REMOTE:-origin}"
 SR_SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 SR_BC=$(dirname -- "$SR_SELF")/board-claim.sh
@@ -332,6 +343,7 @@ do_resume() {
   if [ "$_golabel" != unknown ] && command -v gh >/dev/null 2>&1; then
     case "$_golabel" in
       *'[authenticated:'*)
+        sr_pin
         if _rv=$(gh pr view "$_branch" --json reviews --jq '.reviews | length' 2>/dev/null); then
           [ "${_rv:-0}" -gt 0 ] || echo "  ⚠️  label unconfirmed — the forge reports no review on this head."
         else
@@ -404,6 +416,7 @@ do_resume() {
   # THE PR STATE — optional, read-only, `--head=` form so the branch is one token.
   _pr=unknown
   if command -v gh >/dev/null 2>&1; then
+    sr_pin
     if _prs=$(gh pr list --head="$_branch" --state all --json state --jq '.[].state' 2>/dev/null); then
       if printf '%s\n' "$_prs" | grep -q '^OPEN$';        then _pr=OPEN
       elif printf '%s\n' "$_prs" | grep -q '^MERGED$';    then _pr=MERGED

@@ -15,6 +15,11 @@
 # Guardrails: Reference adapter, not a gate — it makes the trace exist and judges nothing; non-derivable fields degrade to "unknown", never fabricated.
 set -eu
 
+# SWAS-945: the best-effort gh read in correlate sets its own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, before the first gh call there).
+_at_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_at_ghtls" ]; then . "$_at_ghtls"; fi
+
 AGENT_ID="claude-code"; WORK_ITEM="unknown"; PARENT="null"
 PRICE=""; OUTDIR="traces"; STDOUT=0; CORRELATE=1; LATEST=0; TRANSCRIPT=""
 DO_SELFTEST=0
@@ -130,6 +135,7 @@ compute_cost() {  # $1=in $2=out ; cost only when --price "IN,OUT" (per-Mtok) is
 
 correlate() {  # best-effort gh/git; never fail the run
   command -v gh >/dev/null 2>&1 || return 0
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, once, before the first gh call
   _br=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || return 0
   _j=$(gh pr view "$_br" --json number,url,reviews 2>/dev/null) || return 0
   [ -n "$_j" ] || return 0

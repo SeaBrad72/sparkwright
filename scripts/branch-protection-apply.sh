@@ -11,8 +11,9 @@
 #              endpoint, after a y/N confirmation. Every other protection setting is untouched.
 #   --replace  performs the full-object PUT the kit's own templates used to teach — this REPLACES
 #              EVERY protection setting (review requirements, enforce_admins, restrictions), not
-#              just contexts, so it sits behind a SECOND, differently-worded, TTY-GATED confirmation
-#              that must be typed at an actual interactive terminal (see below). Prefer --apply.
+#              just contexts, so it sits behind ONE TTY-GATED confirmation (type REPLACE) that must
+#              be typed at an actual interactive terminal (see below); --apply has its own y/N.
+#              Prefer --apply.
 #              Default profile = SOLO. It ALSO pins the repository's merge methods to squash-only
 #              (a second call, PATCH repos/{owner}/{repo}, under the same confirmation, both
 #              profiles).
@@ -84,6 +85,12 @@
 set -eu
 set -f   # noglob — every `for x in $LIST` expansion in this file is data, never a filesystem glob.
 
+# SWAS-945: every gh call below sets its own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in main, before the first gh call).
+# A missing library means no probe: today's behaviour.
+_bpa_ghtls=$(dirname -- "$0")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_bpa_ghtls" ]; then . "$_bpa_ghtls"; fi
+
 REPO_OVERRIDE=""
 BRANCH=main
 DECLARATION="REQUIRED-CHECKS.md"
@@ -92,6 +99,7 @@ PRINT_PARSED=0
 PRINT_PAYLOAD=""
 TEAM=0
 PICK_WHY=""
+PICK_TEAM_WARN=0
 
 usage() {
   echo "usage: branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME] [--declaration=FILE] [--apply | --replace [--team] | --print-parsed | --print-payload=<solo|team|solo-agent>] | --selftest" >&2
@@ -420,7 +428,7 @@ ba_pick_profile() {
   if ! printf '%s' "$_bp_tip" | grep -qE '^[0-9a-f]{40}$'; then PICK_WHY="the default branch's tip could not be resolved (an unreadable forge reads the solo profile)"; return 0; fi
   _bp_drc=0; _bp_dial=$(ba_forge_file "$REPO" "$_bp_tip" .kit/dials.conf) || _bp_drc=$?
   _bp_crc=0; _bp_cl=$(ba_forge_file "$REPO" "$_bp_tip" CLAUDE.md) || _bp_crc=$?
-  if [ "$(ba_rel_from_text "$_bp_drc" "$_bp_dial" "$_bp_crc" "$_bp_cl")" != solo ]; then PICK_WHY="the default branch does not read solo"; return 0; fi
+  if [ "$(ba_rel_from_text "$_bp_drc" "$_bp_dial" "$_bp_crc" "$_bp_cl")" != solo ]; then PICK_WHY="the default branch does not read solo"; PICK_TEAM_WARN=1; return 0; fi   # MUT-BA-TEAMWARN
   _bp_rct=$(ba_forge_file "$REPO" "$_bp_tip" REQUIRED-CHECKS.md) || _bp_rct=""
   _bp_wft=$(ba_forge_file "$REPO" "$_bp_tip" .github/workflows/solo-go.yml) || _bp_wft=""
   _bp_pvt=$(ba_forge_file "$REPO" "$_bp_tip" scripts/promotion-verify.sh) || _bp_pvt=""
@@ -448,7 +456,7 @@ do_replace() {
   # FAIL line used to drop it. The text is gh's own, so control bytes are stripped and it is capped before it prints.
   if ! _dr_err=$(printf '%s' "$_dr_payload" | gh_quiet api -X PUT "repos/$_dr_repo/branches/$_dr_branch/protection" --input - 2>&1 >/dev/null); then
     _dr_err=$(printf '%s' "$_dr_err" | tr '\n' ' ' | tr -d '[:cntrl:]' | cut -c1-200)
-    printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state; the merge-method PATCH was not attempted${_dr_err:+; gh said: $_dr_err}"
+    printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state and confirm what it holds; the merge-method PATCH was not attempted${_dr_err:+; gh said: $_dr_err}"
     return 1   # MUT-BA-PUTSTOP
   fi
   if ! build_merge_payload | gh_quiet api -X PATCH "repos/$_dr_repo" --input - >/dev/null 2>&1; then
@@ -496,7 +504,7 @@ confirm() {  # <prompt> -> 0 on y/yes (case-insensitive), 1 otherwise. Reads std
   case "$_cfans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
-# confirm_replace — the SECOND, differently-worded, TTY-GATED confirmation (SEC M-1/M-2). Reads
+# confirm_replace — the one TTY-GATED confirmation of --replace (type REPLACE; --apply's y/N is separate) (SEC M-1/M-2). Reads
 # EXCLUSIVELY from /dev/tty, never stdin: piping input (`yes REPLACE | ...`) can no longer drive
 # --replace at all — measured previously doing exactly that. Displays the concrete solo-default
 # payload values (SEC M-2/REV H2) before checking for a tty, so the disclosure is seen even on the
@@ -541,37 +549,40 @@ confirm_replace() {  # [solo|team] [current merge methods]
 
 main() {
   if [ ! -f "$DECLARATION" ]; then
-    printf '%s\n' "FAIL: $DECLARATION not found — nothing declared to apply (see templates/REQUIRED-CHECKS-TEMPLATE.md)"
+    printf '%s\n' "FAIL: $DECLARATION not found — nothing declared to apply (see templates/REQUIRED-CHECKS-TEMPLATE.md). No change was made."
     exit 1
   fi
   ad_read_declaration "$DECLARATION"
   if [ "$AD_TOOMANY" != 0 ]; then
-    printf '%s\n' "FAIL: $DECLARATION declares more than $AD_MAX_LINES required-check context line(s) (cap exceeded — DoS bound)"
+    printf '%s\n' "FAIL: $DECLARATION declares more than $AD_MAX_LINES required-check context line(s) (cap exceeded — DoS bound). No change was made."
     exit 1
   fi
   if [ "$AD_INVALID" != 0 ]; then
-    printf '%s\n' "FAIL: $DECLARATION declares an invalid required-check context name: $AD_INVALID_NAME (must match ^[A-Za-z0-9][A-Za-z0-9._/-]*\$, length<=100 — GitHub context names containing spaces are NOT declarable in v1; rename the CI job/step to a hyphenated name and re-declare)"
+    printf '%s\n' "FAIL: $DECLARATION declares an invalid required-check context name: $AD_INVALID_NAME (must match ^[A-Za-z0-9][A-Za-z0-9._/-]*\$, length<=100 — GitHub context names containing spaces are NOT declarable in v1; rename the CI job/step to a hyphenated name and re-declare). No change was made."
     exit 1
   fi
   if [ "$AD_DUP" != 0 ] || { [ "$AD_PLACEHOLDER" != 0 ] && [ -n "$AD_LIST" ]; }; then
-    printf '%s\n' "FAIL: $DECLARATION is malformed (duplicate or placeholder-mixed) — run 'sh conformance/branch-protection.sh --declared-only' for details"
+    printf '%s\n' "FAIL: $DECLARATION is malformed (duplicate or placeholder-mixed) — run 'sh conformance/branch-protection.sh --declared-only' for details. No change was made."
     exit 1
   fi
   if [ "$AD_PLACEHOLDER" != 0 ] && [ -z "$AD_LIST" ]; then
-    printf '%s\n' "N/A: $DECLARATION is the pristine stamped template — nothing to apply yet"
+    printf '%s\n' "N/A: $DECLARATION is the pristine stamped template — nothing to apply yet. No change was made."
     exit 0
   fi
   if [ -z "$AD_LIST" ]; then
-    printf '%s\n' "FAIL: $DECLARATION declares zero active required-check contexts"
+    printf '%s\n' "FAIL: $DECLARATION declares zero active required-check contexts. No change was made."
     exit 1
   fi
 
-  command -v gh >/dev/null 2>&1 || { printf '%s\n' "UNVERIFIED: gh not installed — cannot read or apply live branch protection"; exit 2; }
+  command -v gh >/dev/null 2>&1 || { printf '%s\n' "UNVERIFIED: gh not installed — cannot read or apply live branch protection. No change was made."; exit 2; }
+  # SWAS-945: every gh call in this script strips these four (SEC M-3, SWAS-198), so the probe's gh does too.
+  unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi   # SWAS-945: the probe, once, before the first gh call
   gh_identity_line
   REPO="$REPO_OVERRIDE"
   if [ -z "$REPO" ]; then REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true); fi
-  [ -n "$REPO" ] || { printf '%s\n' "UNVERIFIED: no GitHub repo context for the gh identity above (pass --repo=OWNER/REPO, or use an account that can read this repo)"; exit 2; }
-  valid_repo "$REPO" || { printf '%s\n' "UNVERIFIED: gh reported a repository name that is not OWNER/REPO (characters A-Za-z0-9._- only, no . or .. segment) — refusing to build API paths from it"; exit 2; }
+  [ -n "$REPO" ] || { printf '%s\n' "UNVERIFIED: no GitHub repo context for the gh identity above (pass --repo=OWNER/REPO, or use an account that can read this repo). No change was made."; exit 2; }
+  valid_repo "$REPO" || { printf '%s\n' "UNVERIFIED: gh reported a repository name that is not OWNER/REPO (characters A-Za-z0-9._- only, no . or .. segment) — refusing to build API paths from it. No change was made."; exit 2; }
 
   if BODY=$(fetch_live_protection "$REPO" "$BRANCH"); then LIVE_RC=0; else LIVE_RC=$?; fi
   if [ "$LIVE_RC" = 4 ]; then
@@ -581,11 +592,11 @@ main() {
       BODY=""
       printf '%s\n' "NOT PROTECTED: $REPO:$BRANCH carries no branch protection yet — --replace will ESTABLISH it from the declaration below. The typed confirmation still applies."
     else
-      printf '%s\n' "UNVERIFIED: $REPO:$BRANCH is not protected yet, so there is nothing live to read and the additive path has nothing to add to — three-state, not a pass. Re-run with --replace to ESTABLISH protection from the declaration (see profiles/<stack>/BRANCH-PROTECTION.md)"
+      printf '%s\n' "UNVERIFIED: $REPO:$BRANCH is not protected yet, so there is nothing live to read and the additive path has nothing to add to — three-state, not a pass. Re-run with --replace to ESTABLISH protection from the declaration (see profiles/<stack>/BRANCH-PROTECTION.md). No change was made."
       exit 2
     fi
   elif [ "$LIVE_RC" != 0 ]; then
-    printf '%s\n' "UNVERIFIED: could not fetch live branch protection for $REPO:$BRANCH (no admin rights, or a transient error) — three-state, not a pass; if no protection exists on the branch yet, --replace establishes it (see profiles/<stack>/BRANCH-PROTECTION.md)"
+    printf '%s\n' "UNVERIFIED: could not fetch live branch protection for $REPO:$BRANCH (no admin rights, or a transient error) — three-state, not a pass; if no protection exists on the branch yet, --replace establishes it (see profiles/<stack>/BRANCH-PROTECTION.md). No change was made."
     exit 2
   fi
   LIVE=$(extract_contexts "$BODY")
@@ -621,6 +632,9 @@ main() {
     _bp_live=$(printf '%s' "$BODY" | tr -d ' \t\n' | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
     _bp_tgt=1; [ "$PROFILE" != solo-agent ] || _bp_tgt=0
     printf '%s\n' "  review-count: live=${_bp_live:-absent} target=$_bp_tgt (profile=$PROFILE: $PICK_WHY)"
+    if [ "$PICK_TEAM_WARN" = 1 ]; then
+      printf '%s\n' "WARN: the default branch does not read solo, but --team is absent, so --replace writes the SOLO profile (enforce_admins:false). For a team repository run --replace --team. A solo repository reads team until its .kit/dials.conf PR merges; until then, --replace (solo) is right for a solo project."
+    fi
   fi
 
   case "$MODE" in
@@ -634,7 +648,7 @@ main() {
     apply)
       if [ -z "$TOADD" ]; then printf '%s\n' "Nothing to add — every declared context is already bound live."; exit 0; fi
       printf '%s\n' "About to ADDITIVELY POST these missing context(s) to $REPO:$BRANCH:$TOADD"
-      confirm "Proceed? [y/N]" || { printf '%s\n' "Aborted — no change made."; exit 1; }
+      confirm "Proceed? [y/N]" || { printf '%s\n' "Aborted. No change was made."; exit 1; }
       _pargs=""
       for _c in $TOADD; do _pargs="$_pargs -f contexts[]=$_c"; done
       # shellcheck disable=SC2086  # word-splitting is deliberate: one -f per declared context
@@ -647,7 +661,7 @@ main() {
     replace)
       _dd=$(dirname -- "$DECLARATION"); _top=$(git -C "$_dd" rev-parse --show-toplevel 2>/dev/null) || _top=$_dd
       [ "$PROFILE" = team ] && team_preflight "$REPO" "$_top"
-      confirm_replace "$PROFILE" "$MM_CURRENT" || { printf '%s\n' "Aborted — no change made."; exit 1; }
+      confirm_replace "$PROFILE" "$MM_CURRENT" || { printf '%s\n' "Aborted. No change was made."; exit 1; }
       do_replace "$REPO" "$BRANCH" "$PROFILE" "$AD_LIST" || exit 1
       exit 0 ;;
   esac
@@ -664,8 +678,8 @@ validate_args() {
 
 selftest() {
   st=0
-  _d=""; _ghdir=""; _extradir=""; _ghenvdir=""; _tp=""
-  trap 'rm -rf "$_d" "$_ghdir" "$_extradir" "$_ghenvdir" "$_tp" 2>/dev/null || true' EXIT
+  _d=""; _ghdir=""; _extradir=""; _ghenvdir=""; _tp=""; _ng=""
+  trap 'rm -rf "$_d" "$_ghdir" "$_extradir" "$_ghenvdir" "$_tp" "${_ng:-}" 2>/dev/null || true' EXIT
   _d=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the declaration fixture"; exit 1; }
   printf '```\nci\ncontrol-plane-ratification\n```\n' > "$_d/decl.md"
 
@@ -811,7 +825,31 @@ STUBFB
   else
     echo "selftest FAIL: K8 — not-protected + --apply did not stay UNVERIFIED naming --replace (rc=$_aprc, out: $_apout)"; st=1
   fi
-  rm -rf "$_np" "$_fb" 2>/dev/null || true
+  # SWAS-907 C3: every exit in main before do_replace says the run wrote nothing. The three exits an operator meets mid-Inception, each driven for real:
+  # a non-admin token (the stub's 403 read: _fbout above), --apply on a repository that is not protected yet (_apout above), and no gh on PATH.
+  if [ "$_fbrc" = 2 ] && printf '%s\n' "$_fbout" | grep -qE '^(UNVERIFIED|FAIL):.*No change was made\.$'; then
+    echo "selftest PASS: SWAS-907 — a non-admin (403) live read exits 2 and says 'No change was made.'"
+  else
+    echo "selftest FAIL: SWAS-907 — the non-admin live-read exit does not say 'No change was made.' (rc=$_fbrc, out: $_fbout)"; st=1
+  fi
+  if [ "$_aprc" = 2 ] && printf '%s\n' "$_apout" | grep -qE '^(UNVERIFIED|FAIL):.*No change was made\.$'; then
+    echo "selftest PASS: SWAS-907 — not-protected + --apply exits 2 and says 'No change was made.'"
+  else
+    echo "selftest FAIL: SWAS-907 — the not-protected --apply exit does not say 'No change was made.' (rc=$_aprc, out: $_apout)"; st=1
+  fi
+  _ng=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the no-gh PATH"; exit 1; }
+  _shbin=$(command -v sh)
+  for _ngt in sed tr cut grep cat dirname mktemp head; do
+    _ngp=$(command -v "$_ngt" 2>/dev/null || true)
+    case "$_ngp" in /*) ln -s "$_ngp" "$_ng/$_ngt" ;; esac
+  done
+  if _ngout=$(env PATH="$_ng" "$_shbin" "$0" --repo=me/repo --declaration="$_d/decl.md" 2>&1); then _ngrc=0; else _ngrc=$?; fi
+  if [ "$_ngrc" = 2 ] && printf '%s\n' "$_ngout" | grep -qE '^UNVERIFIED: gh not installed.*No change was made\.$'; then
+    echo "selftest PASS: SWAS-907 — no gh on PATH exits 2 and says 'No change was made.'"
+  else
+    echo "selftest FAIL: SWAS-907 — the no-gh exit does not say 'No change was made.' (rc=$_ngrc, out: $_ngout)"; st=1
+  fi
+  rm -rf "$_np" "$_fb" "$_ng" 2>/dev/null || true
 
   # 7. never emits --admin, in any mode exercised above (accumulated log — see below).
 
@@ -1308,6 +1346,15 @@ STUBTP
   _ba_cell T12d _f_t12d "a CLAUDE.md read that fails (a 500) reads solo, never absent: the solo profile"
   _ba_mut T12dm '/^  if \[ "\$3" != 0 \] && \[ "\$3" != 1 \]; then echo team; return 0; fi$/d' _f_t12d "reading a failed CLAUDE.md as no Governance line grants solo-agent"
   _ba_mut T12am '/^  if \[ "\$(ba_rel_from_text/d' _f_t12a "without the relationship test an undeclared default branch gets solo-agent"
+  # SWAS-907 Q3 (RB-26): when the picker reads team and --team is absent, one WARN says so. It changes no profile. Silent when the forge reads solo, or --team is given.
+  _swarn='WARN: the default branch does not read solo, but --team is absent'
+  _f_t13w() { _ba_fx "$1" MERGE_RELATIONSHIP=team - "$_SGR" "$_SGC" "$_SGP"; _ba_run "$1"; printf '%s\n' "$_bo" | grep -qF "$_swarn" && printf '%s\n' "$_bo" | grep -qF '(profile=solo:'; }
+  _f_t13s() { _ba_fx "$1" "$_SGD" - "$_SGR" "$_SGC" "$_SGP"; _ba_run "$1"; ! printf '%s\n' "$_bo" | grep -qF "$_swarn"; }
+  _f_t13t() { _ba_fx "$1" MERGE_RELATIONSHIP=team - "$_SGR" "$_SGC" "$_SGP"; _ba_run "$1" --replace --team; ! printf '%s\n' "$_bo" | grep -qF "$_swarn"; }
+  _ba_cell T13w _f_t13w "the forge reads team and --team is absent: one WARN, and the profile stays solo"
+  _ba_cell T13s _f_t13s "the forge reads solo: no team WARN"
+  _ba_cell T13t _f_t13t "--replace --team on a team-reading forge: no WARN (the picker is not consulted)"
+  _ba_mut T13wm '/# MUT-BA-TEAMWARN$/s/PICK_TEAM_WARN=1/PICK_TEAM_WARN=0/' _f_t13w "a picker that never raises the flag prints no WARN"
   _ba_mut T12bm '/^  if \[ "\$(ba_rel_from_text/d' _f_t12b "without the relationship test a team default branch gets solo-agent"
   _ba_cell T12f _f_t12f "a forge entry whose path is not the requested path (a symlinked directory) is not that file: the solo profile"
   _ba_mut T12fm '/MUT-BA-PATH$/d' _f_t12f "accepting any path lets a symlinked .kit grant solo-agent"

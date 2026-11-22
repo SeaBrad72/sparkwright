@@ -3260,6 +3260,8 @@ EOF
   assert_rid_bad "-A"               "rid/refuse-leading-dash: -A is refused (option injection)"
   assert_rid_bad ""                 "rid/refuse-empty: the empty token is refused"
 
+  # SWAS-905: THREE copies now carry this grammar here (backlog-lib's row_id_ok, board-claim's bc_row_ok and board.sh's bd_row_ok), each
+  # [A-Z0-9][A-Z0-9-]*, 1-128 characters; the guard's _cp8b_g_key_ok is the fourth, held by agent-autonomy's TWIN leg (the bound sits outside the case).
   # THE TWIN IS GATED (reviewer R3). `scripts/board-claim.sh::bc_row_ok` is a deliberate SECOND
   # implementation of this grammar — that script cannot source a conformance/ library, because its
   # own selftest drives it inside throwaway clones that carry a BACKLOG.md and nothing else — and
@@ -3279,14 +3281,16 @@ EOF
   }
   _rid_lib=$(_rid_body "$(dirname "$0")/backlog-lib.sh" "row_id_ok")
   _rid_bc=$(_rid_body "$(dirname "$0")/../scripts/board-claim.sh" "bc_row_ok")
-  if [ -z "$_rid_lib" ] || [ -z "$_rid_bc" ]; then
-    echo "selftest FAIL: rid/twin: could not extract one of the two row-id grammars (lib=$(printf '%s' "$_rid_lib" | wc -l) bc=$(printf '%s' "$_rid_bc" | wc -l)) — the leg cannot pass vacuously"; st_fail=1
-  elif [ "$_rid_lib" = "$_rid_bc" ]; then
-    echo "selftest PASS: rid/twin: backlog-lib.sh::row_id_ok and scripts/board-claim.sh::bc_row_ok are byte-identical"
+  _rid_bd=$(_rid_body "$(dirname "$0")/../scripts/board.sh" "bd_row_ok")
+  if [ -z "$_rid_lib" ] || [ -z "$_rid_bc" ] || [ -z "$_rid_bd" ]; then
+    echo "selftest FAIL: rid/twin: could not extract one of the three row-id grammars (lib=$(printf '%s' "$_rid_lib" | wc -l) bc=$(printf '%s' "$_rid_bc" | wc -l) bd=$(printf '%s' "$_rid_bd" | wc -l)) — the leg cannot pass vacuously"; st_fail=1
+  elif [ "$_rid_lib" = "$_rid_bc" ] && [ "$_rid_lib" = "$_rid_bd" ]; then
+    echo "selftest PASS: rid/twin: backlog-lib.sh::row_id_ok, scripts/board-claim.sh::bc_row_ok and scripts/board.sh::bd_row_ok are byte-identical"
   else
-    echo "selftest FAIL: rid/twin: the two row-id grammars have DRIFTED — an id one accepts the other may refuse, and a claim that cannot be made for a row that resolves is the worst of both"; st_fail=1
+    echo "selftest FAIL: rid/twin: the three row-id grammars have DRIFTED — an id one accepts the others may refuse, and a claim that cannot be made for a row that resolves is the worst of both"; st_fail=1
     echo "  backlog-lib.sh::row_id_ok:  <$(printf '%s' "$_rid_lib" | tr '\n' ';')>"
     echo "  board-claim.sh::bc_row_ok:  <$(printf '%s' "$_rid_bc" | tr '\n' ';')>"
+    echo "  board.sh::bd_row_ok:        <$(printf '%s' "$_rid_bd" | tr '\n' ';')>"
   fi
 
   # ===== SWAS-200 — identifier gates spell their letter classes out ===============================

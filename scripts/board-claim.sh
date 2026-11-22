@@ -21,6 +21,7 @@
 #   sh scripts/board-claim.sh claim   <ROW-ID> [--branch <name>] [--links <text>] [--dry-run]
 #                                              [--board-already-moved]
 #   sh scripts/board-claim.sh release <ROW-ID> [--stale]
+#   sh scripts/board-claim.sh move    <ROW-ID> <in-review|done|blocked> [--cell-text <one line>] [--branch <name>]
 #   sh scripts/board-claim.sh check   [<ROW-ID> | --all]
 #   sh scripts/board-claim.sh status
 #   sh scripts/board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>]
@@ -189,7 +190,19 @@
 set -eu
 
 BC_REMOTE="${BOARD_CLAIM_REMOTE:-origin}"
-BC_BOARD="${BOARD_CLAIM_BOARD:-BACKLOG.md}"
+# SWAS-905: the board is the REPOSITORY's, not the working directory's. It defaults to <toplevel>/BACKLOG.md (the
+# backend and the session file already resolve from the toplevel), falling back to $(pwd)/BACKLOG.md outside a
+# repository, as board.sh's bd_root does. A relative BOARD_CLAIM_BOARD resolves against the toplevel too; an absolute
+# one is used as given. The result is always absolute, so every md write can print `board: <absolute path>`.
+bc_board_path() {
+  _bbtop=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  case "${BOARD_CLAIM_BOARD:-}" in
+    '')  printf '%s/BACKLOG.md\n' "$_bbtop" ;;
+    /*)  printf '%s\n' "$BOARD_CLAIM_BOARD" ;;
+    *)   printf '%s/%s\n' "$_bbtop" "$BOARD_CLAIM_BOARD" ;;
+  esac
+}
+BC_BOARD=$(bc_board_path)
 
 # ⚠️ A BACKSTOP ONLY, SINCE FIX ROUND 2. Reads no longer fetch into the caller's clone at all (they
 # use isolated throwaway dirs — see below), so these PID-scoped scratch refs are never created here
@@ -268,14 +281,24 @@ bc_cleanup() {
   bc_drop_scratch 2>/dev/null || true
   { [ -n "${BC_ISO_ROOT:-}" ] && rm -rf "$BC_ISO_ROOT" 2>/dev/null; } || true
   { [ -n "${bc_base:-}" ] && rm -rf "$bc_base" 2>/dev/null; } || true
+  # SWAS-905: the board swap's two temp files (the new board and the pre-image copy) are registered here the moment they exist,
+  # so an interrupted run (INT, TERM) leaves no `BACKLOG.md.XXXXXX` beside the board.
+  { [ -n "${BC_TMP_A:-}" ] && rm -f "$BC_TMP_A" 2>/dev/null; } || true
+  { [ -n "${BC_TMP_B:-}" ] && rm -f "$BC_TMP_B" 2>/dev/null; } || true
   return 0
 }
-trap 'bc_cleanup' EXIT INT TERM
+BC_TMP_A=""; BC_TMP_B=""; BC_WROTE=""; BC_SWAP_RECHECK=""
+# SWAS-905 (round 3): an INT or TERM runs the cleanup and then EXITS (130 / 143). The old shape returned from the handler and let the run
+# carry on, so an interrupted move could still reach its rename after the temp files were gone. EXIT keeps the cleanup as before.
+trap 'bc_cleanup' EXIT
+trap 'bc_cleanup; exit 130' INT
+trap 'bc_cleanup; exit 143' TERM
 
 bc_usage() {
   echo "usage:" >&2
   echo "  board-claim.sh claim   <ROW-ID> [--branch <name>] [--links <text>] [--dry-run] [--board-already-moved] [--lease-token <sha>]" >&2
   echo "  board-claim.sh release <ROW-ID> [--stale] [--lease-token <sha>]" >&2
+  echo "  board-claim.sh move    <ROW-ID> <in-review|done|blocked> [--cell-text <one line>] [--pr <number>] [--branch <name>] [--lease-token <sha>]   (md: board.sh move is the front door; in-review needs --pr)" >&2
   echo "  board-claim.sh check   [<ROW-ID> | --all]" >&2
   echo "  board-claim.sh status" >&2
   echo "  board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>] [--lease-token <sha>]" >&2
@@ -300,11 +323,12 @@ bc_row_ok() {
     [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)    return 1 ;;
     *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)  return 1 ;;
   esac
+  [ "${#1}" -le 128 ] || return 1   # SWAS-905: one bound, 1-128, outside the case the twin leg compares
   return 0
 }
 bc_require_row() {
   if bc_row_ok "$1"; then return 0; fi
-  echo "board-claim: invalid row id '$(printf '%s' "$1" | tr -d '[:cntrl:]')' — a row id must match [A-Z0-9][A-Z0-9-]* (it becomes a ref name)." >&2
+  echo "board-claim: invalid row id '$(printf '%s' "$1" | tr -d '[:cntrl:]')' — a row id must match [A-Z0-9][A-Z0-9-]*, 1-128 characters (it becomes a ref name)." >&2
   return 2
 }
 
@@ -1075,7 +1099,9 @@ bc_row_section() {
 # A row whose escaping is malformed enough to still hide its id from this join is fail-CLOSED — claim
 # refuses rather than acting on a row it cannot see — which is acceptable (design §6.5).
 bc_row_line() {
-  awk -F'|' -v sec="$2" -v want="$3" '
+  # SWAS-905: a 4th argument `count` switches this to COUNT mode: it prints how many rows of the section carry the id (bc_row_hits),
+  # instead of the first matching line number. One parser, so `move` adds no second raw splitter.
+  awk -F'|' -v sec="$2" -v want="$3" -v cnt="${4:-}" '
     /^[[:space:]]*```/ { infence = !infence; next }
     infence { next }
     $0 ~ "^## " sec "[[:space:]]*$" { inseg = 1; next }
@@ -1092,9 +1118,10 @@ bc_row_line() {
       gsub(/^[ \t]+|[ \t]+$/, "", c)
       if (match(c, /`[^`]+`/)) {
         id = substr(c, RSTART + 1, RLENGTH - 2)
-        if (id == want) { print NR; exit }
+        if (id == want) { if (cnt == "count") n++; else { print NR; exit } }
       }
     }
+    END { if (cnt == "count") print n + 0 }
   ' "$1"
 }
 
@@ -1260,6 +1287,9 @@ do_claim() {
     echo "       or, on a hosted tracker, use \`claim-ref\` / \`sparkwright board claim\`)." >&2
     return 2
   fi
+  # SWAS-905: a symlinked or hard-linked board is refused HERE, before the claim ref is pushed (the swap refuses it too, but only after
+  # the push would have taken the claim).
+  bc_board_safe "$BC_BOARD" claim || return 2
   # RETIRED (T3, F5): the declared-backend refusal (S-L5, `bc_backend`) used to sit here. A real
   # BACKLOG.md at $BC_BOARD is now the only precondition, regardless of any declared backend — see
   # the retirement note above `bc_backend`'s old definition.
@@ -1477,6 +1507,94 @@ do_claim() {
   return $?
 }
 
+# bc_table_swap <board> <del-line> <ins-after-line> <new-text> [<replace-line>] — the ONE delete-and-insert that
+# `claim` and `move` share (SWAS-905): line <del-line> is dropped and <new-text> is written after line <ins-after-line>.
+# With a <replace-line> the new text instead takes that line's place (a `None.` section rebuilt as a table); pass
+# <ins-after-line> 0 then. Line numbers are 1-based FILE lines (0 matches nothing).
+# BOARD-PIPE-ESCAPE T5 (C1): `del`/`ins`/`rep` are line NUMBERS (safe through `-v`); the new text is the
+# COMPOSED ROW TEXT and goes through `ENVIRON` instead, for the same byte-preservation reason as
+# `bc_new_row` below — `-v` would re-run awk's escape processing on the row and turn a source `\|`
+# into a raw `|`, adding a phantom column to the board on every write.
+# SWAS-905 hardening, both from the security read:
+#   * The board is never rewritten through a symlink or a hard link (a planted `BACKLOG.md -> hooks/pre-push` would turn
+#     the rename into a write onto the control plane, and a hard-linked board would be a second name for another file):
+#     `bc_board_safe` (`[ -L ]` and a link count of 1) runs in `claim` BEFORE its claim ref is pushed, in `move` before the
+#     board is read, and again here before anything is written.
+#   * The temp file is `mktemp "<board>.XXXXXX"` made under umask 077, so its name cannot be predicted (a planted symlink at
+#     a fixed name was followed by the old `> <board>.board-claim.$$`). It is made a copy of the board first (`cp -p`), so
+#     it carries the board's OWN mode bits (nothing is forced to 644 or 755), and it is removed on any failure. It and the
+#     pre-image copy are registered in BC_TMP_A / BC_TMP_B, which the EXIT/INT/TERM trap removes, so an interrupted run
+#     leaves no `<board>.XXXXXX`.
+#   * <expect-del-text> (6th argument) is the text the caller READ on line <del-line>. The awk aborts, and nothing is
+#     renamed, when that line now differs: a board edited between the caller's read and this write is refused, not
+#     rewritten by line number. An empty value skips the check.
+#   * <expect-cksum> (7th argument) is the `cksum` of the WHOLE board when the caller began to read it: an edit anywhere else in
+#     the board (not only on the deleted line) between the read and the write is refused before the rename. An EMPTY value is a refusal (rc 4), never a skip.
+#   * On success the PRE-IMAGE (a `cp -p` copy of the board as it was) stays in BC_TMP_B, so a caller whose post-read fails can
+#     put the board back (`bc_swap_restore`); a caller that is done calls `bc_swap_done`.
+bc_board_safe() { # <board> <verb> -> rc 0 when the board is a regular file, not a symlink, with link count 1
+  if [ -L "$1" ]; then echo "$2: $1 is a symlink — the board is never rewritten through one; nothing was changed." >&2; return 1; fi
+  _bs_n=$(ls -ld -- "$1" 2>/dev/null | awk '{print $2}')
+  if [ "$_bs_n" != 1 ]; then echo "$2: $1 has link count ${_bs_n:-unknown}, not 1 — a hard-linked board is never rewritten; nothing was changed." >&2; return 1; fi
+  return 0
+}
+bc_board_cksum() { cksum < "$1" 2>/dev/null | awk '{print $1 "-" $2}'; }   # <board> -> the whole-file checksum and size
+bc_swap_done() { rm -f "${BC_TMP_B:-}" 2>/dev/null || true; BC_TMP_B=""; }
+BC_RESTORE_WHY=""
+bc_swap_restore() { # <board> -> put the pre-image back, ONLY while the board is still exactly what the swap wrote (rc 0 when restored)
+  BC_RESTORE_WHY=""
+  [ -n "${BC_TMP_B:-}" ] && [ -f "$BC_TMP_B" ] || { BC_RESTORE_WHY="there is no pre-image"; return 1; }
+  if [ -z "${BC_WROTE:-}" ] || [ "$(bc_board_cksum "$1")" != "$BC_WROTE" ]; then
+    BC_RESTORE_WHY="the board changed again after the swap wrote it"; return 1
+  fi
+  if mv "$BC_TMP_B" "$1"; then BC_TMP_B=""; return 0; fi
+  BC_RESTORE_WHY="the pre-image could not be moved back"; return 1
+}
+bc_table_swap() {
+  bc_board_safe "$1" board-claim || return 1
+  # an EMPTY read-time cksum (the 7th argument: a cksum that printed nothing, or a caller that took none) is a refusal, never a skip
+  if [ -z "${7:-}" ]; then echo "board-claim: no read-time checksum of $1 (cksum gave nothing) — refusing to write blind; nothing was changed." >&2; return 4; fi
+  bc_swap_done
+  BC_TMP_A=$( umask 077; mktemp "$1.XXXXXX" ) || { BC_TMP_A=""; echo "board-claim: could not create a temporary file beside $1; nothing was changed." >&2; return 1; }
+  BC_TMP_B=$( umask 077; mktemp "$1.XXXXXX" ) || { BC_TMP_B=""; rm -f "$BC_TMP_A" 2>/dev/null || true; BC_TMP_A=""; echo "board-claim: could not create a temporary file beside $1; nothing was changed." >&2; return 1; }
+  _ts_rc=0
+  # ONE copy of the board is taken (the pre-image, in BC_TMP_B); its checksum must equal the read-time one, and awk runs on THAT copy, so
+  # what is compared is exactly what is edited. The board is re-checked just before the rename.
+  cp -p "$1" "$BC_TMP_B" || _ts_rc=1
+  if [ "$_ts_rc" -eq 0 ] && [ "$(bc_board_cksum "$BC_TMP_B")" != "$7" ]; then
+    echo "board-claim: $1 changed between the read and the write (its checksum differs) — nothing was changed." >&2; _ts_rc=4
+  fi
+  if [ "$_ts_rc" -eq 0 ]; then cp -p "$BC_TMP_B" "$BC_TMP_A" || _ts_rc=1; fi
+  if [ "$_ts_rc" -eq 0 ]; then
+    env BC_NEWROW="$4" BC_EXPECT="${6:-}" awk -v del="$2" -v ins="$3" -v rep="${5:-0}" '
+      NR == del { if (ENVIRON["BC_EXPECT"] != "" && $0 != ENVIRON["BC_EXPECT"]) exit 3; next }
+      NR == rep { print ENVIRON["BC_NEWROW"]; next }
+      { print }
+      NR == ins { print ENVIRON["BC_NEWROW"] }
+    ' "$BC_TMP_B" > "$BC_TMP_A" || _ts_rc=$?
+  fi
+  if [ "$_ts_rc" -eq 0 ]; then
+    BC_WROTE=$(bc_board_cksum "$BC_TMP_A")
+    # just before the rename: the board must be the file that was copied (cksum), still safe, and (move only) still the contained board.
+    # STATED RESIDUAL: what remains is the gap between this check and the rename itself (see the move header's honest ceilings).
+    if [ "$(bc_board_cksum "$1")" != "$7" ]; then
+      echo "board-claim: $1 changed just before the write (its checksum differs) — nothing was changed." >&2; _ts_rc=4
+    elif ! bc_board_safe "$1" board-claim; then _ts_rc=1
+    elif [ "${BC_SWAP_RECHECK:-}" = 1 ] && { ! bc_board_contained || [ "$BC_BOARD" != "$1" ]; }; then
+      echo "board-claim: $1 is no longer the contained board just before the write — nothing was changed." >&2; _ts_rc=1
+    fi
+  fi
+  if [ "$_ts_rc" -eq 0 ]; then
+    if mv "$BC_TMP_A" "$1"; then BC_TMP_A=""; else _ts_rc=$?; fi
+  fi
+  if [ "$_ts_rc" -ne 0 ]; then
+    rm -f "$BC_TMP_A" 2>/dev/null || true; BC_TMP_A=""
+    bc_swap_done
+    if [ "$_ts_rc" -eq 3 ]; then echo "board-claim: line $2 of $1 is no longer the row that was read — the board changed under this move; nothing was changed." >&2; fi
+  fi
+  return "$_ts_rc"
+}
+
 # bc_board_move — the board half of a claim (remote or local): the row moves Ready -> In Progress, uncommitted.
 # It reads do_claim's variables (_row _branch _links _name _moved) and runs only after the claim is recorded.
 bc_board_move() {
@@ -1486,6 +1604,7 @@ bc_board_move() {
   fi
 
   # ── THE ROW MOVE (design fold 1: claim and row move are ONE act, never two that can diverge) ──
+  _bcck=$(bc_board_cksum "$BC_BOARD")
   _rline=$(bc_row_line "$BC_BOARD" "Ready" "$_row")
   _rowtxt=$(awk -v n="$_rline" 'NR==n' "$BC_BOARD")
   _item=$(bc_cell "$_rowtxt" 1)
@@ -1509,22 +1628,435 @@ bc_board_move() {
   fi
   _new=$(bc_new_row "$_hdrtxt" "$_item" "$_name" "$(date -u +%Y-%m-%d)" "$_links")
 
-  _tmp="$BC_BOARD.board-claim.$$"
-  # BOARD-PIPE-ESCAPE T5 (C1): `del`/`ins` are line NUMBERS (safe through `-v`); `newrow` is the
-  # COMPOSED ROW TEXT and goes through `ENVIRON` instead, for the same byte-preservation reason as
-  # `bc_new_row` above — `-v` would re-run awk's escape processing on the row and turn a source `\|`
-  # into a raw `|`, adding a phantom column to the board on every write.
-  env BC_NEWROW="$_new" awk -v del="$_rline" -v ins="$_iplast" '
-    NR == del { next }
-    { print }
-    NR == ins { print ENVIRON["BC_NEWROW"] }
-  ' "$BC_BOARD" > "$_tmp" && mv "$_tmp" "$BC_BOARD"
+  bc_table_swap "$BC_BOARD" "$_rline" "$_iplast" "$_new" 0 "$_rowtxt" "$_bcck" || {
+    echo "claim: the claim ref is ${1:-PUSHED}, but the board could not be edited (see above). Move the row by hand, or release the claim (\`board-claim.sh release $_row\`)." >&2
+    return 2
+  }
+  bc_swap_done
 
   # C3 (§6.3): sanitize what is ECHOED here, never what was WRITTEN above — `_rowtxt`/`_new` already
   # reached the board with their exact bytes; this is display only.
   echo "claim: board edited (UNCOMMITTED — the slice's first commit carries it):"
   echo "-$(printf '%s' "$_rowtxt" | tr -d '[:cntrl:]' | cut -c1-200)"
   echo "+$(printf '%s' "$_new" | tr -d '[:cntrl:]' | cut -c1-200)"
+  echo "board: $BC_BOARD"
+  return 0
+}
+
+# ── move — THE REST OF THE MD FLOW AFTER claim (SWAS-905) ────────────────────────────────────────
+# `move <ROW> in-review|done|blocked [--cell-text <text>] [--branch <name>]` moves a row that sits In Progress, In
+# Review or Blocked to the named section, uncommitted, so the slice's own commit (and its Kit-* trailers) carries it
+# and the Done row rides the PR. board.sh move is the front door: it owns the file rule for the cell text (a regular
+# file under the repo or $TMPDIR, valid UTF-8, the secret-shape screen) and hands the one line over as --cell-text; this
+# verb re-checks the line's own shape, because it can be called directly.
+#   * Ownership is claim's resume test (claimant AND branch): the claim ref must be ABSENT, or held by this claimant on
+#     this branch. Another holder is refused and named; an unreachable remote refuses (the holder cannot be read, so it
+#     does not guess); with no remote yet the local claim namespace is read the same way.
+#   * The new row is built from the TARGET table's own header, by column name: Item is kept whole, every cell whose
+#     column name exists in both tables is carried (an escaped `\|` included), the target's own columns are set (done:
+#     Closed = today UTC and Retro/outcome; blocked: Since = today and Blocked on), and any other column is `—`.
+#   * A refusal moves nothing and names the row and section: not found, in two places, a source or target table that
+#     will not parse. A target section written as a bare `None.` is rebuilt from the template's header and the move says so.
+#   * `in-progress` is refused (use `claim`), `ready` (hand-edit the row back and run `release`) and `released` (it is a
+#     post-merge, on-deploy edit): they have no md move.
+#   * The edit is proved by a post-read (the row sits in the target section exactly once and nowhere else) and the verb
+#     prints `board: <absolute path>`.
+#   * A move is never made on the default branch, and never on a detached HEAD: the edit rides the CHECKED-OUT slice branch and its PR,
+#     and a `--branch` that differs from it is refused. The default branch is the one `refs/remotes/<remote>/HEAD` names; with no
+#     such ref, `main` and `master` are refused by name and the sentence says to run `git remote set-head <remote> -a` or to move
+#     from a slice branch. `init.defaultBranch` is not read (a preference for new repositories: it would make the verdict depend
+#     on ambient git config).
+#   * The board must be a file named BACKLOG.md under the repository's physical toplevel, with no path component below it starting with
+#     a dot and no symlinked directory out of it (an absolute BOARD_CLAIM_BOARD elsewhere, `../x` and `.claude/BACKLOG.md` are refused);
+#     the resolved physical path is the one read and written. It must not be a symlink and must have link count 1; the temp file is
+#     unpredictable (mktemp, umask 077), keeps the board's own mode bits and is removed by the trap on an interrupt; the row line read is
+#     re-checked at write time AND the whole board's cksum is compared with the one taken at the read, so a board edited anywhere between
+#     the read and the write is refused; and a failed post-read puts the pre-image back, so a refused move leaves the board as it was.
+#     The ownership test runs BEFORE the board is read, and the checkout lease gate (bc_lease_gate move) before that. `claim` refuses a
+#     symlinked or hard-linked board before it pushes its claim ref.
+#   * `in-review` REQUIRES `--pr <number>` ([1-9][0-9]{0,8}) and writes the PR cell as `#<number>` (host-neutral, no URL, no remote read);
+#     `--pr` is refused on `done` and `blocked`. The kit's review-mode gate fails an In Review row with no real PR value, so a `—` cell would
+#     fail the board once committed (erratum E1 of the 905 design).
+# HONEST CEILINGS, read before relying on a move:
+#   * THE WRITE IS CHECKED, NOT LOCKED. The swap copies the board once, compares that copy's cksum with the read-time one, edits the copy,
+#     re-takes the board's cksum and re-checks containment (move) just before the rename. A same-user process that swaps the path, or
+#     edits the board, in the gap between that last check and the `mv` itself is not stopped: a rename cannot be made conditional in POSIX sh.
+#     The guarded restore (`bc_swap_restore`) has the same check-then-rename gap: it compares the board's cksum with the one the swap
+#     wrote and then renames the pre-image back, and an edit between those two steps is overwritten.
+#     INT and TERM run the cleanup and exit (130, 143), so an interrupted move leaves no temp file and does not carry on to its rename.
+#   * THE PR NUMBER IS DECLARED, NOT PROVEN: this verb does not check that the pull request exists (that needs a forge call, which md mode avoids),
+#     exactly as every other value an agent types on the board.
+#   * THE HOLDER TEST IS DECLARED, NEVER AUTHENTICATED, exactly as claim's is: the claimant is the git identity this
+#     process reads and the branch is a name; both are self-set. It stops a cooperating session closing another's row by
+#     mistake. It is not a boundary against an actor who sets user.name, user.email and the branch to match.
+#   * A DIRECT `--cell-text` CALL gets the shape checks above (one line, 1-300 bytes, no control, backslash, backtick, C1,
+#     bidi or separator character, valid UTF-8) but NOT board.sh's file checks (regular, non-symlink, link count 1, under the
+#     repo or $TMPDIR) and NOT its secret-shape screen: those belong to the file read, which only board.sh does. The guard
+#     admits only the root's board.sh for an agent, so the direct path is the owner's own.
+#   * `--lease-token` is taken here. board.sh move does NOT pass one (the guard's G4 spec admits only --retro-file,
+#     --blocked-on-file and --pr for move), so in a checkout that opted in to the lease, `board.sh move` is refused by the gate
+#     until that spec admits the flag. Handed back as a residual; the guard is outside this slice.
+#   * Containment and the default-branch refusal are on `move` only; `claim` keeps its older, wider behaviour.
+
+# bc_row_hits <board> <section> <ROW-ID> -> how many rows of that section carry the id (bc_row_line without the exit)
+bc_row_hits() {
+  bc_row_line "$1" "$2" "$3" count
+}
+
+# bc_row_homes <board> <ROW-ID> — sets _bh_total (rows carrying the id across the six sections) and _bh_where (where).
+bc_row_homes() {
+  _bh_total=0; _bh_where=""
+  for _bh_s in "Ready" "In Progress" "In Review" "Blocked" "Released" "Done"; do
+    _bh_n=$(bc_row_hits "$1" "$_bh_s" "$2")
+    [ "$_bh_n" -gt 0 ] || continue
+    _bh_total=$((_bh_total + _bh_n))
+    if [ "$_bh_n" -gt 1 ]; then _bh_s="$_bh_s x$_bh_n"; fi
+    _bh_where="${_bh_where:+$_bh_where, }$_bh_s"
+  done
+}
+
+# bc_section_none <board> <section> -> the file line of a bare `None.` under that section (outside fences), or empty.
+bc_section_none() {
+  awk -v sec="$2" '
+    /^[[:space:]]*```/ { infence = !infence; next }
+    infence { next }
+    $0 ~ "^## " sec "[[:space:]]*$" { inseg = 1; next }
+    inseg && /^## / { inseg = 0 }
+    inseg && /^[[:space:]]*None\.[[:space:]]*$/ { print NR; exit }
+  ' "$1"
+}
+
+# bc_section_blank <board> <section> -> the file line of the section's heading when the section exists and its whole body
+# (outside fences) is blank lines, else empty. A blank body is rebuilt like a bare `None.` (SWAS-905 review R8).
+bc_section_blank() {
+  awk -v sec="$2" '
+    /^[[:space:]]*```/ { infence = !infence; if (inseg) bad = 1; next }
+    infence { next }
+    $0 ~ "^## " sec "[[:space:]]*$" && !h { inseg = 1; h = NR; next }
+    inseg && /^## / { inseg = 0 }
+    inseg && $0 !~ /^[[:space:]]*$/ { bad = 1 }
+    END { if (h && !bad) print h }
+  ' "$1"
+}
+
+# bc_sep_after <board> <header-line> -> rc 0 when the next line is a markdown separator row.
+bc_sep_after() {
+  awk -v n="$2" 'NR == n + 1 && /^[[:space:]]*\|[[:space:]|:]*-[[:space:]|:-]*\|[[:space:]]*$/ { f = 1 } END { exit !f }' "$1"
+}
+
+# bc_template_table <section> -> the template's header row, then its separator row (templates/BACKLOG-TEMPLATE.md).
+bc_template_table() {
+  case "$1" in
+    "In Review") printf '%s\n%s\n' '| Item | Reviewer | PR |' '|------|----------|----|' ;;
+    "Done")      printf '%s\n%s\n' '| Item | Closed | Retro/outcome |' '|------|--------|---------------|' ;;
+    "Blocked")   printf '%s\n%s\n' '| Item | Blocked on | Since | Event-retro link |' '|------|-----------|-------|------------------|' ;;
+  esac
+}
+
+# bc_move_newrow <target-header> <source-header> <source-row> <col1> <val1> <col2> <val2> -> the new row, by the
+# TARGET's columns. A cell whose column name is in both headers is carried raw; <col1>/<col2> take their values;
+# anything else is `—`. Every value rides ENVIRON, never `awk -v` (see bc_table_swap): `-v` would turn a `\|` into `|`.
+bc_move_newrow() {
+  env BC_MV_T="$1" BC_MV_S="$2" BC_MV_R="$3" BC_MV_C1="$4" BC_MV_V1="$5" BC_MV_C2="$6" BC_MV_V2="$7" awk '
+    function gfm(line, arr,   np, parts, j, s, t, run, L, n, v) {
+      np = split(line, parts, "|"); n = 0; s = ""
+      for (j = 2; j <= np; j++) {
+        s = (s == "") ? parts[j] : s "|" parts[j]
+        t = s; run = 0
+        while ((L = length(t)) > 0 && substr(t, L, 1) == "\\") { run++; t = substr(t, 1, L - 1) }
+        if (run % 2 == 1) continue
+        if (j == np && s ~ /^[ \t]*$/) break
+        n++; v = s; gsub(/^[ \t]+|[ \t]+$/, "", v); arr[n] = v; s = ""
+      }
+      return n
+    }
+    BEGIN {
+      nt = gfm(ENVIRON["BC_MV_T"], th); ns = gfm(ENVIRON["BC_MV_S"], sh); nr = gfm(ENVIRON["BC_MV_R"], sr)
+      c1 = ENVIRON["BC_MV_C1"]; c2 = ENVIRON["BC_MV_C2"]
+      out = "|"
+      for (i = 1; i <= nt; i++) {
+        h = th[i]; v = ""
+        for (k = 1; k <= ns; k++) if (sh[k] == h) { v = sr[k]; break }
+        if (c1 != "" && h == c1) v = ENVIRON["BC_MV_V1"]
+        if (c2 != "" && h == c2) v = ENVIRON["BC_MV_V2"]
+        if (v == "") v = "—"
+        out = out " " v " |"
+      }
+      print out
+    }'
+}
+
+# bc_cell_text_ok <text> -> rc 0 when it is a cell this verb will write: one line, no control byte, 1-300 bytes, no
+# backslash (so the `\|` escape has one reading), no backtick (so no cell can look like a row id), not blank.
+# It must also be valid UTF-8 (iconv), and hold none of: a C1 control (U+0080-U+009F), a bidirectional override or isolate
+# (U+202A-U+202E, U+2066-U+2069) or a line or paragraph separator (U+2028, U+2029). Each is a way to make a cell read
+# differently from what it is, and none survives the `[:cntrl:]` strips the verbs print through. A failed check (a grep
+# or an iconv that cannot run) is a refusal, never a pass.
+bc_cell_text_ok() {
+  [ -n "$1" ] || return 1
+  [ -n "$(printf '%s' "$1" | tr -d ' ')" ] || return 1
+  [ "$(printf '%s' "$1" | wc -c | tr -d ' ')" -le 300 ] || return 1
+  [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377' | wc -c | tr -d ' ')" = 0 ] || return 1
+  case "$1" in
+    *'\'*|*'`'*) return 1 ;;
+  esac
+  printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 || return 1
+  # ...and none of the direction marks U+200E, U+200F and U+061C (zero-width characters stay allowed)
+  _ct_c1=$(printf '\302[\200-\237]'); _ct_ls=$(printf '\342\200[\250-\256]'); _ct_iso=$(printf '\342\201[\246-\251]')
+  _ct_dm=$(printf '\342\200[\216\217]'); _ct_al=$(printf '\330\234')
+  _ct_rc=0
+  printf '%s' "$1" | LC_ALL=C grep -Eq -e "$_ct_c1" -e "$_ct_ls" -e "$_ct_iso" -e "$_ct_dm" -e "$_ct_al" || _ct_rc=$?
+  [ "$_ct_rc" = 1 ] || return 1
+  return 0
+}
+
+# bc_pr_ok <value> -> rc 0 when it is [1-9][0-9]{0,8}: 1-9 ASCII digits, no leading zero (errata E1 of the 905 design).
+bc_pr_ok() {
+  case "$1" in
+    ''|0*|*[!0123456789]*) return 1 ;;
+  esac
+  [ "${#1}" -le 9 ]
+}
+
+# bc_move_owner — claim's resume test, for a move (reads _row _branch _me): the claim ref must be absent, or held by this
+# claimant on this branch. rc 0 proceed · 2 refuse (unreachable, unreadable) · 3 held by someone else (named).
+bc_move_owner() {
+  _mo_ref="refs/claims/$_row"; _mo_txt=""
+  if _mo_st=$(bc_remote_state); then :; else return 2; fi
+  case "$_mo_st" in
+    unreachable) bc_unreachable "$_mo_ref"; return 2 ;;
+    none)
+      _mo_lref="$BC_LOCAL_NS/$_row"
+      bc_local_exists "$_mo_lref" || return 0
+      _mo_txt=$(bc_read_local "$_mo_lref" || true) ;;
+    *)
+      if _mo_held=$(bc_probe "$_mo_ref"); then
+        _mo_txt=$(bc_read_claim "$_mo_ref" || true)
+      else
+        _mo_rc=$?
+        [ "$_mo_rc" != 2 ] || return 0
+        bc_unreachable "$_mo_ref"; return 2
+      fi ;;
+  esac
+  if [ -z "$_mo_txt" ]; then
+    echo "move: a claim on \`$_row\` exists but its CLAIM could not be read, so it cannot be shown to be yours — nothing was moved." >&2
+    return 2
+  fi
+  if [ "$(bc_field "$_mo_txt" claimant)" = "$_me" ] && [ "$(bc_field "$_mo_txt" branch)" = "$_branch" ]; then return 0; fi
+  echo "move: $(bc_holder_line "$_mo_txt")" >&2
+  echo "      Row \`$_row\` is held by another claimant or on another branch, not by '$_me' on '$_branch' — nothing was moved." >&2
+  return 3
+}
+
+# bc_move_target — sets _tsec _colA _valA _colB _valB for the target state, or refuses (rc 2). Reads _target _text.
+bc_move_target() {
+  _colA=""; _valA=""; _colB=""; _valB=""
+  case "$_target" in
+    in-review)
+      [ -z "$_text" ] || { echo "move: \`in-review\` takes no cell text." >&2; return 2; }
+      [ -n "$_pr" ] || { echo "move: In Review needs the PR: add --pr <number> (the PR cell is written as #<number>; the kit's own gate fails an In Review row with no real PR value) — nothing was moved." >&2; return 2; }
+      bc_pr_ok "$_pr" || { echo "move: --pr must be 1 to 9 digits with no leading zero ([1-9][0-9]{0,8}) — nothing was moved." >&2; return 2; }
+      _tsec="In Review"; _colA="PR"; _valA="#$_pr" ;;
+    done|blocked)
+      [ -z "$_pr" ] || { echo "move: --pr belongs to \`in-review\`; \`$_target\` takes no PR number — nothing was moved." >&2; return 2; }
+      bc_cell_text_ok "$_text" || { echo "move: \`$_target\` needs one line of 1-300 bytes with no control byte, backslash or backtick, valid UTF-8 with no C1 control, bidi or line-separator character (--cell-text; board.sh move reads it from a file) — nothing was moved." >&2; return 2; }
+      _valA=$(date -u +%Y-%m-%d)
+      _valB=$(printf '%s' "$_text" | sed 's/|/\\|/g') || { echo "move: the cell text could not be escaped — nothing was moved." >&2; return 2; }
+      [ -n "$_valB" ] || { echo "move: the cell text could not be escaped — nothing was moved." >&2; return 2; }
+      if [ "$_target" = 'done' ]; then _tsec="Done"; _colA="Closed"; _colB="Retro/outcome"
+      else _tsec="Blocked"; _colA="Since"; _colB="Blocked on"; fi ;;
+    in-progress) echo "move: \`in-progress\` is claim's act — use \`claim\`, so no row reaches In Progress without the claim lock." >&2; return 2 ;;
+    ready)       echo "move: \`ready\` is not an md move — hand-edit the row back to Ready and run \`release\` (a rebuilt Ready row would carry no success metric, and claim has already dropped the Ready fields)." >&2; return 2 ;;
+    released)    echo "move: \`released\` is not an md move — a row reaches Released after the merge, on deploy, so the edit would sit uncommitted on main; hand-edit it in the release PR." >&2; return 2 ;;
+    *)           echo "move: '$(printf '%s' "$_target" | tr -d '[:cntrl:]' | cut -c1-40)' is not an md move target (in-review, done, blocked)." >&2; return 2 ;;
+  esac
+}
+
+# bc_move_find — sets _src _rline _srow _shdrtxt for the row, or refuses (rc 2) naming the row and the section.
+bc_move_find() {
+  if [ ! -f "$BC_BOARD" ]; then
+    echo "move: no board at $BC_BOARD (run from the project root, or set BOARD_CLAIM_BOARD) — nothing was moved." >&2
+    return 2
+  fi
+  bc_row_homes "$BC_BOARD" "$_row"
+  if [ "$_bh_total" -eq 0 ]; then echo "move: no row \`$_row\` on $BC_BOARD — nothing was moved." >&2; return 2; fi
+  if [ "$_bh_total" -gt 1 ]; then
+    echo "move: row \`$_row\` is in more than one place on $BC_BOARD ($_bh_where); it must sit in exactly one — nothing was moved." >&2
+    return 2
+  fi
+  _src=$(bc_row_section "$BC_BOARD" "$_row")
+  case "$_src" in
+    "In Progress"|"In Review"|"Blocked") : ;;
+    Ready) echo "move: row \`$_row\` sits in Ready, not claimed — claim it first (\`board.sh claim $_row\`); nothing was moved." >&2; return 2 ;;
+    *)     echo "move: row \`$_row\` sits in $_src, past the states a move leaves; nothing was moved." >&2; return 2 ;;
+  esac
+  if [ "$_src" = "$_tsec" ]; then echo "move: row \`$_row\` already sits in $_tsec — nothing was moved." >&2; return 2; fi
+  _rline=$(bc_row_line "$BC_BOARD" "$_src" "$_row")
+  _srow=$(awk -v n="$_rline" 'NR==n' "$BC_BOARD")
+  _sb=$(bc_section_bounds "$BC_BOARD" "$_src")
+  _shdrtxt=$(awk -v n="${_sb% *}" 'NR==n' "$BC_BOARD")
+  if [ -z "$(bc_col_index "$_shdrtxt" Item)" ] || ! bc_sep_after "$BC_BOARD" "${_sb% *}"; then
+    echo "move: the $_src table on $BC_BOARD will not parse (no Item column, or no separator row under its header) — nothing was moved." >&2
+    return 2
+  fi
+  return 0
+}
+
+# bc_move_table — sets _thdrtxt _tsep _tlast _none (the `None.` line to replace, else empty) for the target section's
+# table, or refuses (rc 2). Reads _tsec _colA _colB.
+bc_move_table() {
+  _tb=$(bc_section_bounds "$BC_BOARD" "$_tsec"); _thdr=${_tb% *}; _tlast=${_tb#* }; _none=""; _blank=""; _rebuilt=""
+  if [ "$_thdr" = 0 ]; then
+    _none=$(bc_section_none "$BC_BOARD" "$_tsec")
+    if [ -n "$_none" ]; then _rebuilt="a bare \`None.\`"
+    else
+      _blank=$(bc_section_blank "$BC_BOARD" "$_tsec")
+      if [ -n "$_blank" ]; then _rebuilt="blank"; fi
+    fi
+    if [ -z "$_rebuilt" ]; then
+      echo "move: the $_tsec section on $BC_BOARD will not parse (no table under it, and no bare \`None.\` or blank body) — nothing was moved." >&2
+      return 2
+    fi
+    _thdrtxt=$(bc_template_table "$_tsec" | sed -n 1p); _tsep=$(bc_template_table "$_tsec" | sed -n 2p)
+  else
+    _thdrtxt=$(awk -v n="$_thdr" 'NR==n' "$BC_BOARD")
+    if ! bc_sep_after "$BC_BOARD" "$_thdr"; then
+      echo "move: the $_tsec table on $BC_BOARD will not parse (no separator row under its header) — nothing was moved." >&2
+      return 2
+    fi
+  fi
+  _bad=""
+  [ -n "$(bc_col_index "$_thdrtxt" Item)" ] || _bad="Item"
+  if [ -z "$_bad" ] && [ -n "$_colA" ] && [ -z "$(bc_col_index "$_thdrtxt" "$_colA")" ]; then _bad="$_colA"; fi
+  if [ -z "$_bad" ] && [ -n "$_colB" ] && [ -z "$(bc_col_index "$_thdrtxt" "$_colB")" ]; then _bad="$_colB"; fi
+  if [ -n "$_bad" ]; then
+    echo "move: the $_tsec table on $BC_BOARD will not parse (it has no \`$_bad\` column) — nothing was moved." >&2
+    return 2
+  fi
+  return 0
+}
+
+# bc_board_contained -> rc 0 when the board's PHYSICAL path (its directory resolved, symlinks followed) is under the
+# repository's physical toplevel. `../x` and an absolute path elsewhere are refused: a move writes only the repository's own board.
+# It must also be a file NAMED `BACKLOG.md`, and no path component below the toplevel may start with a dot (`.claude`, `.git`, ...).
+# On success BC_BOARD is replaced by that resolved physical path, so every later read and write uses it, not the spelling that was given.
+bc_board_contained() {
+  case "$(basename -- "$BC_BOARD")" in
+    BACKLOG.md) : ;;
+    *) return 1 ;;
+  esac
+  _bt_top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  _bt_top=$(CDPATH='' cd -- "$_bt_top" 2>/dev/null && pwd -P) || return 1
+  _bt_dir=$(CDPATH='' cd -- "$(dirname -- "$BC_BOARD")" 2>/dev/null && pwd -P) || return 1
+  _bt_full="$_bt_dir/BACKLOG.md"
+  case "$_bt_full" in
+    "$_bt_top"/*) : ;;
+    *) return 1 ;;
+  esac
+  case "/${_bt_full#"$_bt_top"/}" in
+    */.*) return 1 ;;
+  esac
+  BC_BOARD=$_bt_full
+  return 0
+}
+
+# bc_move_branch — sets _head (the checked-out branch) and _branch (the branch the claim is read for), or refuses (rc 2). A detached HEAD
+# is refused; a `--branch` that differs from the checked-out branch is refused (the edit rides the checked-out branch); and that branch
+# must not be the default branch. The default is `<remote>/HEAD`; with none, main and master are refused by name; init.defaultBranch is not read.
+bc_move_branch() {
+  _head=$(git symbolic-ref -q --short HEAD 2>/dev/null || true)
+  if [ -z "$_head" ]; then
+    echo "move: HEAD is detached (or this is not a repository) — a board move rides a slice branch, so check the slice branch out first — nothing was moved." >&2
+    return 2
+  fi
+  [ -n "$_branch" ] || _branch=$_head
+  if [ "$_branch" != "$_head" ]; then
+    echo "move: --branch '$(printf '%s' "$_branch" | tr -d '[:cntrl:]' | cut -c1-80)' is not the checked-out branch '$_head' — the edit rides the checked-out branch, so the claim is read for that one — nothing was moved." >&2
+    return 2
+  fi
+  bc_require_branch "$_branch" "move --branch" || return 2
+  # the default branch is the one <remote>/HEAD names; with no <remote>/HEAD, `main` and `master` are refused by name. init.defaultBranch is NOT
+  # read: it is the user's preference for NEW repositories and would make the verdict depend on ambient git config.
+  _bd_def=$(git symbolic-ref -q --short "refs/remotes/$BC_REMOTE/HEAD" 2>/dev/null || true)
+  _bd_def=${_bd_def#"$BC_REMOTE"/}
+  if [ -n "$_bd_def" ]; then
+    if [ "$_head" = "$_bd_def" ]; then
+      echo "move: '$_head' is the default branch ($BC_REMOTE/HEAD) — a board move rides a slice branch and its PR, so it is never made on the default branch. Switch to the slice branch (the one that holds the claim) and run it there — nothing was moved." >&2
+      return 2
+    fi
+    return 0
+  fi
+  case "$_head" in
+    main|master)
+      echo "move: '$_head' looks like the default branch and there is no $BC_REMOTE/HEAD to say otherwise: run \`git remote set-head $BC_REMOTE -a\`, or move from a slice branch (the slice branch is the one that holds the claim) — nothing was moved." >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
+do_move() {
+  _row=""; _target=""; _text=""; _branch=""; _ltok=""; _pr=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)        [ $# -ge 2 ] || { echo "move: --pr needs a value" >&2; return 2; }; [ -z "$_pr" ] || { echo "move: --pr is given twice" >&2; return 2; }; _pr=$2; shift 2 ;;
+      --lease-token) [ $# -ge 2 ] || { echo "move: --lease-token needs a value" >&2; return 2; }; _ltok=$2; shift 2 ;;
+      --cell-text) [ $# -ge 2 ] || { echo "move: --cell-text needs a value" >&2; return 2; }; _text=$2; shift 2 ;;
+      --branch)    [ $# -ge 2 ] || { echo "move: --branch needs a value" >&2; return 2; }; _branch=$2; shift 2 ;;
+      -*)          echo "move: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]' | cut -c1-40)'" >&2; bc_usage; return 2 ;;
+      *)           if [ -z "$_row" ]; then _row=$1
+                   elif [ -z "$_target" ]; then _target=$1
+                   else echo "move: one row id and one state, nothing more" >&2; return 2; fi
+                   shift ;;
+    esac
+  done
+  [ -n "$_row" ] && [ -n "$_target" ] || { echo "move: a row id and a state are required" >&2; bc_usage; return 2; }
+  bc_require_row "$_row" || return 2
+  bc_move_target || return 2
+  bc_move_branch || return 2
+  _name=$(git config user.name  2>/dev/null || true)
+  _email=$(git config user.email 2>/dev/null || true)
+  if [ -z "$_name" ] || [ -z "$_email" ]; then
+    echo "move: no git identity (user.name / user.email) — the claim's holder is read as that identity." >&2
+    return 2
+  fi
+  _me="$_name <$_email>"
+  # THE LEASE AND THE OWNER TEST COME BEFORE THE FIRST READ OF THE BOARD: what is read after the holder is known to be
+  # this claimant is what gets written, so a board read before the test could be stale by the time it passes.
+  bc_lease_gate move "$_ltok" || return $?
+  if bc_move_owner; then :; else return $?; fi
+  if ! bc_board_contained; then
+    echo "move: the board $BC_BOARD is not a board this move writes: it must be a file named BACKLOG.md under this repository's toplevel, with no path component starting with a dot, and no symlinked directory out of it — nothing was moved." >&2
+    return 2
+  fi
+  bc_board_safe "$BC_BOARD" move || return 2
+  _mvck=$(bc_board_cksum "$BC_BOARD")
+  [ -n "$_mvck" ] || { echo "move: no checksum of $BC_BOARD could be taken (cksum gave nothing) — refusing to read it blind; nothing was moved." >&2; return 2; }
+  BC_SWAP_RECHECK=1   # the swap re-checks containment just before its rename (move only)
+  bc_move_find || return 2
+  bc_move_table || return 2
+  _new=$(bc_move_newrow "$_thdrtxt" "$_shdrtxt" "$_srow" "$_colA" "$_valA" "$_colB" "$_valB")
+  if [ -n "$_none" ]; then
+    _blk=$(printf '%s\n%s\n%s' "$_thdrtxt" "$_tsep" "$_new")
+    bc_table_swap "$BC_BOARD" "$_rline" 0 "$_blk" "$_none" "$_srow" "$_mvck" || { echo "move: the board could not be written; nothing was moved." >&2; return 1; }
+  elif [ -n "$_blank" ]; then
+    _blk=$(printf '\n%s\n%s\n%s' "$_thdrtxt" "$_tsep" "$_new")
+    bc_table_swap "$BC_BOARD" "$_rline" "$_blank" "$_blk" 0 "$_srow" "$_mvck" || { echo "move: the board could not be written; nothing was moved." >&2; return 1; }
+  else
+    bc_table_swap "$BC_BOARD" "$_rline" "$_tlast" "$_new" 0 "$_srow" "$_mvck" || { echo "move: the board could not be written; nothing was moved." >&2; return 1; }
+  fi
+  bc_row_homes "$BC_BOARD" "$_row"
+  if [ "$_bh_total" -ne 1 ] || [ "$(bc_row_hits "$BC_BOARD" "$_tsec" "$_row")" != 1 ]; then
+    # the post-read failed: the pre-image the swap kept is put back, so a refused move leaves the board as it was
+    if bc_swap_restore "$BC_BOARD"; then _mvrest="the board was restored to what it was"; else _mvrest="the board was NOT restored ($BC_RESTORE_WHY) — check $BC_BOARD before committing"; fi
+    echo "move: the edit ran but the post-read did NOT show \`$_row\` once in $_tsec (it reads: ${_bh_where:-nowhere}) — $_mvrest." >&2
+    return 1
+  fi
+  bc_swap_done
+  echo "move: OK — \`$_row\` $_src -> $_tsec (UNCOMMITTED — the slice's own commit carries it):"
+  echo "-$(printf '%s' "$_srow" | tr -d '[:cntrl:]' | cut -c1-200)"
+  echo "+$(printf '%s' "$_new" | tr -d '[:cntrl:]' | cut -c1-200)"
+  if [ -n "$_rebuilt" ]; then echo "move: the $_tsec section was $_rebuilt; its table was rebuilt from the template's header."; fi
+  echo "board: $BC_BOARD"
   return 0
 }
 
@@ -4410,6 +4942,428 @@ RACE_EOF
     esac
   fi
 
+  # ---- legs (SWAS-905): the board path is the repository's, and `move` is the rest of the md flow ----------------------
+  bc_today=$(date -u +%Y-%m-%d)
+  # BB — the default board is <toplevel>/BACKLOG.md, whatever directory the verb is run from
+  bc_mklocal BB "Session BB" bb@example.com
+  mkdir -p "$bc_base/BB/sub"
+  bc_btop=$(git -C "$bc_base/BB" rev-parse --show-toplevel)
+  bc_run "$bc_base/BB/sub" claim ROW-1 --branch feat/bb
+  bc_expect_rc 0 "leg BB/subdir: a claim run from a subdirectory -> rc 0"
+  bc_has "leg BB/subdir: the verb names the repository's board by absolute path" "board: $bc_btop/BACKLOG.md"
+  if [ "$(bc_in_sec "$bc_base/BB/BACKLOG.md" 'In Progress' ROW-1)" = 1 ] && [ ! -e "$bc_base/BB/sub/BACKLOG.md" ]; then
+    bc_pass "leg BB/subdir: the row moved on the toplevel board and no board was made in the subdirectory"
+  else bc_fail "leg BB/subdir: the claim did not edit <toplevel>/BACKLOG.md (or made a stray board)"; fi
+  bc_fixture_board4 "$bc_base/BB/alt.md"
+  if bc_out=$( cd "$bc_base/BB/sub" && BOARD_CLAIM_BOARD=alt.md sh "$BC_SELF" claim ROW-2 --branch feat/bb 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  bc_expect_rc 0 "leg BB/relative: a relative BOARD_CLAIM_BOARD, run from a subdirectory -> rc 0"
+  bc_has "leg BB/relative: it resolves against the toplevel and the verb prints that path" "board: $bc_btop/alt.md"
+  if [ "$(bc_in_sec "$bc_base/BB/alt.md" 'In Progress' ROW-2)" = 1 ] && [ "$(bc_in_sec "$bc_base/BB/BACKLOG.md" 'In Progress' ROW-2)" = 0 ]; then
+    bc_pass "leg BB/relative: the row moved on alt.md at the toplevel, and BACKLOG.md was left alone"
+  else bc_fail "leg BB/relative: the relative board was not the one edited"; fi
+
+  # M — `move` on a remote-backed clone. MV-2/3/4 carry claim refs on the bare remote; MV-2 is Move One's on feat/m1.
+  bc_mkclone M "Move One" m1@example.com feat/m1
+  bc_mv_rev=$(printf '%s\n%s' '| Item | Reviewer | PR |' '|------|----------|----|')
+  bc_mv_done=$(printf '%s\n%s\n%s' '| Item | Closed | Retro/outcome |' '|------|--------|---------------|' '| `MV-7` — in two places | 2026-11-01 | dup |')
+  bc_fixture_board_mv "$bc_base/M/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_mtop=$(git -C "$bc_base/M" rev-parse --show-toplevel)
+  bc_origin_claim "$bc_remote_dir" MV-2 'Move One <m1@example.com>' feat/m1
+  bc_origin_claim "$bc_remote_dir" MV-3 'Other One <o@example.com>' feat/o
+  bc_origin_claim "$bc_remote_dir" MV-4 'Move One <m1@example.com>' feat/other
+  bc_mv_refuse() { # <label> <rc> <needle> <args…>: refused with that rc, the sentence carries <needle>, the board is byte-unchanged
+    _mrl=$1; _mrr=$2; _mrn=$3; shift 3
+    cp "$bc_base/M/BACKLOG.md" "$bc_base/M.snap"
+    bc_run "$bc_base/M" move "$@"
+    if [ "$bc_rc" -eq "$_mrr" ] && cmp -s "$bc_base/M/BACKLOG.md" "$bc_base/M.snap"; then bc_pass "leg MV/$_mrl: refused rc $_mrr, the board is byte-unchanged"
+    else bc_fail "leg MV/$_mrl: rc=$bc_rc (wanted $_mrr) or the board changed; out=[$bc_out]"; fi
+    bc_has "leg MV/$_mrl: the sentence names the cause" "$_mrn"
+  }
+  # the states that are not md moves
+  bc_mv_refuse in-progress 2 'use `claim`' MV-1 in-progress --branch feat/m1
+  bc_mv_refuse ready 2 'hand-edit the row back to Ready and run `release`' MV-1 ready --branch feat/m1
+  bc_mv_refuse released 2 'hand-edit it in the release PR' MV-1 released --branch feat/m1
+  bc_mv_refuse backlog 2 'not an md move target' MV-1 backlog --branch feat/m1
+  # the board's own refusals name the row and the section
+  bc_mv_refuse not-found 2 'no row `NOPE-1`' NOPE-1 in-review --pr 1087 --branch feat/m1
+  bc_mv_refuse two-places 2 'more than one place' MV-7 in-review --pr 1087 --branch feat/m1
+  bc_has "leg MV/two-places: it names both sections" "In Progress, Done"
+  bc_mv_refuse source-ready 2 'sits in Ready' MV-9 in-review --pr 1087 --branch feat/m1
+  bc_mv_refuse in-review-text 2 'takes no cell text' MV-1 in-review --cell-text 'x' --branch feat/m1
+  # the cell text rule, on a direct call (board.sh's file rule runs first on the front door)
+  bc_mv_refuse text-missing 2 'one line of 1-300 bytes' MV-1 'done' --branch feat/m1
+  bc_mv_refuse text-two-lines 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'one\ntwo')" --branch feat/m1
+  bc_mv_refuse text-backtick 2 'one line of 1-300 bytes' MV-1 'done' --cell-text 'a`b' --branch feat/m1
+  bc_mv_refuse text-backslash 2 'one line of 1-300 bytes' MV-1 'done' --cell-text 'a\b' --branch feat/m1
+  bc_mv_refuse text-control 2 'one line of 1-300 bytes' MV-1 blocked --cell-text "$(printf 'a\033b')" --branch feat/m1
+  bc_mv_refuse text-301 2 'one line of 1-300 bytes' MV-1 blocked --cell-text "$(awk 'BEGIN { for (i = 0; i < 301; i++) printf "T" }')" --branch feat/m1
+  # ownership: another holder is named, the same claimant on ANOTHER branch is refused, an unreachable remote refuses
+  bc_mv_refuse holder 3 'Other One' MV-3 in-review --pr 1087 --branch feat/m1
+  bc_mv_refuse holder-other-branch 3 'feat/other' MV-4 in-review --pr 1087 --branch feat/m1
+  cp "$bc_base/M/BACKLOG.md" "$bc_base/M.snap"
+  bc_run_badremote "$bc_base/M" move MV-5 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 2 "leg MV/unreachable: an unreachable remote refuses (the holder cannot be read) -> rc 2"
+  bc_has "leg MV/unreachable: the refusal says so" "cannot reach"
+  if cmp -s "$bc_base/M/BACKLOG.md" "$bc_base/M.snap"; then bc_pass "leg MV/unreachable: the board is byte-unchanged"
+  else bc_fail "leg MV/unreachable: the board changed"; fi
+  # the moves themselves: an absent claim moves; a claim held by this claimant on this branch moves
+  bc_run "$bc_base/M" move MV-1 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 0 "leg MV/absent-claim: a row with no claim ref moves to In Review -> rc 0"
+  bc_has "leg MV/absent-claim: the verb prints the absolute board path" "board: $bc_mtop/BACKLOG.md"
+  if [ "$(bc_in_sec "$bc_base/M/BACKLOG.md" 'In Review' MV-1)" = 1 ] && [ "$(bc_in_sec "$bc_base/M/BACKLOG.md" 'In Progress' MV-1)" = 0 ] \
+     && grep -qF '| `MV-1` — carry me | — | #1087 |' "$bc_base/M/BACKLOG.md"; then
+    bc_pass "leg MV/absent-claim: MV-1 is in In Review once, out of In Progress, Item kept whole, Reviewer is — and the PR cell is #1087"
+  else bc_fail "leg MV/absent-claim: the new row is wrong; board=[$(cat "$bc_base/M/BACKLOG.md")]"; fi
+  bc_run "$bc_base/M" move MV-2 'done' --cell-text 'ships a|b' --branch feat/m1
+  bc_expect_rc 0 "leg MV/own-claim: a claim held by this claimant on this branch moves -> rc 0"
+  bc_mvline=$(grep -F '`MV-2`' "$bc_base/M/BACKLOG.md" | head -1)
+  if [ "$bc_mvline" = "| \`MV-2\` — carry \\| pipe | $bc_today | ships a\\|b |" ] && [ "$(bc_v_ncols "$bc_mvline")" = 3 ]; then
+    bc_pass "leg MV/done: Closed is today (UTC), Retro/outcome is the text with its pipe escaped, the escaped-pipe Item is carried whole, three columns"
+  else bc_fail "leg MV/done: the Done row is wrong: [$bc_mvline]"; fi
+  bc_run "$bc_base/M" move MV-6 blocked --cell-text 'waiting on the vendor' --branch feat/m1
+  bc_expect_rc 0 "leg MV/blocked: a row moves to Blocked -> rc 0"
+  if grep -qF "| \`MV-6\` — to be blocked | waiting on the vendor | $bc_today | — |" "$bc_base/M/BACKLOG.md"; then
+    bc_pass "leg MV/blocked: Blocked on is the text, Since is today, Event-retro link is —"
+  else bc_fail "leg MV/blocked: the Blocked row is wrong; board=[$(cat "$bc_base/M/BACKLOG.md")]"; fi
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/MV-2 2>/dev/null || true
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/MV-3 2>/dev/null || true
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/MV-4 2>/dev/null || true
+
+  # M2 — target tables: a `None.` section is rebuilt from the template's header; a target that will not parse refuses
+  bc_mkclone M2 "Move One" m1@example.com feat/m1
+  bc_mv2_refuse() { # <label> <needle> <review-body> <done-body> <state>: the target will not parse -> rc 2, board byte-unchanged
+    bc_fixture_board_mv "$bc_base/M2/BACKLOG.md" "$3" "$4"
+    cp "$bc_base/M2/BACKLOG.md" "$bc_base/M2.snap"
+    if [ "$5" = in-review ]; then bc_run "$bc_base/M2" move MV-1 in-review --pr 1087 --branch feat/m1
+    else bc_run "$bc_base/M2" move MV-1 "$5" --cell-text 'x' --branch feat/m1; fi
+    if [ "$bc_rc" -eq 2 ] && cmp -s "$bc_base/M2/BACKLOG.md" "$bc_base/M2.snap"; then bc_pass "leg MV/parse-$1: refused rc 2, the board is byte-unchanged"
+    else bc_fail "leg MV/parse-$1: rc=$bc_rc or the board changed; out=[$bc_out]"; fi
+    bc_has "leg MV/parse-$1: the sentence names the section" "$2"
+  }
+  bc_mv2_refuse no-table 'In Review section on' 'Nothing here, prose only.' "$bc_mv_done" in-review
+  bc_mv2_refuse no-separator 'In Review table on' '| Item | Reviewer | PR |' "$bc_mv_done" in-review
+  bc_mv2_refuse no-column 'no `Retro/outcome` column' "$bc_mv_rev" "$(printf '%s\n%s' '| Item | Closed |' '|------|--------|')" 'done'
+  bc_fixture_board_mv "$bc_base/M2/BACKLOG.md" "$bc_mv_rev" 'None.'
+  bc_run "$bc_base/M2" move MV-1 'done' --cell-text 'closed from None' --branch feat/m1
+  bc_expect_rc 0 "leg MV/none: a Done section written as None. takes the move -> rc 0"
+  bc_has "leg MV/none: the move says it rebuilt the table" "rebuilt from the template's header"
+  if [ "$(bc_in_sec "$bc_base/M2/BACKLOG.md" Done MV-1)" = 1 ] && grep -qxF '| Item | Closed | Retro/outcome |' "$bc_base/M2/BACKLOG.md" \
+     && ! grep -qxF 'None.' "$bc_base/M2/BACKLOG.md"; then
+    bc_pass "leg MV/none: Done now has the template's header, a separator and the row, and the None. line is gone"
+  else bc_fail "leg MV/none: the rebuilt Done is wrong; board=[$(cat "$bc_base/M2/BACKLOG.md")]"; fi
+
+  # ML — no remote yet: the local claim namespace is read the same way
+  bc_mklocal ML "Move One" m1@example.com
+  git -C "$bc_base/ML" symbolic-ref HEAD refs/heads/feat/m1
+  bc_fixture_board_mv "$bc_base/ML/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_plantlocal ML MV-3 'Other One <o@example.com>' feat/o
+  bc_plantlocal ML MV-2 'Move One <m1@example.com>' feat/m1
+  cp "$bc_base/ML/BACKLOG.md" "$bc_base/ML.snap"
+  bc_run "$bc_base/ML" move MV-3 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 3 "leg MV/local-holder: a local claim held by someone else refuses -> rc 3"
+  bc_has "leg MV/local-holder: it names the holder" "Other One"
+  if cmp -s "$bc_base/ML/BACKLOG.md" "$bc_base/ML.snap"; then bc_pass "leg MV/local-holder: the board is byte-unchanged"
+  else bc_fail "leg MV/local-holder: the board changed"; fi
+  bc_run "$bc_base/ML" move MV-2 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 0 "leg MV/local-own: a local claim held by this claimant on this branch moves -> rc 0"
+
+  # ---- legs (SWAS-905 review round 1) --------------------------------------------------------------------------------------
+  # S4 — the cell text, one class each, on a direct call: a C1 control, a bidi override, a bidi isolate, U+2028, U+2029, invalid UTF-8
+  bc_mv_refuse text-c1 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\302\205b')" --branch feat/m1
+  bc_mv_refuse text-bidi-override 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\200\256b')" --branch feat/m1
+  bc_mv_refuse text-bidi-isolate 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\201\247b')" --branch feat/m1
+  bc_mv_refuse text-line-separator 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\200\250b')" --branch feat/m1
+  bc_mv_refuse text-paragraph-separator 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\200\251b')" --branch feat/m1
+  bc_mv_refuse text-invalid-utf8 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\377\376b')" --branch feat/m1
+  # ...and a failed sed is a refusal: a `sed` that exits 1 comes first on PATH, and the row must not be written with a blank cell
+  mkdir -p "$bc_base/sedfail"
+  printf '#!/bin/sh\nexit 1\n' > "$bc_base/sedfail/sed"; chmod +x "$bc_base/sedfail/sed"
+  bc_mkclone H "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/H/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  cp "$bc_base/H/BACKLOG.md" "$bc_base/H.snap"
+  if bc_out=$( cd "$bc_base/H" && PATH="$bc_base/sedfail:$PATH" sh "$BC_SELF" move MV-1 'done' --cell-text 'closed' --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  if [ "$bc_rc" -ne 0 ] && cmp -s "$bc_base/H/BACKLOG.md" "$bc_base/H.snap"; then bc_pass "leg MV/sed-failed: a sed that fails is a refusal (rc $bc_rc) and the board is byte-unchanged"
+  else bc_fail "leg MV/sed-failed: rc=$bc_rc or the board changed; out=[$bc_out]"; fi
+  # a non-ASCII text that IS valid UTF-8 passes (the UTF-8 and bidi checks are not unconditional)
+  bc_run "$bc_base/H" move MV-6 blocked --cell-text 'waiting on café ✓' --branch feat/m1
+  bc_expect_rc 0 "leg MV/text-utf8-ok: valid non-ASCII UTF-8 is admitted -> rc 0"
+  if grep -qF '| waiting on café ✓ |' "$bc_base/H/BACKLOG.md"; then bc_pass "leg MV/text-utf8-ok: the non-ASCII text is written as given"
+  else bc_fail "leg MV/text-utf8-ok: the text was not written; board=[$(cat "$bc_base/H/BACKLOG.md")]"; fi
+  # S1 — a symlinked board and a hard-linked board are refused and nothing moves; no temp file is left beside the board
+  bc_mkclone HS "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HS/real.md" "$bc_mv_rev" "$bc_mv_done"
+  ln -sf real.md "$bc_base/HS/BACKLOG.md"
+  cp "$bc_base/HS/real.md" "$bc_base/HS.snap"
+  bc_run "$bc_base/HS" move MV-1 in-review --pr 1087 --branch feat/m1
+  if [ "$bc_rc" -ne 0 ] && [ -L "$bc_base/HS/BACKLOG.md" ] && cmp -s "$bc_base/HS/real.md" "$bc_base/HS.snap" \
+     && [ -z "$(ls "$bc_base"/HS/BACKLOG.md.* 2>/dev/null)" ]; then
+    bc_pass "leg MV/symlink-board: a symlinked board is refused (rc $bc_rc), stays a symlink, its target is byte-unchanged, no temp file is left"
+  else bc_fail "leg MV/symlink-board: rc=$bc_rc out=[$bc_out]"; fi
+  bc_has "leg MV/symlink-board: the sentence says symlink" "symlink"
+  bc_mkclone HL "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HL/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  ln "$bc_base/HL/BACKLOG.md" "$bc_base/HL-second-name.md"
+  cp "$bc_base/HL/BACKLOG.md" "$bc_base/HL.snap"
+  bc_run "$bc_base/HL" move MV-1 in-review --pr 1087 --branch feat/m1
+  if [ "$bc_rc" -ne 0 ] && cmp -s "$bc_base/HL/BACKLOG.md" "$bc_base/HL.snap" && cmp -s "$bc_base/HL-second-name.md" "$bc_base/HL.snap" \
+     && [ -z "$(ls "$bc_base"/HL/BACKLOG.md.* 2>/dev/null)" ]; then
+    bc_pass "leg MV/hardlink-board: a hard-linked board is refused (rc $bc_rc), both names are byte-unchanged, no temp file is left"
+  else bc_fail "leg MV/hardlink-board: rc=$bc_rc out=[$bc_out]"; fi
+  bc_has "leg MV/hardlink-board: the sentence says link count" "link count"
+  # S2 — the lease: a checkout that opted in refuses a move with no holder's token (and with a made-up one), before it reads the board
+  bc_mkclone HK "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HK/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  git -C "$bc_base/HK" config kit.checkoutLease true
+  cp "$bc_base/HK/BACKLOG.md" "$bc_base/HK.snap"
+  bc_run "$bc_base/HK" move MV-1 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 5 "leg MV/lease: a checkout that opted in to the lease refuses a move with no token -> rc 5"
+  bc_has "leg MV/lease: the gate's sentence names the move" "move: REFUSED"
+  bc_run "$bc_base/HK" move MV-1 in-review --pr 1087 --branch feat/m1 --lease-token 0123456789abcdef0123456789abcdef01234567
+  bc_expect_rc 5 "leg MV/lease: a made-up token is refused too -> rc 5"
+  if cmp -s "$bc_base/HK/BACKLOG.md" "$bc_base/HK.snap"; then bc_pass "leg MV/lease: the board is byte-unchanged"
+  else bc_fail "leg MV/lease: the board changed"; fi
+  # S3 — the row line read is re-checked at the write: a board that changed between the read and the write is refused
+  bc_fixture_board_mv "$bc_base/swap.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_sl=$(bc_row_line "$bc_base/swap.md" 'In Progress' MV-1)
+  bc_srow=$(awk -v n="$bc_sl" 'NR==n' "$bc_base/swap.md")
+  bc_sb=$(bc_section_bounds "$bc_base/swap.md" 'In Review')
+  { printf '<!-- a line added after the read -->\n'; cat "$bc_base/swap.md"; } > "$bc_base/swap2.md"
+  mv "$bc_base/swap2.md" "$bc_base/swap.md"
+  cp "$bc_base/swap.md" "$bc_base/swap.snap"
+  bc_ck=$(bc_board_cksum "$bc_base/swap.md")   # taken AFTER the shift, so only the row-text check can refuse this one
+  if bc_table_swap "$bc_base/swap.md" "$bc_sl" "${bc_sb#* }" '| `MV-1` — carry me | — | — |' 0 "$bc_srow" "$bc_ck" 2>/dev/null; then bc_swrc=0; else bc_swrc=$?; fi
+  if [ "$bc_swrc" -ne 0 ] && cmp -s "$bc_base/swap.md" "$bc_base/swap.snap" && [ -z "$(ls "$bc_base"/swap.md.* 2>/dev/null)" ]; then
+    bc_pass "leg MV/stale-read: the row line moved after the read -> the swap is refused (rc $bc_swrc), the board is byte-unchanged, no temp file is left"
+  else bc_fail "leg MV/stale-read: rc=$bc_swrc, or the board changed, or a temp file is left"; fi
+  # ...and the same swap with the board as it was read goes through (the refusal above is not unconditional)
+  bc_fixture_board_mv "$bc_base/swap.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_ck=$(bc_board_cksum "$bc_base/swap.md")
+  if bc_table_swap "$bc_base/swap.md" "$bc_sl" "${bc_sb#* }" '| `MV-1` — carry me | — | — |' 0 "$bc_srow" "$bc_ck" 2>/dev/null; then bc_swrc=0; else bc_swrc=$?; fi
+  if [ "$bc_swrc" -eq 0 ] && [ "$(bc_in_sec "$bc_base/swap.md" 'In Review' MV-1)" = 1 ] && [ "$(bc_in_sec "$bc_base/swap.md" 'In Progress' MV-1)" = 0 ]; then
+    bc_pass "leg MV/stale-read: with the board as it was read, the swap writes (control)"
+  else bc_fail "leg MV/stale-read: the control swap failed (rc $bc_swrc)"; fi
+  # S5 — containment: an absolute board outside the toplevel and a `../x` board are refused, and the outside file is untouched
+  bc_mkclone HC "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/outside.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_fixture_board_mv "$bc_base/x.md" "$bc_mv_rev" "$bc_mv_done"
+  cp "$bc_base/outside.md" "$bc_base/outside.snap"
+  if bc_out=$( cd "$bc_base/HC" && BOARD_CLAIM_BOARD="$bc_base/outside.md" sh "$BC_SELF" move MV-1 in-review --pr 1087 --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  if [ "$bc_rc" -eq 2 ] && cmp -s "$bc_base/outside.md" "$bc_base/outside.snap"; then bc_pass "leg MV/contain-absolute: an absolute BOARD_CLAIM_BOARD outside the toplevel is refused (rc 2), the file is untouched"
+  else bc_fail "leg MV/contain-absolute: rc=$bc_rc out=[$bc_out]"; fi
+  bc_has "leg MV/contain-absolute: the sentence says toplevel" "toplevel"
+  cp "$bc_base/x.md" "$bc_base/x.snap"
+  if bc_out=$( cd "$bc_base/HC" && BOARD_CLAIM_BOARD="../x.md" sh "$BC_SELF" move MV-1 in-review --pr 1087 --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  if [ "$bc_rc" -eq 2 ] && cmp -s "$bc_base/x.md" "$bc_base/x.snap"; then bc_pass "leg MV/contain-dotdot: BOARD_CLAIM_BOARD=../x.md is refused (rc 2), the file is untouched"
+  else bc_fail "leg MV/contain-dotdot: rc=$bc_rc out=[$bc_out]"; fi
+  # S8 — never on the default branch: main and master with no <remote>/HEAD, and whatever <remote>/HEAD names when it is set
+  # R2-1 / S2-3: the branch is the CHECKED-OUT one. Each clone below has its own HEAD, and the default branch is `<remote>/HEAD`; with none,
+  # main and master are refused by name; init.defaultBranch is not read.
+  bc_dflt() { # <name> <HEAD branch> <expected rc> <needle> <args…>: a clone on that branch with the fixture board; run move; rc, sentence, board unchanged on a refusal
+    _dn=$1; _dh=$2; _dr=$3; _dd=$4; shift 4
+    bc_mkclone "$_dn" "Move One" m1@example.com "$_dh"
+    bc_fixture_board_mv "$bc_base/$_dn/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+    # the clone of the (by now non-empty) fixture remote may carry origin/HEAD; each leg states its own, so start with none
+    git -C "$bc_base/$_dn" symbolic-ref --delete refs/remotes/origin/HEAD >/dev/null 2>&1 || true
+    if [ -n "${bc_dcfg:-}" ]; then git -C "$bc_base/$_dn" config $bc_dcfg; fi
+    if [ -n "${bc_dref:-}" ]; then git -C "$bc_base/$_dn" symbolic-ref refs/remotes/origin/HEAD "$bc_dref"; fi
+    cp "$bc_base/$_dn/BACKLOG.md" "$bc_base/$_dn.snap"
+    # independent of the user's global and system git config (the selftest already sets GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM to /dev/null)
+    GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_NOSYSTEM=1; export GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+    bc_run "$bc_base/$_dn" move MV-1 in-review --pr 1087 "$@"
+    unset GIT_CONFIG_NOSYSTEM
+    bc_expect_rc "$_dr" "leg MV/default-$_dn: HEAD $_dh, $* -> rc $_dr"
+    [ -z "$_dd" ] || bc_has "leg MV/default-$_dn: the sentence names the cause" "$_dd"
+    if [ "$_dr" != 0 ]; then
+      if cmp -s "$bc_base/$_dn/BACKLOG.md" "$bc_base/$_dn.snap"; then bc_pass "leg MV/default-$_dn: the board is byte-unchanged"
+      else bc_fail "leg MV/default-$_dn: the board changed"; fi
+    fi
+  }
+  bc_dcfg=''; bc_dref=''
+  bc_dflt HDa main 2 'default branch' --branch main
+  bc_has "leg MV/default-HDa: the sentence points at the slice branch" "slice branch"
+  bc_dflt HDb main 2 'is not the checked-out branch' --branch feat/x
+  bc_dflt HDc main 2 'default branch'
+  bc_dref=refs/remotes/origin/trunk
+  bc_dflt HDd trunk 2 'default branch' --branch trunk
+  bc_dflt HDe main 0 '' --branch main
+  # no <remote>/HEAD: master and main are refused by name (the sentence tells how to set the head), a slice branch is admitted, and
+  # init.defaultBranch is NOT read (here it names the slice branch itself, which must still be admitted)
+  bc_dref=''; bc_dcfg=''
+  bc_dflt HDf master 2 'git remote set-head' --branch master
+  bc_dflt HDi feat/x 0 '' --branch feat/x
+  bc_dcfg='init.defaultBranch feat/y'
+  bc_dflt HDg feat/y 0 '' --branch feat/y
+  bc_dcfg=''
+  # a detached HEAD is refused (a real commit is needed to detach)
+  bc_mklocal HDh "Move One" m1@example.com
+  bc_fixture_board_mv "$bc_base/HDh/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  git -C "$bc_base/HDh" checkout -q --detach
+  cp "$bc_base/HDh/BACKLOG.md" "$bc_base/HDh.snap"
+  bc_run "$bc_base/HDh" move MV-1 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 2 "leg MV/default-HDh: a detached HEAD is refused -> rc 2"
+  bc_has "leg MV/default-HDh: the sentence says detached" "detached"
+  if cmp -s "$bc_base/HDh/BACKLOG.md" "$bc_base/HDh.snap"; then bc_pass "leg MV/default-HDh: the board is byte-unchanged"
+  else bc_fail "leg MV/default-HDh: the board changed"; fi
+  # R5 — the post-read fires: a target table whose Item column is not the first column takes the row where the reader cannot see it
+  bc_mkclone HP "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HP/BACKLOG.md" "$(printf '%s\n%s' '| Reviewer | Item | PR |' '|----------|------|----|')" "$bc_mv_done"
+  cp "$bc_base/HP/BACKLOG.md" "$bc_base/HP.snap"
+  bc_run "$bc_base/HP" move MV-1 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 1 "leg MV/post-read: a row written where the reader cannot see it -> rc 1"
+  bc_has "leg MV/post-read: the post-read says it did not show the row" "post-read did NOT show"
+  bc_has "leg MV/post-read: and that the board was restored" "the board was restored"
+  if cmp -s "$bc_base/HP/BACKLOG.md" "$bc_base/HP.snap" && [ -z "$(ls "$bc_base"/HP/BACKLOG.md.* 2>/dev/null)" ]; then bc_pass "leg MV/post-read: the refused move left the board byte-unchanged (the pre-image was put back) and no temp file"
+  else bc_fail "leg MV/post-read: the board changed or a temp file is left"; fi
+  # R8 — a blank target section is rebuilt like a None. one
+  bc_mkclone HB "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HB/BACKLOG.md" "$bc_mv_rev" ''
+  bc_run "$bc_base/HB" move MV-1 'done' --cell-text 'closed from blank' --branch feat/m1
+  bc_expect_rc 0 "leg MV/blank: a Done section with a blank body takes the move -> rc 0"
+  bc_has "leg MV/blank: the move says it rebuilt the table" "was blank"
+  bc_afterhead=$(awk '/^## Done/ { getline a; getline b; print b }' "$bc_base/HB/BACKLOG.md")
+  if [ "$bc_afterhead" = '| Item | Closed | Retro/outcome |' ] && [ "$(bc_in_sec "$bc_base/HB/BACKLOG.md" Done MV-1)" = 1 ]; then
+    bc_pass "leg MV/blank: Done now has a blank line, the template's header and the row"
+  else bc_fail "leg MV/blank: the rebuilt Done is wrong; board=[$(cat "$bc_base/HB/BACKLOG.md")]"; fi
+
+  # ---- legs (SWAS-905 review round 2) ---------------------------------------------------------------------------------------------
+  bc_swap_done
+  # R2-2 / S2-2: a claim on a symlinked board is refused BEFORE the claim ref is pushed
+  bc_mkclone HY "Move One" m1@example.com
+  bc_fixture_board_mv "$bc_base/HY/real.md" "$bc_mv_rev" "$bc_mv_done"
+  ln -sf real.md "$bc_base/HY/BACKLOG.md"
+  cp "$bc_base/HY/real.md" "$bc_base/HY.snap"
+  bc_run "$bc_base/HY" claim MV-9 --branch feat/y
+  bc_expect_rc 2 "leg CL/symlink-board: a claim on a symlinked board is refused -> rc 2"
+  bc_has "leg CL/symlink-board: the sentence says symlink" "symlink"
+  if [ -z "$(git --git-dir="$bc_remote_dir" for-each-ref refs/claims/MV-9)" ] && cmp -s "$bc_base/HY/real.md" "$bc_base/HY.snap"; then
+    bc_pass "leg CL/symlink-board: no claim ref was pushed and the board's target is byte-unchanged"
+  else bc_fail "leg CL/symlink-board: a claim ref for MV-9 exists on the remote, or the board changed"; fi
+  # S2-1: an edit ELSEWHERE in the board (not on the deleted line) between the read and the write is refused by the cksum
+  bc_fixture_board_mv "$bc_base/swap3.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_sl3=$(bc_row_line "$bc_base/swap3.md" 'In Progress' MV-1)
+  bc_srow3=$(awk -v n="$bc_sl3" 'NR==n' "$bc_base/swap3.md")
+  bc_sb3=$(bc_section_bounds "$bc_base/swap3.md" 'In Review')
+  bc_ck3=$(bc_board_cksum "$bc_base/swap3.md")
+  printf '<!-- an edit made elsewhere, after the read -->\n' >> "$bc_base/swap3.md"
+  cp "$bc_base/swap3.md" "$bc_base/swap3.snap"
+  if bc_table_swap "$bc_base/swap3.md" "$bc_sl3" "${bc_sb3#* }" '| `MV-1` — carry me | — | #1087 |' 0 "$bc_srow3" "$bc_ck3" 2>/dev/null; then bc_swrc=0; else bc_swrc=$?; fi
+  if [ "$bc_swrc" -ne 0 ] && cmp -s "$bc_base/swap3.md" "$bc_base/swap3.snap" && [ -z "$(ls "$bc_base"/swap3.md.* 2>/dev/null)" ]; then
+    bc_pass "leg MV/cksum: an edit elsewhere in the board after the read is refused (rc $bc_swrc), the board is byte-unchanged, no temp file is left"
+  else bc_fail "leg MV/cksum: rc=$bc_swrc, or the board changed, or a temp file is left"; fi
+  bc_fixture_board_mv "$bc_base/swap3.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_ck3=$(bc_board_cksum "$bc_base/swap3.md")
+  if bc_table_swap "$bc_base/swap3.md" "$bc_sl3" "${bc_sb3#* }" '| `MV-1` — carry me | — | #1087 |' 0 "$bc_srow3" "$bc_ck3" 2>/dev/null; then bc_swrc=0; else bc_swrc=$?; fi
+  if [ "$bc_swrc" -eq 0 ] && [ "$(bc_in_sec "$bc_base/swap3.md" 'In Review' MV-1)" = 1 ]; then bc_pass "leg MV/cksum: with the board unchanged since the read, the swap writes (control)"
+  else bc_fail "leg MV/cksum: the control swap failed (rc $bc_swrc)"; fi
+  bc_swap_done
+  # S2-4: the two temp paths are removed by the cleanup trap (made deterministic by calling the cleanup directly, with the fixture base unset so it cannot remove it)
+  bc_tmpa="$bc_base/trapA.txt"; bc_tmpb="$bc_base/trapB.txt"; : > "$bc_tmpa"; : > "$bc_tmpb"
+  ( bc_base=''; BC_ISO_ROOT=''; BC_TMP_A=$bc_tmpa; BC_TMP_B=$bc_tmpb; bc_cleanup )
+  if [ ! -e "$bc_tmpa" ] && [ ! -e "$bc_tmpb" ]; then bc_pass "leg MV/trap-cleanup: the cleanup the INT/TERM/EXIT trap runs removes both registered temp files (a signal itself is not driven; the INT/TERM handler runs this cleanup and then exits)"
+  else bc_fail "leg MV/trap-cleanup: a registered temp file survived the cleanup"; fi
+  # S3-2: an EMPTY read-time cksum is a refusal on both paths (a `cksum` shim that prints nothing and exits 1)
+  mkdir -p "$bc_base/ckfail"
+  printf '#!/bin/sh\nexit 1\n' > "$bc_base/ckfail/cksum"; chmod +x "$bc_base/ckfail/cksum"
+  bc_mkclone HQ "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HQ/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  cp "$bc_base/HQ/BACKLOG.md" "$bc_base/HQ.snap"
+  if bc_out=$( cd "$bc_base/HQ" && PATH="$bc_base/ckfail:$PATH" sh "$BC_SELF" move MV-1 in-review --pr 1087 --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  if [ "$bc_rc" -eq 2 ] && cmp -s "$bc_base/HQ/BACKLOG.md" "$bc_base/HQ.snap"; then bc_pass "leg MV/cksum-empty: move with a cksum that prints nothing is refused (rc 2), the board is byte-unchanged"
+  else bc_fail "leg MV/cksum-empty: rc=$bc_rc out=[$bc_out]"; fi
+  bc_has "leg MV/cksum-empty: the sentence says no checksum" "no checksum"
+  bc_mkclone HQ2 "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HQ2/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  cp "$bc_base/HQ2/BACKLOG.md" "$bc_base/HQ2.snap"
+  if bc_out=$( cd "$bc_base/HQ2" && PATH="$bc_base/ckfail:$PATH" sh "$BC_SELF" claim MV-9 --branch feat/q 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  if [ "$bc_rc" -eq 2 ] && cmp -s "$bc_base/HQ2/BACKLOG.md" "$bc_base/HQ2.snap"; then bc_pass "leg CL/cksum-empty: a claim whose board cksum prints nothing does not edit the board (rc 2)"
+  else bc_fail "leg CL/cksum-empty: rc=$bc_rc out=[$bc_out]"; fi
+  bc_has "leg CL/cksum-empty: the sentence says no read-time checksum" "no read-time checksum"
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/MV-9 2>/dev/null || true
+  # S3-1: the restore moves the pre-image back ONLY while the board is still what the swap wrote
+  bc_fixture_board_mv "$bc_base/swap4.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_sl4=$(bc_row_line "$bc_base/swap4.md" 'In Progress' MV-1)
+  bc_srow4=$(awk -v n="$bc_sl4" 'NR==n' "$bc_base/swap4.md")
+  bc_sb4=$(bc_section_bounds "$bc_base/swap4.md" 'In Review')
+  bc_ck4=$(bc_board_cksum "$bc_base/swap4.md")
+  bc_table_swap "$bc_base/swap4.md" "$bc_sl4" "${bc_sb4#* }" '| `MV-1` — carry me | — | #1087 |' 0 "$bc_srow4" "$bc_ck4" 2>/dev/null || bc_fail "leg MV/restore-guard: the setup swap failed"
+  printf '<!-- changed again after the swap -->\n' >> "$bc_base/swap4.md"
+  cp "$bc_base/swap4.md" "$bc_base/swap4.snap"
+  if bc_swap_restore "$bc_base/swap4.md"; then bc_rr=0; else bc_rr=$?; fi
+  if [ "$bc_rr" -ne 0 ] && cmp -s "$bc_base/swap4.md" "$bc_base/swap4.snap" && [ -n "$BC_RESTORE_WHY" ]; then
+    bc_pass "leg MV/restore-guard: a board that changed again after the swap is NOT overwritten by the pre-image ($BC_RESTORE_WHY)"
+  else bc_fail "leg MV/restore-guard: rc=$bc_rr, or the board was overwritten"; fi
+  bc_swap_done
+  # S2-5 / S2-6: the board is a file named BACKLOG.md under the toplevel, with no dot component and no symlinked directory out of it
+  bc_mkclone HC3 "Move One" m1@example.com feat/m1
+  mkdir -p "$bc_base/HC3/.claude" "$bc_base/HC3/docs" "$bc_base/outside-dir"
+  bc_fixture_board_mv "$bc_base/HC3/.claude/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_fixture_board_mv "$bc_base/HC3/OTHER.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_fixture_board_mv "$bc_base/outside-dir/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_fixture_board_mv "$bc_base/HC3/docs/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  ln -sf "$bc_base/outside-dir" "$bc_base/HC3/sub"
+  bc_cont() { # <label> <BOARD_CLAIM_BOARD> <watched file>: refused rc 2 and that file byte-unchanged
+    cp "$3" "$bc_base/cont.snap"
+    if bc_out=$( cd "$bc_base/HC3" && BOARD_CLAIM_BOARD="$2" sh "$BC_SELF" move MV-1 in-review --pr 1087 --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+    if [ "$bc_rc" -eq 2 ] && cmp -s "$3" "$bc_base/cont.snap"; then bc_pass "leg MV/contain-$1: refused (rc 2), the file is untouched"
+    else bc_fail "leg MV/contain-$1: rc=$bc_rc out=[$bc_out]"; fi
+  }
+  bc_cont dot-dir '.claude/BACKLOG.md' "$bc_base/HC3/.claude/BACKLOG.md"
+  bc_cont basename 'OTHER.md' "$bc_base/HC3/OTHER.md"
+  bc_cont symlinked-dir 'sub/BACKLOG.md' "$bc_base/outside-dir/BACKLOG.md"
+  if bc_out=$( cd "$bc_base/HC3" && BOARD_CLAIM_BOARD=docs/BACKLOG.md sh "$BC_SELF" move MV-1 in-review --pr 1087 --branch feat/m1 2>&1 ); then bc_rc=0; else bc_rc=$?; fi
+  bc_hc3top=$(git -C "$bc_base/HC3" rev-parse --show-toplevel)
+  if [ "$bc_rc" -eq 0 ] && printf '%s\n' "$bc_out" | grep -qxF "board: $bc_hc3top/docs/BACKLOG.md" && [ "$(bc_in_sec "$bc_base/HC3/docs/BACKLOG.md" 'In Review' MV-1)" = 1 ]; then
+    bc_pass "leg MV/contain-ok: docs/BACKLOG.md under the toplevel is admitted, and the verb prints and writes the resolved physical path (control)"
+  else bc_fail "leg MV/contain-ok: rc=$bc_rc out=[$bc_out]"; fi
+  # S2-7: the board keeps its OWN mode bits (nothing is forced to 644 or 755)
+  bc_mkclone HM "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HM/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  chmod 640 "$bc_base/HM/BACKLOG.md"
+  bc_run "$bc_base/HM" move MV-1 in-review --pr 1087 --branch feat/m1
+  bc_expect_rc 0 "leg MV/mode: a board with mode 640 is moved -> rc 0"
+  bc_hmmode=$(ls -l "$bc_base/HM/BACKLOG.md" | cut -c1-10)
+  if [ "$bc_hmmode" = '-rw-r-----' ]; then bc_pass "leg MV/mode: the board is still -rw-r----- afterwards (its own mode bits, not 644)"
+  else bc_fail "leg MV/mode: the mode is [$bc_hmmode], wanted -rw-r-----"; fi
+  # S2-7: the direction marks U+200E, U+200F and U+061C are refused, one leg each; a zero-width space stays allowed
+  bc_mv_refuse text-lrm 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\200\216b')" --branch feat/m1
+  bc_mv_refuse text-rlm 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\342\200\217b')" --branch feat/m1
+  bc_mv_refuse text-alm 2 'one line of 1-300 bytes' MV-1 'done' --cell-text "$(printf 'a\330\234b')" --branch feat/m1
+  bc_run "$bc_base/H" move MV-5 blocked --cell-text "$(printf 'zero\342\200\213width')" --branch feat/m1
+  bc_expect_rc 0 "leg MV/text-zwsp-ok: a zero-width space (U+200B) stays allowed -> rc 0"
+
+  # ---- legs (SWAS-905 erratum E1): `in-review` takes the PR number, and nothing else does --------------------------------------------
+  bc_mv_refuse pr-missing 2 'add --pr <number>' MV-1 in-review --branch feat/m1
+  bc_mv_refuse pr-zero 2 '[1-9][0-9]{0,8}' MV-1 in-review --pr 0 --branch feat/m1
+  bc_mv_refuse pr-leading-zero 2 '[1-9][0-9]{0,8}' MV-1 in-review --pr 012 --branch feat/m1
+  bc_mv_refuse pr-ten-digits 2 '[1-9][0-9]{0,8}' MV-1 in-review --pr 1234567890 --branch feat/m1
+  bc_mv_refuse pr-non-digit 2 '[1-9][0-9]{0,8}' MV-1 in-review --pr 12a --branch feat/m1
+  bc_mv_refuse pr-hash 2 '[1-9][0-9]{0,8}' MV-1 in-review --pr '#12' --branch feat/m1
+  bc_mv_refuse pr-on-done 2 'belongs to `in-review`' MV-1 'done' --cell-text 'closed' --pr 12 --branch feat/m1
+  bc_mv_refuse pr-on-blocked 2 'belongs to `in-review`' MV-1 blocked --cell-text 'waiting' --pr 12 --branch feat/m1
+  bc_mv_refuse pr-twice 2 'given twice' MV-1 in-review --pr 12 --pr 13 --branch feat/m1
+  bc_mkclone HR "Move One" m1@example.com feat/m1
+  bc_fixture_board_mv "$bc_base/HR/BACKLOG.md" "$bc_mv_rev" "$bc_mv_done"
+  bc_run "$bc_base/HR" move MV-1 in-review --pr 123456789 --branch feat/m1
+  bc_expect_rc 0 "leg MV/pr-nine-digits: a nine-digit PR number is admitted -> rc 0"
+  if grep -qF '| `MV-1` — carry me | — | #123456789 |' "$bc_base/HR/BACKLOG.md"; then bc_pass "leg MV/pr-cell: the PR cell is # and the number, nothing else"
+  else bc_fail "leg MV/pr-cell: the PR cell is wrong; board=[$(cat "$bc_base/HR/BACKLOG.md")]"; fi
+
+  # the column carry, on the builder itself: a header that has the column, one that lacks it, an escaped-pipe cell, and the set cells
+  bc_src='| Item | Owner | Started | Links |'
+  bc_got=$(bc_move_newrow '| Item | Owner | PR |' "$bc_src" '| `X-1` — t | Ann | 2026-11-01 | l |' '' '' '' '')
+  if [ "$bc_got" = '| `X-1` — t | Ann | — |' ]; then bc_pass "leg MV/carry-has: a target header that has the column carries the source cell (Owner), and the one it lacks is —"
+  else bc_fail "leg MV/carry-has: got [$bc_got]"; fi
+  bc_got=$(bc_move_newrow '| Item | Reviewer | PR |' "$bc_src" '| `X-1` — t | Ann | 2026-11-01 | l |' '' '' '' '')
+  if [ "$bc_got" = '| `X-1` — t | — | — |' ]; then bc_pass "leg MV/carry-lacks: a target header that lacks the source's columns carries only Item, and the rest are —"
+  else bc_fail "leg MV/carry-lacks: got [$bc_got]"; fi
+  bc_got=$(bc_move_newrow '| Item | Closed | Retro/outcome |' "$bc_src" '| `X-1` — a\|b | Ann | 2026-11-01 | l\|m |' Closed 2026-11-18 Retro/outcome 'x\|y')
+  if [ "$bc_got" = '| `X-1` — a\|b | 2026-11-18 | x\|y |' ] && [ "$(bc_v_ncols "$bc_got")" = 3 ]; then
+    bc_pass "leg MV/carry-escaped-pipe: an escaped-pipe Item is carried whole, the set cells win, and the row keeps its column count"
+  else bc_fail "leg MV/carry-escaped-pipe: got [$bc_got]"; fi
+  bc_got=$(bc_move_newrow '| Item | Links |' "$bc_src" '| `X-1` — t | Ann | 2026-11-01 | a\|b |' '' '' '' '')
+  if [ "$bc_got" = '| `X-1` — t | a\|b |' ]; then bc_pass "leg MV/carry-escaped-cell: an escaped-pipe cell in a carried column is kept raw"
+  else bc_fail "leg MV/carry-escaped-cell: got [$bc_got]"; fi
+
   if [ "$bc_st_fail" -ne 0 ]; then
     echo "board-claim --selftest: FAIL" >&2
     return 1
@@ -4449,6 +5403,8 @@ bc_mkclone() {
     git config user.name "$2"
     git config user.email "$3"
     git config commit.gpgsign false
+    # SWAS-905: an optional 4th argument names the (unborn) branch HEAD points at, for the `move` legs (a move reads the checked-out branch)
+    if [ -n "${4:-}" ]; then git symbolic-ref HEAD "refs/heads/$4"; fi
   )
   bc_fixture_board "$bc_base/$1/BACKLOG.md"
 }
@@ -4499,6 +5455,62 @@ bc_fixture_board_moved() {
 |------|-------|---------|-------|
 | \`ROW-MOVED\` — moved by hand $2 | agent | 2026-09-04 | $3 |
 BOARD_MOVED_EOF
+}
+
+# bc_in_sec <board> <section> <ROW-ID> -> how many rows under that section carry the backticked id (SWAS-905 legs).
+bc_in_sec() {
+  awk -v s="## $2" -v r="\`$3\`" '$0 == s { f = 1; next } /^## / { f = 0 } f && index($0, r) { n++ } END { print n + 0 }' "$1"
+}
+
+# bc_fixture_board_mv <path> <In Review body> <Done body> — SWAS-905: In Progress rows for the move legs. MV-1 has no
+# claim; MV-2 is claimed by Move One on feat/m1; MV-3 by another claimant; MV-4 by Move One on another branch; MV-5 is for
+# the unreachable-remote leg; MV-6 is moved to Blocked; MV-7 is also in the default Done body (a row in two places).
+bc_fixture_board_mv() {
+  cat > "$1" <<BOARD_MV_EOF
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| \`MV-9\` — still Ready | because | x | S | low | feature | agent | — | m |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| \`MV-1\` — carry me | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+| \`MV-2\` — carry \\| pipe | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+| \`MV-3\` — held by another | Move One | 2026-11-01 | branch \`feat/o\` · x |
+| \`MV-4\` — held on another branch | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+| \`MV-5\` — remote unreachable | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+| \`MV-6\` — to be blocked | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+| \`MV-7\` — in two places | Move One | 2026-11-01 | branch \`feat/m1\` · x |
+
+## In Review
+
+$2
+
+## Blocked
+
+| Item | Blocked on | Since | Event-retro link |
+|------|-----------|-------|------------------|
+
+## Done
+
+$3
+BOARD_MV_EOF
+}
+
+# bc_plantlocal <name> <row> <claimant-line> <branch> — a local claim (refs/local-claims/<row>) planted by hand in that repository.
+bc_plantlocal() {
+  (
+    cd "$bc_base/$1" || exit 1
+    _pl_blob=$(printf 'row: %s\nclaimant: %s\nbranch: %s\nclaimed-at: 2026-11-01T00:00:00Z\nsession: s-20261101-aaaabbbb (declared)\n' "$2" "$3" "$4" | git hash-object -w --stdin)
+    _pl_tree=$(printf '100644 blob %s\tCLAIM\n' "$_pl_blob" | git mktree)
+    _pl_commit=$(printf 'claim\n' | git commit-tree "$_pl_tree")
+    git update-ref "$BC_LOCAL_NS/$2" "$_pl_commit"
+  )
 }
 
 # bc_mkclaimref <row> <filename> <content> — push a HAND-BUILT claim ref carrying <filename> instead
@@ -4679,9 +5691,10 @@ bc_origin_claim() {
                "$2" "$3" "$4" | git --git-dir="$1" hash-object -w --stdin)
   _oc_tree=$(printf '100644 blob %s\tCLAIM\n' "$_oc_blob" | git --git-dir="$1" mktree)
   if [ -n "${5:-}" ]; then
-    _oc_commit=$(printf 'child claim\n' | git --git-dir="$1" commit-tree "$_oc_tree" -p "$5")
+    _oc_commit=$(printf 'child claim\n' | git --git-dir="$1" -c user.name=Planter -c user.email=planter@example.com commit-tree "$_oc_tree" -p "$5")
   else
-    _oc_commit=$(printf 'claim\n' | git --git-dir="$1" commit-tree "$_oc_tree")
+    # an explicit identity: commit-tree needs one, and a runner (or the core's stripped env) has no ambient one
+    _oc_commit=$(printf 'claim\n' | git --git-dir="$1" -c user.name=Planter -c user.email=planter@example.com commit-tree "$_oc_tree")
   fi
   git --git-dir="$1" update-ref "refs/claims/$2" "$_oc_commit"
 }
@@ -4725,11 +5738,23 @@ BC_SELF=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
 # keeps working, which is the upgrade path for an adopter who has not taken the guard.
 BC_GUARD=$(dirname -- "$BC_SELF")/runaway-guard.sh
 
+# SWAS-945: the PR-state evidence (bc_ev_pr) reaches gh, and it is read inside command substitutions, so a pin set there would die with the subshell. The
+# trust-store probe (scripts/gh-tls.sh) runs ONCE here, in the parent shell, before the verbs that read that evidence: release and release-ref (the --stale proof)
+# and status. claim, check and claim-ref never reach gh and are not probed. A missing library means no probe.
+BC_GHTLS=$(dirname -- "$BC_SELF")/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$BC_GHTLS" ]; then . "$BC_GHTLS"; fi
+
 bc_cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
 case "$bc_cmd" in
+  release|status|release-ref)
+    if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi ;;
+esac
+case "$bc_cmd" in
   claim)       if do_claim       "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   release)     if do_release     "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  move)        if do_move        "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   check)       if do_check       "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   status)      if do_status      "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   claim-ref)   if do_claim_ref   "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;

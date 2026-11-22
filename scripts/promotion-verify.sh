@@ -119,9 +119,10 @@ set -eu
 # crafted commit; the metering gate reads the approved commit, so it must read the REAL object.
 export GIT_NO_REPLACE_OBJECTS=1
 
-# ROOT — same idiom as hooks/pre-push (`ROOT=$(git rev-parse --show-toplevel) || ROOT=.`), used only
-# by `land`'s A9 hygiene re-read (design §8) to locate conformance/backlog-lib.sh, .kit/tracker.conf,
-# and scripts/tracker-read.sh regardless of the caller's cwd within the working tree.
+# ROOT — same idiom as hooks/pre-push (`ROOT=$(git rev-parse --show-toplevel) || ROOT=.`), used by
+# `land`'s A9 hygiene re-read (design §8) to locate conformance/backlog-lib.sh, .kit/tracker.conf,
+# and scripts/tracker-read.sh regardless of the caller's cwd within the working tree, and (SWAS-944) by
+# the design-basis legs 3 and 4, which read a repo-root-relative basis path from any subdirectory.
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
 
 # SWAS-903: the gh-reaching verbs set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; the probe runs once, at dispatch,
@@ -289,7 +290,9 @@ _pv_scratch_free() {
 # anything else = the remote did not answer. Recording blind is exactly the race this transaction
 # exists to end, so the unreachable case REFUSES rather than recording locally.
 # Returns 0 = proceed, 2 = refuse (message already printed).
+_pv_sync_none=0
 _pv_sync_in() {
+  _pv_sync_none=0
   if git ls-remote --exit-code origin "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     _si_probe=0
   else
@@ -297,7 +300,9 @@ _pv_sync_in() {
   fi
   case "$_si_probe" in
     0) ;;
-    2) echo "record: origin has no refs/notes/$NOTES_REF yet — recording the first entry; publish will create it." >&2
+    2) _pv_sync_none=1
+       # SWAS-944: the pre-leg call (argument `quiet`) runs before a design GO's legs 5 and 6 may still refuse, so it must not say "recording".
+       [ "${1:-}" = quiet ] || echo "record: origin has no refs/notes/$NOTES_REF yet — recording the first entry; publish will create it." >&2
        return 0 ;;
     *) echo "record: cannot reach the ledger remote — 'git ls-remote origin refs/notes/$NOTES_REF' exited $_si_probe." >&2
        echo "        A record written against a ledger this process cannot read is the race this" >&2
@@ -345,11 +350,269 @@ _pv_unwind() {
   fi
 }
 
+# ---- SWAS-944: `record --gate design` checks its basis BEFORE it writes (design 2026-11-18-record-input-at-write-944, rev 3 + errata E1/E2/E3).
+# Mirrors the legs of conformance/ceremony-binding.sh that a record's own text decides (path safety, the design glob, a regular file, the
+# touch check, and for the inherited form `<P>:<path>` the parent's design GO at P). CI stays the control: the parent pick (go-by, token
+# quote, ambiguity), the legacy list, the parent's identity and blob identity with the graded head are left to the gate. Every refusal is
+# rc 2 and writes no note. printf, never echo: a basis is operator text (dash's echo expands a backslash).
+_pv_dl_say() { printf '%s\n' "$*" >&2; }
+# _pv_dl_blob <commit> <path> -> 0 when the entry at that commit is a regular file (blob, 100644 or 100755); a missing path and a symlink are not.
+_pv_dl_blob() {
+  # from the repository's top level, as CI reads the basis (the path is relative to the root, not to the caller's directory)
+  _db_e="$(git -C "$ROOT" ls-tree --full-tree "$1" -- "$2" 2>/dev/null | head -1)" || _db_e=""
+  [ -n "$_db_e" ] || return 1
+  _db_m="${_db_e%% *}"; _db_t="${_db_e#* }"; _db_t="${_db_t%% *}"
+  [ "$_db_t" = blob ] || return 1
+  case "$_db_m" in
+    100644|100755) return 0 ;;
+  esac
+  return 1
+}
+# _pv_dl_hexprefix <written hex> <resolved 40-hex> — the gate's _hex_is_prefix: a branch or tag spelled like hex cannot stand in for a commit.
+_pv_dl_hexprefix() {
+  _hp_w="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$2" in
+    "$_hp_w"*) return 0 ;;
+  esac
+  return 1
+}
+# _pv_dl_remedy — E1: print the ONE remedy that works for the ledger's state, when a design GO's parent is not in the local ledger under --no-push.
+# E3: reads only (an ls-remote, then local object and ancestry tests; no fetch, no write). Local ledger absent, equal to origin's, or an ancestor of
+# origin's tip that is present locally -> the single-ref fetch; origin's tip not local, or local ahead -> sync; unreadable -> both, labelled.
+# Neither line carries a glob or a leading plus.
+_pv_dl_remedy() {
+  _rm_fetch="git fetch origin refs/notes/$NOTES_REF:refs/notes/$NOTES_REF"
+  _rm_sync="sh scripts/promotion-verify.sh sync"
+  _rm_loc="$(git rev-parse -q --verify "refs/notes/$NOTES_REF^{commit}" 2>/dev/null)" || _rm_loc=""
+  _rm_state=unreadable
+  # E3: no fetch, no write. An ls-remote of origin's tip, then local tests only.
+  _rm_rc=0; _rm_out="$(GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code origin "refs/notes/$NOTES_REF" 2>/dev/null)" || _rm_rc=$?
+  if [ "$_rm_rc" = 2 ]; then
+    _rm_state=noorigin
+  elif [ "$_rm_rc" = 0 ]; then
+    _rm_tip="$(printf '%s\n' "$_rm_out" | awk -F'\t' -v r="refs/notes/$NOTES_REF" '$2 == r { print $1; exit }')"
+    if [ -z "$_rm_tip" ]; then
+      _rm_state=unreadable
+    elif [ -z "$_rm_loc" ] || [ "$_rm_tip" = "$_rm_loc" ]; then
+      _rm_state=fetch
+    elif git cat-file -e "${_rm_tip}^{commit}" >/dev/null 2>&1; then
+      # origin's tip is local: behind (fast-forward provable here) -> fetch; ahead or diverged -> sync
+      if git merge-base --is-ancestor "$_rm_loc" "$_rm_tip" >/dev/null 2>&1; then _rm_state=fetch; else _rm_state=sync; fi
+    else
+      _rm_state=sync   # origin's tip is not local: behind or diverged, which a fetch-free read cannot tell apart
+    fi
+  fi
+  case "$_rm_state" in
+    fetch)
+      _pv_dl_say "        fetch the ledger first:"
+      _pv_dl_say "        $_rm_fetch" ;;
+    sync)
+      _pv_dl_say "        origin's ledger is not a plain fast-forward of yours here (it holds notes you lack, or yours holds notes it lacks), so a plain fetch could be refused; sync fetches, reconciles and publishes:"
+      _pv_dl_say "        $_rm_sync" ;;
+    noorigin)
+      _pv_dl_say "        origin has no ledger yet: record the parent design GO first." ;;
+    *)
+      _pv_dl_say "        the ledger's state against origin could not be read; one of these applies:"
+      _pv_dl_say "        if your local ledger is absent, behind or equal to origin's, fetch it:"
+      _pv_dl_say "        $_rm_fetch"
+      _pv_dl_say "        if your local ledger holds notes origin does not have, reconcile it:"
+      _pv_dl_say "        $_rm_sync" ;;
+  esac
+}
+# _pv_dl_nofetch <what> — the refusal for a parent GO that is not in the ledger this run can see.
+_pv_dl_nofetch() {
+  if [ "$nopush" = 1 ]; then
+    _pv_dl_say "record: $1 in the local ledger, NOT FETCHED (--no-push fetches and writes nothing; one ls-remote reads origin's tip to choose the remedy). Fetch the ledger, or run without --no-push. Nothing was written."
+    _pv_dl_remedy
+  elif [ "$_pv_sync_none" = 1 ]; then
+    _pv_dl_say "record: origin has no ledger yet, so no parent design GO at $_dl_ip is published ($1). Nothing was written."
+  else
+    _pv_dl_say "record: $1. Nothing was written."
+  fi
+}
+# _pv_dl_scan <note> <path> — sorts a note's design records: sets _ds_same / _ds_other (accepted, under this scope / another: the bare basis equals
+# the path, or the basis is the legacy `(none recorded)`), _ds_hop (inherited-form basis), _ds_names (any other basis).
+_pv_dl_scan() {
+  _ds_same=0; _ds_other=0; _ds_hop=0; _ds_names=""
+  _ds_n="$(printf '%s\n' "$1" | kit_note_records n)"; _ds_i=0
+  while [ "$_ds_i" -lt "$_ds_n" ]; do
+    _ds_i=$((_ds_i + 1))
+    [ "$(printf '%s\n' "$1" | kit_note_records type "$_ds_i")" = record ] || continue
+    _ds_r="$(printf '%s\n' "$1" | kit_note_records body "$_ds_i")"
+    [ "$(_pv_rec_field "$_ds_r" gate)" = design ] || continue
+    _ds_b="$(_pv_rec_field "$_ds_r" basis)"
+    if printf '%s\n' "$_ds_b" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then _ds_hop=$((_ds_hop + 1)); continue; fi
+    if [ "$_ds_b" = "$2" ] || [ "$_ds_b" = "(none recorded)" ]; then
+      if [ "$(_pv_rec_field "$_ds_r" scope)" = "$scope" ]; then _ds_same=$((_ds_same + 1)); else _ds_other=$((_ds_other + 1)); fi
+    else
+      _ds_names="${_ds_names:+$_ds_names, }'$_ds_b'"
+    fi
+  done
+}
+# _pv_dl_inherited — legs 3i, 5 and 6 for `<P>:<path>` (globals: _dl_ip, _dl_path, _dl_a40). rc 2 = refused.
+_pv_dl_inherited() {
+  _dl_p40="$(git rev-parse -q --verify "${_dl_ip}^{commit}" 2>/dev/null)" || _dl_p40=""
+  if [ -z "$_dl_p40" ]; then
+    _pv_dl_say "record: the GO'd commit $_dl_ip is not in this clone: the branch that carries it must stay on origin (D-240819-4); restore it, or write a confirming design (skills/design). Nothing was written."
+    return 2
+  fi
+  if ! _pv_dl_hexprefix "$_dl_ip" "$_dl_p40"; then
+    _pv_dl_say "record: the written hex $_dl_ip is not a prefix of the commit it resolves to ($_dl_p40): a branch or tag spelled like hex cannot stand in for a commit id. Nothing was written."
+    return 2
+  fi
+  # leg 3i: the design is the GO'd blob AT P (the gate's _ip_blob_identity), not at the approved commit.
+  if ! _pv_dl_blob "$_dl_p40" "$_dl_path"; then
+    _pv_dl_say "record: the basis '$_dl_path' is not a regular file at $_dl_ip (missing, a symlink or a directory): the inherited form quotes the design as it stood at P. Nothing was written."
+    return 2
+  fi
+  _dl_pn="$(git notes --ref="$NOTES_REF" show "$_dl_p40" 2>/dev/null)" || _dl_pn=""
+  _pv_dl_scan "$_dl_pn" "$_dl_path"
+  if [ "$_dl_p40" = "$_dl_a40" ]; then
+    # leg 5, P = the approved commit: only a stacked child (a parent GO under another scope) is the gate's accepted shape.
+    if [ "$_ds_other" -gt 0 ]; then return 0; fi
+    if [ "$_ds_same" -gt 0 ]; then
+      _pv_dl_say "record: the parent design GO at $_dl_ip is under this same scope, so recording this GO would replace the design GO it quotes. Nothing was written."
+      return 2
+    fi
+    if [ -z "$_dl_pn" ] && [ "$nopush" = 1 ]; then
+      _pv_dl_nofetch "no design GO record at $_dl_ip (it names '$_dl_path')"; return 2
+    fi
+    _pv_dl_say "record: the inherited form quotes an earlier design GO at $_dl_ip; for the design you are approving now, use --basis $_dl_path, or approve a later commit on this branch. Nothing was written."
+    return 2
+  fi
+  # leg 6: a design GO at P names the path.
+  if [ "$((_ds_same + _ds_other))" -gt 0 ]; then return 0; fi
+  if [ -z "$_dl_pn" ]; then
+    _pv_dl_nofetch "no design GO record at $_dl_ip (it names '$_dl_path')"; return 2
+  fi
+  if [ "$_ds_hop" -gt 0 ]; then
+    _pv_dl_say "record: the only design record(s) at $_dl_ip are themselves in the inherited form: one hop only, a child cannot name another child as its parent. Nothing was written."
+    return 2
+  fi
+  if [ -n "$_ds_names" ]; then
+    _pv_dl_say "record: the design record(s) at $_dl_ip name $_ds_names, not '$_dl_path'. Nothing was written."
+    return 2
+  fi
+  _pv_dl_nofetch "no design GO record at $_dl_ip names '$_dl_path'"
+  return 2
+}
+# _pv_dl_errata_go <design-sibling> — E2 condition 2: the ledger already holds a `gate: design` record with this scope and kit-row whose basis is
+# the sibling design path, bare or inherited. Scans every note (the design GO sits on an earlier commit). rc 2 = refused.
+_pv_dl_errata_go() {
+  for _eg_a in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
+    _eg_note="$(git notes --ref="$NOTES_REF" show "$_eg_a" 2>/dev/null)" || continue
+    # skip a note that cannot hold a record of this scope before splitting it (the splitter is awk per record)
+    printf '%s\n' "$_eg_note" | grep -qxF "scope: $scope" || continue
+    _eg_n="$(printf '%s\n' "$_eg_note" | kit_note_records n)"; _eg_i=0
+    while [ "$_eg_i" -lt "$_eg_n" ]; do
+      _eg_i=$((_eg_i + 1))
+      [ "$(printf '%s\n' "$_eg_note" | kit_note_records type "$_eg_i")" = record ] || continue
+      _eg_r="$(printf '%s\n' "$_eg_note" | kit_note_records body "$_eg_i")"
+      [ "$(_pv_rec_field "$_eg_r" gate)" = design ] || continue
+      [ "$(_pv_rec_field "$_eg_r" scope)" = "$scope" ] || continue
+      [ "$(_pv_rec_field "$_eg_r" kit-row)" = "$kitrow" ] || continue
+      _eg_b="$(_pv_rec_field "$_eg_r" basis)"
+      if printf '%s\n' "$_eg_b" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then _eg_b="${_eg_b#*:}"; fi
+      if [ "$_eg_b" = "$1" ]; then return 0; fi
+    done
+  done
+  if [ "$nopush" = 1 ]; then
+    _pv_dl_say "record: an errata GO needs its design GO first (scope $scope): none naming '$1' is in the local ledger, NOT FETCHED (--no-push fetches and writes nothing; one ls-remote reads origin's tip to choose the remedy). Nothing was written."
+    _pv_dl_remedy
+  else
+    _pv_dl_say "record: an errata GO needs its design GO first (scope $scope): the ledger holds no design GO with this scope and kit-row naming '$1'. Nothing was written."
+  fi
+  return 2
+}
+# _pv_design_legs — the legs of design §2b for `--gate design`, in the order of §2a. Reads do_record's asha, basis, scope, kitrow, nopush.
+_pv_design_legs() {
+  # leg 0: --approved-sha is a hex object name (the gate's own test), and the hex is a prefix of what it resolves to.
+  case "$asha" in
+    ''|*[!0123456789abcdefABCDEF]*) _dl_bad=1 ;;
+    *) _dl_bad=0 ;;
+  esac
+  if [ "$_dl_bad" = 1 ] || [ "${#asha}" -lt 7 ] || [ "${#asha}" -gt 40 ]; then
+    _pv_dl_say "record: a design GO's --approved-sha must be a hex object name of 7-40 characters (not HEAD, a branch name or another revision expression): ceremony-binding refuses anything else. Got: $asha. Nothing was written."
+    return 2
+  fi
+  _dl_a40="$(git rev-parse -q --verify "${asha}^{commit}" 2>/dev/null)" || _dl_a40=""
+  if [ -z "$_dl_a40" ] || ! _pv_dl_hexprefix "$asha" "$_dl_a40"; then
+    _pv_dl_say "record: --approved-sha $asha is not a hex object name of a commit (a branch or tag spelled like hex does not count). Nothing was written."
+    return 2
+  fi
+  _dl_inh=0; _dl_ip=""; _dl_path="$basis"
+  if printf '%s\n' "$basis" | grep -Eq '^[0-9a-fA-F]{7,40}:'; then _dl_inh=1; _dl_ip="${basis%%:*}"; _dl_path="${basis#*:}"; fi
+  # leg 1: path safety, before git reads the path (the gate's pattern).
+  case "$_dl_path" in
+    /*|*..*)
+      _pv_dl_say "record: refusing a basis path that is absolute or contains '..': $_dl_path. Nothing was written."
+      return 2 ;;
+  esac
+  # leg 2: the design glob, read and guarded exactly as the gate does.
+  CB_DESIGN_GLOB="${CB_DESIGN_GLOB:-docs/architecture/*-design.md}"
+  case "$CB_DESIGN_GLOB" in
+    ''|'*'|'**'|'*'*'*'|'?*')
+      _pv_dl_say "record: CB_DESIGN_GLOB must not match every path — that disables the design-artifact constraint entirely. Narrow it to your design-document convention. Nothing was written."
+      return 2 ;;
+  esac
+  _dl_errata=0; _dl_sib=""
+  # shellcheck disable=SC2254 # UNQUOTED ON PURPOSE: CB_DESIGN_GLOB is a glob pattern (the gate matches it the same way).
+  case "$_dl_path" in
+    $CB_DESIGN_GLOB) : ;;
+    *)
+      # E2: an errata file of a design is accepted beside that design's GO (bare form only; conditions 1-3 below).
+      case "$_dl_path" in
+        docs/architecture/*-errata.md) _dl_sib="${_dl_path%-errata.md}-design.md" ;;
+        docs/architecture/*-errata-*.md)
+          _dl_en="${_dl_path%.md}"; _dl_en="${_dl_en##*-errata-}"
+          case "$_dl_en" in
+            ''|*[!0-9]*) _dl_sib="" ;;
+            *) _dl_sib="${_dl_path%-errata-"$_dl_en".md}-design.md" ;;
+          esac ;;
+      esac
+      if [ -z "$_dl_sib" ]; then
+        _pv_dl_say "record: the basis '$_dl_path' is not a design artifact: expected $CB_DESIGN_GLOB (e.g. docs/architecture/2026-07-26-my-slice-design.md). A GO naming an arbitrary tracked file is not a recorded DESIGN decision. Nothing was written."
+        return 2
+      fi
+      if [ "$_dl_inh" = 1 ]; then
+        _pv_dl_say "record: an errata GO names its errata file as a bare path (--basis $_dl_path); the inherited form <P>:<path> is never accepted for an errata basis. Nothing was written."
+        return 2
+      fi
+      if ! _pv_dl_blob "$_dl_a40" "$_dl_sib"; then
+        _pv_dl_say "record: '$_dl_path' looks like an errata file, but its design '$_dl_sib' is not a tracked file at the approved commit, so the errata cannot be tied to its own design. Nothing was written."
+        return 2
+      fi
+      _dl_errata=1 ;;
+  esac
+  # leg 3 (bare): a regular file at the approved commit. The inherited form checks it at P (leg 3i, in _pv_dl_inherited).
+  if [ "$_dl_inh" = 0 ] && ! _pv_dl_blob "$_dl_a40" "$_dl_path"; then
+    _pv_dl_say "record: the basis '$_dl_path' is not a regular file at the approved commit $_dl_a40 (missing, a symlink or a directory). Nothing was written."
+    return 2
+  fi
+  # leg 4 (bare): the approved commit touches the path, compared as full ids.
+  if [ "$_dl_inh" = 0 ]; then
+    _dl_last="$(GIT_LITERAL_PATHSPECS=1 git -C "$ROOT" rev-list -1 "$_dl_a40" -- "$_dl_path" 2>/dev/null)" || _dl_last=""
+    if [ "$_dl_last" != "$_dl_a40" ]; then
+      _pv_dl_say "record: the approved commit $_dl_a40 does not touch '$_dl_path' (last touched by ${_dl_last:-no commit in its history}); approve that commit, or use the inherited form <P>:$_dl_path to quote an earlier design GO. Nothing was written."
+      return 2
+    fi
+  fi
+  [ "$_dl_inh" = 1 ] || [ "$_dl_errata" = 1 ] || return 0
+  # the pre-leg fetch: before leg 5 (and E2's condition 2), after the symbolic-ledger refusal; `quiet` drops the "recording the first entry" line.
+  if [ "$nopush" = 0 ]; then _pv_sync_in quiet || return 2; fi
+  if [ "$_dl_inh" = 1 ]; then _pv_dl_inherited || return 2; return 0; fi
+  _pv_dl_errata_go "$_dl_sib" || return 2
+  return 0
+}
+
 usage() {
   echo "usage:" >&2
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
   echo "                             --rung <r> --class <c> --scope <pr> (--token <str> | --token-file <path>) [--basis <t> (required with --gate design)]" >&2
   echo "                             [--go-by <name>] [--no-push]" >&2
+  echo "        a design GO is checked before it is written (a hex --approved-sha; the basis a design file the approved commit touches):" >&2
+  echo "          --gate design --basis docs/architecture/<date>-<slice>-design.md                 (the design you are approving now)" >&2
+  echo "          --gate design --basis <P>:docs/architecture/<date>-<slice>-design.md             (inherited: quotes the design GO already recorded at an earlier commit P)" >&2
   echo "        record is a TRANSACTION: it fetches refs/notes/<ref> from origin first, refuses if" >&2
   echo "        the local ledger has diverged, writes the note, PUBLISHES it, and unwinds its own" >&2
   echo "        unpublished note if the push is rejected (retrying once on a non-fast-forward)." >&2
@@ -372,6 +635,13 @@ usage() {
   echo "                      1..4096 raw bytes (the trailing newline counts), a regular file (no symlink) under the repo root or \$TMPDIR (default /tmp) with no dot" >&2
   echo "                      component, no secret shape. Use it when the words must stay off the command line." >&2
   echo "        --class must be one of: ordinary | sensitive | control-plane (case-insensitive)" >&2
+  echo "        --gate must be one of: design | plan | governance | merge | release-candidate (case-insensitive; stored lowercase)" >&2
+  echo "        --rung must be one of: spike | integration | rc | staging | production (case-insensitive; stored lowercase)" >&2
+  echo "          --gate design --rung integration   (a design GO; --basis names the design)" >&2
+  echo "          --gate plan --rung integration     (a plan-presentation record)" >&2
+  echo "          --gate governance --rung integration   (a meta-control panel's GO)" >&2
+  echo "          --gate merge --rung integration    (a PR's merge GO)" >&2
+  echo "          --gate release-candidate --rung rc (a release-candidate go/no-go)" >&2
   echo "  promotion-verify.sh log [--unpushed]" >&2
   echo "        --unpushed lists only the records the remote ledger does not have; it fails CLOSED" >&2
   echo "                   (UNKNOWN, rc 2) when the remote cannot be read — never a silent '0'." >&2
@@ -380,7 +650,7 @@ usage() {
   echo "        kept, same-commit twins whose identity agrees take origin's bytes, and a note origin" >&2
   echo "        once held and removed is refused (voided). --dry-run prints WOULD lines, writes nothing." >&2
   echo "        sync is a TRANSACTION: it fetches origin's ledger, classifies by tree content, re-validates" >&2
-  echo "        every local-only note as exactly what record would write NOW (the label is re-derived," >&2
+  echo "        every local-only note as exactly what record would write NOW (gate and rung as shape only, SWAS-948; the label is re-derived," >&2
   echo "        never trusted), builds the result on origin's tip, backs up the old local tip (only when" >&2
   echo "        it drops local content) at refs/kit/promotions-presync-<UTC>, swaps, PUBLISHES, and" >&2
   echo "        unwinds if the push is rejected (retrying once on a non-fast-forward)." >&2
@@ -409,6 +679,8 @@ usage() {
   echo "  promotion-verify.sh land --ref <pr|tag|merged-ref> --merge-cmd \"<cmd>\" \\" >&2
   echo "                           --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> \\" >&2
   echo "                           --class <c> --scope <s> --token <str> --go-by <the GO-giver> [--basis <t>]" >&2
+  echo "        --gate: design | plan | governance | merge | release-candidate; --rung: spike | integration | rc | staging | production" >&2
+  echo "        (case-insensitive, folded to lowercase before anything is read; a land GO is usually --gate merge --rung integration)." >&2
   echo "        land (control-plane) merges ONLY on an AUTHENTICATED NON-AUTHOR forge approval: --approved-by is" >&2
   echo "        the forge login of a non-author reviewer whose APPROVED review is on <sha> (checked BEFORE the" >&2
   echo "        record, so a refusal writes no note, and again from the note on origin BEFORE the merge); the" >&2
@@ -770,6 +1042,48 @@ _pv_class_ok() {
   esac
   return 1
 }
+# SWAS-948: record's and land's gate and rung vocabularies (NOT shared with sync, which keeps reading legacy
+# notes). Case-insensitive, no trimming; on success print the LOWERCASE list spelling and return 0.
+# _pv_gate_ok <gate> — design | plan | governance | merge | release-candidate.
+_pv_gate_ok() {
+  case "$1" in
+    ''|*[!A-Za-z-]*) return 1 ;;
+  esac
+  _pv_vf="$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')"
+  case "$_pv_vf" in
+    design|plan|governance|merge|release-candidate)
+      printf '%s\n' "$_pv_vf"
+      return 0 ;;
+  esac
+  return 1
+}
+# _pv_rung_ok <rung> — spike | integration | rc | staging | production.
+_pv_rung_ok() {
+  case "$1" in
+    ''|*[!A-Za-z-]*) return 1 ;;
+  esac
+  _pv_vf="$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')"
+  case "$_pv_vf" in
+    spike|integration|rc|staging|production)
+      printf '%s\n' "$_pv_vf"
+      return 0 ;;
+  esac
+  return 1
+}
+# _pv_vocab_refuse <cmd> <flag> <value> — the refusal text for an unlisted --gate/--rung, on stderr.
+_pv_vocab_refuse() {
+  _pv_shown="$(printf '%s' "$3" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-40)"
+  if [ "$2" = gate ]; then
+    echo "$1: invalid --gate '$_pv_shown' — must be one of: design · plan · governance · merge · release-candidate (case-insensitive)" >&2
+  else
+    echo "$1: invalid --rung '$_pv_shown' — must be one of: spike · integration · rc · staging · production (case-insensitive)" >&2
+  fi
+  echo "        --gate design --rung integration   (a design GO; --basis names the design)" >&2
+  echo "        --gate plan --rung integration     (a plan-presentation record)" >&2
+  echo "        --gate governance --rung integration   (a meta-control panel's GO)" >&2
+  echo "        --gate merge --rung integration    (a PR's merge GO)" >&2
+  echo "        --gate release-candidate --rung rc (a release-candidate go/no-go)" >&2
+}
 # _pv_scope_shape <scope> — 0 ok · 1 `branch/` names no branch · 2 a charset the gate cannot express.
 # Non-`branch/` scopes keep the hygiene they already had (see do_record's D11 note).
 _pv_scope_shape() {
@@ -1103,6 +1417,13 @@ do_record() {
     echo "        unrecognised value would record a GO no consumer can classify. Rejected (fail closed)." >&2
     return 2
   fi
+  # SWAS-948: --gate and --rung are listed values too, folded to the lowercase list spelling so a `Design`
+  # gets the design-basis check below and the design legs, and the note says what ceremony-binding reads.
+  # BEFORE the basis check; `sync` does not call these (legacy notes keep reading as they are).
+  _gf=""; _rf=""
+  _gf="$(_pv_gate_ok "$gate")" || { _pv_vocab_refuse record gate "$gate"; return 2; }
+  _rf="$(_pv_rung_ok "$rung")" || { _pv_vocab_refuse record rung "$rung"; return 2; }
+  gate="$_gf"; rung="$_rf"
   # A DESIGN GO MUST NAME ITS ARTIFACT (SWAS-392, design 2.3a). The gate that reads a design GO
   # (conformance/ceremony-binding.sh) refuses one whose basis is empty or `(none recorded)` as "names no
   # artifact", and an inherited-design child binds only to a parent whose basis is a path (or a LEGACY
@@ -1190,6 +1511,17 @@ do_record() {
     *) echo "record: could not derive a 40-hex approved-tree from '$asha' (got '$atree') — refusing to write a record that cannot be traced" >&2
        return 2 ;;
   esac
+  # STEP 0 (security vet M1; MOVED UP by SWAS-944, for every gate). A SYMBOLIC ledger ref is a repointing — measured: a fetch and a plain
+  # `update-ref` both write THROUGH a symref, while `--no-deref` clobbers the symref itself. Either way the operator's ledger is not
+  # where they think it is, so the guard's bypass #8 becomes a loud FRONT-DOOR refusal here rather than a silent mis-write. It must
+  # run before the design legs' pre-leg fetch (which writes through a symref), and before derive_assurance and the forge call.
+  if git symbolic-ref -q "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    echo "record: ledger ref refs/notes/$NOTES_REF is symbolic — repointed; refusing to record." >&2
+    echo "        Restore it (git symbolic-ref --delete refs/notes/$NOTES_REF) before recording." >&2
+    return 2
+  fi
+  # SWAS-944: a design GO's basis is checked before anything is derived or written (legs 0-6; every refusal is rc 2, no note, no forge call).
+  if [ "$gate" = design ]; then _pv_design_legs || return 2; fi
   # The assurance label is DERIVED (below), never accepted from input. Brackets in --approved-by were
   # rejected above, so the id is the caller string verbatim — input can't manufacture assurance.
   aby_id="$aby"
@@ -1214,15 +1546,7 @@ do_record() {
   # any route (measured). IT IS AGENT-FORGEABLE — an agent can prefix the same variable to a raw
   # command — and the arm's ceiling says so: the arm is a drift control (owner ruling D3′), not a
   # boundary; the control that binds is the record rendered at the CI judgment surface.
-  # STEP 0 (security vet M1). A SYMBOLIC ledger ref is a repointing — measured: a fetch and a plain
-  # `update-ref` both write THROUGH a symref, while `--no-deref` clobbers the symref itself. Either
-  # way the operator's ledger is not where they think it is, so the guard's bypass #8 becomes a loud
-  # FRONT-DOOR refusal here rather than a silent mis-write. Before anything is composed or written.
-  if git symbolic-ref -q "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
-    echo "record: ledger ref refs/notes/$NOTES_REF is symbolic — repointed; refusing to record." >&2
-    echo "        Restore it (git symbolic-ref --delete refs/notes/$NOTES_REF) before recording." >&2
-    return 2
-  fi
+  # (STEP 0, security vet M1: the symbolic-ledger refusal now sits above, ahead of the design legs' pre-leg fetch.)
   # STEP 0 (security vet M3): COMPOSE THE BODY ONCE, before the transaction. The assurance label can
   # involve a network call (the forge-review upgrade), so recomposing it on the retry below could
   # write DIFFERENT bytes for the same GO. The same bytes are written on both attempts.
@@ -1560,7 +1884,25 @@ do_trace() {
   fi
   git rev-parse -q --verify "$from^{commit}" >/dev/null 2>&1 || {
     echo "trace: --from '$from' is not a commit in this repository" >&2; return 2; }
-  _tr_rc=0; _tr_n=0; _tr_miss=0; _tr_pre=0
+  _tr_rc=0; _tr_n=0; _tr_miss=0; _tr_pre=0; _tr_base=0
+  # THE INCEPTION BASELINE (SWAS-943). Inception commits the incepted baseline as the trunk's FIRST commit, before any GO can exist
+  # (the Inception exception, CLAUDE.md section 1), so no adopter can have recorded it. In THIS walk only, a commit reads as the baseline
+  # when ALL hold: the trunk has exactly ONE root and it is this commit (a property of the whole trunk history, never of the window, so a
+  # root spliced in later makes two roots and nothing is exempt); the repository is not shallow (a shallow boundary commit looks parentless,
+  # so the exemption is off and one line says why); and no note binds it (a recorded root binds as before). The probe ignores replace refs,
+  # so a graft cannot fake a root. `--ref` is untouched: asked about one commit by name, the trace gives the plain answer.
+  # Anything the probe cannot read exempts nothing (shallow is anything but a clear `false`; no roots is an empty string).
+  _tr_shallow="$(git rev-parse --is-shallow-repository 2>/dev/null)" || _tr_shallow=unknown
+  _tr_roots="$(git -c core.commitGraph=false --no-replace-objects rev-list --max-parents=0 "$from" 2>/dev/null)" || _tr_roots=""
+  if [ "$_tr_shallow" = true ]; then
+    echo "baseline: not checked (shallow clone; fetch the full history to exempt the Inception baseline)"
+  fi
+  # A .git/info/grafts file can make any commit look parentless, and replace-ref protection does not cover it: with one present, exempt nothing.
+  _tr_graft="$(git rev-parse --git-path info/grafts 2>/dev/null)" || _tr_graft=""
+  if [ -n "$_tr_graft" ] && [ -e "$_tr_graft" ]; then
+    echo "baseline: not checked (a .git/info/grafts file is present; grafts can make any commit look like a root)"
+    _tr_shallow=grafted
+  fi
   # THE DETECTIVE EVIDENCE LEG (SWAS-537, ruling Q1: it prints and counts, and NEVER changes the rc). For each commit bound to a note,
   # read the exact-head evidence of the PR the note names (the very reads `land` makes). A commit with none is FLAGGED: it reached
   # the trunk without a completed light-or-full run on the head that was approved (an admin or UI merge in the SEC-2 window, or a
@@ -1607,8 +1949,22 @@ do_trace() {
   # that tree is the one that reds. (`tac`/`tail -r` are not portable; awk is.)
   for _tr_c in $(git rev-list -n "$recent" "$from" | awk '{a[NR]=$0} END{for(i=NR;i>0;i--) print a[i]}'); do
     _tr_n=$((_tr_n + 1))
-    if trace_one "$_tr_c"; then _tr_ev_one "$_tr_c"; else _tr_rc=1; _tr_miss=$((_tr_miss + 1)); fi
+    _tr_isbase=0
+    if [ "$_tr_shallow" = false ] && [ "$_tr_roots" = "$_tr_c" ]; then _tr_isbase=1; fi
+    if [ "$_tr_isbase" = 1 ]; then
+      # The baseline candidate is tried FIRST, silently: it may carry a note, and then it binds like any commit. trace_one mutates
+      # _tr_claimed/_ta/_tn in THIS shell, so it is never run inside $(...); its stderr (the old RECORDLESS text) goes to a temp file.
+      _tr_errf="$(mktemp "${TMPDIR:-/tmp}/trace-base.XXXXXX" 2>/dev/null)" || _tr_errf=/dev/null
+      if trace_one "$_tr_c" 2>"$_tr_errf"; then
+        _tr_ev_one "$_tr_c"
+      else
+        _tr_base=$((_tr_base + 1))
+        printf '%s  baseline: the trunk'"'"'s only root commit, unrecorded by design (Inception precedes the GO ledger)\n' "$(printf '%s' "$_tr_c" | cut -c1-12)"
+      fi
+      [ "$_tr_errf" = /dev/null ] || rm -f "$_tr_errf"
+    elif trace_one "$_tr_c"; then _tr_ev_one "$_tr_c"; else _tr_rc=1; _tr_miss=$((_tr_miss + 1)); fi
   done
+  _tr_bound=$((_tr_n - _tr_miss - _tr_base))
   _tr_ev_ok=$((_tr_ev_n - _tr_ev_flags - _tr_ev_pre))
   if [ "$_tr_ev_unver" = 1 ]; then
     echo "evidence leg: UNVERIFIED (the first forge read failed; the cause is not known: a missing credential, as in CI's loop-state, or no answer from the forge) - no commit was checked for exact-head CI evidence; this says nothing about them either way."
@@ -1625,9 +1981,18 @@ do_trace() {
     echo "trace: walked ZERO commits from '$from' — a green over an empty window asserts nothing." >&2
     return 1
   fi
+  # A window holding only the baseline binds nothing: a green here would assert nothing (the empty-window rule, extended).
+  if [ "$_tr_rc" = 0 ] && [ "$_tr_bound" -eq 0 ] && [ "$_tr_base" -gt 0 ]; then
+    echo "trace: no bound commit in the window — only the Inception baseline; a green here would assert nothing." >&2
+    return 1
+  fi
   if [ "$_tr_rc" = 0 ]; then
-    echo "OK: trace — $_tr_n/$_tr_n of the last $recent commit(s) on $from are bound to a promotion note."
-    echo "    of those, $((_tr_n - _tr_pre)) carry a projected board row; $_tr_pre predate the kit-row projection"
+    if [ "$_tr_base" -gt 0 ]; then
+      echo "OK: trace — $_tr_bound/$_tr_bound bound of the last $recent commit(s) on $from; $_tr_base is the Inception baseline (the trunk's only root, unrecorded by design)."
+    else
+      echo "OK: trace — $_tr_bound/$_tr_bound of the last $recent commit(s) on $from are bound to a promotion note."
+    fi
+    echo "    of those, $((_tr_bound - _tr_pre)) carry a projected board row; $_tr_pre predate the kit-row projection"
     echo "    (bound and recoverable, NOT verified-correct: this inherits the GO record's assurance exactly.)"
   else
     echo "FAIL: trace — $_tr_miss of $_tr_n commit(s) on $from have no recoverable board row (see above)." >&2
@@ -3239,7 +3604,7 @@ do_actuate() {
     ordinary|sensitive) ;;
     control-plane)
       echo "ACTUATE REFUSED: change-class '$cls_val' — control-plane merges go through land, in both relationships (D-241014-1 item 6). Nothing was merged. Run:" >&2
-      echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class control-plane --scope \"PR #<PR number>\" --go-by <the GO-giver> --approved-by <reviewer login> --gate <gate> --rung <rung> --token \"<the owner's words>\"" >&2
+      echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class control-plane --scope \"PR #<PR number>\" --go-by <the GO-giver> --approved-by <reviewer login> --gate merge --rung integration --token \"<the owner's words>\"" >&2
       echo "land's --ref is the PR NUMBER (it must equal --scope), not actuate's head branch." >&2
       return 1 ;;
     *)
@@ -3262,7 +3627,7 @@ do_actuate() {
   if pv_go_gate_typed "$(printf '%s\n' "$note" | sed -n 's/^gate: //p' | head -1)"; then _act_mode=absent; fi
   if [ "$_act_mode" = review ]; then
     echo "ACTUATE REFUSED (GO_ACT=review): in review mode an APPROVED forge review by a GO_GIVERS login is the merge GO and only \`land\` reads it live, so actuate merges nothing. Nothing was merged. Run:" >&2
-    echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class <the class> --scope \"PR #<PR number>\" --approved-by <the GO-giver's reviewer login> --gate <gate> --rung <rung>" >&2
+    echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class <the class> --scope \"PR #<PR number>\" --approved-by <the GO-giver's reviewer login> --gate merge --rung integration" >&2
     echo "land's --ref is the PR NUMBER (it must equal --scope), not actuate's head branch; an empty-body approval takes no --token or --go-by." >&2
     return 1
   fi
@@ -3542,7 +3907,7 @@ do_land() {
   ref=""; merge_cmd=""; asha=""; land_cls=""; land_aby=""; land_goby=""; land_goby_given=0; land_scope=""
   # SWAS-727: land_gate and land_tok_given are PEEKED, never consumed (the pass-through arm still moves them on to record), so the
   # S2-1 argv reading below is unchanged. PV_REC_* are reset here so nothing from an earlier call in this process reaches record.
-  land_gate=""; land_tok_given=0; _land_noncp=0; _land_rkind=""
+  land_gate=""; land_rung=""; land_tok_given=0; _land_noncp=0; _land_rkind=""
   PV_REC_GOACT=""; PV_REC_GOWORDS=""; PV_REC_GOSHA=""
   # Strip land's OWN two flags (--ref, --merge-cmd) and PEEK --approved-sha / --class / --approved-by /
   # --go-by / --scope (shared with record: record binds the note to the sha, the merge pins
@@ -3561,7 +3926,7 @@ do_land() {
   _argc=$#
   while [ "$_argc" -gt 0 ]; do
     case "$1" in
-      --approved-sha|--class|--approved-by|--go-by|--scope|--gate)
+      --approved-sha|--class|--approved-by|--go-by|--scope|--gate|--rung)
         # only an ORIGINAL argument has a value to check: with fewer than two left, $2 is a moved-back argument, never this flag's value
         _land_pv=""; if [ "$_argc" -ge 2 ]; then _land_pv="${2:-}"; fi
         case "$_land_pv" in
@@ -3577,7 +3942,22 @@ do_land() {
         # CONSUMED, like the other peeked flags (a bare peek let `--gate design --basis --gate` read an EMPTY gate here while record
         # read `design`): last wins, as in record, and the whole-note check below compares the recorded gate with this value.
         [ "$_argc" -ge 2 ] || { echo "land: --gate needs a value" >&2; usage; return 2; }
-        land_gate="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
+        land_gate="$2"
+        # SWAS-948: fold HERE, so the value re-appended for record (and the one land reads back by) is the lowercase list spelling and an
+        # unlisted one is refused before any network read. An empty value is left for record's own "missing --gate".
+        if [ -n "$land_gate" ]; then
+          _lf="$(_pv_gate_ok "$land_gate")" || { _pv_vocab_refuse land gate "$land_gate"; return 2; }
+          land_gate="$_lf"
+        fi
+        set -- "$@" "$1" "$land_gate"; shift 2; _argc=$((_argc-2)) ;;
+      --rung)
+        [ "$_argc" -ge 2 ] || { echo "land: --rung needs a value" >&2; usage; return 2; }
+        land_rung="$2"
+        if [ -n "$land_rung" ]; then
+          _lf="$(_pv_rung_ok "$land_rung")" || { _pv_vocab_refuse land rung "$land_rung"; return 2; }
+          land_rung="$_lf"
+        fi
+        set -- "$@" "$1" "$land_rung"; shift 2; _argc=$((_argc-2)) ;;
       --ref)
         [ "$_argc" -ge 2 ] || { echo "land: --ref needs a value" >&2; usage; return 2; }
         ref="$2"; shift 2; _argc=$((_argc-2)) ;;

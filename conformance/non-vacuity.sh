@@ -40,6 +40,12 @@
 #   Proves each selftest catches the FAIL-PATH operator class — NOT every conceivable weakness. A
 #   strong automated floor, not a completeness proof.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). Before the cd below. No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 cd "$(dirname "$0")/.." 2>/dev/null || true
 ONLY=""              # single check to judge (basename); set ONLY via --only <name> on argv, NEVER from
                      # the environment — the bare/CI path can never be narrowed. Empty = the whole set.

@@ -30,8 +30,8 @@ only):
 mvn wrapper:wrapper
 ```
 
-Commit the generated `mvnw`, `mvnw.cmd`, and `.mvn/` (per the profile: "commit
-`.mvn/wrapper`"). After that, everything runs through `./mvnw`.
+Run it before the baseline commit and commit the generated `mvnw`, `mvnw.cmd`, and `.mvn/`
+as part of that commit (per the profile: "commit `.mvn/wrapper`"), with no separate commit. After that, everything runs through `./mvnw`.
 
 ## The gates (must match `profiles/java-spring/ci.yml`)
 

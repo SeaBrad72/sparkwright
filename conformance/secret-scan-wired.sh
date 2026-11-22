@@ -50,6 +50,12 @@
 # Guardrails: read-only; no network; trap-cleans its temp dirs; never emits or commits a real secret
 #   (random PEM bodies; legs 3 and 6 plant fixed values); fails closed (rc 2) if gitleaks is unavailable.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 
 # The pinned scanner the profiles ship (parity is the point — neutrality). Kept in lockstep with
 # profiles/*/ci.yml and the kit's own secret-scan job; drift between them is a routed maintenance item.

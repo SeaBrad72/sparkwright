@@ -81,6 +81,21 @@ build_fixture() {
     git add f.txt; git commit -qm side                  # SIDE = missing content
     git rev-parse HEAD > "$D/.SIDE"
 
+    # DSG: a design commit on its own branch off BASE (SWAS-944). `record --gate design` refuses a basis the approved
+    # commit does not track and touch, so the design-GO cells record here; APP's tree is unchanged by it.
+    git checkout -q -b dsg "$(cat "$D/.BASE")"
+    mkdir -p docs/architecture
+    {
+      printf '# Fixture design\n\n'
+      printf 'This design describes the fixture change in several real lines so it is more than a stub.\n'
+      printf 'It states the problem: the record step must bind a design GO to a design file that exists.\n'
+      printf 'It states the approach: the approved commit adds this file, so the GO names a tracked artifact.\n'
+      printf 'It states the trade-off: one extra branch in the fixture, no change to any other commit.\n'
+      printf 'It states the test: record on this commit succeeds, record on a commit without it is refused.\n'
+    } > docs/architecture/x-design.md
+    git add docs/architecture/x-design.md; git commit -qm 'design'
+    git rev-parse HEAD > "$D/.DSG"
+
     git checkout -q "$(cat "$D/.TRUNK")"                  # leave the work-tree on the clean squash tip
   )
 }
@@ -139,14 +154,14 @@ selftest() {
   fx_skip_note() { echo "($1 SKIPPED: not a kit tree, counted per skip line above)"; }
   D="$(mktemp -d)"; R="$D/repo"
   build_fixture "$D" || true
-  for _s in .BASE .APPROVED .SQUASH .EXTRA .RC .REVERT .SIDE .TRUNK; do
+  for _s in .BASE .APPROVED .SQUASH .EXTRA .RC .REVERT .SIDE .TRUNK .DSG; do
     [ -f "$D/$_s" ] || { echo "FAIL: could not build git fixture (missing $_s)"; return 1; }
   done
   # .BASE and .RC are consumed inside build_fixture (BASE anchors branches; RC carries the v2.0.0
   # tag); the selftest asserts via the refs below. Only bind what the assertions reference.
   APP="$(cat "$D/.APPROVED")"; SQ="$(cat "$D/.SQUASH")"
   EXTRA="$(cat "$D/.EXTRA")"; REV="$(cat "$D/.REVERT")"
-  SIDE="$(cat "$D/.SIDE")"; TRUNK="$(cat "$D/.TRUNK")"
+  SIDE="$(cat "$D/.SIDE")"; TRUNK="$(cat "$D/.TRUNK")"; DSG="$(cat "$D/.DSG")"
 
   # assert <want-rc> <label> <check-args...>
   assert() {
@@ -189,7 +204,7 @@ selftest() {
   #     and/or changes the approved tree, and this block FAILs. ---
   APP_TREE_BEFORE="$( ( cd "$R" && git rev-parse "$APP^{tree}" ) )"
   if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate release-candidate --rung "Release candidate" --class Ordinary \
+        --gate release-candidate --rung rc --class Ordinary \
         --scope "PR #999" --token "GO: merge #999 at $APP" --basis "reviewer APPROVE" >/dev/null 2>&1 ); then
     _rec=0; else _rec=$?; fi
   APP_TREE_AFTER="$( ( cd "$R" && git rev-parse "$APP^{tree}" ) )"
@@ -211,7 +226,7 @@ selftest() {
   assert 0 "note round-trip: check resolves latest approved-sha (APP) from the note" --ref "$SQ"
   # a LATER record binding the divergent SIDE -> resolve must now pick SIDE and FAIL.
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$SIDE" --approved-by "solo maintainer" \
-      --gate release-candidate --rung "Release candidate" --class Ordinary \
+      --gate release-candidate --rung rc --class Ordinary \
       --scope "PR #1000" --token "GO: merge #1000 at $SIDE" >/dev/null 2>&1 ) \
     || { echo "FAIL: second record (SIDE) failed"; st=1; }
   assert 1 "note round-trip NEGATIVE: latest note (SIDE) tree != squash tip -> FAIL" --ref "$SQ"
@@ -222,7 +237,7 @@ selftest() {
   #     is now rejected outright at input — see the injection negatives below — so here we feed a
   #     CLEAN id and assert the derivation itself cannot overclaim.) ---
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "attacker" \
-      --gate release-candidate --rung "Release candidate" --class Ordinary \
+      --gate release-candidate --rung rc --class Ordinary \
       --scope "PR #1001" --token "GO clean" >/dev/null 2>&1 ) \
     || { echo "FAIL: label-can't-lie record failed"; st=1; }
   LABEL_LINE="$( ( cd "$R" && git notes --ref=promotions show "$APP" 2>/dev/null | grep '^approved-by:' ) || true )"
@@ -243,11 +258,11 @@ selftest() {
   # with `grep -F -x`, so a mangled or normalised value would silently satisfy nothing), and the two
   # shapes the gate could never match are refused AT THE FRONT DOOR rather than recorded dead.
   # =====================================================================================
-  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate design --rung "Design" --class control-plane \
-        --scope "branch/feat-b2-go" --token "GO: design at $APP" \
+  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$DSG" --approved-by "solo maintainer" \
+        --gate design --rung integration --class control-plane \
+        --scope "branch/feat-b2-go" --token "GO: design at $DSG" \
         --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _brc=0; else _brc=$?; fi
-  _bscope="$( ( cd "$R" && git notes --ref=promotions show "$APP" 2>/dev/null \
+  _bscope="$( ( cd "$R" && git notes --ref=promotions show "$DSG" 2>/dev/null \
                  | grep -c '^scope: branch/feat-b2-go$' ) || true )"
   if [ "$_brc" = 0 ] && [ "$_bscope" = 1 ]; then
     echo "PASS: branch scoping: --scope branch/<name> accepted and round-trips verbatim into the note"
@@ -258,7 +273,7 @@ selftest() {
   # (below) cannot be the reason they are refused, and they assert the SCOPE-SPECIFIC message as well
   # as rc 2. Without --basis, and asserting rc alone, they would stay green for the wrong refusal.
   _b2out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate design --rung "Design" --class control-plane --scope "branch/" \
+        --gate design --rung integration --class control-plane --scope "branch/" \
         --token "GO" --basis "docs/architecture/x-design.md" 2>&1 )" && _b2rc=0 || _b2rc=$?
   if [ "$_b2rc" = 2 ] && printf '%s' "$_b2out" | grep -qF "names no branch"; then
     echo "PASS: branch scoping NEGATIVE (PV3): a bare 'branch/' names no branch -> rc 2 with the scope message"
@@ -266,7 +281,7 @@ selftest() {
     echo "FAIL: branch scoping NEGATIVE (PV3): 'branch/' should be rc 2 'names no branch', got rc=$_b2rc: $_b2out"; st=1
   fi
   _b3out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate design --rung "Design" --class control-plane --scope "branch/feat+plus" \
+        --gate design --rung integration --class control-plane --scope "branch/feat+plus" \
         --token "GO" --basis "docs/architecture/x-design.md" 2>&1 )" && _b3rc=0 || _b3rc=$?
   if [ "$_b3rc" = 2 ] && printf '%s' "$_b3out" | grep -qF "may contain only"; then
     echo "PASS: branch scoping NEGATIVE (PV3): a name outside the gate's scope charset -> rc 2 with the scope message (not recorded dead)"
@@ -276,8 +291,8 @@ selftest() {
   # REGRESSION: the NEW rule applies to the `branch/` shape ONLY. Existing scopes keep their existing
   # hygiene — this repo's own ledger holds scopes with a space ("PR #999"), and retrofitting the
   # charset onto every scope would refuse records the gates already accept.
-  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate design --rung "Design" --class Ordinary --scope "PR #1005" \
+  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$DSG" --approved-by "solo maintainer" \
+        --gate design --rung integration --class Ordinary --scope "PR #1005" \
         --token "GO" --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _b4rc=0; else _b4rc=$?; fi
   if [ "$_b4rc" = 0 ]; then
     echo "PASS: branch scoping: a non-branch scope with a space is still accepted (no retrofit)"
@@ -293,7 +308,7 @@ selftest() {
     _pv1cls="${_pv1c%%:*}"; _pv1sc="${_pv1c#*:}"
     _pv1pre="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
     _pv1out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-          --gate design --rung "Design" --class "$_pv1cls" --scope "$_pv1sc" \
+          --gate design --rung integration --class "$_pv1cls" --scope "$_pv1sc" \
           --token "GO" 2>&1 )" && _pv1rc=0 || _pv1rc=$?
     _pv1post="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
     if [ "$_pv1rc" = 2 ] && [ "$_pv1pre" = "$_pv1post" ] && printf '%s' "$_pv1out" | grep -qF -e "--basis"; then
@@ -307,7 +322,7 @@ selftest() {
   for _pv4b in "(none recorded)" "  (None Recorded) "; do
     _pv4pre="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
     _pv4out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-          --gate design --rung "Design" --class Ordinary --scope "PR #1015" \
+          --gate design --rung integration --class Ordinary --scope "PR #1015" \
           --token "GO" --basis "$_pv4b" 2>&1 )" && _pv4rc=0 || _pv4rc=$?
     _pv4post="$( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none )"
     if [ "$_pv4rc" = 2 ] && [ "$_pv4pre" = "$_pv4post" ] && printf '%s' "$_pv4out" | grep -qF -e "none recorded"; then
@@ -318,12 +333,51 @@ selftest() {
   done
   # PV2: any OTHER gate keeps the optional basis -- rc 0 and the literal default, unchanged.
   if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
-        --gate release-candidate --rung "Release candidate" --class Ordinary --scope "PR #1014" \
+        --gate release-candidate --rung rc --class Ordinary --scope "PR #1014" \
         --token "GO" >/dev/null 2>&1 ) \
      && ( cd "$R" && git notes --ref=promotions show "$APP" 2>/dev/null | grep -qx 'basis: (none recorded)' ); then
     echo "PASS: PV2: record with another gate and no --basis -> rc 0, 'basis: (none recorded)' unchanged"
   else
     echo "FAIL: PV2: a non-design gate without --basis must still record with 'basis: (none recorded)'"; st=1
+  fi
+
+  # SWAS-948 (C1, C1b, C2, C3) — `record` takes --gate and --rung from LISTED values, folded to the lowercase list spelling, at the front
+  # door (rc 2, no note, the list and one worked example per gate printed). g9_refused asserts rc 2, an untouched ledger ref and two needles.
+  g9_ledger() { ( cd "$R" && git rev-parse -q --verify refs/notes/promotions 2>/dev/null || echo none ); }
+  g9_rec() {   # <gate> <rung> -> _g9rc, _g9out (a fresh scope; no --basis)
+    if _g9out="$( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
+          --gate "$1" --rung "$2" --class Ordinary --scope "PR #948" --token "GO" 2>&1 )"; then _g9rc=0; else _g9rc=$?; fi
+  }
+  g9_refused() {   # <label> <needle 1> <needle 2> <gate> <rung>
+    _g9l="$1"; _g9n1="$2"; _g9n2="$3"; shift 3
+    _g9pre="$(g9_ledger)"; g9_rec "$@"; _g9post="$(g9_ledger)"
+    if [ "$_g9rc" = 2 ] && [ "$_g9pre" = "$_g9post" ] && printf '%s' "$_g9out" | grep -qF -e "$_g9n1" && printf '%s' "$_g9out" | grep -qF -e "$_g9n2"; then
+      echo "PASS: $_g9l (rc 2, ledger untouched, the message and the list printed)"
+    else
+      echo "FAIL: $_g9l: want rc 2 + '$_g9n1' + '$_g9n2' + an untouched ledger; got rc $_g9rc pre=$_g9pre post=$_g9post; out=$_g9out"; st=1
+    fi
+  }
+  G9_GATES="design · plan · governance · merge · release-candidate"
+  G9_RUNGS="spike · integration · rc · staging · production"
+  g9_refused "948-C1a: --gate desgin is refused" "invalid --gate 'desgin'" "$G9_GATES" desgin integration
+  g9_refused "948-C1a: --gate promotion is refused (it means merge; the writers moved)" "invalid --gate 'promotion'" "$G9_GATES" promotion integration
+  _nl='
+'
+  g9_refused "948-C1c: a gate with a trailing newline is refused, never silently cleaned" "--gate" "--gate" "merge${_nl}" integration
+  g9_refused "948-C1: an empty --gate keeps the existing 'missing --gate' message and the usage text carries the list" "record: missing --gate" "design | plan | governance | merge | release-candidate" "" integration
+  g9_refused "948-C1b: --gate Design folds to design and so gets the design-basis check (no --basis)" "--gate design requires --basis" "--basis" Design integration
+  g9_refused "948-C2: --rung 'Release candidate' is refused (the list spelling is rc)" "invalid --rung 'Release candidate'" "$G9_RUNGS" merge "Release candidate"
+  # C3: the note stores the lowercase list spelling. Asserted by the ABSENCE of the typed spelling as well as the presence of the folded
+  # one, because earlier cells recorded lowercase lines on the same commit and a record that skipped the fold would still match those.
+  if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$DSG" --approved-by "solo maintainer" \
+        --gate Design --rung Integration --class control-plane --scope "branch/feat-948-fold" \
+        --token "GO: 948 fold at $DSG" --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _g9c3=0; else _g9c3=$?; fi
+  _g9note="$( ( cd "$R" && git notes --ref=promotions show "$DSG" 2>/dev/null ) || true )"
+  if [ "$_g9c3" = 0 ] && printf '%s\n' "$_g9note" | grep -qx 'gate: design' && printf '%s\n' "$_g9note" | grep -qx 'rung: integration' \
+     && ! printf '%s\n' "$_g9note" | grep -qx 'gate: Design' && ! printf '%s\n' "$_g9note" | grep -qx 'rung: Integration'; then
+    echo "PASS: 948-C3: --gate Design --rung Integration records 'gate: design' and 'rung: integration' (the typed spelling is not stored)"
+  else
+    echo "FAIL: 948-C3: want rc 0, 'gate: design', 'rung: integration' and no 'gate: Design' / 'rung: Integration'; got rc $_g9c3; note=$_g9note"; st=1
   fi
 
   # =====================================================================================
@@ -360,7 +414,7 @@ selftest() {
   fi
 
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" \
-      --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
+      --gate merge --rung integration --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) \
     || { echo "FAIL: record on the row-bearing commit failed"; st=1; }
   if ( cd "$R" && git notes --ref=promotions show "$ROWC" 2>/dev/null | grep -qxF 'kit-row: DEMO-ROW-42' ); then
@@ -372,7 +426,7 @@ selftest() {
   # ABSENT ⇒ `(none)`, NEVER INVENTED. SIDE carries no trailers; a record on it must say so rather
   # than guess, inherit, or omit the field (an omitted field is indistinguishable from an old note).
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$SIDE" --approved-by "solo maintainer" \
-      --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1011" \
+      --gate merge --rung integration --class Ordinary --scope "PR #1011" \
       --token "GO clean" >/dev/null 2>&1 ) || { echo "FAIL: record on the trailerless commit failed"; st=1; }
   if ( cd "$R" && git notes --ref=promotions show "$SIDE" 2>/dev/null | grep -qxF 'kit-row: (none)' ); then
     echo "PASS: kit-row projection: a commit with no Kit-Row records '(none)', never an invented row"
@@ -392,11 +446,11 @@ selftest() {
   # reads `(none recorded)`; re-recorded with --go-by (record supersedes) it reads `<name> [self-asserted]`.
   _tr_l9="$( ( cd "$R" && $VSH "$VERIFY" trace --ref "$SQROW" 2>/dev/null ) || true )"
   case "$_tr_l9" in
-    *"gate: promotion  scope: PR #1010  approved-by: solo maintainer [self-asserted]  go-by: (none recorded)") echo "PASS: trace L9: the per-commit line ends with the approver and 'go-by: (none recorded)' (prefix unchanged)" ;;
+    *"gate: merge  scope: PR #1010  approved-by: solo maintainer [self-asserted]  go-by: (none recorded)") echo "PASS: trace L9: the per-commit line ends with the approver and 'go-by: (none recorded)' (prefix unchanged)" ;;
     *) echo "FAIL: trace L9: expected the line to end '...scope: PR #1010  approved-by: solo maintainer [self-asserted]  go-by: (none recorded)'; got: $_tr_l9"; st=1 ;;
   esac
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Owner Fixture" \
-      --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
+      --gate merge --rung integration --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) || true
   _tr_l9="$( ( cd "$R" && $VSH "$VERIFY" trace --ref "$SQROW" 2>/dev/null ) || true )"
   case "$_tr_l9" in
@@ -412,7 +466,7 @@ selftest() {
     *) echo "FAIL: trace: expected 'go-by: BadName' (control byte stripped, not the line dropped); got: $_tr_l9"; st=1 ;;
   esac
   ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Owner Fixture" \
-      --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
+      --gate merge --rung integration --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) || true
   # L9 (ceremony-binding half): the design-gate remedy names the committer, not an unspecified <human>.
   if grep -qF "<the design commit's committer name or email>" "$SCRIPT_DIR/ceremony-binding.sh" \
@@ -431,18 +485,24 @@ selftest() {
     echo "PASS: trace NEGATIVE: a commit with no matching note exits 1 (recordless merge is loud)"
   fi
 
-  # --recent: the RECORDLESS-MERGE leg the kit's own CI runs. Over a window that includes the
-  # unrecorded BASE and 'squash-merge feat' commits it must RED and name at least one of them.
-  _tr_out="$( ( cd "$R" && $VSH "$VERIFY" trace --recent 3 --from "$TRUNK" 2>&1 ) || true )"
-  if ( cd "$R" && $VSH "$VERIFY" trace --recent 3 --from "$TRUNK" >/dev/null 2>&1 ); then
-    echo "FAIL: trace --recent over a window containing recordless merges must RED"; st=1
+  # --recent: the RECORDLESS-MERGE leg the kit's own CI runs. SWAS-943: the trunk's only root (BASE) now reads as the Inception baseline,
+  # so it no longer reds the window. The window is re-anchored on one UNRECORDED PARENTED trunk commit (on a scratch branch, so the
+  # later cells' trunk is untouched) on top of the two recorded ones: it must RED and be named by the 12-character sha the trace prints.
+  ( cd "$R" && git checkout -q -b tbneg "$TRUNK" && printf 'recordless\n' > recordless.txt && git add recordless.txt \
+      && git commit -qm 'recordless trunk commit (no GO)' ) >/dev/null 2>&1 \
+    || { echo "FAIL: could not build the recordless-trunk-commit fixture"; st=1; }
+  _tr_neg12="$( ( cd "$R" && git rev-parse tbneg ) | cut -c1-12 )"
+  _tr_out="$( ( cd "$R" && $VSH "$VERIFY" trace --recent 3 --from tbneg 2>&1 ) || true )"
+  if ( cd "$R" && $VSH "$VERIFY" trace --recent 3 --from tbneg >/dev/null 2>&1 ); then
+    echo "FAIL: trace --recent over a window containing a recordless merge must RED"; st=1
   else
     echo "PASS: trace --recent NEGATIVE: a recordless trunk commit reds the window"
   fi
   case "$_tr_out" in
-    *"$SQROW"*|*"no promotion note"*) echo "PASS: trace --recent names what it could not recover" ;;
-    *) echo "FAIL: trace --recent red did not name the unrecoverable commit(s): $_tr_out"; st=1 ;;
+    *"$_tr_neg12"*"no promotion note"*) echo "PASS: trace --recent names what it could not recover" ;;
+    *) echo "FAIL: trace --recent red did not name the unrecoverable commit $_tr_neg12: $_tr_out"; st=1 ;;
   esac
+  ( cd "$R" && git checkout -q "$TRUNK" && git branch -D tbneg ) >/dev/null 2>&1 || true
 
   # POSITIVE WINDOW: a window of exactly the one recorded commit must be GREEN. Paired with the
   # negative above, this is the discriminant — an always-red trace fails here, an always-green one
@@ -571,7 +631,7 @@ selftest() {
          | git commit -q -F - ) || { echo "FAIL: could not build the control-char row fixture"; st=1; }
   CTRLC="$( ( cd "$R" && git rev-parse ctrlrow ) )"
   if ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$CTRLC" --approved-by "solo maintainer" \
-        --gate promotion --rung Ordinary --class Ordinary --scope "PR #1012" \
+        --gate merge --rung integration --class Ordinary --scope "PR #1012" \
         --token "GO clean" >/dev/null 2>&1 ); then _ctrc=0; else _ctrc=$?; fi
   _ctnote="$( ( cd "$R" && git notes --ref=promotions show "$CTRLC" 2>/dev/null ) || true )"
   if [ "$_ctrc" = 2 ] && [ -z "$_ctnote" ]; then
@@ -647,16 +707,16 @@ selftest() {
 
   NL_TOK="$(printf 'GO\napproved-by: forged [signed: gpg]')"
   reject_inj "injection NEGATIVE: newline+forged [signed: gpg] in --token rejected" \
-    --approved-sha "$APP" --approved-by "solo maintainer" --gate g --rung r --class Ordinary \
+    --approved-sha "$APP" --approved-by "solo maintainer" --gate merge --rung integration --class Ordinary \
     --scope "PR #1002" --token "$NL_TOK"
 
   NL_BASIS="$(printf 'reviewer APPROVE\napproved-by: forged [authenticated: github-review]')"
   reject_inj "injection NEGATIVE: newline+forged [authenticated: in --basis rejected" \
-    --approved-sha "$APP" --approved-by "solo maintainer" --gate g --rung r --class Ordinary \
+    --approved-sha "$APP" --approved-by "solo maintainer" --gate merge --rung integration --class Ordinary \
     --scope "PR #1003" --token "GO clean" --basis "$NL_BASIS"
 
   reject_inj "injection NEGATIVE: mid-string [signed: gpg] in --approved-by rejected" \
-    --approved-sha "$APP" --approved-by "attacker [signed: gpg] and more" --gate g --rung r \
+    --approved-sha "$APP" --approved-by "attacker [signed: gpg] and more" --gate merge --rung integration \
     --class Ordinary --scope "PR #1004" --token "GO clean"
 
   # =====================================================================================
@@ -752,9 +812,64 @@ selftest() {
     _lghd="$(lgh "$_lasha" "solo maintainer")"
     if _ld_out="$( cd "$LOA" && PATH="$_lghd:$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land \
           --ref 77 --merge-cmd "$_lmc" --approved-sha "$_lasha" --approved-by "solo maintainer" \
-          --go-by "the owner" --gate release-candidate --rung "Release candidate" --class "$_lcls" \
+          --go-by "the owner" --gate release-candidate --rung rc --class "$_lcls" \
           --scope "$_lscope" --token "GO: land at $_lasha" "$@" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   }
+
+  # SWAS-948 (C4, C5) — `land` folds --gate and --rung BEFORE any forge read or merge, and re-appends the FOLDED values for record, so the
+  # (scope, gate) pick it reads back by finds the record it just wrote. The unlisted value arrives after lland's own valid pair (last wins).
+  mkorigin g948gate
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/g948-gate" --gate desgin
+  if [ "$_ldc" = 2 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -qF "land: invalid --gate 'desgin'"; then
+    echo "PASS: 948-C4: land with an unlisted --gate is refused rc 2 before any merge, no note on origin"
+  else
+    echo "FAIL: 948-C4: want rc 2 + no merge + no note + \"land: invalid --gate 'desgin'\"; got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+  mkorigin g948rung
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/g948-rung" --rung "Release candidate"
+  if [ "$_ldc" = 2 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -qF "land: invalid --rung 'Release candidate'"; then
+    echo "PASS: 948-C4: land with an unlisted --rung is refused rc 2 before any merge, no note on origin"
+  else
+    echo "FAIL: 948-C4: want rc 2 + no merge + no note + \"land: invalid --rung 'Release candidate'\"; got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+  mkorigin g948nl
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/g948-nl" --gate "merge${_nl}"
+  if [ "$_ldc" = 2 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q -e 'land: invalid --gate'; then
+    echo "PASS: 948-C4: land with a gate that has a trailing newline is refused rc 2 before any merge, no note on origin"
+  else
+    echo "FAIL: 948-C4: want rc 2 + no merge + no note for --gate 'merge<newline>'; got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+  mkorigin g948fold
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/g948-fold" --gate Merge --rung Integration
+  _g9on="$(git --git-dir="$LO/remote.git" notes --ref="$LR2" show "$LOSHA" 2>/dev/null || true)"
+  if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && onote "$LOSHA" && printf '%s\n' "$_g9on" | grep -qx 'gate: merge' && printf '%s\n' "$_g9on" | grep -qx 'rung: integration' \
+     && ! printf '%s\n' "$_g9on" | grep -qx 'gate: Merge' && ! printf '%s\n' "$_g9on" | grep -qx 'rung: Integration'; then
+    echo "PASS: 948-C4 fold: land --gate Merge --rung Integration finds its own record, merges the stub, and the note on origin holds the lowercase spelling"
+  else
+    echo "FAIL: 948-C4 fold: want rc 0 + merge + note on origin with 'gate: merge' / 'rung: integration'; got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out note=$_g9on"; st=1
+  fi
+  # C5: a hand-planted legacy `gate: promotion` note (the 218 in the ledger) is still READ by log and sync. The legacy note is a real record
+  # rewritten in place, so its shape is whatever record writes today.
+  mkorigin g948leg
+  g9_rl() {
+    ( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" record --no-push --approved-sha "$LOSHA" --approved-by "solo maintainer" \
+        --gate merge --rung integration --class control-plane --scope "PR #948" --token "GO: 948 legacy" >/dev/null 2>&1 )
+  }
+  g9_rl || { echo "FAIL: 948-C5: could not record the fixture note"; st=1; }
+  ( cd "$LOA" && git notes --ref="$LR2" show "$LOSHA" | sed 's/^gate: merge$/gate: promotion/' | git notes --ref="$LR2" add -f -F - "$LOSHA" ) >/dev/null 2>&1 \
+    || { echo "FAIL: 948-C5: could not plant the legacy note"; st=1; }
+  if git -C "$LOA" notes --ref="$LR2" show "$LOSHA" 2>/dev/null | grep -qx 'gate: promotion'; then :; else echo "FAIL: 948-C5: the planted note carries no 'gate: promotion' line (the cell would be vacuous)"; st=1; fi
+  if _g9lg="$( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" log 2>&1 )" && printf '%s' "$_g9lg" | grep -qF "$LOSHA"; then
+    echo "PASS: 948-C5: log still reads a planted 'gate: promotion' note"
+  else echo "FAIL: 948-C5: log did not list the planted legacy note; out=$_g9lg"; st=1; fi
+  if _g9sy="$( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" sync --dry-run 2>&1 )" && ! printf '%s' "$_g9sy" | grep -qF "invalid --gate"; then
+    echo "PASS: 948-C5: sync --dry-run still accepts a planted 'gate: promotion' note (rc 0, no gate refusal)"
+  else echo "FAIL: 948-C5: sync --dry-run refused or errored on the planted legacy note; out=$_g9sy"; st=1; fi
+  # (the legacy-beside-new coexistence cell, 948-COEX, is in the go-bound area below, on a solo base where go-bound judges)
 
   # (+) LIVENESS: a valid record + a stub merge -> rc 0, the stub ran, AND the GO note is ON ORIGIN
   #     (not merely local — the property #658 was missing). This exercises step-2's on-origin confirm.
@@ -926,7 +1041,7 @@ selftest() {
   tf_rec() {   # <TMPDIR for the run> <record args...> -> _tf_rc, _tf_out
     _tf_td="$1"; shift
     if _tf_out="$( cd "$TFR" && TMPDIR="$_tf_td" $VSH "$TF_V" record --no-push --approved-sha "$TFC" --approved-by "solo maintainer" \
-          --gate promotion --rung Ordinary --class Ordinary --scope "branch/tf724" "$@" 2>&1 )"; then _tf_rc=0; else _tf_rc=$?; fi
+          --gate merge --rung integration --class Ordinary --scope "branch/tf724" "$@" 2>&1 )"; then _tf_rc=0; else _tf_rc=$?; fi
   }
   tf_note() { git -C "$TFR" notes --ref=promotions show "$TFC" 2>/dev/null | grep -v '^recorded-at:' || true; }
   tf_refused() {   # <TMPDIR> <needle> <record args...>: 0 only when rc 2 + the needle + the ledger ref unchanged
@@ -1107,13 +1222,13 @@ selftest() {
   # the solo bar's gate leg, at 2b on the note read back from origin: a design GO is not a merge GO
   mkorigin lsologate; lsolo_base MERGE_RELATIONSHIP=solo
   rm -f "$LAND_MARK"
-  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-gate" --gate design-arm
-  lsolo_report "land SOLO NEGATIVE: gate 'design-arm' fails the solo bar at 2b, refused before the merge" refuse "pre-build gate"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-gate" --gate plan
+  lsolo_report "land SOLO NEGATIVE: gate 'plan' (a typed pre-build gate; SWAS-948 moved it off the unlisted 'design-arm') fails the solo bar at 2b, refused before the merge" refuse "pre-build gate"
   # --go-by stays REQUIRED in solo (0d(i) is kept)
   mkorigin lsologoby; lsolo_base MERGE_RELATIONSHIP=solo
   rm -f "$LAND_MARK"
   if _ld_out="$( cd "$LOA" && PATH="$(lgh "$LOSHA" "x"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land --ref 77 --merge-cmd "$LAND_STUB" \
-        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" \
+        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung rc \
         --class control-plane --scope "PR #77" --token "GO" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   lsolo_report "land SOLO NEGATIVE: no --go-by is still refused (0d(i) kept), nothing merged" refuse "--go-by"
   # SWAS-902: land reaches record's template-text refusal (solo, so no earlier team-mode refusal can pass for it): the new message, no merge,
@@ -1217,7 +1332,7 @@ Kit-Row: ROW-LANDWARN"
   LOSHA3="$(git -C "$LOA" rev-parse HEAD)"
   if _ld_out="$( cd "$LOA" && PATH="$(lgh "$LOSHA3" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" BOARD_CLAIM_REMOTE="$LO/no-such-remote.git" \
         $VSH "$VERIFY" land --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA3" \
-        --approved-by "solo maintainer" --go-by "the owner" --gate release-candidate --rung "Release candidate" \
+        --approved-by "solo maintainer" --go-by "the owner" --gate release-candidate --rung rc \
         --class control-plane --scope "PR #77" --token "GO: land at $LOSHA3" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'WARN' \
      && printf '%s' "$_ld_out" | grep -q 'board-claim.sh release ROW-LANDWARN --stale'; then
@@ -1922,7 +2037,7 @@ EOF
     if _ld_out="$( cd "$LOA/${MG_SUB:-}" && env -u KIT_RUNAWAY_SANDBOX -u RUNAWAY_TALLY -u RUNAWAY_BUDGET_CONFIG -u RUNAWAY_METERING_GATE \
           HOME="$MG_H" $MG_ENVX PATH="$_mgh:$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$MG_K/scripts/promotion-verify.sh" land \
           --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$MG_ASHA" --approved-by "${MG_ABY:-solo maintainer}" \
-          --go-by "the owner" --gate release-candidate --rung "Release candidate" --class control-plane \
+          --go-by "the owner" --gate release-candidate --rung rc --class control-plane \
           --scope "PR #77" --token "GO: land mg" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   }
   # mg_check <label> <proceed|refuse> <needle>... (a leading ! = must NOT appear)
@@ -2155,7 +2270,7 @@ EOF
     _fxsha="$(git -C "$1" rev-parse HEAD)"
     if _ld_out="$( cd "$1" && PATH="$(lgh "$_fxsha" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$FXAD/scripts/promotion-verify.sh" land \
           --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$_fxsha" --approved-by "solo maintainer" --go-by "the owner" \
-          --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land at $_fxsha" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+          --gate release-candidate --rung rc --class control-plane --scope "PR #77" --token "GO: land at $_fxsha" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
   }
   if [ "$(fx_facts "$FXAD")" = "0 0 0" ]; then echo "PASS: FXL-c: the layout facts are read at the gate checkout (an adopter-layout copy reads 0 0 0)"
   else echo "FAIL: FXL-c: an adopter-layout gate copy read '$(fx_facts "$FXAD")', not '0 0 0'"; st=1; fi
@@ -2203,21 +2318,32 @@ EOF
       git clone -q remote.git A 2>/dev/null
       cd A
       git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
-      printf 'a\n' > f.txt; git add f.txt; git commit -qm base
+      printf 'a\n' > f.txt
+      mkdir -p docs/architecture
+      printf '# X design\n\nThe x fixture design: a record names this file as its basis.\nIt carries several real lines so it is more than a stub.\nThe approved commit adds or touches it, as the record legs require.\n' > docs/architecture/x-design.md
+      printf '# Y design\n\nThe y fixture design: a second tracked design file for a different basis.\nIt carries several real lines so it is more than a stub.\nThe approved commit adds or touches it, as the record legs require.\n' > docs/architecture/y-design.md
+      git add f.txt docs/architecture/x-design.md docs/architecture/y-design.md; git commit -qm base
       git push -q origin HEAD:refs/heads/main
       cd "$LF"
       git clone -q remote.git B 2>/dev/null
       cd B
       git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
-      git commit -q --allow-empty -m b-side )
+      printf 'b-side change\n' >> docs/architecture/x-design.md
+      git add docs/architecture/x-design.md; git commit -q -m b-side )
     ASHA="$(git -C "$LF/A" rev-parse HEAD)"
     BSHA="$(git -C "$LF/B" rev-parse HEAD)"
+  }
+  # la2 <clone-dir> -> a commit message `a2` that TOUCHES x-design.md (a design record's approved commit must touch its basis).
+  la2() {
+    printf 'a2 change\n' >> "$1/docs/architecture/x-design.md"
+    git -C "$1" add docs/architecture/x-design.md
+    git -C "$1" commit -q -m a2
   }
   # lrec <clone-dir> <approved-sha> <scope> [extra record args...] -> sets LRC and LOUT.
   lrec() {
     _cd="$1"; _cs="$2"; _cp="$3"; shift 3
     if LOUT="$( cd "$_cd" && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" record \
-          --approved-sha "$_cs" --approved-by "solo maintainer" --gate design --rung Design \
+          --approved-sha "$_cs" --approved-by "solo maintainer" --gate design --rung integration \
           --class control-plane --scope "$_cp" --token "GO: $_cp" \
           --basis docs/architecture/x-design.md "$@" 2>&1 )"; then
       LRC=0; else LRC=$?; fi
@@ -2241,7 +2367,7 @@ EOF
       printf 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
       printf '( cd "%s/B" && PROMOTION_NOTES_REF=%s sh "%s" record --approved-sha %s \\\n' \
              "$LF" "$LR" "$VERIFY" "$BSHA"
-      printf '  --approved-by racer --gate design --rung Design --class control-plane \\\n'
+      printf '  --approved-by racer --gate design --rung integration --class control-plane \\\n'
       printf '  --scope branch/racer-$$ --token "GO: racer" --basis docs/architecture/x-design.md ) >/dev/null 2>&1\nexit 0\n'
     } > "$LF/hooks/reference-transaction"
     chmod +x "$LF/hooks/reference-transaction"
@@ -2317,7 +2443,7 @@ EOF
   #     and write NOTHING — an offline record is the race this row exists to end. ---
   _npre="$(lrev "$LF/A")"
   git -C "$LF/A" remote set-url origin "$LF/does-not-exist.git"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_asha2" "branch/offline"
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -qi 'reach' && ! lnote "$LF/A" "$_asha2" \
@@ -2345,7 +2471,7 @@ EOF
   #     in again, re-write the SAME body and publish: chain = seed, racer, A. ---
   mkledger race
   lrec "$LF/A" "$ASHA" "branch/seed"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   lracer once
   lrec "$LF/A" "$_asha2" "branch/retry"
@@ -2367,7 +2493,7 @@ EOF
   mkledger hookrace
   if [ -f "$KITROOT/hooks/pre-push" ] && [ -f "$KITROOT/.claude/hooks/guard-core.sh" ]; then
     lrec "$LF/A" "$ASHA" "branch/seed"
-    git -C "$LF/A" commit -q --allow-empty -m a2
+    la2 "$LF/A"
     _asha2="$(git -C "$LF/A" rev-parse HEAD)"
     lracer once
     mkdir -p "$LF/A/.claude/hooks"
@@ -2394,7 +2520,7 @@ EOF
   #     record is unwound and REFUSED loudly — never retained locally, never published. ---
   mkledger race2
   lrec "$LF/A" "$ASHA" "branch/seed"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   lracer always
   lrec "$LF/A" "$_asha2" "branch/doomed"
@@ -2409,7 +2535,7 @@ EOF
   _rpre="$(lrev "$LF/A")"
   printf '#!/bin/sh\necho "FIXTURE-DENIED: ledger is read-only" >&2\nexit 1\n' > "$LF/remote.git/hooks/pre-receive"
   chmod +x "$LF/remote.git/hooks/pre-receive"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_asha2" "branch/denied"
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'FIXTURE-DENIED' \
@@ -2422,7 +2548,7 @@ EOF
   #     clobbering the interloper — and `record` says so instead of claiming a clean rollback. ---
   mkledger casfail
   lrec "$LF/A" "$ASHA" "branch/seed"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   mkdir -p "$LF/hooks"
   { printf '#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
@@ -2444,7 +2570,7 @@ EOF
   #     hook deletes the scratch the moment it appears, and the mode must say UNKNOWN, rc 2. ---
   mkledger scratch
   lrec "$LF/A" "$ASHA" "branch/seed"
-  git -C "$LF/A" commit -q --allow-empty -m a2
+  la2 "$LF/A"
   _asha2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_asha2" "branch/np" --no-push
   mkdir -p "$LF/hooks"
@@ -2467,7 +2593,7 @@ EOF
   #     first would satisfy an rc-only assertion. ---
   _rrefs="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
   if LOUT="$( cd "$LF/A" && PROMOTION_NOTES_REF='*' $VSH "$VERIFY" record --approved-sha "$ASHA" \
-        --approved-by x --gate design --rung Design --class control-plane --scope branch/x \
+        --approved-by x --gate design --rung integration --class control-plane --scope branch/x \
         --token GO --basis docs/architecture/x-design.md 2>&1 )"; then LRC=0; else LRC=$?; fi
   _rrefs2="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
   if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'invalid PROMOTION_NOTES_REF' \
@@ -2520,7 +2646,7 @@ EOF
   mkledger sfast
   lrec "$LF/A" "$ASHA" "branch/s1"
   lfetch "$LF/B"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _a2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _a2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_a2" "branch/s1b"
   _bpre="$(lrev "$LF/B")"
   lsync "$LF/B"
@@ -2558,7 +2684,7 @@ EOF
   #     Also (10): --dry-run first leaves the local ledger and BOTH ref lists byte-identical.
   mkledger stwin
   lrec "$LF/A" "$ASHA" "branch/s4"
-  lrec "$LF/B" "$ASHA" "branch/s4" --no-push --token "different token" --basis "different basis"
+  lrec "$LF/B" "$ASHA" "branch/s4" --no-push --token "different token" --basis "docs/architecture/y-design.md"
   # Force the recorded-at difference (same-second records would otherwise be equal), so the
   # "only approval-token / basis / recorded-at may differ" claim is exercised on all three.
   git -C "$LF/B" notes --ref="$LR" show "$ASHA" | sed 's/^recorded-at: .*/recorded-at: 2001-01-01T00:00:00Z/' > "$LF/ts.txt"
@@ -2592,7 +2718,7 @@ EOF
 
   # (−) 6. --discard-local scopes to the sha it names: two refusing shas.
   mkledger sdisc
-  git -C "$LF/A" commit -q --allow-empty -m a2; _a2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _a2="$(git -C "$LF/A" rev-parse HEAD)"
   git -C "$LF/A" push -q origin HEAD:refs/heads/main
   git -C "$LF/B" fetch -q origin
   lrec "$LF/A" "$ASHA" "branch/s6"
@@ -2734,7 +2860,7 @@ EOF
   mkledger sf1f
   lrec "$LF/A" "$ASHA" "branch/f1f"
   lfetch "$LF/B"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _a2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _a2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_a2" "branch/f1fb"
   _lpre="$(lrev "$LF/B")"
   lsyncf "$LF/B" merge-base --dry-run
@@ -2830,7 +2956,7 @@ EOF
     mkledger "$1"
     lrec "$LF/A" "$ASHA" "branch/$1a"
     lfetch "$LF/B"
-    git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+    la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
     lrec "$LF/A" "$_fa2" "branch/$1b"
     lrec "$LF/B" "$BSHA" "branch/$1c" --no-push
   }
@@ -2897,9 +3023,10 @@ EOF
   # (−) T2-5: kit-row mismatch — the commit carries `Kit-Row: A`, the note says B (anchor: the note said A first).
   mkledger s2row
   lrec "$LF/A" "$ASHA" "branch/s2rowa"; lfetch "$LF/B"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_fa2" "branch/s2rowb"
-  git -C "$LF/B" commit -q --allow-empty -m b-row -m "Kit-Row: A"; BSHA="$(git -C "$LF/B" rev-parse HEAD)"
+  printf 'b-row change\n' >> "$LF/B/docs/architecture/x-design.md"; git -C "$LF/B" add docs/architecture/x-design.md
+  git -C "$LF/B" commit -q -m b-row -m "Kit-Row: A"; BSHA="$(git -C "$LF/B" rev-parse HEAD)"
   lrec "$LF/B" "$BSHA" "branch/s2rowc" --no-push
   _kanc=1; git -C "$LF/B" notes --ref="$LR" show "$BSHA" | grep -q '^kit-row: A$' && _kanc=0
   lmut "$LF/B" "$BSHA" 's/^kit-row: .*/kit-row: B/'
@@ -3117,7 +3244,7 @@ EOF
   lrec "$LF/A" "$ASHA" "branch/s2r1"
   lrec "$LF/B" "$BSHA" "branch/s2r2"
   lrec "$LF/A" "$ASHA" "branch/s2r1" --no-push --token "local twin"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_fa2" "branch/s2r3" --no-push
   if ldiverged "$LF/A"; then _anc=0; else _anc=1; fi
   _lpre="$(lrev "$LF/A")"
@@ -3239,7 +3366,7 @@ EOF
   lrec "$LF/A" "$ASHA" "branch/f1a0"
   lfetch "$LF/B"; _fpre="$(lrev "$LF/B")"
   lrejecthook
-  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1a --token "GO: f1a" --basis docs/architecture/x-design.md
+  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung integration --class control-plane --scope branch/f1a --token "GO: f1a" --basis docs/architecture/x-design.md
   _frc="$LRC"; _fsout="$LOUT"
   llog "$LF/B" --unpushed
   if [ -e "$LF/sig.mark" ] && [ "$LRC" = 0 ] && [ "$(lrev "$LF/B")" = "$_fpre" ] && ! lnote "$LF/B" "$BSHA" \
@@ -3253,7 +3380,7 @@ EOF
   mkledger f1b
   lrec "$LF/A" "$ASHA" "branch/f1b0"
   lfetch "$LF/B"
-  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/f1b --token "GO: f1b" --basis docs/architecture/x-design.md
+  lsig "$LF/B" push record --approved-sha "$BSHA" --approved-by "solo maintainer" --gate design --rung integration --class control-plane --scope branch/f1b --token "GO: f1b" --basis docs/architecture/x-design.md
   if [ "$LRC" = 143 ] && rnote "$LF" "$BSHA" && lnote "$LF/B" "$BSHA" && [ "$(lrev "$LF/B")" = "$(rrev "$LF")" ]; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync F1(b) (+): record + TERM during a push that SUCCEEDS -> note on origin, local == origin, exit 143, not unwound" "rc=$LRC out=$LOUT"
 
@@ -3317,7 +3444,7 @@ EOF
   lrec "$LF/A" "$ASHA" "branch/f2r1"
   lrec "$LF/B" "$BSHA" "branch/f2r2"
   lrec "$LF/A" "$ASHA" "branch/f2r1" --no-push --token "local twin"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_fa2" "branch/f2r3" --no-push
   if ldiverged "$LF/A"; then _anc=0; else _anc=1; fi
   _lpre="$(lrev "$LF/A")"
@@ -3530,7 +3657,7 @@ EOF
   lfix b1c
   if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
   _lpre="$(lrev "$LF/B")"
-  lplant "$LF/B" "refs/kit/notes-remote-" record --approved-sha "$ASHA" --approved-by "solo maintainer" --gate design --rung Design --class control-plane --scope branch/b1c --token "GO: b1c" --basis docs/architecture/x-design.md
+  lplant "$LF/B" "refs/kit/notes-remote-" record --approved-sha "$ASHA" --approved-by "solo maintainer" --gate design --rung integration --class control-plane --scope branch/b1c --token "GO: b1c" --basis docs/architecture/x-design.md
   if [ "$_anc" = 0 ] && [ "$LRC" = 2 ] && [ "$(lrev "$LF/B")" = "$_lpre" ] \
      && printf '%s' "$LOUT" | grep -qF "refs/kit/notes-remote-$_wpid"; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync B1(c) (−): the same symref at the scratch ref -> record's sync-in refuses naming it; the local ledger is intact" "anc=$_anc rc=$LRC lrev=$(lrev "$LF/B") want=$_lpre out=$LOUT"
@@ -3550,9 +3677,10 @@ EOF
   git clone -q --depth 1 -b main "file://$LF/remote.git" "$LF/S" 2>/dev/null
   git -C "$LF/S" config user.email t@example.com; git -C "$LF/S" config user.name t; git -C "$LF/S" config commit.gpgsign false
   git -C "$LF/S" fetch -q origin "refs/notes/$LR:refs/notes/$LR"
-  git -C "$LF/S" commit -q --allow-empty -m s-side; _ssha="$(git -C "$LF/S" rev-parse HEAD)"
+  printf 's-side change\n' >> "$LF/S/docs/architecture/x-design.md"; git -C "$LF/S" add docs/architecture/x-design.md
+  git -C "$LF/S" commit -q -m s-side; _ssha="$(git -C "$LF/S" rev-parse HEAD)"
   lrec "$LF/S" "$_ssha" "branch/b4s" --no-push
-  git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_fa2" "branch/b4b"
   _shal="$(git -C "$LF/S" rev-parse --is-shallow-repository)"
   if git -C "$LF/S" merge-base --is-ancestor "$(lrev "$LF/S")" "$(rrev "$LF")" 2>/dev/null; then _anc=1; else _anc=0; fi
@@ -3563,12 +3691,13 @@ EOF
   # B4(b): a notes chain TRUNCATED by --depth (its tip is a graft) is refused, naming 'shallow', ledger unchanged.
   mkledger b4b
   lrec "$LF/A" "$ASHA" "branch/b4ba"
-  git -C "$LF/A" commit -q --allow-empty -m a2; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
+  la2 "$LF/A"; _fa2="$(git -C "$LF/A" rev-parse HEAD)"
   lrec "$LF/A" "$_fa2" "branch/b4bb"
   git clone -q "file://$LF/remote.git" "$LF/S2" 2>/dev/null
   git -C "$LF/S2" config user.email t@example.com; git -C "$LF/S2" config user.name t; git -C "$LF/S2" config commit.gpgsign false
   git -C "$LF/S2" fetch -q --depth 1 origin "refs/notes/$LR:refs/notes/$LR"
-  git -C "$LF/S2" commit -q --allow-empty -m s2-side; _s2sha="$(git -C "$LF/S2" rev-parse HEAD)"
+  printf 's2-side change\n' >> "$LF/S2/docs/architecture/x-design.md"; git -C "$LF/S2" add docs/architecture/x-design.md
+  git -C "$LF/S2" commit -q -m s2-side; _s2sha="$(git -C "$LF/S2" rev-parse HEAD)"
   lrec "$LF/S2" "$_s2sha" "branch/b4bs" --no-push
   _lpre="$(lrev "$LF/S2")"
   lsync "$LF/S2"
@@ -3607,7 +3736,7 @@ EOF
   # (the earlier land section's cleanup removed $LAND_STUB with the land-* fixtures: recreate a stub)
   LAND_STUB="$LROOT/c2-stub"; printf '#!/bin/sh\ntouch %s\n' "'$LAND_MARK'" > "$LAND_STUB"; chmod +x "$LAND_STUB"
   _c2_path="$PATH"; PATH="$(lgh "$LOSHA" "solo maintainer"):$PATH"
-  lplant "$LOA" "refs/notes/kit-land-confirm-" land --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA" --approved-by "solo maintainer" --go-by "the owner" --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land c2"
+  lplant "$LOA" "refs/notes/kit-land-confirm-" land --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA" --approved-by "solo maintainer" --go-by "the owner" --gate release-candidate --rung rc --class control-plane --scope "PR #77" --token "GO: land c2"
   PATH="$_c2_path"; _wnr=""
   if [ "$LRC" != 0 ] && printf '%s' "$LOUT" | grep -qF "refs/notes/kit-land-confirm-$_wpid" && [ ! -f "$LAND_MARK" ] \
      && git -C "$LOA" rev-parse -q --verify "refs/notes/$LR2" >/dev/null && onote "$LOSHA"; then _lc=0; else _lc=1; fi
@@ -3668,12 +3797,12 @@ EOF
     [ "$LRC" = 0 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^scope: branch/r2a$')" = 1 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] \
       && printf '%s\n' "$_nn" | grep -q '^basis: docs/architecture/y-design.md$' && printf '%s\n' "$_nn" | grep -q '^scope: branch/r2b$'
   }
-  _f_r5() {   # a --rung that reads 'promotion x' is only a field value: the note stays two records (one blank separator), not three pieces
-    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r5a" --rung 'promotion x'; _x1="$LRC"; lrec "$LF/A" "$ASHA" "branch/r5b"; _x2="$LRC"
+  _f_r5() {   # a --go-by that reads 'promotion x' is only a field value: the note stays two records (one blank separator), not three pieces
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/r5a" --go-by 'promotion x'; _x1="$LRC"; lrec "$LF/A" "$ASHA" "branch/r5b"; _x2="$LRC"
     _nn="$(_n323)"
     if [ "$_x1" = 0 ] && [ "$_x2" = 0 ]; then _op323=0; fi
     [ "$_x1" = 0 ] && [ "$_x2" = 0 ] && [ "$(printf '%s\n' "$_nn" | grep -c '^$')" = 1 ] \
-      && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] && printf '%s\n' "$_nn" | grep -q '^rung: promotion x$'
+      && [ "$(printf '%s\n' "$_nn" | grep -c '^record: promotion')" = 2 ] && printf '%s\n' "$_nn" | grep -q '^go-by: promotion x \[self-asserted\]$'
   }
   _f_r11() {   # 64 records already on the sha: the 65th record refuses at the cap and the note still holds all 64
     mkledger "$1"; _i11=0
@@ -3694,7 +3823,7 @@ EOF
       printf '[ -e "%s/.raced" ] && exit 0\n: > "%s/.raced"\n' "$LF" "$LF"
       printf 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
       printf '( cd "%s/B" && PROMOTION_NOTES_REF=%s sh "%s" record --approved-sha %s \\\n' "$LF" "$LR" "$VERIFY" "$ASHA"
-      printf '  --approved-by racer --gate design --rung Design --class control-plane \\\n'
+      printf '  --approved-by racer --gate design --rung integration --class control-plane \\\n'
       printf '  --scope branch/r3racer --token "GO: racer" --basis docs/architecture/x-design.md ) >/dev/null 2>&1\nexit 0\n'
     } > "$LF/hooks/reference-transaction"
     chmod +x "$LF/hooks/reference-transaction"; git -C "$LF/A" config core.hooksPath "$LF/hooks"
@@ -3706,7 +3835,7 @@ EOF
     [ "$LRC" = 0 ] && [ "$(printf '%s\n' "$_ro" | sed -n 's/^scope: //p' | LC_ALL=C sort | tr '\n' ' ')" = 'branch/r3a branch/r3racer branch/r3seed ' ]
   }
   _f_l1() {   # a merge GO recorded on a design commit leaves that commit's design record in place
-    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/l1"; lrec "$LF/A" "$ASHA" "PR #5" --gate release-candidate --rung "Release candidate"
+    mkledger "$1"; lrec "$LF/A" "$ASHA" "branch/l1"; lrec "$LF/A" "$ASHA" "PR #5" --gate release-candidate --rung rc
     _nn="$(_n323)"
     if [ "$LRC" = 0 ]; then _op323=0; fi
     [ "$LRC" = 0 ] && printf '%s\n' "$_nn" | grep -q '^gate: design$' && printf '%s\n' "$_nn" | grep -q '^scope: branch/l1$' \
@@ -3739,7 +3868,7 @@ EOF
   }
   _t323rec() {   # <gate> <scope> -> a record with an approved-tree
     printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $T3X" "approved-tree: $T3TREE" "approved-by: o [self-asserted]" \
-      "gate: $1" "rung: r" "change-class: ordinary" "kit-row: (none)" "scope: $2" "approval-token: \"GO\"" "basis: b" "recorded-at: t"
+      "gate: $1" "rung: integration" "change-class: ordinary" "kit-row: (none)" "scope: $2" "approval-token: \"GO\"" "basis: b" "recorded-at: t"
   }
   _f_t1() {   # two records on one commit: a revert-and-reapply in the window cannot claim the commit a second time
     _t323repo "$1"; { _t323rec design branch/t1; printf '\n'; _t323rec release-candidate 'PR #1'; } > "$T3/.note"
@@ -3765,8 +3894,8 @@ EOF
   _j323 R11m _f_r11 's/if \[ \$((_nw_kept + 1)) -gt 64 \]; then/if false; then/' "dropping the refusal writes a 65th record (a defective note)"
   _j323 R12 _f_r12 - "a --token ending in whitespace is refused naming the field, and nothing is written"
   _j323 R12m _f_r12 's/^  for _p in "token=\$token" "basis=\$basis".*"gate=\$gate"; do$/  for _p in; do/' "dropping the refusal records a value the ledger will strip"
-  _j323 R5 _f_r5 - "a --rung of 'promotion x' stays a field value: two records, one separator"
-  _j323 R5m _f_r5 '/function hdr/ s/(record|land)/[A-Za-z0-9_-]+/' "the generic header rule splits the record at the rung line"
+  _j323 R5 _f_r5 - "a --go-by of 'promotion x' stays a field value: two records, one separator"
+  _j323 R5m _f_r5 '/function hdr/ s/(record|land)/[A-Za-z0-9_-]+/' "the generic header rule splits the record at the go-by line"
   _j323 L1 _f_l1 - "a merge GO on a design commit leaves its design record in place"
   _j323 L1m _f_l1 's/^_pv_note_with() {$/_pv_note_with() { printf "%s\\n" "$nbody"; return 0/' "restoring the replace erases the design record"
   _j323 S1a _f_s1a - "sync refuses a local-only note that holds two records, naming --discard-local"
@@ -3815,7 +3944,7 @@ EOF
   _f_l5a() {   # a re-record of the GO leaves the land record's go-record-sha256 dangling: the land record binds nothing
     _l323_land "$1"; _l323_trace "$_l_sq"; _l5pre="$LOUT"; _l5r0="$LRC"
     ( cd "$LOA" && PATH="$(lgh "$LOSHA" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" record --no-push \
-        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" --class control-plane \
+        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung rc --class control-plane \
         --scope "PR #77" --go-by "the owner" --token "a different token" ) >/dev/null 2>&1 && _l5rc=0 || _l5rc=$?
     _l323_trace "$_l_sq"
     if [ "$_ldc" = 0 ] && [ "$_l5rc" = 0 ] && [ "$LRC" = 0 ]; then _op323=0; fi
@@ -3847,7 +3976,7 @@ EOF
     while [ "$_i63" -lt 63 ]; do
       _i63=$((_i63 + 1))
       ( cd "$LOA" && PATH="$(lgh "$LOSHA" "solo maintainer"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" record --no-push \
-          --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" --class control-plane \
+          --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung rc --class control-plane \
           --scope "branch/cap$_i63" --token "GO" ) >/dev/null 2>&1 || true
     done
     lland "$LAND_STUB" "$LOSHA" control-plane "branch/$1"
@@ -3873,6 +4002,158 @@ EOF
   J323_COPY=0
 
   # =====================================================================================
+  # SWAS-943: the trunk trace reads the Inception baseline as the baseline, not a recordless merge. In the --recent walk a commit is the
+  # baseline only when it is the trunk's ONLY root (a property of the whole history, not of the window), the repository is not shallow, and no
+  # note binds it. Cells TB1-TB9; mutants TB1m TB2m TB3m TB3m2 TB4m TB8m, run by _j323 over a sed-edited COPY of the gate. Every fixture is a
+  # fresh repository on trunk `main`, root commit unrecorded; a recorded commit carries a hand-written note whose approved-tree is its own tree.
+  # =====================================================================================
+  _tb_init() {   # <name> -> TBR (a fresh repository, trunk `main`) and TBROOT (its root commit, no note)
+    TBR="$LROOT/$1"; rm -rf "$TBR"; mkdir -p "$TBR"
+    ( set -e; cd "$TBR"; git init -q; git symbolic-ref HEAD refs/heads/main
+      git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt; git add f.txt; git commit -qm base ) >/dev/null 2>&1
+    TBROOT="$(git -C "$TBR" rev-parse HEAD)"
+  }
+  _tb_commit() {   # <repo> <file> <content> <message> -> TBC, one parented commit on the trunk
+    ( cd "$1" && printf '%s\n' "$3" > "$2" && git add "$2" && git commit -qm "$4" ) >/dev/null 2>&1
+    TBC="$(git -C "$1" rev-parse HEAD)"
+  }
+  _tb_rec() {   # <repo> <commit> <row> -> a GO note on <commit> whose approved-tree is that commit's own tree
+    _tbt="$(git -C "$1" rev-parse "$2^{tree}")"
+    printf '%s\n' "record: promotion GO (approve->execute->log)" "approved-sha: $2" "approved-tree: $_tbt" \
+      "approved-by: o [self-asserted]" "gate: release-candidate" "rung: r" "change-class: ordinary" "kit-row: $3" \
+      "scope: PR #1" "approval-token: \"GO\"" "basis: b" "recorded-at: t" > "$1.note"
+    git -C "$1" notes --ref=promotions add -f -F "$1.note" "$2" >/dev/null 2>&1
+  }
+  _tb_ledger() {   # <repo> -> a ledger that binds nothing on the trunk: one note on a side commit (off the trunk, on the empty tree no trunk commit has)
+    _tbside="$(git -C "$1" commit-tree "$(git -C "$1" hash-object -t tree /dev/null)" -m side)"
+    _tb_rec "$1" "$_tbside" TB-SIDE
+  }
+  _tb_splice() {   # <repo> -> TBO (an unrelated single-commit orphan) merged onto the trunk, TBC (the merge commit): a SECOND root
+    ( cd "$1" && git checkout -q --orphan tborphan && git rm -rfq . && printf 'z\n' > z.txt && git add z.txt && git commit -qm orphan \
+        && git checkout -q main && git merge -q --allow-unrelated-histories --no-edit tborphan ) >/dev/null 2>&1
+    TBO="$(git -C "$1" rev-parse tborphan)"; TBC="$(git -C "$1" rev-parse HEAD)"
+  }
+  _tb_run() {   # <repo> <trace args...> -> LRC and LOUT (stdout and stderr together); the operation ran when it reached its own verdict
+    _tbd="$1"; shift
+    if LOUT="$( cd "$_tbd" && $VSH "$VERIFY" trace "$@" 2>&1 )"; then LRC=0; else LRC=$?; fi
+    # The operation RAN only when the trace reached its own verdict: the no-ledger early exit (rc 1, "nothing to trace against") is no verdict,
+    # so a mutant that reds through it is never counted as killed (_j323 reads _op323).
+    case "$LOUT" in *'nothing to trace against'*) return 0 ;; esac
+    if { [ "$LRC" = 0 ] || [ "$LRC" = 1 ]; } && _opok; then _op323=0; fi
+  }
+  _tb_has() { printf '%s\n' "$LOUT" | grep -qF -- "$1"; }
+  _tb_cnt() { printf '%s\n' "$LOUT" | grep -cF -- "$1" || true; }
+  _tb_s12() { printf '%s' "$1" | cut -c1-12; }
+  _f_tb1() {   # root (no note), then one recorded commit: green, the baseline line, exact counts, no RECORDLESS text
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'recorded a'; _tb_rec "$TBR" "$TBC" TB-ROW-1
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 0 ] && _tb_has "$(_tb_s12 "$TBROOT")  baseline: the trunk's only root commit, unrecorded by design (Inception precedes the GO ledger)" \
+      && _tb_has '1/1 bound of the last 2 commit(s)' && _tb_has '1 is the Inception baseline' && ! _tb_has 'RECORDLESS MERGE'
+  }
+  _f_tb2() {   # root (no note), then one unrecorded commit: the commit reds as RECORDLESS, the root reads as the baseline and only that
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'unrecorded a'; _tb_one="$TBC"; _tb_ledger "$TBR"
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 1 ] && _tb_has "trace: $_tb_one has no promotion note" && ! _tb_has "trace: $TBROOT has no promotion note" \
+      && _tb_has "$(_tb_s12 "$TBROOT")  baseline: " && [ "$(_tb_cnt 'RECORDLESS MERGE')" = 1 ]
+  }
+  _f_tb3() {   # a second root spliced in (its merge commit recorded): nothing is exempt, so the root and the orphan both red
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'recorded a'; _tb_one="$TBC"; _tb_rec "$TBR" "$_tb_one" TB-ROW-3
+    _tb_splice "$TBR"; _tb_rec "$TBR" "$TBC" TB-ROW-3m
+    _tb_run "$TBR" --recent 4 --from main
+    [ "$LRC" = 1 ] && ! _tb_has 'unrecorded by design' && _tb_has "trace: $TBO has no promotion note" \
+      && _tb_has "trace: $TBROOT has no promotion note" && ! _tb_has "trace: $_tb_one has no promotion note" \
+      && ! _tb_has "trace: $TBC has no promotion note" && [ "$(_tb_cnt 'RECORDLESS MERGE')" = 2 ]
+  }
+  _f_tb4() {   # a window holding only the baseline asserts nothing: it reds
+    _tb_init "$1"; _tb_ledger "$TBR"
+    _tb_run "$TBR" --recent 1 --from main
+    [ "$LRC" = 1 ] && _tb_has 'only the Inception baseline' && _tb_has "$(_tb_s12 "$TBROOT")  baseline: " && ! _tb_has 'OK: trace'
+  }
+  _f_tb5() {   # --ref is unchanged: asked about the root by name, the trace still answers RECORDLESS
+    _tb_init "$1"; _tb_ledger "$TBR"
+    _tb_run "$TBR" --ref "$TBROOT"
+    [ "$LRC" = 1 ] && _tb_has 'RECORDLESS MERGE' && ! _tb_has 'unrecorded by design'
+  }
+  _f_tb6() {   # the true root is OUTSIDE the window, a single-commit orphan is spliced in: two roots on the trunk, so the orphan is no baseline
+    _tb_init "$1"; _tb_i=0
+    while [ "$_tb_i" -lt 5 ]; do
+      _tb_i=$((_tb_i + 1)); _tb_commit "$TBR" "t$_tb_i.txt" "v$_tb_i" "trunk $_tb_i"; _tb_rec "$TBR" "$TBC" "TB-ROW-6-$_tb_i"
+    done
+    _tb_splice "$TBR"; _tb_rec "$TBR" "$TBC" TB-ROW-6m
+    _tb_run "$TBR" --recent 3 --from main
+    [ "$LRC" = 1 ] && ! _tb_has 'unrecorded by design' && _tb_has "trace: $TBO has no promotion note" && [ "$(_tb_cnt 'RECORDLESS MERGE')" = 1 ]
+  }
+  _tb7_build() {   # <name> -> TBS, a depth-1 clone of a trunk whose tip carries no note; rc 1 when the clone cannot be made shallow here
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'recorded a'; _tb_rec "$TBR" "$TBC" TB-ROW-7
+    _tb_commit "$TBR" b.txt b1 'unrecorded tip'; TBTIP="$TBC"
+    TBS="$TBR-shallow"; rm -rf "$TBS"
+    git clone -q --depth 1 "file://$TBR" "$TBS" >/dev/null 2>&1 || return 1
+    git -C "$TBS" fetch -q origin "refs/notes/promotions:refs/notes/promotions" >/dev/null 2>&1 || return 1
+    [ "$(git -C "$TBS" rev-parse --is-shallow-repository 2>/dev/null)" = true ]
+  }
+  _f_tb7() {   # a shallow clone: its boundary commit looks like a root, so no exemption; one line says why; the tip reds
+    _tb7_build "$1" || return 1
+    _tb_run "$TBS" --recent 2 --from main
+    [ "$LRC" = 1 ] && _tb_has 'baseline: not checked (shallow clone; fetch the full history to exempt the Inception baseline)' \
+      && ! _tb_has 'unrecorded by design' && _tb_has "trace: $TBTIP has no promotion note"
+  }
+  _f_tb8() {   # a replace-graft makes an unrecorded commit look parentless: the probe ignores it, so that commit is no baseline and reds
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'unrecorded one'; _tb_one="$TBC"
+    _tb_commit "$TBR" b.txt b1 'recorded two'; _tb_rec "$TBR" "$TBC" TB-ROW-8
+    git -C "$TBR" replace --graft "$_tb_one" >/dev/null 2>&1 || return 1
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 1 ] && ! _tb_has 'unrecorded by design' && _tb_has "trace: $_tb_one has no promotion note" && [ "$(_tb_cnt 'RECORDLESS MERGE')" = 1 ]
+  }
+  _f_tb10g() {   # a .git/info/grafts file cuts the real root off: the gate exempts nothing, says why, and the parentless-looking commit reds
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'unrecorded one'; _tb_one="$TBC"
+    _tb_commit "$TBR" b.txt b1 'recorded two'; _tb_rec "$TBR" "$TBC" TB-ROW-10
+    mkdir -p "$TBR/.git/info"; printf '%s\n' "$_tb_one" > "$TBR/.git/info/grafts"
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 1 ] && _tb_has 'baseline: not checked (a .git/info/grafts file is present; grafts can make any commit look like a root)' \
+      && ! _tb_has 'unrecorded by design' && _tb_has "trace: $_tb_one has no promotion note" && [ "$(_tb_cnt 'RECORDLESS MERGE')" = 1 ]
+  }
+  _f_tb11() {   # the root carries its OWN note (plus one recorded commit): it binds like any commit, no baseline line, 2/2 bound
+    _tb_init "$1"; _tb_rec "$TBR" "$TBROOT" TB-ROW-11r; _tb_commit "$TBR" a.txt a1 'recorded a'; _tb_rec "$TBR" "$TBC" TB-ROW-11
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 0 ] && ! _tb_has 'baseline:' && _tb_has '2/2 of the last 2 commit(s) on main are bound to a promotion note' && ! _tb_has 'Inception baseline'
+  }
+  _f_tb9() {   # two unrecorded PARENTED commits (the root is outside the window): neither is a baseline; both red
+    _tb_init "$1"; _tb_commit "$TBR" a.txt a1 'unrecorded one'; _tb_one="$TBC"; _tb_commit "$TBR" b.txt b1 'unrecorded two'; _tb_two="$TBC"; _tb_ledger "$TBR"
+    _tb_run "$TBR" --recent 2 --from main
+    [ "$LRC" = 1 ] && ! _tb_has 'unrecorded by design' && _tb_has "trace: $_tb_one has no promotion note" \
+      && _tb_has "trace: $_tb_two has no promotion note"
+  }
+  _j323 TB1 _f_tb1 - "the trunk's only root, unrecorded, reads as the Inception baseline: green, one baseline line, 1/1 bound, no RECORDLESS text"
+  _j323 TB2 _f_tb2 - "an unrecorded commit after the baseline reds as RECORDLESS while the root reads as the baseline and only that"
+  _j323 TB3 _f_tb3 - "a second root spliced in turns the exemption off: the root and the orphan both red"
+  _j323 TB4 _f_tb4 - "a window holding only the baseline reds: no bound commit, so a green would assert nothing"
+  _j323 TB5 _f_tb5 - "trace --ref on the root keeps its strict answer (RECORDLESS MERGE)"
+  _j323 TB6 _f_tb6 - "a spliced orphan inside a window whose true root is outside it is no baseline (two roots on the trunk)"
+  if _tb7_build tb7probe; then
+    _j323 TB7 _f_tb7 - "a shallow clone exempts nothing and says so (the boundary commit looks like a root)"
+  else
+    echo "selftest TB7: not built, because the depth-1 clone could not be made shallow here (git clone --depth over file://, the notes fetch, or --is-shallow-repository was not available); TB7 and TB4m were NOT run"
+  fi
+  _j323 TB8 _f_tb8 - "a replace-graft cannot fake a root: the probe ignores replace refs, so the grafted commit reds"
+  _j323 TB9 _f_tb9 - "an unrecorded PARENTED commit is never the baseline (the root test bites)"
+  _j323 TB10g _f_tb10g - "a .git/info/grafts file turns the exemption off, says so, and the commit it makes look parentless reds"
+  _j323 TB11 _f_tb11 - "a root that carries its own note binds like any commit: no baseline line, 2/2 bound, no baseline clause"
+  _j323 TB10gm _f_tb10g 's/^    _tr_shallow=grafted$/    :/' "dropping the grafts test lets the grafted commit read as the only root, and exempts it"
+  _j323 TB1m _f_tb9 's/\[ "\$_tr_roots" = "\$_tr_c" \]/true/' "treating any unbindable commit as the baseline exempts a parented one"
+  _j323 TB2m _f_tb6 's#\[ "\$_tr_roots" = "\$_tr_c" \]#[ "$(git rev-list --parents -n 1 "$_tr_c" | wc -w | tr -d " ")" = 1 ]#' "testing 'a root in the window' instead of 'the trunk's only root' exempts a spliced orphan"
+  _j323 TB3m _f_tb1 's/_tr_n - _tr_miss - _tr_base/_tr_n - _tr_miss/' "counting the baseline as bound changes the exact numbers"
+  _j323 TB3m2 _f_tb4 's/_tr_n - _tr_miss - _tr_base/_tr_n - _tr_miss/' "counting the baseline as bound lets a baseline-only window go green"
+  if _tb7_build tb7probe; then
+    _j323 TB4m _f_tb7 's/\[ "\$_tr_shallow" = false \] && //' "skipping the shallow test exempts a shallow boundary commit"
+  fi
+  # TB8m: the gate exports GIT_NO_REPLACE_OBJECTS=1 for the whole script (line 120), so the probe's own --no-replace-objects is redundant and
+  # dropping it alone changes nothing: that flag-only mutant is equivalent and is NOT built. This mutant drops BOTH, so the graft is honoured, the
+  # grafted commit is the trunk's only reachable root, and it reads as the baseline (rc 0 plus the baseline line); the real gate reds it (rc 1).
+  # A caller environment that itself exports GIT_NO_REPLACE_OBJECTS makes this mutant read SURVIVED, which fails closed (the cell then flags it).
+  _j323 TB8m _f_tb8 's/^export GIT_NO_REPLACE_OBJECTS=1/:/;s/git -c core.commitGraph=false --no-replace-objects rev-list --max-parents=0/git -c core.commitGraph=false rev-list --max-parents=0/' "a gate that honours replace refs lets a graft make the grafted commit the only root, and exempts it"
+
+  # =====================================================================================
   # SWAS-901 slice A: `go-bound`, the read-only verb the solo-go-bound workflow runs from the BASE branch. It prints exactly one line,
   # `go-bound: na|ok|missing|error [reason]`, and writes nothing. Each cell is run by _j323 against the real gate (must hold) and, for the
   # mutants, against a sed-edited COPY (must NOT hold). GB-T1..GB-T12 read the relationship from the DEFAULT branch's tip (refs/kit/solo-go-default, set to the base B by the fixture) and the PR head by sha; GB-T9c
@@ -3889,10 +4170,15 @@ EOF
       git commit -qm base; git update-ref refs/kit/solo-go-default HEAD ) >/dev/null 2>&1
     G_B="$(git -C "$G_R" rev-parse HEAD)"
   }
-  _g901_head() {   # <repo> <parent> <change|empty> [<dial line>] -> G_H, a commit on <parent>; HEAD goes back to the base tip
+  _g901_head() {   # <repo> <parent> <change|design|empty> [<dial line>] -> G_H, a commit on <parent>; HEAD goes back to the base tip. `design` is `change` plus a docs/architecture/x-design.md the head adds (a design GO's basis must be touched by its approved commit, SWAS-944)
     ( set -e; cd "$1"; git checkout -q "$2"
-      if [ "$3" = change ]; then
+      if [ "$3" = change ] || [ "$3" = design ]; then
         printf '%s\n' "$2" >> f.txt; git add f.txt
+        if [ "$3" = design ]; then
+          mkdir -p docs/architecture
+          printf '# Fixture design\n\nA design the PR head adds so its design GO names a tracked, touched file.\nIt carries several real lines so it is more than a stub.\nThe approved commit is the one that last touched it.\n' > docs/architecture/x-design.md
+          git add docs/architecture/x-design.md
+        fi
         if [ -n "${4:-}" ]; then mkdir -p .kit; printf '%s\n' "$4" > .kit/dials.conf; git add .kit/dials.conf; fi
         git commit -qm pr
       else git commit -q --allow-empty -m empty; fi
@@ -3902,10 +4188,10 @@ EOF
   _g901_rec() {   # <repo> <sha> <scope> <gate> [<class>] -> one GO record on <sha>, written offline by the real verb
     if [ "$4" = design ]; then
       ( cd "$1" && $VSH "$G901_REAL" record --no-push --approved-sha "$2" --approved-by "solo maintainer" --go-by "the owner" --gate design \
-          --rung Design --class "${5:-control-plane}" --scope "$3" --token "GO: design $2" --basis docs/architecture/x-design.md ) >/dev/null 2>&1
+          --rung integration --class "${5:-control-plane}" --scope "$3" --token "GO: design $2" --basis docs/architecture/x-design.md ) >/dev/null 2>&1
     else
       ( cd "$1" && $VSH "$G901_REAL" record --no-push --approved-sha "$2" --approved-by "solo maintainer" --go-by "the owner" --gate "$4" \
-          --rung "Release candidate" --class "${5:-ordinary}" --scope "$3" --token "GO: $4 $2" ) >/dev/null 2>&1
+          --rung rc --class "${5:-ordinary}" --scope "$3" --token "GO: $4 $2" ) >/dev/null 2>&1
     fi
   }
   _g901_gb() {   # <repo> <sha> <pr> [<base-ref> = main] [<default-branch> = main] -> LOUT (stdout), LRC
@@ -3918,8 +4204,8 @@ EOF
     return 1
   }
   _g901_snap() { ( cd "$1" && git for-each-ref && git notes --ref=promotions list ) 2>&1; }
-  _g901_solo() {   # <name> -> a solo base, a PR head G_H on it and a valid merge-gate record for PR #7 on that head
-    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+  _g901_solo() {   # <name> [<head mode> = change] -> a solo base, a PR head G_H on it and a valid merge-gate record for PR #7 on that head
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" "${2:-change}"
     _g901_rec "$G_R" "$G_H" "PR #7" release-candidate
   }
   _f_gb1() {   # a base that reads team or has no dial is na, though the PR head declares solo and carries a valid note
@@ -3958,13 +4244,13 @@ EOF
     _g901_is missing
   }
   _f_gb4a() {   # a design-gate record and a merge-gate record for the same PR: the merge-gate one is judged -> ok
-    _g901_solo "$1" || return 1
+    _g901_solo "$1" design || return 1
     _g901_rec "$G_R" "$G_H" "PR #7" design || return 1
     _g901_gb "$G_R" "$G_H" 7; _g901_ran
     _g901_is ok
   }
   _f_gb4b() {   # a design GO alone is not a merge GO -> missing
-    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" design
     _g901_rec "$G_R" "$G_H" "PR #7" design || return 1
     _g901_gb "$G_R" "$G_H" 7; _g901_ran
     _g901_is missing
@@ -4046,6 +4332,30 @@ EOF
     if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ]; then _op323=0; fi
     [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -qF -e 'merge relationship: solo (origin/main'
   }
+  # SWAS-948. record now refuses `--gate promotion`, so a legacy record is PLANTED here by rewriting the gate line of a real one.
+  _g948_regate() {   # <repo> <sha> <sed script> -> rewrites the note on <sha> in place
+    ( cd "$1" && git notes --ref=promotions show "$2" | sed "$3" > "$1.note" && git notes --ref=promotions add -f -F "$1.note" "$2" ) >/dev/null 2>&1
+  }
+  _f_coex() {   # THE DISCLOSED TRANSITIONAL STATE: a legacy `promotion` record beside a new `merge` record for one PR is two merge-gate records, so go-bound fails closed
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #7" merge || return 1
+    _g901_rec "$G_R" "$G_H" "PR #7" release-candidate || return 1
+    _g948_regate "$G_R" "$G_H" 's/^gate: release-candidate$/gate: promotion/' || return 1
+    _g948_n="$( cd "$G_R" && git notes --ref=promotions show "$G_H" 2>/dev/null )"
+    printf '%s\n' "$_g948_n" | grep -qx 'gate: promotion' && printf '%s\n' "$_g948_n" | grep -qx 'gate: merge' || return 1   # both records exist on the same sha and scope
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing
+  }
+  _f_gbt() {   # pv_go_gate_typed's letter boundary, on a planted note: the pick keeps `planned-release` as a merge-gate record, so go-bound
+    # reaches the solo bar, whose design*/plan* prefix then refuses it as a pre-build gate (fail closed). Without the boundary the pick drops
+    # the record first and go-bound says missing for another reason, so the solo-bar reason is what pins the boundary.
+    _g901_repo "$1" MERGE_RELATIONSHIP=solo NONE; _g901_head "$G_R" "$G_B" change
+    _g901_rec "$G_R" "$G_H" "PR #7" merge || return 1
+    _g948_regate "$G_R" "$G_H" 's/^gate: merge$/gate: planned-release/' || return 1
+    ( cd "$G_R" && git notes --ref=promotions show "$G_H" 2>/dev/null | grep -qx 'gate: planned-release' ) || return 1
+    _g901_gb "$G_R" "$G_H" 7; _g901_ran
+    _g901_is missing && printf '%s' "$LOUT" | grep -qF -e "gate 'planned-release' is a pre-build gate"
+  }
   J323_COPY=0
   _j323 GB-T1 _f_gb1 - "go-bound: a base that reads team or has no dial is na, though the PR head declares solo"
   _j323 GB-T1m _f_gb1 's@^  _gb_tip=.*$@  _gb_tip="$_gb_sha"@' "reading the dial from the PR head instead of the base tip opens a solo reading"
@@ -4081,6 +4391,9 @@ EOF
   _j323 GB-T8m _f_gb8 's@^  if \[ "\$_mrgov" = team .; then$@  if false; then@' "letting the dial win over Governance team reads solo"
   _j323 GB-T9 _f_gb9 - "go-bound: writes no ref and no note"
   _j323 GB-T9m _f_gb9 's@echo "go-bound: ok"@git notes --ref=promotions add -f -m x "$_gb_sha" >/dev/null 2>\&1; echo "go-bound: ok"@' "a notes add inside go-bound moves the ledger"
+  _j323 GB-948COEX _f_coex - "948-COEX: a legacy promotion record beside a new merge record on one PR reads missing in go-bound (fail closed)"
+  _j323 GB-948T _f_gbt - "948-T: a planted planned-release note is kept by go-bound's pick (pv_go_gate_typed's letter boundary) and refused by the solo bar"
+  _j323 GB-948Tm _f_gbt 's@design|plan|design\[!a-z\]\*|plan\[!a-z\]\*) return 0 ;;@design|plan|design*|plan*) return 0 ;;@' "a typed-gate test with no letter boundary treats planned-release as a plan gate, so the pick drops it before the solo bar"
   _j323 GB-T9b _f_gb9b - "go-bound: stdout is exactly one line, and a bad flag is an error, rc 2"
   _j323 GB-T9bm _f_gb9b 's@echo "go-bound: ok"@echo "go-bound: ok"; echo "go-bound: ok"@' "a second output line breaks the one-line grammar"
   # SWAS-901 E6 S-1: once the default branch's REQUIRED-CHECKS.md declares solo-go-bound, a default branch that no longer READS solo (a team dial, a
@@ -4166,7 +4479,7 @@ EOF
     _sgl_d="$1"; _sgl_gh="$(lgh "$LOSHA" "solo maintainer")"
     if _ld_out="$( cd "$LOA" && SG_NEXT="$_sgl_gh/gh" PROMOTION_VERIFY_SG_POLL="${SG_POLL:-2}" PATH="$_sgl_d:$_sgl_gh:$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land \
           --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA" --approved-by "solo maintainer" --go-by "the owner" \
-          --gate release-candidate --rung "Release candidate" --class control-plane --scope "PR #77" --token "GO: land at $LOSHA" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+          --gate release-candidate --rung rc --class control-plane --scope "PR #77" --token "GO: land at $LOSHA" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
     case "$_ld_out" in *'merge relationship: '*) _op323=0 ;; esac
   }
   _sg_merged() { [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ]; }
@@ -4287,6 +4600,415 @@ EOF
   _j323 HO4m2 _f_ho4 's@^  pv_handover land .*MUT-HO-OK$@  :@' "without the print before the success text the count is one"
   _j323 HO4m3 _f_ho4 's@merged on your recorded GO, bound to the head sha@merged on an authenticated non-author forge approval@' "reverting the solo success text claims a forge approval that no forge gave"
   J323_COPY=0; LGH_NOREV=""
+
+  # =====================================================================================
+  # SWAS-944: `record --gate design` checks its basis BEFORE it writes (design 2026-11-18-record-input-at-write-944 §2e rev 3, errata E2 + E3).
+  # Every negative asserts rc 2, ITS OWN leg's message, no new note, and a ledger that is unmoved or fast-forwarded to origin's tip. Each cell is
+  # run by _j323 against the real gate (must hold) and its mutants against a sed-edited COPY (must NOT hold). RI1-RI21 with RI8i and RI17d, E2's
+  # RI22a-e, E3's RI17e-h and RI15b. E1's RI17e-g are replaced by E3's (E3 says so). Not built: none.
+  # =====================================================================================
+  J323_COPY=0
+  _ri_head() { git -C "$1" rev-parse HEAD; }
+  _ri_pre() { _rip_l="$(lrev "$1")"; _rip_o="$(rrev "$LF")"; }   # <clone>: the ledger's state before the operation under test
+  _ri_ran() { if { [ "$LRC" = 0 ] || [ "$LRC" = 2 ]; } && _opok; then _op323=0; fi; }
+  _ri_ran_any() { if _opok; then _op323=0; fi; }
+  _ri_said() { printf '%s' "$LOUT" | grep -qF -e "$1"; }
+  _ri_neg0() {   # <clone> <needle>... -> rc 2, every needle printed, origin's ledger unmoved, the clone's unmoved or fast-forwarded to origin's tip
+    _rn_c="$1"; shift
+    [ "$LRC" = 2 ] || return 1
+    for _rn_n in "$@"; do _ri_said "$_rn_n" || return 1; done
+    [ "$(rrev "$LF")" = "$_rip_o" ] || return 1
+    [ "$(lrev "$_rn_c")" = "$_rip_l" ] || [ "$(lrev "$_rn_c")" = "$(rrev "$LF")" ] || return 1
+    return 0
+  }
+  _ri_neg() { _ri_neg0 "$@" && _ri_said 'Nothing was written'; }
+  _ri_nonote() { ! lnote "$1" "$2" && ! rnote "$LF" "$2"; }   # <clone> <sha>: no note on that sha, locally or on origin
+  _ri_fetch_line() { printf '%s\n' "$LOUT" | grep -qxF "        git fetch origin refs/notes/$LR:refs/notes/$LR"; }
+  _ri_sync_line() { printf '%s\n' "$LOUT" | grep -qxF "        sh scripts/promotion-verify.sh sync"; }
+  _ri_nostar() {   # every printed remedy line carries neither a glob nor a leading plus, and at least one is printed
+    _rns="$(printf '%s\n' "$LOUT" | grep -E '^        (git fetch origin |sh scripts/promotion-verify.sh sync)')"
+    [ -n "$_rns" ] || return 1
+    ! printf '%s\n' "$_rns" | grep -qE '[*]|[+]refs'
+  }
+  _rir() {   # <clone> <sha> <scope> <basis> [extra record args...] -> LRC, LOUT: a design GO (a later --gate overrides, last wins). _RI_GLOB, when set, is CB_DESIGN_GLOB
+    _ric="$1"; _ris="$2"; _rix="$3"; _rib="$4"; shift 4
+    if LOUT="$( cd "$_ric" && { if [ -n "${_RI_GLOB+x}" ]; then CB_DESIGN_GLOB="$_RI_GLOB"; export CB_DESIGN_GLOB; fi; } \
+        && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e PROMOTION_NOTES_REF="$LR" $VSH "$VERIFY" record \
+          --approved-sha "$_ris" --approved-by "solo maintainer" --gate design --rung integration \
+          --class control-plane --scope "$_rix" --token "GO: $_rix" \
+          --basis "$_rib" "$@" 2>&1 )"; then LRC=0; else LRC=$?; fi
+  }
+  _ri_links() {   # <name> -> mkledger plus _riLNK (docs/architecture/link-design.md as a symlink) and _riA3 (the same path replaced by a regular file)
+    mkledger "$1"
+    ( set -e; cd "$LF/A"
+      ln -s x-design.md docs/architecture/link-design.md; git add docs/architecture/link-design.md; git commit -qm lnk; git rev-parse HEAD > "$LF/.lnk"
+      git rm -q docs/architecture/link-design.md
+      printf '# Link design\n\nNow a regular file.\nIt carries several real lines so it is more than a stub.\nThe approved commit replaces the symlink with it.\n' > docs/architecture/link-design.md
+      git add docs/architecture/link-design.md; git commit -qm a3; git rev-parse HEAD > "$LF/.a3" ) >/dev/null 2>&1
+    _riLNK="$(cat "$LF/.lnk")"; _riA3="$(cat "$LF/.a3")"
+  }
+  _ri_errata() {   # <name> -> mkledger plus _riE1, a commit adding five errata-shaped files (x-errata, x-errata-2, z-design, z-errata, q-errata)
+    mkledger "$1"
+    ( set -e; cd "$LF/A"
+      for _rif in x-errata x-errata-2 z-design z-errata q-errata; do
+        printf '# %s\n\nA fixture file for the errata cells.\nIt carries several real lines so it is more than a stub.\nThe approved commit adds it.\n' "$_rif" > "docs/architecture/$_rif.md"
+      done
+      git add docs/architecture; git commit -qm errata; git rev-parse HEAD > "$LF/.e1" ) >/dev/null 2>&1
+    _riE1="$(cat "$LF/.e1")"
+  }
+  _riX=docs/architecture/x-design.md
+  _riY=docs/architecture/y-design.md
+
+  _f_ri1() {   # a bare basis the approved commit touches, a full 40-hex sha: recorded and published
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri1 "$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && _ri_said published && rnote "$LF" "$ASHA"
+  }
+  _f_ri2() {   # the same with a 7-hex --approved-sha: recorded, and the note says it exactly as typed
+    mkledger "$1"; _ri2s="$(printf '%s' "$ASHA" | cut -c1-7)"
+    _rir "$LF/A" "$_ri2s" branch/ri2 "$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && rnote "$LF" "$ASHA" && git -C "$LF/A" notes --ref="$LR" show "$ASHA" | grep -qx "approved-sha: $_ri2s"
+  }
+  _f_ri3() {   # run B: --basis <asha>:<path> with nothing at P is refused with the "use --basis <path>" remedy
+    mkledger "$1"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$ASHA" branch/ri3 "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "use --basis $_riX, or approve a later commit on this branch" && _ri_nonote "$LF/A" "$ASHA"
+  }
+  _f_ri4() {   # P = asha through a short P against a full asha, and a full P against a short asha: refused by leg 5, not by rc alone
+    mkledger "$1"; _ri_pre "$LF/A"; _ri4s="$(printf '%s' "$ASHA" | cut -c1-7)"
+    _rir "$LF/A" "$ASHA" branch/ri4a "$_ri4s:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "use --basis $_riX" || return 1
+    _rir "$LF/A" "$_ri4s" branch/ri4b "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "use --basis $_riX" && _ri_nonote "$LF/A" "$ASHA"
+  }
+  _f_ri5() {   # a stacked child: P = asha, P carries a bare design record naming the path under another scope -> accepted (the gate accepts it)
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri5p "$_riX"; [ "$LRC" = 0 ] || return 1
+    _rir "$LF/A" "$ASHA" branch/ri5c "$ASHA:$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && [ "$(git -C "$LF/A" notes --ref="$LR" show "$ASHA" | grep -c '^record: promotion')" = 2 ]
+  }
+  _f_ri6() {   # the same with the parent's own scope: it would replace the very GO it quotes
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri6 "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$ASHA" branch/ri6 "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "would replace the design GO it quotes" && [ "$(git -C "$LF/A" notes --ref="$LR" show "$ASHA" | grep -c '^record: promotion')" = 1 ]
+  }
+  _f_ri7() {   # a bare basis the approved commit does not touch: refused, naming the commit that last touched it
+    mkledger "$1"; la2 "$LF/A"; _ri7a="$(_ri_head "$LF/A")"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri7a" branch/ri7 "$_riY"; _ri_ran
+    _ri_neg "$LF/A" "does not touch '$_riY' (last touched by $ASHA)" && _ri_nonote "$LF/A" "$_ri7a"
+  }
+  _f_ri8() {   # path safety (two cases), a path absent at asha, and a symlink at asha: each refused by its own leg
+    _ri_links "$1"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$ASHA" branch/ri8a ../x-design.md; _ri_ran
+    _ri_neg "$LF/A" "absolute or contains '..'" || return 1
+    _rir "$LF/A" "$ASHA" branch/ri8b /abs/x-design.md; _ri_ran
+    _ri_neg "$LF/A" "absolute or contains '..'" || return 1
+    _rir "$LF/A" "$ASHA" branch/ri8c docs/architecture/nope-design.md; _ri_ran
+    _ri_neg "$LF/A" "is not a regular file at the approved commit" || return 1
+    _rir "$LF/A" "$_riLNK" branch/ri8d docs/architecture/link-design.md; _ri_ran
+    _ri_neg "$LF/A" "is not a regular file at the approved commit" && _ri_nonote "$LF/A" "$_riLNK"
+  }
+  _f_ri8i() {   # the inherited form: the path is a symlink at P (and a regular file at asha): refused at P by leg 3i
+    _ri_links "$1"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_riA3" branch/ri8i "$_riLNK:docs/architecture/link-design.md"; _ri_ran
+    _ri_neg "$LF/A" "is not a regular file at $_riLNK" && _ri_nonote "$LF/A" "$_riA3"
+  }
+  _f_ri9() {   # README.md on a commit that touches it: only the glob refuses it
+    mkledger "$1"
+    ( cd "$LF/A" && printf '# readme\n' > README.md && git add README.md && git commit -qm readme ) >/dev/null 2>&1; _ri9a="$(_ri_head "$LF/A")"
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri9a" branch/ri9 README.md; _ri_ran
+    _ri_neg "$LF/A" "is not a design artifact" && _ri_nonote "$LF/A" "$_ri9a"
+  }
+  _f_ri10() {   # inherited, a ledger on origin but no design GO record at P
+    mkledger "$1"; la2 "$LF/A"; _ri10a="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri10a" branch/ri10x "$_riX"; [ "$LRC" = 0 ] || return 1
+    la2 "$LF/A"; _ri10b="$(_ri_head "$LF/A")"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri10b" branch/ri10 "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "no design GO record at $ASHA" && _ri_nonote "$LF/A" "$_ri10b"
+  }
+  _f_ri11() {   # inherited, P's only design record is itself inherited: one hop only
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri11g "$_riX"; [ "$LRC" = 0 ] || return 1
+    la2 "$LF/A"; _ri11a="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri11a" branch/ri11c "$ASHA:$_riX"; [ "$LRC" = 0 ] || return 1
+    la2 "$LF/A"; _ri11b="$(_ri_head "$LF/A")"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri11b" branch/ri11d "$_ri11a:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "one hop only" && _ri_nonote "$LF/A" "$_ri11b"
+  }
+  _f_ri12() {   # inherited, P's design record names another path: refused, naming both paths
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri12p "$_riY"; [ "$LRC" = 0 ] || return 1
+    la2 "$LF/A"; _ri12a="$(_ri_head "$LF/A")"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri12a" branch/ri12 "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "name '$_riY', not '$_riX'" && _ri_nonote "$LF/A" "$_ri12a"
+  }
+  _f_ri13() {   # inherited, a valid bare parent at an earlier P: accepted
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri13p "$_riX"; [ "$LRC" = 0 ] || return 1
+    la2 "$LF/A"; _ri13a="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri13a" branch/ri13 "$ASHA:$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && rnote "$LF" "$_ri13a"
+  }
+  _f_ri14() {   # inherited, a basis-less (legacy-shaped) design parent: accepted; CI judges the list and the position
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri14p "$_riX"; [ "$LRC" = 0 ] || return 1
+    git -C "$LF/A" notes --ref="$LR" show "$ASHA" | sed 's/^basis: .*/basis: (none recorded)/' > "$LF/ri14.note" || return 1
+    git -C "$LF/A" notes --ref="$LR" add -f -F "$LF/ri14.note" "$ASHA" >/dev/null 2>&1 || return 1
+    la2 "$LF/A"; _ri14a="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri14a" branch/ri14c "$ASHA:$_riX" --no-push; _ri_ran
+    [ "$LRC" = 0 ] && lnote "$LF/A" "$_ri14a"
+  }
+  _f_ri15() {   # --approved-sha HEAD, a branch name and 6 hex characters, each resolving to a commit that passes legs 1-4: leg 0 alone refuses
+    mkledger "$1"; la2 "$LF/A"; _ri15a="$(_ri_head "$LF/A")"; git -C "$LF/A" branch ri15br "$_ri15a"; _ri_pre "$LF/A"
+    _rir "$LF/A" HEAD branch/ri15a "$_riX"; _ri_ran
+    _ri_neg "$LF/A" "must be a hex object name of 7-40 characters" || return 1
+    _rir "$LF/A" ri15br branch/ri15b "$_riX"; _ri_ran
+    _ri_neg "$LF/A" "must be a hex object name of 7-40 characters" || return 1
+    _rir "$LF/A" "$(printf '%s' "$_ri15a" | cut -c1-6)" branch/ri15c "$_riX"; _ri_ran
+    _ri_neg "$LF/A" "must be a hex object name of 7-40 characters" && _ri_nonote "$LF/A" "$_ri15a"
+  }
+  _f_ri15b() {   # E3: --approved-sha deadbee, a branch named like hex that points at a valid design commit: the written hex is no prefix of it
+    mkledger "$1"; la2 "$LF/A"; _ri15d="$(_ri_head "$LF/A")"; git -C "$LF/A" branch deadbee "$_ri15d"; _ri_pre "$LF/A"
+    _rir "$LF/A" deadbee branch/ri15d "$_riX"; _ri_ran
+    _ri_neg "$LF/A" "is not a hex object name of a commit" && _ri_nonote "$LF/A" "$_ri15d"
+  }
+  _f_ri16() {   # glob parity: (a) the same default line in record and in the gate, (b) '*' refused by both, (c) an override is honoured
+    mkledger "$1"; _ri16ok=0
+    _ri16g="$KITROOT/conformance/ceremony-binding.sh"; _ri16l='CB_DESIGN_GLOB="${CB_DESIGN_GLOB:-docs/architecture/*-design.md}"'
+    grep -qF -e "$_ri16l" "$G901_REAL" && grep -qF -e "$_ri16l" "$_ri16g" || _ri16ok=1
+    _ri_pre "$LF/A"
+    _RI_GLOB='*'; _rir "$LF/A" "$ASHA" branch/ri16b "$_riX"; unset _RI_GLOB; _ri_ran
+    _ri_neg "$LF/A" "CB_DESIGN_GLOB must not match every path" || _ri16ok=1
+    if _ri16o="$( cd "$KITROOT" && CB_DESIGN_GLOB='*' $VSH conformance/ceremony-binding.sh 2>&1 )"; then _ri16c=0; else _ri16c=$?; fi
+    [ "$_ri16c" = 2 ] && printf '%s' "$_ri16o" | grep -qF 'CB_DESIGN_GLOB must not match every path' || _ri16ok=1
+    ( cd "$LF/A" && mkdir -p docs/designs && printf '# A\n\nA design under an overridden glob.\nIt carries several real lines so it is more than a stub.\nThe approved commit adds it.\n' > docs/designs/a.md \
+        && git add docs/designs/a.md && git commit -qm dd ) >/dev/null 2>&1; _ri16d="$(_ri_head "$LF/A")"
+    _RI_GLOB='docs/designs/*.md'; _rir "$LF/A" "$_ri16d" branch/ri16c docs/designs/a.md; _ri16r="$LRC"; _ri_ran
+    [ "$_ri16r" = 0 ] || _ri16ok=1
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri16d" branch/ri16d "$_riX"; unset _RI_GLOB; _ri_ran
+    _ri_neg "$LF/A" "is not a design artifact" || _ri16ok=1
+    return "$_ri16ok"
+  }
+  # RI17: two clones. The parent design GO is published from A; B starts behind origin (it has no ledger yet).
+  _f_ri17a() {   # (a) publishing: the pre-leg fetch finds the parent -> rc 0, published, B's ledger equals origin's
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri17ap "$_riX"; [ "$LRC" = 0 ] || return 1
+    _rir "$LF/B" "$BSHA" branch/ri17a "$ASHA:$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && rnote "$LF" "$BSHA" && [ "$(lrev "$LF/B")" = "$(rrev "$LF")" ]
+  }
+  _f_ri17b() {   # (b) --no-push: B reads its local ledger only; "not fetched", the fetch line (B has no ledger), B's ledger unchanged
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri17bp "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17b "$ASHA:$_riX" --no-push; _ri_ran
+    _ri_neg "$LF/B" "in the local ledger, NOT FETCHED" && _ri_fetch_line && _ri_nostar && _ri_nonote "$LF/B" "$BSHA" && [ "$(lrev "$LF/B")" = none ]
+  }
+  _f_ri17c() {   # (c) origin unreachable: the existing "cannot reach" refusal, not a basis message; B's ledger unchanged
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri17cp "$_riX"; [ "$LRC" = 0 ] || return 1
+    git -C "$LF/B" remote set-url origin "$LF/nowhere.git"
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17c "$ASHA:$_riX"; _ri_ran
+    _ri_neg0 "$LF/B" "cannot reach the ledger remote" && ! _ri_said "no design GO record" && [ "$(lrev "$LF/B")" = none ]
+  }
+  _f_ri17d() {   # as (a), but the child names a path no record at P names: leg 6 refuses; B's ledger equals origin's tip (the allowed fast-forward)
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri17dp "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17d "$ASHA:$_riY"; _ri_ran
+    _ri_neg "$LF/B" "name '$_riX', not '$_riY'" && [ "$(lrev "$LF/B")" = "$(rrev "$LF")" ] && [ "$(lrev "$LF/B")" != "$_rip_l" ] && _ri_nonote "$LF/B" "$BSHA"
+  }
+  _f_ri17e() {   # E3: B's ledger equals origin's -> the single-ref fetch line, byte for byte, with no glob and no +refs
+    mkledger "$1"; la2 "$LF/A"; _ri17ea="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri17ea" branch/ri17ep "$_riX"; [ "$LRC" = 0 ] || return 1
+    lfetch "$LF/B"; _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17e "$ASHA:$_riX" --no-push; _ri_ran
+    _ri_neg "$LF/B" "in the local ledger, NOT FETCHED" && _ri_fetch_line && _ri_nostar && ! _ri_sync_line
+  }
+  _f_ri17f() {   # E3: B's ledger is ahead of origin's (a --no-push record first; origin's tip is local) -> sync, and the fetch line is absent
+    mkledger "$1"; la2 "$LF/A"; _ri17fa="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri17fa" branch/ri17fp "$_riX"; [ "$LRC" = 0 ] || return 1
+    lfetch "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17fx "$_riX" --no-push; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17f "$ASHA:$_riX" --no-push; _ri_ran
+    _ri_neg "$LF/B" "in the local ledger, NOT FETCHED" && _ri_sync_line && _ri_nostar && ! _ri_said "git fetch origin refs/notes/"
+  }
+  _f_ri17g() {   # E3: origin moved on after B's fetch, so its tip is not local (behind) -> sync, and the fetch line is absent
+    mkledger "$1"; la2 "$LF/A"; _ri17ga="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri17ga" branch/ri17gp "$_riX"; [ "$LRC" = 0 ] || return 1
+    lfetch "$LF/B"
+    la2 "$LF/A"; _ri17gb="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri17gb" branch/ri17gq "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17g "$ASHA:$_riX" --no-push; _ri_ran
+    _ri_neg "$LF/B" "in the local ledger, NOT FETCHED" && _ri_sync_line && _ri_nostar && ! _ri_said "git fetch origin refs/notes/"
+  }
+  _f_ri17h() {   # E3: origin has no ledger -> "record the parent design GO first" and no fetch line (--no-push); without --no-push the leg 5/6 refusal says so
+    mkledger "$1"; _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri17h "$ASHA:$_riX" --no-push; _ri_ran
+    _ri_neg "$LF/B" "origin has no ledger yet: record the parent design GO first." || return 1
+    ! _ri_said "git fetch origin refs/notes/" || return 1
+    _rir "$LF/B" "$BSHA" branch/ri17i "$ASHA:$_riX"; _ri_ran
+    _ri_neg "$LF/B" "origin has no ledger yet, so no parent design GO at $ASHA is published" && _ri_nonote "$LF/B" "$BSHA"
+  }
+  _f_ri18() {   # land --gate design with a basis the approved commit does not touch: leg 4 refuses, no merge, no note (local or on origin)
+    mkorigin "$1"; rm -f "$LAND_MARK"
+    ( set -e; cd "$LOA"; mkdir -p docs/architecture
+      printf '# X design\n\nThe x fixture design.\nIt carries several real lines so it is more than a stub.\nThe head below does not touch it.\n' > docs/architecture/x-design.md
+      git add docs/architecture/x-design.md; git commit -qm design
+      printf 'f2\n' >> f.txt; git add f.txt; git commit -qm head
+      git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+    _ri18="$(git -C "$LOA" rev-parse HEAD)"; _ri18g="$(lgh "$_ri18" "solo maintainer")"
+    if _ri18o="$( cd "$LOA" && PATH="$_ri18g:$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land \
+          --ref 77 --merge-cmd "$LAND_STUB" --approved-sha "$_ri18" --approved-by "solo maintainer" \
+          --go-by "the owner" --gate design --rung integration --class control-plane \
+          --scope "PR #77" --token "GO: land design at $_ri18" --basis "$_riX" 2>&1 )"; then _ri18c=0; else _ri18c=$?; fi
+    case "$_ri18o" in *'syntax error'*|*'not found'*) ;; *) if [ "$_ri18c" = 0 ] || [ "$_ri18c" = 2 ]; then _op323=0; fi ;; esac
+    [ "$_ri18c" = 2 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ri18o" | grep -qF "does not touch '$_riX'" \
+      && ! onote "$_ri18" && ! git -C "$LOA" notes --ref="$LR2" show "$_ri18" >/dev/null 2>&1
+  }
+  _f_ri19() {   # other gates are unchanged (rc 0 on three inputs the design gate refuses), and the same inputs under --gate design are refused by legs 2, 5 and 0
+    mkledger "$1"; _ri19ok=0
+    ( cd "$LF/A" && printf '# readme\n' > README.md && git add README.md && git commit -qm readme ) >/dev/null 2>&1
+    la2 "$LF/A"; _ri19a="$(_ri_head "$LF/A")"
+    _rir "$LF/A" "$_ri19a" "PR #51" README.md --gate release-candidate --rung rc; _ri_ran
+    [ "$LRC" = 0 ] || _ri19ok=1
+    _rir "$LF/A" "$_ri19a" "PR #52" "$_ri19a:$_riX" --gate release-candidate --rung rc; _ri_ran
+    [ "$LRC" = 0 ] || _ri19ok=1
+    _rir "$LF/A" HEAD "PR #53" "$_riX" --gate release-candidate --rung rc; _ri_ran
+    [ "$LRC" = 0 ] || _ri19ok=1
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri19a" branch/ri19a README.md; _ri_ran
+    _ri_neg "$LF/A" "is not a design artifact" || _ri19ok=1
+    _rir "$LF/A" "$_ri19a" branch/ri19b "$_ri19a:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "use --basis $_riX" || _ri19ok=1
+    _rir "$LF/A" HEAD branch/ri19c "$_riX"; _ri_ran
+    _ri_neg "$LF/A" "must be a hex object name of 7-40 characters" || _ri19ok=1
+    return "$_ri19ok"
+  }
+  _f_ri20() {   # a symref'd ledger and an inherited basis, without --no-push: refused as symbolic BEFORE the fetch, so the decoy ref never moves
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri20p "$_riX"; [ "$LRC" = 0 ] || return 1
+    git -C "$LF/B" symbolic-ref "refs/notes/$LR" refs/notes/decoy
+    _ri_pre "$LF/B"
+    _rir "$LF/B" "$BSHA" branch/ri20 "$ASHA:$_riX"; _ri_ran_any
+    _ri_neg0 "$LF/B" "is symbolic" && [ -z "$(git -C "$LF/B" rev-parse -q --verify refs/notes/decoy 2>/dev/null)" ] && _ri_nonote "$LF/B" "$BSHA"
+  }
+  _f_ri21() {   # a branch named like hex (deadbee, no object starts with it) holds a valid bare parent GO: the written hex is no prefix of what it resolves to
+    mkledger "$1"
+    _rir "$LF/A" "$ASHA" branch/ri21p "$_riX"; [ "$LRC" = 0 ] || return 1
+    git -C "$LF/A" branch deadbee "$ASHA"; la2 "$LF/A"; _ri21a="$(_ri_head "$LF/A")"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_ri21a" branch/ri21 "deadbee:$_riX"; _ri_ran
+    _ri_neg "$LF/A" "is not a prefix of the commit it resolves to" && _ri_nonote "$LF/A" "$_ri21a"
+  }
+  # E2: an errata GO is accepted beside its design GO (same scope and kit-row), refused alone, and refused on another design's GO.
+  _f_ri22a() {   # a design GO with a *-design.md basis, then the errata GO for the same scope with that design's -errata.md
+    _ri_errata "$1"
+    _rir "$LF/A" "$ASHA" branch/ri22a "$_riX"; [ "$LRC" = 0 ] || return 1
+    _rir "$LF/A" "$_riE1" branch/ri22a docs/architecture/x-errata.md; _ri_ran
+    [ "$LRC" = 0 ] && _ri_said published && rnote "$LF" "$_riE1"
+  }
+  _f_ri22b() {   # the same errata GO with no prior design GO for the scope
+    _ri_errata "$1"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_riE1" branch/ri22b docs/architecture/x-errata.md; _ri_ran
+    _ri_neg "$LF/A" "an errata GO needs its design GO first (scope branch/ri22b)" && _ri_nonote "$LF/A" "$_riE1"
+  }
+  _f_ri22c() {   # a prior design GO for the scope, but the errata file's own design is not a tracked file: refused by condition 1
+    _ri_errata "$1"
+    _rir "$LF/A" "$ASHA" branch/ri22c "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$_riE1" branch/ri22c docs/architecture/q-errata.md; _ri_ran
+    _ri_neg "$LF/A" "its design 'docs/architecture/q-design.md' is not a tracked file" && _ri_nonote "$LF/A" "$_riE1"
+  }
+  _f_ri22c2() {   # a prior design GO for the scope that names ANOTHER design: the errata of z-design cannot ride on x-design's GO (condition 2)
+    _ri_errata "$1"
+    _rir "$LF/A" "$ASHA" branch/ri22k "$_riX"; [ "$LRC" = 0 ] || return 1
+    _ri_pre "$LF/A"
+    _rir "$LF/A" "$_riE1" branch/ri22k docs/architecture/z-errata.md; _ri_ran
+    _ri_neg "$LF/A" "an errata GO needs its design GO first (scope branch/ri22k)" "naming 'docs/architecture/z-design.md'" && _ri_nonote "$LF/A" "$_riE1"
+  }
+  _f_ri22d() {   # an -errata-2.md basis beside its design GO: the numbered form is accepted
+    _ri_errata "$1"
+    _rir "$LF/A" "$ASHA" branch/ri22d "$_riX"; [ "$LRC" = 0 ] || return 1
+    _rir "$LF/A" "$_riE1" branch/ri22d docs/architecture/x-errata-2.md; _ri_ran
+    [ "$LRC" = 0 ] && _ri_said published && rnote "$LF" "$_riE1"
+  }
+  _f_ri22e() {   # an inherited <P>:<errata path> basis is never accepted
+    _ri_errata "$1"; _ri_pre "$LF/A"
+    _rir "$LF/A" "$_riE1" branch/ri22e "$ASHA:docs/architecture/x-errata.md"; _ri_ran
+    _ri_neg "$LF/A" "an errata GO names its errata file as a bare path" && _ri_nonote "$LF/A" "$_riE1"
+  }
+  _f_ri23() {   # S1: the same valid design GO as RI1, run from a subdirectory with a repo-root-relative basis: recorded and published
+    mkledger "$1"
+    _rir "$LF/A/docs" "$ASHA" branch/ri23 "$_riX"; _ri_ran
+    [ "$LRC" = 0 ] && _ri_said published && rnote "$LF" "$ASHA"
+  }
+  _j323 RI23 _f_ri23 - "a valid design GO run from a subdirectory of the repository is recorded and published"
+  _j323 RI23m _f_ri23 's/git -C "\$ROOT" rev-list -1/git rev-list -1/' "dropping -C ROOT from leg 4 reads the basis relative to the subdirectory and refuses"
+  _j323 RI1 _f_ri1 - "a design GO whose bare basis the approved commit touches (full sha) is recorded and published"
+  _j323 RI2 _f_ri2 - "the same with a 7-hex --approved-sha is recorded, and the note says approved-sha exactly as typed"
+  _j323 RI2m _f_ri2 's/^    if \[ "\$_dl_last" != "\$_dl_a40" \]; then$/    if [ "$_dl_last" != "$asha" ]; then/' "comparing leg 4 against the typed sha refuses a short sha"
+  _j323 RI3 _f_ri3 - "run B: --basis <asha>:<path> with nothing at P is refused with the 'use --basis <path>' remedy, nothing written"
+  _j323 RI3m _f_ri3 's/^  if \[ "\$_dl_p40" = "\$_dl_a40" \]; then$/  if false; then/' "dropping the P = approved commit refusal changes leg 5's message"
+  _j323 RI4 _f_ri4 - "a short P against a full asha, and a full P against a short asha, are both refused by leg 5"
+  _j323 RI4m _f_ri4 's/^  if \[ "\$_dl_p40" = "\$_dl_a40" \]; then$/  if [ "$_dl_ip" = "$asha" ]; then/' "comparing P and asha as typed lets a short P through leg 5"
+  _j323 RI5 _f_ri5 - "a stacked child (P = asha, a parent GO under another scope) is accepted, as the gate accepts it"
+  _j323 RI6 _f_ri6 - "the same under the parent's own scope is refused: it would replace the design GO it quotes"
+  _j323 RI6m _f_ri6 's/^    if \[ "\$_ds_same" -gt 0 \]; then$/    if false; then/' "dropping the same-scope arm changes the message to the run-B remedy"
+  _j323 RI7 _f_ri7 - "a bare basis the approved commit does not touch is refused, naming the commit that last touched it"
+  _j323 RI7m _f_ri7 's/^    if \[ "\$_dl_last" != "\$_dl_a40" \]; then$/    if false; then/' "dropping leg 4 records an untouched design"
+  _j323 RI8 _f_ri8 - "../ and /abs bases (path safety), a path absent at asha and a symlink at asha are each refused by their own leg"
+  _j323 RI8m1 _f_ri8 's#^    /\*|\*\.\.\*)$#    zz-never)#' "dropping path safety lets ../ reach the glob leg instead"
+  _j323 RI8m2 _f_ri8 's/^  if \[ "\$_dl_inh" = 0 \] && ! _pv_dl_blob "\$_dl_a40" "\$_dl_path"; then$/  if false; then/' "dropping the regular-file check lets an absent path and a symlink reach leg 4 or pass"
+  _j323 RI8i _f_ri8i - "inherited: a symlink at P (a regular file at asha) is refused at P by leg 3i"
+  _j323 RI8im _f_ri8i 's/^  if ! _pv_dl_blob "\$_dl_p40" "\$_dl_path"; then$/  if ! _pv_dl_blob "$_dl_a40" "$_dl_path"; then/' "running leg 3 at asha for the inherited form misses the symlink at P"
+  _j323 RI9 _f_ri9 - "README.md on a commit that touches it is refused by the glob alone"
+  _j323 RI9m _f_ri9 's/^    \$CB_DESIGN_GLOB) : ;;$/    *) : ;;/' "dropping the glob leg records any tracked touched file"
+  _j323 RI10 _f_ri10 - "inherited, a ledger on origin and no design GO record at P: refused"
+  _j323 RI11 _f_ri11 - "inherited, P's only design record is itself inherited: refused as one hop only"
+  _j323 RI11m _f_ri11 's/^  if \[ "\$_ds_hop" -gt 0 \]; then$/  if false; then/' "dropping the one-hop arm changes the message to a generic one"
+  _j323 RI12 _f_ri12 - "inherited, P's design record names another path: refused naming both paths"
+  _j323 RI12m _f_ri12 's/^    if \[ "\$_ds_b" = "\$2" \] || /    if true || /' "dropping leg 6's path comparison accepts any design record at P"
+  _j323 RI13 _f_ri13 - "inherited, a valid bare parent at an earlier P is accepted"
+  _j323 RI14 _f_ri14 - "inherited, a basis-less (legacy-shaped) design parent is accepted; CI judges the list and the position"
+  _j323 RI14m _f_ri14 's/ || \[ "\$_ds_b" = "(none recorded)" \]; then$/; then/' "dropping the legacy arm refuses a parent the gate accepts"
+  _j323 RI15 _f_ri15 - "--approved-sha HEAD, a branch name and 6 hex characters are each refused by leg 0 (each resolves to a commit that passes legs 1-4)"
+  _j323 RI15m _f_ri15 's/^  if \[ "\$_dl_bad" = 1 \] || .*; then$/  if false; then/' "dropping leg 0 changes the message, or records the 6-hex sha"
+  _j323 RI15b _f_ri15b - "E3: --approved-sha deadbee (a branch named like hex) is refused: the written hex is no prefix of the commit"
+  _j323 RI15bm _f_ri15b 's/ || ! _pv_dl_hexprefix "\$asha" "\$_dl_a40"; then$/; then/' "dropping leg 0's prefix check records the branch's commit"
+  _j323 RI16 _f_ri16 - "glob parity: the same default line, '*' refused by record and by the gate, an override honoured"
+  _j323 RI16m _f_ri16 's/^  case "\$CB_DESIGN_GLOB" in$/  case zz in/' "dropping the match-everything refusal lets CB_DESIGN_GLOB='*' record"
+  _j323 RI17a _f_ri17a - "two clones, B behind: the pre-leg fetch finds the parent, rc 0, published, B equals origin"
+  _j323 RI17am _f_ri17a 's/^  if \[ "\$nopush" = 0 \]; then _pv_sync_in quiet || return 2; fi$/  :/' "dropping the pre-leg fetch refuses a child whose parent B has not fetched"
+  _j323 RI17b _f_ri17b - "--no-push: 'local ledger, NOT FETCHED', the single-ref fetch line, B's ledger unchanged"
+  _j323 RI17c _f_ri17c - "origin unreachable: the existing 'cannot reach' refusal, not a basis message, B's ledger unchanged"
+  _j323 RI17d _f_ri17d - "leg 6 refuses after the fetch; B's ledger equals origin's tip, no note on the approved sha"
+  _j323 RI17e _f_ri17e - "E3: B's ledger equals origin's -> the fetch line byte for byte, with no glob and no +refs"
+  _j323 RI17f _f_ri17f - "E3: B's ledger ahead of origin's -> the sync line, no fetch line"
+  _j323 RI17fm _f_ri17f 's/^  case "\$_rm_state" in$/  case fetch in/' "always printing the fetch line is refused by an ahead ledger"
+  _j323 RI17g _f_ri17g - "E3: origin's tip is not local (behind) -> the sync line, no fetch line"
+  _j323 RI17gm _f_ri17g 's/^  case "\$_rm_state" in$/  case fetch in/' "always printing the fetch line is refused by an origin tip not held locally"
+  _j323 RI17h _f_ri17h - "E3: origin has no ledger -> 'record the parent design GO first', and no fetch line"
+  _j323 RI18 _f_ri18 - "land --gate design with an untouched basis: leg 4 refuses, no merge, no note local or on origin"
+  _j323 RI19 _f_ri19 - "other gates unchanged (rc 0 on inputs the design gate refuses by legs 2, 5 and 0)"
+  _j323 RI20 _f_ri20 - "a symref'd ledger is refused as symbolic before the fetch; the decoy ref never moves"
+  _j323 RI20m _f_ri20 's#^  if git symbolic-ref -q "refs/notes/\$NOTES_REF" >/dev/null 2>[&]1; then$#  if [ "$gate" != design ] \&\& git symbolic-ref -q "refs/notes/$NOTES_REF" >/dev/null 2>\&1; then#;s#^  if \[ "\$gate" = design \]; then _pv_design_legs || return 2; fi$#  if [ "$gate" = design ]; then _pv_design_legs || return 2; if git symbolic-ref -q "refs/notes/$NOTES_REF" >/dev/null 2>\&1; then echo "record: ledger ref refs/notes/$NOTES_REF is symbolic, moved below the fetch." >\&2; return 2; fi; fi#' "moving the symref check below the pre-leg fetch still refuses as symbolic, but the fetch has written through the symref (only the decoy assertion kills it)"
+  _j323 RI21 _f_ri21 - "a branch named like hex holding a valid parent GO is refused: the written hex is no prefix of the commit"
+  _j323 RI21m _f_ri21 's/^  if ! _pv_dl_hexprefix "\$_dl_ip" "\$_dl_p40"; then$/  if false; then/' "dropping leg 5's prefix check lets the branch stand in for P"
+  _j323 RI22a _f_ri22a - "E2: an errata GO beside its design GO (same scope and kit-row) is recorded and published"
+  _j323 RI22b _f_ri22b - "E2: the errata GO with no prior design GO is refused"
+  _j323 RI22bm _f_ri22b 's/^_pv_dl_errata_go() {$/_pv_dl_errata_go() { return 0/' "dropping condition 2 records an errata GO alone"
+  _j323 RI22c _f_ri22c - "E2: an errata file whose design is not a tracked file is refused by condition 1"
+  _j323 RI22cm _f_ri22c 's/^      if ! _pv_dl_blob "\$_dl_a40" "\$_dl_sib"; then$/      if false; then/' "dropping the sibling-path test changes the refusal to the generic one"
+  _j323 RI22c2 _f_ri22c2 - "E2: the errata of another tracked design cannot ride on this design's GO"
+  _j323 RI22c2m _f_ri22c2 's/^      if \[ "\$_eg_b" = "\$1" \]; then return 0; fi$/      if true; then return 0; fi/' "dropping the basis comparison accepts any design GO of the scope"
+  _j323 RI22d _f_ri22d - "E2: an -errata-2.md basis beside its design GO is recorded (the numbered form)"
+  _j323 RI22e _f_ri22e - "E2: an inherited <P>:<errata path> basis is refused"
 
   # FXS: the skip count is load-bearing. A skip call raises it by exactly one, and the note carries the number (0 prints as "0 SKIPPED").
   _fxs0="$FX_SKIPS"; fx_skip "FXS-probe" >/dev/null; _fxs1="$FX_SKIPS"; FX_SKIPS="$_fxs0"

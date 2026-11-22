@@ -60,6 +60,12 @@
 #                                                   then the same adopter-census as the serial mode on the merged output
 # A leg's exit is its slice's verdict; the join's exit is the whole proof's. No leg and no join reads the environment to choose.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 ROOT=$(CDPATH='' cd "$(dirname "$0")/.." && pwd)
 TIMING_FILE=""   # --timing-file <path>: per-row timing of the inner verify.sh run (SWAS-372); absent = off
 LEG_MODE=""; LEG_SPEC=""; LEG_REC=""; JOIN_ROWS=""; JOIN_BAT=""   # SWAS-393: --leg-rows / --leg-battery / --join (arguments only)

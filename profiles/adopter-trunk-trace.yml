@@ -43,8 +43,10 @@
 # ── THE trunk-trace OBSERVE/ENFORCE DIAL ──
 #     TRUNK_TRACE_MODE: observe   (DEFAULT — the trace's verdict is printed; the job always exits 0)
 #     TRUNK_TRACE_MODE: enforce   (the trace's rc is the job's exit; a recordless recent commit REDS the run)
-# It ships `observe` because a fresh project has no GO notes and its first commits (incept's bootstrap,
-# any imported history) have none either, so the trace reds on them by design. Observe covers only the
+# It ships `observe` because a fresh project has no GO notes, and imported history (brownfield commits
+# from before adoption) has none either, so the trace reds on those by design. incept's baseline commit
+# (the trunk's only root, committed before any GO can exist) reads as the baseline: it is counted on its
+# own line and never reds by itself. Observe covers only the
 # VERDICT (the trace's rc 1 or 2). A failed fetch, a failed shallow test, a failed credential drop or a
 # missing default-branch ref exits non-zero in either mode: those are real errors, not findings.
 # The observe state carries its named exit condition (D-240811-2.1).
@@ -63,8 +65,11 @@ env:
   # THE DIAL. Ships `observe`.
   #
   #   EXIT CONDITION: flip to `enforce` when this job's OK line reads k/k on your trunk, with k = 10, or
-  #   the whole history if it is shorter, that is, every recent merge went through
-  #   promotion-verify.sh record, land or actuate.
+  #   the whole history if it is shorter, that is, every recent trunk commit is bound to a GO note
+  #   (went through promotion-verify.sh record, land or actuate), apart from the Inception baseline,
+  #   which is counted on its own line and is not in k.
+  #   A force-pushed single-root history's root would read as the baseline too: the `baseline:` line names
+  #   its sha on every run (visible, not detected); branch protection's no-force-push rule is the control.
   #
   # In `observe` the job RUNS THE TRACE, prints the verdict to the log and the step summary, and ALWAYS
   # EXITS 0 on that verdict.
@@ -196,7 +201,7 @@ jobs:
             *) echo "trunk-trace: the trace produced no usable rc ('$GATE_RC'); reporting 2."; rc=2 ;;
           esac
           case "$rc" in
-            0) reason="every one of the last 10 trunk commits is bound to a GO note." ;;
+            0) reason="every recent trunk commit is bound to a GO note, apart from the Inception baseline, which is counted on its own line." ;;
             1) reason="a recent trunk commit is not bound to a GO note, or no GO ledger exists yet." ;;
             *) reason="the trace could not be evaluated (see the trace step log above)." ;;
           esac
@@ -208,7 +213,7 @@ jobs:
               ;;
             *)
               title="trunk-trace: observe mode — not enforcing yet"
-              summary="$(printf 'OBSERVE mode: %s Enforcement is OFF — this job ALWAYS exits 0 on the trace verdict. EXIT CONDITION: flip TRUNK_TRACE_MODE to enforce at the top of .github/workflows/adopter-trunk-trace.yml when this job'"'"'s OK line reads k/k on your trunk (k = 10, or the whole history if it is shorter): every recent merge went through promotion-verify.sh record, land or actuate. Never bind this job as a required context.' "$reason")"
+              summary="$(printf 'OBSERVE mode: %s Enforcement is OFF — this job ALWAYS exits 0 on the trace verdict. EXIT CONDITION: flip TRUNK_TRACE_MODE to enforce at the top of .github/workflows/adopter-trunk-trace.yml when this job'"'"'s OK line reads k/k on your trunk (k = 10, or the whole history if it is shorter): every recent trunk commit is bound to a GO note (went through promotion-verify.sh record, land or actuate), apart from the Inception baseline, which is counted on its own line. Never bind this job as a required context.' "$reason")"
               ;;
           esac
           {

@@ -1121,7 +1121,7 @@ AWK
   DRC="$(mkrepo)" || { fail "REC-CLASS: fixture build"; return 1; }
   XRC="$(cat "$DRC/.X")"
   if ORC="$( cd "$DRC" && sh "$VERIFY" record --approved-sha "$XRC" --approved-by "Reviewer B" \
-               --gate release-candidate --rung "Release candidate" --class "Contol-plane" \
+               --gate release-candidate --rung rc --class "Contol-plane" \
                --scope "PR #260" --token "GO" 2>&1 )"; then RRC=0; else RRC=$?; fi
   if [ "$RRC" = 2 ] && _has "$ORC" "invalid --class" \
      && [ -z "$(_note_of "$DRC" "$XRC")" ]; then
@@ -1134,7 +1134,7 @@ AWK
     DLC="$(mkrepo)" || { fail "REC-CLASS-OK: fixture build"; return 1; }
     XLC="$(cat "$DLC/.X")"
     if ( cd "$DLC" && sh "$VERIFY" record --no-push --approved-sha "$XLC" --approved-by "Reviewer B" \
-           --gate release-candidate --rung "Release candidate" --class "$_lc" \
+           --gate release-candidate --rung rc --class "$_lc" \
            --scope "branch/x" --token "GO" >/dev/null 2>&1 ); then
       pass "REC-CLASS-OK: '$_lc' accepted (case-insensitive vocabulary, not a refuse-all)"
     else
@@ -1233,7 +1233,7 @@ AWK
   rm -f "$LDMARK"
   if OUT="$( cd "$LDR/c" && PATH="$_lg:$PATH" PROMOTION_NOTES_REF=promotions sh "$VERIFY" land --ref 260 \
        --merge-cmd "$LDR/stub" --approved-sha "$LDX" --approved-by reviewer-login --token --go-by --gate release-candidate \
-       --rung "Release candidate" --class control-plane --scope "PR #260" 2>&1 )"; then RC=0; else RC=$?; fi
+       --rung rc --class control-plane --scope "PR #260" 2>&1 )"; then RC=0; else RC=$?; fi
   if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ] \
      && _has "$OUT" '--go-by'; then
     pass "S2-1a: a flag-shaped peeked value (--go-by --gate) -> rc 2 naming the flag, NO note, merge never ran"
@@ -1331,7 +1331,7 @@ AWK
     fail "L5: rc=$RC lines=$(printf '%s\n' "$N5" | wc -l | tr -d ' ') note=[$N5] trace=[$TR5]"
   fi
   if ( cd "$DL5" && sh "$VERIFY" record --no-push --approved-sha "$XL5" --approved-by "Reviewer B" --go-by "Owner Fixture" \
-         --gate release-candidate --rung "Release candidate" --class Ordinary --scope "PR #260" --token "GO" >/dev/null 2>&1 ) \
+         --gate release-candidate --rung rc --class Ordinary --scope "PR #260" --token "GO" >/dev/null 2>&1 ) \
      && [ "$(_note_of "$DL5" "$XL5" | sed -n '5p')" = 'go-by: Owner Fixture [self-asserted]' ]; then
     pass "L5b: record --go-by 'Owner Fixture' -> line 5 'go-by: Owner Fixture [self-asserted]' (a FIXED literal label)"
   else
@@ -1346,12 +1346,12 @@ AWK
   _l7bad=""
   for _l7 in 'Owner [authenticated: github-review]' "$(printf 'Owner\napproved-by: x [signed: gpg]')" '   ' ''; do
     if ( cd "$DL7" && sh "$VERIFY" record --no-push --approved-sha "$XL7" --approved-by "Reviewer B" --go-by "$_l7" \
-           --gate release-candidate --rung "Release candidate" --class Ordinary --scope "branch/l7" --token "GO" >/dev/null 2>&1 ); then _l7rc=0; else _l7rc=$?; fi
+           --gate release-candidate --rung rc --class Ordinary --scope "branch/l7" --token "GO" >/dev/null 2>&1 ); then _l7rc=0; else _l7rc=$?; fi
     if [ "$_l7rc" != 2 ] || [ -n "$(_note_of "$DL7" "$XL7")" ]; then _l7bad="$_l7bad [$_l7 rc=$_l7rc]"; fi
   done
   # ...and the NON-VACUITY partner: the same call with a clean name is ACCEPTED (an unknown flag would also be rc 2).
   if ( cd "$DL7" && sh "$VERIFY" record --no-push --approved-sha "$XL7" --approved-by "Reviewer B" --go-by "Owner Name" \
-         --gate release-candidate --rung "Release candidate" --class Ordinary --scope "branch/l7" --token "GO" >/dev/null 2>&1 ) \
+         --gate release-candidate --rung rc --class Ordinary --scope "branch/l7" --token "GO" >/dev/null 2>&1 ) \
      && [ "$(_note_of "$DL7" "$XL7" | sed -n '5p')" = 'go-by: Owner Name [self-asserted]' ]; then :; else _l7bad="$_l7bad [control: a clean --go-by was refused]"; fi
   if [ -z "$_l7bad" ]; then
     pass "L7: --go-by with a bracket, a newline, whitespace-only or empty -> rc 2 at the front door, NO note written (a clean name is accepted)"
@@ -1683,7 +1683,7 @@ AWK
   }
   D="$(mkrepo)" || { fail "fixture build (SAST-RW)"; return 1; }
   _rw_refuse "SAST-RW-RECORD-ASHA" 2 "record: invalid --approved-sha '-x' (must not start with '-')" \
-    record --no-push --approved-sha -x --approved-by b --gate g --rung r --class Ordinary --scope s --token t
+    record --no-push --approved-sha -x --approved-by b --gate merge --rung integration --class Ordinary --scope s --token t
   _rw_refuse "SAST-RW-TRACE-REF" 2 "trace: arguments must not start with '-' (got '-x')" trace --ref -x
   _rw_refuse "SAST-RW-TRACE-FROM" 2 "trace: arguments must not start with '-' (got '-y')" trace --ref abc --from -y
   _rw_refuse "SAST-RW-TRACE-RECENT" 2 "trace: --recent takes a positive integer" trace --recent 5x
@@ -2274,11 +2274,16 @@ GO_GIVERS=owner-rev' go-other
   # SWAS-727 FIX PASS. H: `--gate` is consumed by land's argv peek (the shape `--gate design --basis --gate` once read an EMPTY gate in land and
   # `design` in record), a flag-shaped value is rc 2, the recorded gate must equal the judged one, and only `design`, `plan`, `design-*` and
   # `plan-*` are typed gates (`planned-release` is a merge gate).
+  # SWAS-948: land now takes --gate from the listed values, so an unlisted gate (planned-release, design-review, 'design review') is refused
+  # rc 2 before any read, with nothing written or merged. The reader's prefix rule on such a gate is still pinned on planted NOTES by the
+  # SOLO-NEG-GATE cells (design-review, planning, design-arm), which is where a legacy value can still appear.
   _rv_cell RVH1-gate-flag-with-no-value-is-rc-2 - 2 'land: --gate needs a value' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --basis --gate
   _RVGATE=-x; _rv_cell RVH2-flag-shaped-gate-value-is-rc-2 - 2 "land: --gate value '-x' starts with '-'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
-  _RVGATE=planned-release; _rvp _rv_post_oneact RVH3-planned-release-is-a-merge-gate-not-typed - 0 'GO = forge review 5551 by owner-rev' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
-  _RVGATE=design-review; _rv_cell RVH4-design-dash-gate-stays-typed - 1 "$_RV_NOGO" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
-  _RVGATE='design review'; _rv_cell RVH5-design-space-gate-stays-typed - 1 "$_RV_NOGO" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _rv_cell RVH2b-948-rung-flag-with-no-value-is-rc-2 - 2 'land: --rung needs a value' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev --basis --rung
+  _RVRUNG=-x; _rv_cell RVH2c-948-flag-shaped-rung-value-is-rc-2 - 2 "land: --rung value '-x' starts with '-'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVRUNG=""
+  _RVGATE=planned-release; _rv_cell RVH3-948-unlisted-planned-release-is-refused-rc-2 - 2 "land: invalid --gate 'planned-release'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE=design-review; _rv_cell RVH4-948-unlisted-design-review-is-refused-rc-2 - 2 "land: invalid --gate 'design-review'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
+  _RVGATE='design review'; _rv_cell RVH5-948-unlisted-design-space-review-is-refused-rc-2 - 2 "land: invalid --gate 'design review'" "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RVGATE=""
   # L: line comments on the review hold the approval; a failed comments read is a hold, never a one-act GO; zero comments is one-act.
   _RV_COMMENTS='[{"id":1,"body":"x"}]'; _rv_cell RVL1-line-comments-hold-an-empty-body-approval - 2 'LAND HELD: review 5551' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RV_COMMENTS=""
   _RV_COMMENTSERR=1; _rv_cell RVL2-failed-comments-read-is-a-hold - 2 'LAND HELD: review 5551' "$_RV_DIAL" NONE "$_RV_APP" '"SeaBrad72"' owner-rev; _RV_COMMENTSERR=0
@@ -2685,7 +2690,7 @@ _run_record() {
   # they test the ASSURANCE LABEL, not publication, so they take the labelled offline escape.
   if OUT="$( cd "$_rd" && PATH="$_rp" sh "$VERIFY" record --no-push \
                --approved-sha "$_rx" --approved-by "$_rb" --gate release-candidate \
-               --rung "Release candidate" --class Ordinary --scope "$_rs" \
+               --rung rc --class Ordinary --scope "$_rs" \
                --token "GO: merge $_rs" 2>&1 )"; then RC=0; else RC=$?; fi
 }
 
@@ -2960,7 +2965,7 @@ _land_run() {
   rm -f "$LDMARK"
   if OUT="$( cd "$LDR/c" && PATH="$_lrg:$PATH" PROMOTION_NOTES_REF=promotions sh "$VERIFY" land --ref "${_LREF:-260}" \
        --merge-cmd "$LDR/stub" --approved-sha "$LDX" --approved-by "$_lrb" --gate release-candidate \
-       --rung "Release candidate" --class control-plane --scope "PR #260" --token "GO: land #260" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
+       --rung rc --class control-plane --scope "PR #260" --token "GO: land #260" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
 }
 # SWAS-323b: a landed note is the GO record and then the LAND record (a blank line between), so these two read the GO record, the lines the cells
 # have always counted and indexed: everything before the first blank line.
@@ -2977,7 +2982,7 @@ GO_GIVERS=owner-rev'
 _RV_SHA0='0123456789012345678901234567890123456789'
 _RV_COMMENTS=""; _RV_COMMENTSERR=0
 _RV_C5571=""; _RV_CERR5571=0; _RV_BERR5571=0   # SWAS-747: the per-id files of review 5571 (its line comments, a failed comments read, a failed body read)
-_RV_POST=""; _RV_PRE=""; _RVV=""; _RVKIT=0; _RVGATE=""; _RVCLS=""
+_RV_POST=""; _RV_PRE=""; _RVV=""; _RVKIT=0; _RVGATE=""; _RVRUNG=""; _RVCLS=""
 # _rv_pre_treedial — the PR's own head commit declares `review` in its tree (a PR must not choose its own bar); LDX moves to that head.
 _rv_pre_treedial() {
   ( cd "$LDR/c" && mkdir -p .kit && printf 'GO_ACT=review\nGO_GIVERS=owner-rev\n' > .kit/dials.conf && git add .kit/dials.conf \
@@ -3001,7 +3006,7 @@ _rv_run() {
   rm -f "$LDMARK"
   if OUT="$( cd "$LDR/c" && PATH="$_rvg:$PATH" PROMOTION_NOTES_REF=promotions sh "${_RVV:-$VERIFY}" land --ref "${_LREF:-260}" \
        --merge-cmd "$LDR/stub" --approved-sha "$LDX" --approved-by "$_rvb" --gate "${_RVGATE:-release-candidate}" \
-       --rung "Release candidate" --class "${_RVCLS:-control-plane}" --scope "PR #260" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
+       --rung "${_RVRUNG:-rc}" --class "${_RVCLS:-control-plane}" --scope "PR #260" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
 }
 _rv_none() { [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && [ -z "$(_land_onote)" ]; }
 # _rv_cell <label> <sed-script|-> <expect-rc> <needle> <dial|NONE> <CLAUDE.md line|NONE> <reviews-json> <pr-author-json> <approved-by> [land args…]

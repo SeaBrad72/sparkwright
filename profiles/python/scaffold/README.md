@@ -34,12 +34,12 @@ so importing the module for tests binds no port and doesn't drag coverage down.
 ## One-time lockfile step (required before the first CI run)
 
 The pipeline installs with `uv sync --frozen`, which **requires a committed `uv.lock`**.
-This scaffold ships without one (it's generated per-environment). Run once after copying:
+This scaffold ships without one (it's generated per-environment). Run once after copying,
+before the baseline commit, so the lockfile is part of it (no separate commit):
 
 ```sh
 uv lock          # resolves dependency-groups -> writes uv.lock
 git add uv.lock
-git commit -m "chore: add uv.lock"
 ```
 
 After that, the standard profile commands apply (`profiles/python.md` §3):

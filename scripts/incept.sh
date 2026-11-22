@@ -71,6 +71,83 @@ if [ "${1:-}" = "__db-curate" ]; then curate_db_backed "${2:-1}"; exit 0; fi
 #     inception. Defined up here beside the other pre-preamble seam for the same reason as
 #     strip_db_region: the seam needs none of the inception preamble. Uses the globals NAME VER
 #     STACK CI MODE TEAM PROTECT_HINT GUARD_STEP (set by the main flow, or by the seam's placeholders).
+# --- SWAS-934: the run environment. Names only, never values: the names file and the printed line carry variable NAMES (the line, as "$NAME" references).
+RELAUNCH_NAMES=""; RELAUNCH_ROOT=""   # set empty here so an exported value is never read; the seam sets them from its arguments
+run_env_names() {  # the set names, one per line, in the fixed order; nothing unless a trigger name is set and non-empty
+  _re_t=""
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || _re_t="${_re_t}CLAUDE_CONFIG_DIR "   # MUT-RUNENV-TRIGGER
+  [ -z "${GH_CONFIG_DIR:-}" ] || _re_t="${_re_t}GH_CONFIG_DIR "   # MUT-RUNENV-TRIGGER
+  [ -z "${GIT_CONFIG_GLOBAL:-}" ] || _re_t="${_re_t}GIT_CONFIG_GLOBAL "   # MUT-RUNENV-TRIGGER
+  [ -n "$_re_t" ] || return 0
+  [ -z "${GIT_CONFIG_NOSYSTEM:-}" ] || _re_t="${_re_t}GIT_CONFIG_NOSYSTEM "   # carried only: never a trigger on its own
+  printf '%s\n' $_re_t   # word split on purpose: four glob-free names
+}
+record_run_env() {  # redirected run: write .kit-run/run-env.names; otherwise remove a stale one. Never through a symlink.
+  _rr_names=$(run_env_names)
+  RELAUNCH_NAMES=$(printf '%s' "$_rr_names" | tr '\n' ' ')
+  if [ -L .kit-run ] || [ -L .kit-run/run-env.names ]; then
+    RELAUNCH_NAMES=""   # no file will exist to check against, so the printed line must not promise a check (R3)
+    printf '%s\n' "incept: .kit-run or .kit-run/run-env.names is a symlink, so the run environment is neither recorded nor cleared."
+    return 0
+  fi
+  if [ -z "$_rr_names" ]; then rm -f .kit-run/run-env.names 2>/dev/null || true; return 0; fi
+  # write through a temp file made inside .kit-run, then move it into place: never a write into a path someone else could have swapped in (L3)
+  if [ ! -d .kit-run/run-env.names ] && mkdir -p .kit-run 2>/dev/null && _rr_tmp=$(mktemp .kit-run/run-env.XXXXXX 2>/dev/null); then
+    if printf '%s\n' "$_rr_names" > "$_rr_tmp" 2>/dev/null && mv -f "$_rr_tmp" .kit-run/run-env.names 2>/dev/null; then return 0; fi
+    rm -f "$_rr_tmp" 2>/dev/null || true
+  fi
+  RELAUNCH_NAMES=""
+  printf '%s\n' "incept: could not write .kit-run/run-env.names, so the run environment is not recorded."
+}
+relaunch_fmt_char() {  # <1-14> -> the UTF-8 bytes of one bidi or zero-width character (the same 14 code points as scripts/new.sh has_format_char; incept cannot source new.sh)
+  case "$1" in
+    1) printf '\342\200\213' ;; 2) printf '\342\200\214' ;; 3) printf '\342\200\215' ;; 4) printf '\342\200\216' ;; 5) printf '\342\200\217' ;;
+    6) printf '\342\200\252' ;; 7) printf '\342\200\253' ;; 8) printf '\342\200\254' ;; 9) printf '\342\200\255' ;; 10) printf '\342\200\256' ;;
+    11) printf '\342\201\246' ;; 12) printf '\342\201\247' ;; 13) printf '\342\201\250' ;; 14) printf '\342\201\251' ;;
+  esac
+}
+relaunch_root_ok() {  # <root> -> 0 iff the human reads exactly what they paste: no control, bidi or zero-width character
+  case "$1" in
+    *[[:cntrl:]]*) return 1 ;;   # MUT-RUNENV-CHARS
+  esac
+  for _rk in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    _rb=$(relaunch_fmt_char "$_rk")
+    [ -n "$_rb" ] || continue   # an empty needle would match everything
+    case "$1" in
+      *"$_rb"*) return 1 ;;   # MUT-RUNENV-CHARS
+    esac
+  done
+  return 0
+}
+print_relaunch() {  # the launch line: plain, or the redirected form with NAME="$NAME" references; the root single-quoted
+  _pr_root="${RELAUNCH_ROOT:-$PWD}"
+  if ! relaunch_root_ok "$_pr_root"; then
+    printf '%s\n' "Start your agent session here: the project root holds a control, bidi or zero-width character, so no line is printed to paste; cd into it by hand and start the session there."
+    return 0
+  fi
+  _pr_q=$(printf '%s\n' "$_pr_root" | LC_ALL=C sed "s/'/'\\\\''/g") || _pr_q=""   # MUT-RUNENV-QUOTE
+  if [ -z "$_pr_q" ]; then   # a root sed could not carry (L4): never a line that reads cd ''
+    printf '%s\n' "Start your agent session here: the project root holds a control, bidi or zero-width character, so no line is printed to paste; cd into it by hand and start the session there."
+    return 0
+  fi
+  if [ -z "$RELAUNCH_NAMES" ]; then   # MUT-RUNENV-FORM
+    printf '%s\n' "Start your agent session here:"   # MUT-RUNENV-SPLIT
+    printf '%s\n' "  cd '${_pr_q}' && claude"
+    printf '%s\n' "(Not a parent or a subfolder: the guard loads only from the launch directory.)"
+    printf '%s\n' "Then check, once: /hooks lists a PreToolUse hook running .claude/hooks/guard.sh, and /status shows Project settings on its Setting sources line."
+    return 0
+  fi
+  _pr_list=""; _pr_vars=""
+  for _pn in $RELAUNCH_NAMES; do
+    _pr_list="${_pr_list:+$_pr_list }${_pn}"
+    _pr_vars="${_pr_vars} ${_pn}=\"\$${_pn}\""
+  done
+  printf '%s\n' "This session runs with a redirected environment: ${_pr_list}. Paste the line below in a shell where each is set as it is now; env -i also drops every other variable (an API key, the SSH agent, a proxy, the locale), so add any your setup needs."
+  printf '%s\n' "Start your agent session here:"   # MUT-RUNENV-SPLIT
+  printf '%s\n' "  cd '${_pr_q}' && env -i HOME=\"\$HOME\" PATH=\"\$PATH\" TERM=\"\$TERM\"${_pr_vars} claude"
+  printf '%s\n' "(Not a parent or a subfolder: the guard loads only from the launch directory.)"
+  printf '%s\n' "Then check, once: /hooks lists a PreToolUse hook running .claude/hooks/guard.sh, and /status shows Project settings on its Setting sources line. sh scripts/preflight.sh names any of these that the new session lacks."
+}
 print_epilogue() {
 cat <<EOF
 
@@ -78,28 +155,64 @@ cat <<EOF
 Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
 
 Do the judgment steps incept does NOT automate (see START-HERE.md):
-  1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
+  1. One draft carries CLAUDE.md §1 (charter: problem, vision, success metrics, scope), §3 (per-project config: autonomy tiers, SLO, operator fluency, review routing, WIP) and §4 (roles): the agent writes docs/inception-draft/PROJECT-CLAUDE.md from your words; a person pastes all three into CLAUDE.md before the baseline commit, then deletes docs/inception-draft/ (the guard refuses the agent's own write to CLAUDE.md (Edit, Write or a shell write); later edits go through a dev clone and a PR).
   2. Record the real stack decision in docs/architecture/ADR-000-stack.md.
-  3. Commit the incepted baseline — the FIRST commit (see docs/adoption/inception-bootstrap.md).
+  3. Commit the incepted baseline — the FIRST commit (see docs/adoption/inception-bootstrap.md): a person creates the empty repository and adds it as origin; the agent commits the baseline after your paste, then runs git push origin main and reads it back with git ls-remote --heads origin main.
      After the first push, share the kit base so teammates can run kit-update: sh scripts/kit-update.sh --publish-base
   4. ${PROTECT_HINT}
-  5. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
-  6. Assign roles in CLAUDE.md §4.
+  5. Per-project config (CLAUDE.md §3: autonomy tiers, SLO, review routing, WIP): done in step 1's draft and pasted before the baseline commit.
+  6. Roles (CLAUDE.md §4): done in step 1's draft and pasted before the baseline commit.
   7. ${GUARD_STEP}
      Other runtimes: pipe proposed commands through scripts/kit-guard (docs/operations/runtime-guards.md).
 
-Start your agent session here: cd "${PWD}" && claude (not a parent or a subfolder; the guard loads only from the launch directory).
+$(print_relaunch)
 
 Verify now: sh conformance/inception-done.sh --surface
 Verify when a protected remote exists: sh conformance/inception-done.sh
 EOF
 }
+github_protect_hint() {  # SWAS-907 R2: branches on $TEAM exactly as scripts/new.sh's owed branch-protection line does
+  if [ "${TEAM:-}" = team ]; then
+    printf '%s' "Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then a person runs scripts/branch-protection-apply.sh --replace --team on an unprotected main (first time), in a real terminal, with an admin credential (docs/operations/forge-identity-switch.md, step 5); without --team a team repository gets the solo profile. Use --apply once it is protected (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
+  else
+    printf '%s' "Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then a person runs scripts/branch-protection-apply.sh --replace on an unprotected main (first time), in a real terminal, with an admin credential (docs/operations/forge-identity-switch.md, step 5). Use --apply once it is protected (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
+  fi
+}
+# SWAS-945, D-241119-1: the local-bind step, printed AFTER the epilogue (the epilogue's text is locked by inception-done.sh's leg (m)) and only for a stack whose scaffold tests listen on a port.
+# It is a human step: an agent never edits a settings file, and the declaration is the owner's commit. printf only, no heredoc. The step carries the full lost= text the grant opens, the fake-forge route included.
+local_bind_step() {  # <stack> -> the step, or nothing
+  case "$1" in
+    typescript-node)   # MUT-LBSTEP: the scaffold's e2e and integration tests listen on 0.0.0.0 (measured 2026-11-19: 2 of 26 fail under the default sandbox)
+      printf '%s\n' "One more human step, only if you run this stack's own tests inside an agent session: its scaffold tests listen on a port (on 0.0.0.0), and the default sandbox refuses every bind, so two of its 26 scaffold tests fail there until you opt in."
+      printf '%s\n' "  a. You (a person, never the agent) add this to .claude/settings.local.json, which stays untracked:"
+      printf '%s\n' '       {"sandbox":{"network":{"allowLocalBinding":true}}}'
+      printf '%s\n' "  b. The owner commits one line to .kit/boundary-optout.conf (one line; no value holds an equals sign; a line is capped at 512 bytes, so with the full lost= text below, reason= has about 89 bytes left):"
+      printf '%s\n' "       part=local-bind reason=<why your tests listen on a port> lost=<the text below> since=<YYYY-MM-DD>"
+      printf '%s\n' "  What it opens (the lost= text): the agent's processes can bind on 0.0.0.0, so a server it starts is reachable from your LAN; its shell reaches every local listener (local proxies, browser debugging ports, local databases); and a script it writes can run a fake GitHub on loopback that a kit verb then talks to (the review label is a drift control, not authentication; branch protection still binds the merge)."
+      printf '%s\n' "  Without step b, sh scripts/preflight.sh and conformance/guard-wired.sh FAIL on the bind. Details: docs/operations/runtime-guards.md, \"What the sandbox profile allows, and why\"." ;;
+  esac
+}
+print_local_bind_step() {
+  _lb_s=$(local_bind_step "${STACK:-}")
+  [ -z "$_lb_s" ] || printf '\n%s\n' "$_lb_s"
+}
 # Internal/testing seam: print ONLY the closing epilogue with placeholder values, then exit
 # (inception-done.sh --selftest's epilogue leg drives this; argument-borne, never an env var).
+if [ "${1:-}" = "__emit-local-bind" ]; then local_bind_step "${2:-}"; exit 0; fi
+if [ "${1:-}" = "__run-env-names" ]; then run_env_names; exit 0; fi
 if [ "${1:-}" = "__emit-epilogue" ]; then
+  shift
+  while [ $# -gt 0 ]; do   # SWAS-934: optional --names "<space list>" and --root <path>, argument-borne like the seam itself
+    case "$1" in
+      --names) RELAUNCH_NAMES="${2:-}" ;;
+      --root) RELAUNCH_ROOT="${2:-}" ;;
+      --team) EMIT_TEAM="${2:-}" ;;   # SWAS-907 R2: the governance answer, argument-borne like the others
+    esac
+    if [ $# -ge 2 ]; then shift 2; else shift; fi
+  done
   NAME="<project>"; VER=$(cat VERSION 2>/dev/null || echo unknown); STACK="<stack>"; CI="<ci>"
-  MODE="<mode>"; TEAM="<governance>"
-  PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected (see profiles/<stack>/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
+  MODE="<mode>"; TEAM="${EMIT_TEAM:-<governance>}"
+  PROTECT_HINT=$(github_protect_hint)
   GUARD_STEP="(runtime-guard status — printed by a real inception run)"
   print_epilogue; exit 0
 fi
@@ -479,6 +592,7 @@ done
 # guard and conformance, so proceeding would only defer a cryptic failure.
 _pf_nested=""
 [ "${ALLOW_NESTED:-0}" -eq 1 ] && _pf_nested="--allow-nested"
+record_run_env   # SWAS-934: before either preflight call, so they read this run's names file, never a stale one
 # SWAS-355: --boundary-advisory, so a boundary FAIL (an UNDECLARED opt-out) never aborts incept as "missing prerequisites": only the rc of the tools check is read here.
 # shellcheck disable=SC2086  # $_pf_nested is a deliberate single optional flag, not a word list
 if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh --boundary-advisory $_pf_nested >/dev/null 2>&1; then
@@ -1693,10 +1807,10 @@ if [ -d "profiles/${STACK}/scaffold" ]; then
   fi
   # Stack-specific one-time step to make the first CI push green (exact command, not a generic hint).
   case "$STACK" in
-    python)      echo "  first-green step: uv lock && git add uv.lock && git commit -m 'lock deps'" ;;
-    java-spring) echo "  first-green step: mvn wrapper:wrapper && git add mvnw .mvn && git commit -m 'add maven wrapper'" ;;
-    kotlin)      echo "  first-green step: gradle wrapper && git add gradlew gradle && git commit -m 'add gradle wrapper'" ;;
-    dotnet)      echo "  first-green step: dotnet restore (writes packages.lock.json) && git add '**/packages.lock.json' && git commit -m 'lock deps'" ;;
+    python)      echo "  first-green step (run before the baseline commit, so it is part of it): uv lock && git add uv.lock" ;;
+    java-spring) echo "  first-green step (run before the baseline commit, so it is part of it): mvn wrapper:wrapper && git add mvnw .mvn" ;;
+    kotlin)      echo "  first-green step (run before the baseline commit, so it is part of it): gradle wrapper && git add gradlew gradle" ;;
+    dotnet)      echo "  first-green step (run before the baseline commit, so it is part of it): dotnet restore (writes packages.lock.json) && git add '**/packages.lock.json'" ;;
     go|rust)     echo "  no lockfile step — this scaffold is dependency-free and clone-green." ;;
   esac
   echo "  run it: see profiles/${STACK}/scaffold/README.md → 'See it run' (start the app, curl /healthz)"
@@ -1994,7 +2108,8 @@ if [ -f scripts/preflight.sh ]; then
 fi
 
 case "$CI" in
-  github) PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh" ;;
+  github) PROTECT_HINT=$(github_protect_hint) ;;
   gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;
 esac
 print_epilogue
+print_local_bind_step

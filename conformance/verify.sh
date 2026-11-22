@@ -47,6 +47,13 @@
 # are REFUSED outright (error, exit 2) when CI or GITHUB_ACTIONS is set, and any run that uses one is tainted: a loud
 # stderr banner and an UNVERIFIED exit 2 whatever the rows did. A sourced registry runs in-process, so this is not a sandbox.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
+_va_lib=0; _VA_ROWS=""; if [ -f "$_FA_LIB" ] && [ -r "$_FA_LIB" ]; then _va_lib=1; fi   # SWAS-945 E4: a regular readable library is one the source line loaded, so its init assigned _ka_on; the queue is reset (an inherited one is never read); after init, before any cd
 # Refuse the test seams under CI BEFORE doing anything else (ADOPTER-KIT-SELFTESTS-ON-CHANGE fix round 1, S3).
 if { [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; } && { [ -n "${VERIFY_SELFTEST_REGISTRY:-}" ] || [ -n "${VERIFY_CLASSIFIER:-}" ]; }; then
   echo "verify: REFUSED — VERIFY_SELFTEST_REGISTRY / VERIFY_CLASSIFIER are test seams and are not honoured when CI or GITHUB_ACTIONS is set" >&2
@@ -519,6 +526,7 @@ _mg_main() {
     # deferral is not a join). Without --battery the row runs as it always did, and a deferral stays the N-A it is today.
     if _mg_aa_na "$_mm_wd/aa"; then
       nas=$((nas-1)); controls=$((controls+1)); failed=$((failed+1)); ctrl_fail=1
+      # E4: this hand-made N-A FAIL row is not noted: a plain --merge does not list it in the summary; the recorded path does, from the capture.
       { line "[control]" agent-autonomy FAIL; emit_diag agent-autonomy "the joined battery rendered N-A. In a merge the agent-autonomy row is PASS or FAIL, never N-A"; } > "$_mm_wd/aa"
     fi
   else
@@ -527,6 +535,65 @@ _mg_main() {
   if [ -n "$KS_TIMING" ]; then _mg_timing "$KS_TIMING" "$@"; fi
   awk 'FNR == NR { a[++n] = $0; next } $0 == "@@JOIN@@" { for (i = 1; i <= n; i++) print a[i]; next } { print }' "$_mm_wd/aa" "$_mm_wd/rows" > "$_mm_wd/final"
   MERGE_FINAL=$_mm_wd/final
+  return 0
+}
+
+# ── SWAS-945 erratum E4 — a column-0 summary of the failed rows, ONLY under the opt-in, only on a red run ─────────────────────────────────
+# Every row and its diagnostic print indented, so the problem matcher (scripts/fail-annotate.sh) takes nothing from verify's own output. Under
+# GITHUB_ACTIONS=true and SW_ANNOTATE=1 this prints `FAIL: verify row <name> (<VERDICT>): <reason>` lines at the END of a red run: at most 8, then
+# `FAIL: +K more failed verify rows (see the log above)` (GitHub keeps about 10 annotations per step). Without the opt-in nothing changes, byte for byte.
+# THE GATE is the library's own unexported flag _ka_on (kit_annot_init always assigns it, 0 or 1) read together with _va_lib, which the top of this file sets
+# once the library has loaded: with the library absent an inherited _ka_on is never read. A nested process starts with _ka_on unset, so a recorded child
+# (`sh "$_SELF"` under --output-file), a fixture and green-on-clone's inner run are silent; the PARENT prints, from the capture (_vs_write_record).
+# _va_note <row> <VERDICT> <output> : check()'s three failing arms (the plain run). _va_scan <capture> : the same rows, read back from a recorded run
+# (line()'s own shape, emit_diag's header, then the row's first output line; a --merge's rebuilt rows have that shape too). _va_print : the summary.
+# All three return 0 and print nothing when the gate is off. POSIX sh: no array, no local, no heredoc in a function.
+_va_note() {
+  if [ "${_va_lib:-0}" = 1 ] && [ "${_ka_on:-0}" = 1 ]; then :; else return 0; fi
+  _vn_tab=$(printf '\t')
+  _vn_nl='
+'
+  _vn_r=$(printf '%s\n' "$3" | tr -d '\r' | tr '\t' ' ' | sed -n '/[^[:space:]]/{s/^[[:space:]]*//;s/^FAIL[: ][[:space:]]*//;s/^[[:space:]]*//;p;q;}' | cut -c1-300) || _vn_r=""
+  if [ -z "$_vn_r" ]; then _vn_r="(no output)"; fi
+  _VA_ROWS="${_VA_ROWS:-}$1$_vn_tab$2$_vn_tab$_vn_r$_vn_nl"
+  return 0
+}
+_va_scan() {
+  if [ "${_va_lib:-0}" = 1 ] && [ "${_ka_on:-0}" = 1 ]; then :; else return 0; fi
+  [ -r "$1" ] || return 0
+  _vx_tab=$(printf '\t')
+  _vx_nl='
+'
+  _vx_rows=$(awk '
+    /^  \[(control|doc)\] +[^ ]+ +(FAIL|UNVERIFIED|MISCONFIGURED)$/ { nm = $2; vd = $3; st = 1; next }
+    /^  \[(control|doc)\] / { st = 0; next }
+    st == 1 && /^      ── .* output ─/ { st = 2; next }
+    st == 1 && /^      \(.* produced no output/ { print nm "\t" vd "\t"; st = 0; next }
+    st == 2 && /^      (─)+$/ { print nm "\t" vd "\t"; st = 0; next }
+    st == 2 { r = $0; sub(/^      /, "", r); if (r ~ /[^ \t\r]/) { print nm "\t" vd "\t" r; st = 0 } }
+  ' "$1") || return 0
+  _vx_rest=$_vx_rows
+  while [ -n "$_vx_rest" ]; do
+    _vx_line=${_vx_rest%%"$_vx_nl"*}
+    case "$_vx_rest" in
+      *"$_vx_nl"*) _vx_rest=${_vx_rest#*"$_vx_nl"} ;;
+      *) _vx_rest="" ;;
+    esac
+    _vx_n=${_vx_line%%"$_vx_tab"*}
+    _vx_t=${_vx_line#*"$_vx_tab"}
+    _vx_v=${_vx_t%%"$_vx_tab"*}
+    _vx_r=${_vx_t#*"$_vx_tab"}
+    _va_note "$_vx_n" "$_vx_v" "$_vx_r"
+  done
+  return 0
+}
+_va_print() {
+  if [ "${_va_lib:-0}" = 1 ] && [ "${_ka_on:-0}" = 1 ]; then :; else return 0; fi
+  [ -n "${_VA_ROWS:-}" ] || return 0
+  printf '%s' "$_VA_ROWS" | awk -F '\t' -v cap=8 '
+    NF >= 3 { n++; if (n <= cap) printf "FAIL: verify row %s (%s): %s\n", $1, $2, $3 }
+    END { if (n > cap) printf "FAIL: +%d more failed verify rows (see the log above)\n", n - cap }
+  ' || :
   return 0
 }
 
@@ -605,6 +672,9 @@ _vs_write_record() {
     echo "verify: WARNING — could not write the record to $_wr_path (the enforced verdict is unchanged)" >&2
   fi
   cat "$_wr_cap"
+  # SWAS-945 E4: the recorded child ran with the opt-in flag at 0, so THIS parent prints the failed-row summary, from the capture, before it is removed
+  # and only on a red run (the record above is already written and is not touched). `|| :` keeps a fault here from replacing the child's status.
+  if [ "$_wr_rc" != 0 ]; then _va_scan "$_wr_cap" || :; _va_print || :; fi
   rm -f "$_wr_cap"
   exit "$_wr_rc"
 }
@@ -916,15 +986,17 @@ check() {
     # $failed increment survived the whole battery).
     line "[$kind]" "$name" "MISCONFIGURED"; misconfigured=$((misconfigured+1))
     emit_diag "$name" "$out"
+    _va_note "$name" MISCONFIGURED "$out"
   elif [ "$rc" = "2" ]; then
     line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1)); _rt_log "$name" "$_rt_secs" "UNVERIFIED"
     # Under --require/CI an UNVERIFIED IS a failure, so it earns its diagnostic too — otherwise the
     # one state most likely to be environmental ("no gh, no remote") is the hardest to act on.
-    [ "$REQUIRE" = "1" ] && { failed=$((failed+1)); emit_diag "$name" "$out"; } || true
+    [ "$REQUIRE" = "1" ] && { failed=$((failed+1)); emit_diag "$name" "$out"; _va_note "$name" UNVERIFIED "$out"; } || true
   else
     line "[$kind]" "$name" "FAIL"; failed=$((failed+1)); _rt_log "$name" "$_rt_secs" "FAIL"
     [ "$kind" = "control" ] && ctrl_fail=1 || true
     emit_diag "$name" "$out"
+    _va_note "$name" FAIL "$out"
   fi
 }
 
@@ -2367,6 +2439,219 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   rm -rf "$_kr_d"
   # KR-END
 
+  # ── VA (SWAS-945 erratum E4) — verify prints a column-0 summary of its failed rows, only under the opt-in and only on a red run ─────────────────────────
+  # Cells VA-1 .. VA-11 and VA-G drive the SHIPPED _va_note / _va_scan / _va_print, check(), _vs_write_record and the real script end to end on fixtures. The
+  # stub-registry seam is refused under GITHUB_ACTIONS and ends its run at its own exit before the summary site, so the end-to-end cells run a stripped copy of
+  # this file (no inline rows) on a kit-marked fixture root whose rows come from verify-kitself.rows, as the KR legs do. Each cell names the mutant that must turn
+  # it red; the mutant runs are the conductor's, not this file's.
+  _vz_d=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the VA legs)"; exit 1; }
+  _vz_die() { rm -rf "$_vz_d"; echo "verify --selftest: FAIL ($1)"; shift; for _vzl in "$@"; do echo "  $_vzl"; done; exit 1; }
+  _vz_lib_f="$(dirname "$_SELF")/../scripts/fail-annotate.sh"; _vz_json_f="$(dirname "$_SELF")/../scripts/fail-annotate.json"
+  [ -r "$_vz_lib_f" ] && [ -r "$_vz_json_f" ] || _vz_die "VA: scripts/fail-annotate.sh or its matcher JSON is not readable beside this file (the library ships in the export, so the E4 cells cannot run)"
+
+  # VA-G: the library still assigns _ka_on on its FA-GATE line, and always (0 first). Mutant: _ka_on renamed in the library.
+  [ "$(sed -n 's/^ *if .*\(_ka_on=1\); fi *# FA-GATE$/\1/p' "$_vz_lib_f")" = '_ka_on=1' ] || _vz_die "VA-G: the library's FA-GATE line no longer sets _ka_on=1 — verify's summary gate reads that unexported flag"
+  grep -q '^  _ka_on=0$' "$_vz_lib_f" || _vz_die "VA-G: the library no longer assigns _ka_on=0 first — an inherited value would survive an init that does not reach the gate line"
+
+  # VA-1: flag 1, a capture rendered by the REAL line() and emit_diag() with two failed rows (gamma: a leading blank line, leading spaces, a CR and a leading
+  # `FAIL `): exactly two lines in the format, reasons stripped. A second capture holds a 400-byte reason (cut to 300) and an empty output ((no output)).
+  # Two decoys pin the row pattern's indent: alpha's output starts with an 8-space `[control] inner FAIL`, which the real pattern reads as alpha's reason,
+  # and an unindented `[control] outer FAIL` with its own diagnostic, which the real pattern ignores. A loosened pattern (any indent, or the anchor dropped)
+  # loses alpha's line or adds an `outer` line. Mutant: _va_scan's row pattern loosened to an unindented row.
+  _vz_scan() {  # <lib 0|1> <ka_on 0|1> <capture> : _va_scan then _va_print in a subshell under that gate state, no row noted before
+    ( _va_lib=$1; _ka_on=$2; _VA_ROWS=""; _va_scan "$3"; _va_print )
+  }
+  {
+    line "[control]" alpha FAIL; emit_diag alpha "$(printf '  [control] inner FAIL\nFAIL: cause alpha one')"
+    printf '%s\n' '[control] outer FAIL'; emit_diag outer "decoy cause"
+    line "[control]" beta PASS
+    line "[doc]" gamma UNVERIFIED; emit_diag gamma "$(printf '\n  FAIL cause gamma two\r')"
+    line "[control]" omega PASS
+  } > "$_vz_d/cap1"
+  _vz_want=$(printf '%s\n' 'FAIL: verify row alpha (FAIL): [control] inner FAIL' 'FAIL: verify row gamma (UNVERIFIED): cause gamma two')
+  _vz_got=$(_vz_scan 1 1 "$_vz_d/cap1")
+  [ "$_vz_got" = "$_vz_want" ] || _vz_die "VA-1: the summary of a two-failure capture is not exactly the two expected lines" "want:" "$_vz_want" "got:" "$_vz_got"
+  _vz_long=$(awk 'BEGIN { for (i = 0; i < 400; i++) printf "x" }')
+  {
+    line "[control]" delta FAIL; emit_diag delta "$_vz_long"
+    line "[control]" eps MISCONFIGURED; emit_diag eps ""
+  } > "$_vz_d/cap2"
+  _vz_got=$(_vz_scan 1 1 "$_vz_d/cap2")
+  _vz_l1=$(printf '%s\n' "$_vz_got" | sed -n 1p); _vz_l2=$(printf '%s\n' "$_vz_got" | sed -n 2p); _vz_pfx='FAIL: verify row delta (FAIL): '
+  [ "${#_vz_l1}" = $((${#_vz_pfx} + 300)) ] || _vz_die "VA-1: a 400-byte reason was not cut to exactly 300 characters" "got: $_vz_l1"
+  [ "$_vz_l2" = 'FAIL: verify row eps (MISCONFIGURED): (no output)' ] || _vz_die "VA-1: an empty diagnostic did not read '(no output)'" "got: $_vz_l2"
+
+  # VA-2: flag 0, and the library absent with the flag at 1: the same capture, and check() on a failing stub row, note and print nothing. The flag-1 run of the
+  # same check() call is the anchor (it prints the row). Mutants: the gate removed from _va_print; the _va_lib test dropped; the gate removed from _va_note
+  # (the noted-rows state below is then non-empty).
+  printf '#!/bin/sh\necho "FAIL: stub cause"\nexit 1\n' > "$_vz_d/stubfail.sh"
+  _vz_chk() {  # <lib> <ka_on> : check() on a failing stub row under that gate state; the summary, then what was noted
+    ( _va_lib=$1; _ka_on=$2; _VA_ROWS=""; controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0; misconfigured=0; REQUIRE=0
+      check control vachk sh "$_vz_d/stubfail.sh" > /dev/null 2>&1
+      _va_print
+      printf 'noted:%s' "${_VA_ROWS:-}" )
+  }
+  [ -z "$(_vz_scan 1 0 "$_vz_d/cap1")" ] || _vz_die "VA-2: the summary printed with the flag at 0"
+  [ -z "$(_vz_scan 0 1 "$_vz_d/cap1")" ] || _vz_die "VA-2: the summary printed with the library absent and _ka_on at 1 (an inherited flag was read)"
+  # VA-2 seeded: a queue already holding a row, printed directly with the gate off (lib 1 / ka 0, and lib 0 / ka 1): silent. Mutant: the gate removed from _va_print.
+  _vz_seed=$(printf 'seed\tFAIL\tseeded cause\n')
+  [ -z "$( _va_lib=1; _ka_on=0; _VA_ROWS=$_vz_seed; _va_print )" ] || _vz_die "VA-2: _va_print printed a seeded row with the flag at 0"
+  [ -z "$( _va_lib=0; _ka_on=1; _VA_ROWS=$_vz_seed; _va_print )" ] || _vz_die "VA-2: _va_print printed a seeded row with the library absent and _ka_on at 1"
+  [ "$(_vz_chk 1 0)" = 'noted:' ] || _vz_die "VA-2: check() noted or printed a failed row with the flag at 0" "got: $(_vz_chk 1 0)"
+  [ "$(_vz_chk 0 1)" = 'noted:' ] || _vz_die "VA-2: check() noted or printed a failed row with the library absent and _ka_on at 1" "got: $(_vz_chk 0 1)"
+  _vz_got=$(_vz_chk 1 1 | sed -n 1p)
+  [ "$_vz_got" = 'FAIL: verify row vachk (FAIL): stub cause' ] || _vz_die "VA-2 anchor: check() on a failing stub row with the flag at 1 did not print its row (the cell above would be vacuous)" "got: $_vz_got"
+
+  # VA-6: 11 failed rows print 8 row lines then `FAIL: +3 more ...`. Mutants: no cap; a cap of 10.
+  _vz_cap=$( _va_lib=1; _ka_on=1; _VA_ROWS=""; _vz_i=1
+             while [ "$_vz_i" -le 11 ]; do _va_note "row$_vz_i" FAIL "cause $_vz_i"; _vz_i=$((_vz_i+1)); done
+             _va_print )
+  [ "$(printf '%s\n' "$_vz_cap" | grep -c '')" = 9 ] || _vz_die "VA-6: 11 failed rows did not print exactly 9 lines (8 rows and the overflow line)" "got:" "$_vz_cap"
+  [ "$(printf '%s\n' "$_vz_cap" | sed -n 8p)" = 'FAIL: verify row row8 (FAIL): cause 8' ] || _vz_die "VA-6: the eighth line is not the eighth row" "got:" "$_vz_cap"
+  [ "$(printf '%s\n' "$_vz_cap" | sed -n 9p)" = 'FAIL: +3 more failed verify rows (see the log above)' ] || _vz_die "VA-6: the ninth line is not the +3 overflow line" "got:" "$_vz_cap"
+
+  # VA-7: every summary line this file can print matches the problem matcher's own regexp, read from scripts/fail-annotate.json. Mutant: the summary indented by two spaces.
+  _vz_rx=$(sed -n 's/^ *"regexp": "\(.*\)",*$/\1/p' "$_vz_json_f" | head -n 1)
+  [ -n "$_vz_rx" ] || _vz_die "VA-7: no regexp could be read from scripts/fail-annotate.json"
+  printf '%s\n%s\n%s\n' "$_vz_want" "$_vz_cap" "$_vz_got" > "$_vz_d/lines"
+  _vz_n=$(grep -c '' "$_vz_d/lines"); _vz_m=$(grep -Ec -e "$_vz_rx" "$_vz_d/lines") || _vz_m=0
+  [ "$_vz_n" = "$_vz_m" ] && [ "$_vz_n" -gt 0 ] || _vz_die "VA-7: $_vz_m of $_vz_n summary lines match the matcher's regexp ($_vz_rx)"
+
+  # VA-4 / VA-10 / the wrapper half of VA-8: _vs_write_record over a fixture child that prints rows (the real line() and emit_diag()) and exits non-zero. Flag 1
+  # then 0: the same rc (1) both ways, stdout identical apart from the summary lines, the record file identical and free of them, no capture left behind, and the
+  # summary printed BEFORE the capture is removed. A green child (rc 0) prints no summary (VA-8). Mutants: VA-4 the summary written into the capture, _va_print's rc
+  # returned; VA-10 _va_scan moved after `rm -f "$_wr_cap"` (the summary goes missing); VA-8 the rc gate dropped.
+  mkdir -p "$_vz_d/w/conformance" "$_vz_d/r1" "$_vz_d/r0" "$_vz_d/r2"
+  {
+    line "[control]" alpha FAIL; emit_diag alpha "FAIL: wrapper cause alpha"
+    line "[doc]" gamma FAIL; emit_diag gamma "gamma cause"
+  } > "$_vz_d/w/cap.txt"
+  printf '%s\n' '#!/bin/sh' 'cat "$(dirname "$0")/../cap.txt"' 'exit "${VA_RC:-1}"' > "$_vz_d/w/conformance/child.sh"
+  _vz_wr() {  # <lib> <ka_on> <child-rc> <record> : _vs_write_record over the fixture child (a subshell: it exits); stdout is its stdout, the status its status
+    ( _va_lib=$1; _ka_on=$2; _VA_ROWS=""; VA_RC=$3; export VA_RC; GIT_CEILING_DIRECTORIES=$_vz_d; export GIT_CEILING_DIRECTORIES
+      _SELF="$_vz_d/w/conformance/child.sh"; _KS_ORIG_PWD=$_vz_d
+      _vs_write_record "$4" --require )
+  }
+  if _vz_o1=$(_vz_wr 1 1 1 "$_vz_d/r1/rec"); then _vz_rc1=0; else _vz_rc1=$?; fi
+  if _vz_o0=$(_vz_wr 1 0 1 "$_vz_d/r0/rec"); then _vz_rc0=0; else _vz_rc0=$?; fi
+  [ "$_vz_rc1" = 1 ] && [ "$_vz_rc0" = 1 ] || _vz_die "VA-4: the recorded run's status was not the child's (1) with the flag on ($_vz_rc1) and off ($_vz_rc0)"
+  _vz_want=$(printf '%s\n' 'FAIL: verify row alpha (FAIL): wrapper cause alpha' 'FAIL: verify row gamma (FAIL): gamma cause')
+  _vz_got=$(printf '%s\n' "$_vz_o1" | grep '^FAIL: verify row ') || _vz_got=""
+  [ "$_vz_got" = "$_vz_want" ] || _vz_die "VA-10: the wrapper did not print the two-row summary from the capture before removing it" "want:" "$_vz_want" "got:" "$_vz_got"
+  _vz_strip=$(printf '%s\n' "$_vz_o1" | grep -v '^FAIL: verify row ') || _vz_strip=""
+  [ "$_vz_strip" = "$_vz_o0" ] || _vz_die "VA-4: with the flag on, stdout is not the flag-off stdout plus the summary lines"
+  cmp -s "$_vz_d/r1/rec" "$_vz_d/r0/rec" || _vz_die "VA-4: the record differs between the flag on and off"
+  if grep -q 'verify row' "$_vz_d/r1/rec"; then _vz_die "VA-4: the summary was written into the record"; fi
+  [ -z "$(find "$_vz_d/r1" "$_vz_d/r0" -name '.verify-rec.*')" ] || _vz_die "VA-10: a .verify-rec.* capture or staging file was left behind"
+  _vz_o2=$(_vz_wr 1 1 0 "$_vz_d/r2/rec") || _vz_die "VA-8: a green recorded run exited non-zero"
+  if printf '%s\n' "$_vz_o2" | grep -q '^FAIL: verify row '; then _vz_die "VA-8: a GREEN recorded run (child rc 0, advisory doc FAIL rows) printed a summary"; fi
+
+  # VA-5: nested runs are silent. An outer fixture entry point (opt-in set) inits the real library and runs a child that sources it, inits and calls the shipped
+  # _va_note / _va_print: the child prints nothing, while the same child run directly under the opt-in prints its row (the anchor). Mutant: the library's `unset`
+  # replaced by `export` (E3 FA-N1's mutant), which hands the opt-in to the child.
+  mkdir -p "$_vz_d/n/conformance" "$_vz_d/n/scripts"
+  cp "$_vz_lib_f" "$_vz_d/n/scripts/fail-annotate.sh"; cp "$_vz_json_f" "$_vz_d/n/scripts/fail-annotate.json"
+  # shellcheck disable=SC2016  # the fixture scripts are literal text
+  {
+    printf '%s\n' '#!/bin/sh' 'set -eu' 'kit_annot_init() { return 0; }' '_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"' \
+      'if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi' 'kit_annot_init' '_va_lib=0; _VA_ROWS=""; if [ -f "$_FA_LIB" ] && [ -r "$_FA_LIB" ]; then _va_lib=1; fi'
+    sed -n '/^_va_note() {$/,/^}$/p' "$_SELF"
+    sed -n '/^_va_print() {$/,/^}$/p' "$_SELF"
+    printf '%s\n' '_va_note childrow FAIL "child cause"' '_va_print'
+  } > "$_vz_d/n/conformance/child.sh"
+  # shellcheck disable=SC2016  # the fixture scripts are literal text
+  printf '%s\n' '#!/bin/sh' 'set -eu' 'kit_annot_init() { return 0; }' '_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"' \
+    'if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi' 'kit_annot_init' 'sh "$(dirname "$0")/child.sh"' > "$_vz_d/n/conformance/outer.sh"
+  _vz_nested=$(env -u CI -u GITHUB_ACTIONS -u SW_ANNOTATE GITHUB_ACTIONS=true SW_ANNOTATE=1 sh "$_vz_d/n/conformance/outer.sh" 2>&1) || _vz_die "VA-5: the nested fixture failed" "$_vz_nested"
+  _vz_direct=$(env -u CI -u GITHUB_ACTIONS -u SW_ANNOTATE GITHUB_ACTIONS=true SW_ANNOTATE=1 sh "$_vz_d/n/conformance/child.sh" 2>&1) || _vz_die "VA-5: the child fixture failed when run directly" "$_vz_direct"
+  printf '%s\n' "$_vz_direct" | grep -qx 'FAIL: verify row childrow (FAIL): child cause' || _vz_die "VA-5 anchor: the child run directly under the opt-in did not print its row (the nested cell would be vacuous)" "$_vz_direct"
+  if printf '%s\n' "$_vz_nested" | grep -q '^FAIL: verify row '; then _vz_die "VA-5: a child of an opted-in entry point printed a summary (the opt-in leaked past the outer init)" "$_vz_nested"; fi
+
+  # VA-11: a capture in --merge's own row shape. `--merge` rebuilds its rows with `cat` (no check() call), from the shard records' lines: so a merge rendering is the
+  # shard record's own line() and emit_diag text. The cell builds a shard record, runs the SHIPPED _mg_parse over it and takes the rebuilt body lines (what `--merge`
+  # prints for those rows): the rows are FOUND, so a `--merge --output-file` step's wrapper summarises its failed rows; a PLAIN --merge notes only the battery row
+  # that check() grades itself. Mutant: the scan pattern changed to a shape merge does not print.
+  mkdir -p "$_vz_d/m"
+  {
+    printf '%s\n' 'verify-output-file: v1 head=h self=s dirty=d require=1 changed=0 shard=1/2 tree=t' 'Conformance verification (honest aggregate)' '-------------------------------------------'
+    line "[control]" alpha FAIL; emit_diag alpha "FAIL: merge cause alpha"
+    line "[doc]" gamma FAIL; emit_diag gamma "merge cause gamma"
+    printf '%s\n' 'Shard-rows: 1/2 1:alpha 3:gamma' 'Shard-counts: controls=1 docs=1 unverified=0 nas=0 failed=2 misconfigured=0 ctrl_fail=1' '' 'Summary: stub' 'RESULT: FAIL (a control check failed)' 'verify-output-end: v1 rc=1 lines=99'
+  } > "$_vz_d/m.rec"
+  _vz_mp=$(_mg_parse "$_vz_d/m.rec" 1 "$_vz_d/m" m.rec) || _vz_die "VA-11: the shipped _mg_parse refused the fixture shard record, so the merge row shape cannot be taken from it" "$_vz_mp"
+  cut -f3- "$_vz_d/m/rows.1" > "$_vz_d/m.merged"
+  _vz_want=$(printf '%s\n' 'FAIL: verify row alpha (FAIL): merge cause alpha' 'FAIL: verify row gamma (FAIL): merge cause gamma')
+  _vz_got=$(_vz_scan 1 1 "$_vz_d/m.merged")
+  [ "$_vz_got" = "$_vz_want" ] || _vz_die "VA-11: the rows of a --merge's rebuilt body were not found by the scan" "want:" "$_vz_want" "got:" "$_vz_got"
+
+  # The end-to-end cells (VA-1 on a real run, VA-2, VA-3, VA-8 plain, VA-9): a stripped copy of this file on a kit-marked fixture root, its rows in verify-kitself.rows.
+  _vz_fix() {  # <name> <verify-source> <withlib|nolib> <row-line>... : the fixture root; rows ok / fail / unverified-or-misconfigured scripts beside it
+    _vzf=$_vz_d/$1; _vzs=$2; _vzl=$3; shift 3
+    mkdir -p "$_vzf/conformance" "$_vzf/docs" "$_vzf/scripts"
+    : > "$_vzf/docs/ROADMAP-KIT.md"
+    grep -v '^check ' "$_vzs" > "$_vzf/conformance/verify.sh"
+    if [ "$_vzl" = withlib ]; then cp "$_vz_lib_f" "$_vzf/scripts/fail-annotate.sh"; cp "$_vz_json_f" "$_vzf/scripts/fail-annotate.json"; fi
+    printf '%s\n' "$@" > "$_vzf/conformance/verify-kitself.rows"
+    printf '#!/bin/sh\necho "OK: ran"\n' > "$_vzf/conformance/ok.sh"
+    printf '#!/bin/sh\necho "FAIL: planted red cause"\nexit 1\n' > "$_vzf/conformance/fail.sh"
+    printf '#!/bin/sh\necho "cannot verify: nothing here"\nexit 2\n' > "$_vzf/conformance/unv.sh"
+    printf '#!/bin/sh\necho "usage: mc.sh [x]" >&2\nexit 2\n' > "$_vzf/conformance/mc.sh"
+  }
+  _vz_go() {  # <fixture> [VAR=value ...] : the fixture's copy under a scrubbed environment; sets _vz_o and _vz_rc
+    _vzg=$1; shift
+    _vz_o=$( cd "$_vz_d/$_vzg" && env -u CI -u GITHUB_ACTIONS -u SW_ANNOTATE -u _ka_on VERIFY_SKIP_PREFLIGHT=1 "$@" sh "$_vz_d/$_vzg/conformance/verify.sh" 2>&1 ) && _vz_rc=0 || _vz_rc=$?
+  }
+  _vz_red='check control vaok --kitself sh conformance/ok.sh'
+  _vz_fix f1 "$_SELF" withlib "$_vz_red" 'check control vared --kitself sh conformance/fail.sh' 'check control vamc --kitself sh conformance/mc.sh' 'check control vaunv --kitself sh conformance/unv.sh'
+  # The plain path, red (CI=1, so an UNVERIFIED row blocks): with the opt-in the three failing arms (FAIL, MISCONFIGURED, UNVERIFIED under --require) print one line each,
+  # in run order, AFTER the RESULT line, and the exit status is result_sentence's own (1). Without the opt-in, and with only half of it (GITHUB_ACTIONS or SW_ANNOTATE alone),
+  # nothing is printed, and the opted-in stdout is the opted-out stdout plus the matcher lines and the summary.
+  _vz_go f1 CI=1 GITHUB_ACTIONS=true SW_ANNOTATE=1; _vz_on=$_vz_o; _vz_onrc=$_vz_rc
+  _vz_go f1 CI=1; _vz_off=$_vz_o; _vz_offrc=$_vz_rc
+  _vz_go f1 CI=1 GITHUB_ACTIONS=true; _vz_half1=$_vz_o
+  _vz_go f1 CI=1 SW_ANNOTATE=1; _vz_half2=$_vz_o
+  [ "$_vz_onrc" = 1 ] && [ "$_vz_offrc" = 1 ] || _vz_die "VA-1: the red fixture run exited $_vz_onrc opted in and $_vz_offrc opted out, not 1 both ways" "$_vz_on"
+  printf '%s\n' "$_vz_off" | grep -q '^RESULT: FAIL' || _vz_die "VA-1: the red fixture run did not end in a RESULT: FAIL line (the fixture is vacuous)" "$_vz_off"
+  _vz_want=$(printf '%s\n' 'FAIL: verify row vared (FAIL): planted red cause' 'FAIL: verify row vamc (MISCONFIGURED): usage: mc.sh [x]' 'FAIL: verify row vaunv (UNVERIFIED): cannot verify: nothing here')
+  _vz_got=$(printf '%s\n' "$_vz_on" | sed -n '/^RESULT:/,$p' | grep '^FAIL: ') || _vz_got=""
+  [ "$_vz_got" = "$_vz_want" ] || _vz_die "VA-1: the opted-in red run did not print exactly the three failed rows after its RESULT line" "want:" "$_vz_want" "got:" "$_vz_got" "full output:" "$_vz_on"
+  _vz_want3=$_vz_want
+  if printf '%s\n' "$_vz_off" | grep -q '^FAIL: verify row '; then _vz_die "VA-2: a red run printed a summary WITHOUT the opt-in"; fi
+  # VA-12: opted in, a red run, with _VA_ROWS exported in the environment holding a planted row whose reason ends in a CR then `::x::`: the summary is exactly the
+  # three real rows (the top of this file resets the queue). Mutant: the `_VA_ROWS=""` reset removed.
+  _vz_go f1 CI=1 GITHUB_ACTIONS=true SW_ANNOTATE=1 "_VA_ROWS=$(printf 'plant\tFAIL\tbad cause\r::x::\n')"
+  _vz_got=$(printf '%s\n' "$_vz_o" | sed -n '/^RESULT:/,$p' | grep '^FAIL: ') || _vz_got=""
+  [ "$_vz_got" = "$_vz_want3" ] || _vz_die "VA-12: an inherited _VA_ROWS reached the summary (or a real row went missing)" "want:" "$_vz_want3" "got:" "$_vz_got"
+  if printf '%s\n' "$_vz_half1$_vz_half2" | grep -q '^FAIL: verify row '; then _vz_die "VA-2: a red run printed a summary with only half of the opt-in (GITHUB_ACTIONS or SW_ANNOTATE alone)"; fi
+  _vz_strip=$(printf '%s\n' "$_vz_on" | grep -v -e '^::' -e '^FAIL: verify row ') || _vz_strip=""
+  [ "$_vz_strip" = "$_vz_off" ] || _vz_die "VA-3: the opted-in stdout is not the opted-out stdout plus the matcher lines and the summary (a counter, verdict, Summary or RESULT line moved)"
+  # VA-3: flag 0, the same four stub rows (PASS, FAIL, UNVERIFIED under --require, MISCONFIGURED): byte-identical, rc included, to a copy of this file with E4's
+  # _va_note calls deleted (main's form). Mutant: _va_note printing when the flag is 0.
+  sed 's/ *_va_note "\$name" [A-Z][A-Z]* "\$out";\{0,1\}//' "$_SELF" > "$_vz_d/main-form.sh"
+  if cmp -s "$_SELF" "$_vz_d/main-form.sh"; then _vz_die "VA-3: the main's-form copy is identical to this file — the sed no longer finds the _va_note calls in check(); retarget it"; fi
+  _vz_fix f3 "$_vz_d/main-form.sh" withlib "$_vz_red" 'check control vared --kitself sh conformance/fail.sh' 'check control vamc --kitself sh conformance/mc.sh' 'check control vaunv --kitself sh conformance/unv.sh'
+  _vz_go f3 CI=1; _vz_main=$_vz_o; _vz_mainrc=$_vz_rc
+  [ "$_vz_main" = "$_vz_off" ] && [ "$_vz_mainrc" = "$_vz_offrc" ] || _vz_die "VA-3: with the flag at 0 the run is not byte-identical (stdout and rc) to main's form" "main's form:" "$_vz_main" "this file:" "$_vz_off"
+  # VA-9: an inherited _ka_on=1 exported, the library file ABSENT, the opt-in set, a red run: no summary. Mutant: the gate on _ka_on alone.
+  _vz_fix f4 "$_SELF" nolib "$_vz_red" 'check control vared --kitself sh conformance/fail.sh'
+  _vz_go f4 CI=1 GITHUB_ACTIONS=true SW_ANNOTATE=1 _ka_on=1
+  printf '%s\n' "$_vz_o" | grep -q '^RESULT: FAIL' || _vz_die "VA-9: the library-absent red fixture did not end in RESULT: FAIL (the cell is vacuous)" "$_vz_o"
+  if printf '%s\n' "$_vz_o" | grep -q '^FAIL: verify row '; then _vz_die "VA-9: an inherited _ka_on=1 with the library absent turned the summary on"; fi
+  # VA-13: scripts/fail-annotate.sh is a DIRECTORY (readable, not a regular file), _ka_on=1 inherited, the opt-in set, a red run: no summary. Mutant: `-f` dropped from the _va_lib test.
+  _vz_fix f5 "$_SELF" nolib "$_vz_red" 'check control vared --kitself sh conformance/fail.sh'
+  mkdir -p "$_vz_d/f5/scripts/fail-annotate.sh"
+  _vz_go f5 CI=1 GITHUB_ACTIONS=true SW_ANNOTATE=1 _ka_on=1
+  printf '%s\n' "$_vz_o" | grep -q '^RESULT: FAIL' || _vz_die "VA-13: the directory-library red fixture did not end in RESULT: FAIL (the cell is vacuous)" "$_vz_o"
+  if printf '%s\n' "$_vz_o" | grep -q '^FAIL: verify row '; then _vz_die "VA-13: a directory at the library path turned the summary on"; fi
+  # VA-8, plain path: opted in, a GREEN run (rc 0) that holds an advisory doc FAIL and a non-required UNVERIFIED: no summary. Mutant: the rc gate dropped.
+  _vz_fix f2 "$_SELF" withlib "$_vz_red" 'check doc vadoc --kitself sh conformance/fail.sh' 'check control vaunv --kitself sh conformance/unv.sh'
+  _vz_go f2 GITHUB_ACTIONS=true SW_ANNOTATE=1
+  [ "$_vz_rc" = 0 ] || _vz_die "VA-8: the advisory fixture run exited $_vz_rc, not 0 (the cell is vacuous)" "$_vz_o"
+  printf '%s\n' "$_vz_o" | grep -Eq '^  \[doc\] +vadoc +FAIL$' || _vz_die "VA-8: the advisory fixture did not render the doc FAIL row (the cell is vacuous)" "$_vz_o"
+  printf '%s\n' "$_vz_o" | grep -Eq '^  \[control\] +vaunv +UNVERIFIED$' || _vz_die "VA-8: the advisory fixture did not render the non-required UNVERIFIED row (the cell is vacuous)" "$_vz_o"
+  if printf '%s\n' "$_vz_o" | grep -q '^FAIL: verify row '; then _vz_die "VA-8: a GREEN opted-in run printed a summary for its advisory rows"; fi
+  rm -rf "$_vz_d"
+
   # ── PRE-FLIGHT leg (B3) — a HEAD-less tree must fail FAST and name the TRUE cause ─────────────────
   # Behavioural: a real no-commit repo + this very script; asserts exit status, wording AND the clock.
   # The fixture is a whole git repo, so it is trap-cleaned (review R1): the earlier inline `rmdir` left
@@ -2432,6 +2717,8 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   echo "                         an empty diff and a bad sha; the all-zero first-push before writes none"
   echo "                       + VP: the renderer probe prints ONE 'renderer probe: agent-autonomy <verdict>' line, read from the"
   echo "                         whole-name rendered row (a longer or [doc] row never counts), kept in variables everywhere else"
+  echo "                       + VA-1..VA-13, VA-G (SWAS-945 E4): under the opt-in only, a red run ends with column-0 'FAIL: verify row <name> (<VERDICT>): <reason>'"
+  echo "                         lines (at most 8 and an overflow line); off, half-on, library-absent, nested, green and merge shapes are pinned; each cell has a mutant"
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
   echo "                         commit, and stays silent on a tree that has history — both probes"
   echo "                         ANCHORED to the pre-flight's OWN sentence, so a failing child's prose"
@@ -2963,4 +3250,7 @@ if [ -n "$SEAM_ACTIVE" ]; then
   echo "RESULT: UNVERIFIED (TEST SEAM ACTIVE: $SEAM_ACTIVE — this run is NOT a verdict, whatever the rows above say)"
   exit 2
 fi
-result_sentence; exit $?
+# SWAS-945 E4: the failed-row summary follows the RESULT line, only on a red run and only under the opt-in (_va_print is silent otherwise); the exit status is result_sentence's own.
+if result_sentence; then _va_rc=0; else _va_rc=$?; fi
+[ "$_va_rc" = 0 ] || _va_print || :
+exit "$_va_rc"

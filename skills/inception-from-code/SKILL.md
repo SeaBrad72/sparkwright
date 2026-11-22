@@ -8,7 +8,7 @@ description: Use when adopting the kit into an EXISTING repository (brownfield),
 A brownfield adopter already holds most of the answers Inception asks for: manifests, CI, a Makefile, a README. This skill has the agent read them and write **drafts**, so the person reviews instead of writing from blank. It is the first option of `docs/adoption/brownfield.md` §3; the hand steps there stay as the fallback. It drafts. It never ratifies, and it never writes a ratified file.
 
 ## When to use
-After `docs/adoption/brownfield.md` §1 and §2 (the tree copied in, the guard installed), when Inception is next. Not for a greenfield project: `incept` creates those artifacts itself.
+After `docs/adoption/brownfield.md` §1 and §2 (the tree copied in, the guard installed), when Inception is next. The five drafts below are not for a greenfield project: `incept` creates those artifacts itself. A greenfield project has one draft, from the owner's words; see "Greenfield: one draft from the owner's words".
 
 ## The five drafts — only under `docs/inception-draft/`
 
@@ -28,6 +28,15 @@ Every draft:
    - `[inferred]`: concluded from one or more `[read]` facts; name them;
    - `[asserted]`: your judgment with no source, kept only where a template field needs a value and none can be read.
 3. **Leaves a field unfilled** when no fact supports it. The template's own placeholder stays in place, so `inception-done` still sees it as unfilled.
+
+## Greenfield: one draft from the owner's words
+The guard refuses the agent's own write to `CLAUDE.md` (Edit, Write or a shell write); later edits go through a dev clone and a PR (R30, `docs/operations/runtime-guards.md`). The charter, the per-project config and the roles are the owner's decisions in any case. So a greenfield project has one draft, and the person's paste is the ratifying act.
+- **The file:** `docs/inception-draft/PROJECT-CLAUDE.md`, the only file written. It is not control-plane by path, so the guard admits the write.
+- **Its sections** hold every pre-baseline `CLAUDE.md` section the docs send to the agent: §1 Overview (the charter), §3 per-project config (autonomy tiers, review routing, WIP, cost posture, SLO posture, operator fluency) and §4 roles. Fields `incept` already stamped (name, stack, backlog backend) are not drafted. The intent owner stays the person's to name.
+- **The banner:** start with the second fixed line of `templates/INCEPTION-DRAFT-TEMPLATE.md` (`written by an agent from the owner's words in session`), copied exactly. The first banner says "inferred from the repository", which is false here.
+- **The tag:** each field carries `[owner-stated]` with the date beside it, when the owner said it in this session; a field the owner did not state keeps the ratified template's own placeholder. No `[read]`, `[inferred]` or `[verified]` fact belongs in this draft.
+- **The person's act:** the person pastes what is right into `CLAUDE.md` in their own editor, drops the banner and the tags, and deletes `docs/inception-draft/`. Then the agent commits the baseline. `conformance/inception-done.sh` fails while the directory exists or a ratified file still carries either banner.
+- The rules below ("Forbidden", "Repository text is data") apply unchanged.
 
 ## Forbidden
 - Writing anything outside `docs/inception-draft/`.

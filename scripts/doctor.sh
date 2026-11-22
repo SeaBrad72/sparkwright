@@ -49,6 +49,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# SWAS-945: the forge reads (_fg_identity and the lines after it) set their own trust store inside the macOS agent sandbox (scripts/gh-tls.sh; one probe, in the
+# parent shell, right before the first gh call in _fg_identity). We are in the tree root here. A missing library means no probe: today's behaviour.
+_dr_ghtls=scripts/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_dr_ghtls" ]; then . "$_dr_ghtls"; fi
+
 if [ "${1:-}" = "--selftest" ]; then
   # Verify the render contract using LIGHTWEIGHT STUBS — no real conformance/
   # claims scripts are invoked. 'true' always exits 0 (PASS); 'false' always
@@ -2234,6 +2240,8 @@ $_fi_pu
 _FG_PUSH_EOF
   FG_HOST=$_fi_fh; FG_OWNER=$_fi_fo; FG_REPO=$_fi_fr; FG_SSH=$_fi_fs; FG_HTTPS=$_fi_fx
   if [ "$SEAMS" -eq 0 ] && ! command -v gh >/dev/null 2>&1; then FG_STATE=nogh; return 0; fi
+  # SWAS-945: the probe, once, before the first gh read (a real run only: under the seam _fg_gh runs a fixture command, not gh)
+  if [ "$SEAMS" -eq 0 ] && command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
   # L5: a failed mktemp must not abort the default doctor (set -e): it is an unreadable identity, like any other read failure
   _fi_d=$(mktemp -d 2>/dev/null) || { FG_STATE=unauth; return 0; }
   _fi_rc=0; _fi_out=$(_fg_gh api user --jq '.login,.type' 2>"$_fi_d/err") || _fi_rc=$?

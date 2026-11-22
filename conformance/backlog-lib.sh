@@ -447,9 +447,9 @@ tracker_delegated_cure() {
 # text (anyone can open a PR), so every match below is string EQUALITY or a CONSTANT `case`
 # pattern applied TO the id — never a pattern built FROM it.
 
-# row_id_ok <token> : rc0 iff the token matches [A-Z0-9][A-Z0-9-]*. THE ONE DEFINITION of the
+# row_id_ok <token> : rc0 iff the token matches [A-Z0-9][A-Z0-9-]* and is 1-128 characters (SWAS-905: one bound, the same in every copy). THE ONE DEFINITION of the
 # grammar for the checks that source this library. scripts/board-claim.sh carries a byte-equal
-# `bc_row_ok` and CANNOT call this one — its selftest drives it inside throwaway clones that
+# `bc_row_ok` (and scripts/board.sh a third, `bd_row_ok`) and CANNOT call this one — its selftest drives it inside throwaway clones that
 # carry a BACKLOG.md and nothing else, so sourcing a conformance/ library would make the verb
 # untestable in the only fixture that proves it (that file's own disclosure at :210-224 states
 # the same boundary for the board parser).
@@ -467,6 +467,7 @@ row_id_ok() {
     [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)    return 1 ;;
     *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)  return 1 ;;
   esac
+  [ "${#1}" -le 128 ] || return 1   # SWAS-905: one bound, 1-128, outside the case the twin leg compares
   return 0
 }
 

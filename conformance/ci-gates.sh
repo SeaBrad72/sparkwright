@@ -26,6 +26,12 @@
 # guarantees use a YAML parser (e.g. `yq -r '.jobs[].steps[].id'`). This shell check is a
 # portable, zero-dependency gate and should be paired with the pipeline actually running.
 set -eu
+# SWAS-945 PR 2: under GITHUB_ACTIONS set to true and SW_ANNOTATE set to 1, this check's column-0 FAIL lines become annotations (problem matcher; scripts/fail-annotate.sh). No library, no change.
+kit_annot_init() { return 0; }
+_FA_LIB="$(dirname "$0")/../scripts/fail-annotate.sh"
+# shellcheck source=scripts/fail-annotate.sh
+if [ -f "$_FA_LIB" ]; then . "$_FA_LIB"; fi
+kit_annot_init
 
 # --- emitted-CI seam ---------------------------------------------------------------
 # K9 (CP-7 run 4): profiles/typescript-node/ci.yml called `sh scripts/otel-trace.sh --emit`,
@@ -1163,8 +1169,8 @@ ONBODY
     echo "FAIL: $_bm_f the macOS workflow must carry exactly one job 'boundary-redteam-macos' whose header is the pinned runner, timeout, continue-on-error and permissions lines, then steps" >&2; return 1
   fi
   _bm_ns=$(printf '%s\n' "$_bm_m" | awk 'index($0, "      - ") == 1 { n++ } END { print n + 0 }')
-  if [ "$_bm_ns" != 7 ]; then
-    echo "FAIL: $_bm_f the macOS workflow must carry exactly seven steps (checkout, setup-node, tools, profile resolver, graded legs, extras, upload); found $_bm_ns" >&2; return 1
+  if [ "$_bm_ns" != 8 ]; then
+    echo "FAIL: $_bm_f the macOS workflow must carry exactly eight steps (checkout, setup-node, tools, profile resolver, graded legs, bash 3.2 parse, extras, upload); found $_bm_ns" >&2; return 1
   fi
   # 3. the steps: the checkout (persist-credentials tied to its own with:), the pins equal to the Linux job's, then each step as an exact line sequence
   _bm_un=0
@@ -1259,6 +1265,17 @@ S4BODY
           done
           exit "$bad"
 S5BODY
+  # SWAS-914 (errata E1): the bash 3.2 parse step is the SIXTH step, between the graded legs and the extras, its name, if: and run body exact and the run line NOT masked (a '|| :' would turn a parse failure into a green step)
+  _bm_s5p=$(printf '%s\n' "$_bm_m" | awk 'index($0, "      - ") == 1 { n++; if (n == 6) print }')
+  case "$_bm_s5p" in
+    "      - name: bash 3.2 parse of the kit's shell "*) ;;
+    *) echo "FAIL: $_bm_f the bash 3.2 parse step must be the sixth step, between the graded legs and the report-only extras (SWAS-914)" >&2; return 1 ;;
+  esac
+  _bm_chk "bash 3.2 parse step (exactly the pinned lines, the run line unmasked: no '|| :')" "$(_bm_step '      - name: bash 3.2 parse')" <<'S5PBODY' || return 1
+      - name: bash 3.2 parse of the kit's shell (SWAS-914; graded, exit 0 = parsed, 1 = a parse failure, 2 = no bash 3.2 here)
+        if: ${{ !cancelled() }}
+        run: sh conformance/bash32-parse.sh
+S5PBODY
   # the extras: the step's name and if: are exact; every harness line in the step ends '|| :' and is on the macOS-only allowlist (C42 literal control, C42R alone, a --*-candidate line), AND the
   # step's whole run body is pinned below as an exact line sequence: the 'run: |' line and its seven fixed lines (mkdir, the C42R echo header, the C42R harness line, the cat, the summary line, the
   # literal-control echo header, the literal-control harness line) verbatim, then the eight generated SWAS-564 lines; generic candidate lines only after them (BRMO); --c73-candidate and c73-* reserved (BRMZ, BRMG).
@@ -4538,6 +4555,10 @@ selftest() {
         _bq_in '/^          echo "C42R real-path cell, alone/ { print "          echo ${{ inputs.profile }}" } { print }' > "$d/bm/m91.yml"
         _bq_in '/^        description: / { sub(/Which slice/, "Which inputs.profile slice") } { print }' > "$d/bm/m92.yml"
         _bq_in '/^          echo "C42R real-path cell, alone/ { print "          # ${{ inputs.profile }}" } { print }' > "$d/bm/m93.yml"
+        # BR133-BR135 (SWAS-914, errata E1): the bash 3.2 parse step. BR133 missing (the step's three lines dropped), BR134 masked (|| : on its run line), BR135 moved after the extras (its three lines held, then printed before the upload step).
+        _bq_in '/^      - name: bash 3[.]2 parse/ { skip = 3 } skip > 0 { skip--; next } { print }' > "$d/bm/m133.yml"
+        _bq_in '/^        run: sh conformance\/bash32-parse[.]sh$/ { print $0 " || :"; next } { print }' > "$d/bm/m134.yml"
+        _bq_in '/^      - name: bash 3[.]2 parse/ { hold = 3 } hold > 0 { held = held $0 "\n"; hold--; next } /^      - name: Upload the macOS readings/ { printf "%s", held } { print }' > "$d/bm/m135.yml"
         # each row is file|want|id|description, split on '|' (a separator no want or description holds; the descriptions carry ':' and quotes)
         for _bq_m in "m53|must run on the LITERAL|BR53|runs-on rewritten to a KIT_CI_RUNNER-style expression" \
                      "m54|must run on the LITERAL|BR54|runs-on rewritten to macos-latest" \
@@ -4623,7 +4644,10 @@ selftest() {
                      "m132|extras step's run body|BR132|an extra --stub flag on the A build line" \
                      "m132b|report-only extra|BR132b|a non-C73 cell (C1) on the A measure line" \
                      "m132c|report-only extra|BR132c|a non-C73 cell (C36) appended to the A measure list" \
-                     "m132d|report-only extra|BR132d|an extra --report-only flag on the A measure line"; do
+                     "m132d|report-only extra|BR132d|an extra --report-only flag on the A measure line" \
+                     "m133|exactly eight steps|BR133|the bash 3.2 parse step missing (SWAS-914)" \
+                     "m134|bash 3.2 parse step|BR134|the bash 3.2 parse step masked with || : (SWAS-914)" \
+                     "m135|bash 3.2 parse step|BR135|the bash 3.2 parse step moved after the extras (SWAS-914)"; do
           _bq_f=${_bq_m%%|*}; _bq_r=${_bq_m#*|}; _bq_want=${_bq_r%%|*}; _bq_r=${_bq_r#*|}
           _bq_id=${_bq_r%%|*}; _bq_desc=${_bq_r#*|}
           _bq_ci="$_br_real"; _bq_mf="$d/bm/$_bq_f.yml"
@@ -7003,17 +7027,21 @@ $1"
       fi
       _tr8p_pin
     }
-    # TR8P-8: the derivation reads selftest_touched_replay up to its rc-0 sfx, off_kit, tr8_gate and tr8_noci, and the roster running touched_replay. A cksum of those lines is pinned; any edit
+    # TR8P-8: the derivation reads selftest_touched_replay up to its rc-0 sfx, off_kit, tr8_clone, tr8_commit, tr8_gate and tr8_noci, and the roster running touched_replay. A cksum of those lines is pinned; any edit
     # (an added early return included) reds this cell and sends the editor to design section 2, which says what the derivation needs. Bumping the pin is that deliberate edit.
     # PIN: the measured cksum (crc-size) of those lines at SWAS-658's build; the FAIL line prints the new value when they change.
     # SWAS-903 (SWAS-909 narrow part): selftest_touched_replay now plans in a fixture clone of the real tree (tr8_clone, tr8_commit; the base is a sha of the fixture's own commit), so the lane's
     # last real commit no longer decides the plan. Design section 2 re-read: P1 (three kit files) and P3 (CI file) are unchanged; the old HEAD~1 branch (P2) is gone from TR8, and the one new early
     # exit (the clone cannot be built) is a FAIL with SF=1, never an N/A pass, so the derived proof gains no vacuous branch. The region is 1744 bytes (was 1285): the clone lines.
-    _TR8P_PIN=907424207-1744
+    # SWAS-909 (R6-2 of SWAS-903): tr8_clone and tr8_commit build the tree TR8 plans, so they join the region (design section 2's honest-ceiling list re-read: they give the fixture its meaning, as
+    # off_kit, tr8_gate and tr8_noci give P3 and P4 theirs). The region is 2018 bytes (was 1744): the two one-line helpers.
+    _TR8P_PIN=2191946852-2018
     _tr8p_pin() {
       _tp_src="$_kr/conformance/prepush-lane.sh"
       _tp_got=$(awk '
         /^off_kit\(\) / { print }
+        /^tr8_clone\(\) / { print }
+        /^tr8_commit\(\) / { print }
         /^tr8_gate\(\) \{$/ { g = 1 }
         /^tr8_noci\(\) \{$/ { g = 1 }
         g { print }
@@ -7027,7 +7055,7 @@ $1"
         ''|*-0) echo "selftest FAIL: TR8P-8 — the pin extraction found no TR8 lines in conformance/prepush-lane.sh (measured $_tp_got)"; sf=1 ;;
         *) if ! _has "$_tp_ro" ' touched_replay '; then echo "selftest FAIL: TR8P-8 — the selftest roster no longer runs touched_replay, so verify's prepush-lane PASS would not cover TR8"; sf=1
            elif [ "$_tp_got" != "$_TR8P_PIN" ]; then echo "selftest FAIL: TR8P-8 — the lane's TR8 code the derivation reads changed (measured cksum $_tp_got, pinned $_TR8P_PIN): re-read design 2026-11-08-tr8-once-658 section 2, then bump _TR8P_PIN"; sf=1
-           else echo "selftest PASS: TR8P-8 — the TR8 code the derived proof reads (selftest_touched_replay to its rc-0 sfx, off_kit, tr8_gate, tr8_noci) matches the pin, and the roster runs touched_replay"; fi ;;
+           else echo "selftest PASS: TR8P-8 — the TR8 code the derived proof reads (selftest_touched_replay to its rc-0 sfx, off_kit, tr8_clone, tr8_commit, tr8_gate, tr8_noci) matches the pin, and the roster runs touched_replay"; fi ;;
       esac
     }
     _tr8p_cells

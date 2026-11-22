@@ -9,6 +9,28 @@
 
 selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }
 
+# SWAS-981 - the COMMAND-POSITION fragment the destructive matrix splices in front of each anchored verb (design
+# docs/architecture/2026-11-20-guard-destructive-prefix-981-design.md section 6; sites S1-S26 below carry a `981-Sn` marker or are named by the
+# plan). It says where a simple command can start (line start, after ; & | ( ) {), then any run of prefix words (NAME=value, a redirect word, a
+# reserved word, an unquoted $X, env with its options, or a wrapper: sudo, command, exec, nohup, nice), then an optional path or backslash before
+# the verb. It only ADDS ways to match a deny pattern, so no ALLOW can follow from it. POSIX ERE only; each piece is a single-quoted string and the
+# only splice is `"$_GD981_POS"'<arm text>'`. The quote-blind reading of the anchor is kept (runtime-guards R1, R33). Defined once at file scope.
+_GD981_NM='[A-Za-z_][A-Za-z0-9_]*'   # 981-NM
+_GD981_AT='(^[[:space:]]*|[;&|(){][[:space:]]*)'   # 981-AT
+# 981-VAL: OR-3 (b), the precise value reading. `$` is not a bare byte, so `$'x'` has one reading only.
+_GD981_VAL='([^[:space:];&|"'\''\\$]|\\.|"([^"\\]|\\.)*"|\$'\''([^'\''\\]|\\.)*'\''|\$([^'\''[:space:];&|"\\]|"([^"\\]|\\.)*")|'\''[^'\'']*'\'')*(\$)?'   # 981-VAL
+_GD981_AS="$_GD981_NM"'\+?='"$_GD981_VAL"   # 981-AS
+_GD981_RD='[0-9]*(<<<|<<-?|<>|>>|>[|]|[<>]&?)[[:space:]]*[^[:space:];&|<>]+'   # 981-RD
+_GD981_RW='(!|if|then|else|elif|while|until|do|coproc|time([[:space:]]+-p)?)'   # 981-RW
+_GD981_DV='\$(\{'"$_GD981_NM"'\}|'"$_GD981_NM"')'   # 981-DV
+_GD981_ENV='env([[:space:]]+(-[A-Za-z0-9=_-]+|-[A-Za-z0-9]*u[[:space:]]+'"$_GD981_NM"'|-[CP][[:space:]]+[^[:space:];&|]+))*'   # 981-ENV
+_GD981_WR='('"$_GD981_ENV"'|sudo([[:space:]]+(--|--?[A-Za-z][A-Za-z-]*(=[^[:space:]]*)?|-[ugCDhpr][[:space:]]+[^[:space:];&|-][^[:space:];&|]*))*|command([[:space:]]+-p)?|exec([[:space:]]+(-[cl]+|-a[[:space:]]+[^[:space:];&|]+))*|nohup|nice([[:space:]]+(-n[[:space:]]*-?[0-9]+|-[0-9]+|--adjustment=-?[0-9]+))?)'   # 981-WR (OR-1 (a))
+_GD981_PT='(\\|[^[:space:];&|()<>`]*/)?'   # 981-PT
+_GD981_TM='time([[:space:]]+-p)?'   # 981-TM
+_GD981_POS="$_GD981_AT"'(((('"$_GD981_AS"')|('"$_GD981_RD"')|'"$_GD981_RW"'|'"$_GD981_DV"'|'"$_GD981_PT$_GD981_WR"'|'"$_GD981_PT$_GD981_TM"')[[:space:]]+)*)'"$_GD981_PT"   # 981-POS
+# SWAS-992 - the verb TAIL of three deletion arms: a blank, the line end, or a byte that ends a shell word straight after the verb (; & | ) < >). Not [^a-z]: that takes the dash of a longer name.
+_GD992_TL='([[:space:]]|$|[;&|)<>])'   # 992-TL
+
 # SWAS-309 - S6R's admin-deny reason, printed from ONE place so the late S6R arm and the early G309-S6FIRST arm speak
 # the same bytes. Prints the dot-segment/percent reason when _S6_API_DQ=1, else the admin-merge reason; unsets _S6_API_DQ.
 _s6_admin_reason() {
@@ -40,17 +62,18 @@ _guard_stop_pointer() {
   esac
   case "$1" in
     secret-read)
-      printf '%s' ' Next: read .env.example (or ask for a redacted value) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate).' ;;
+      printf '%s' ' Next: read .env.example (or ask for a redacted value) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate). (stop=secret-read)' ;;   # 966-TAG
     secret-write)
-      printf '%s' ' Next: write the template (.env.example) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate).' ;;
+      printf '%s' ' Next: write the template (.env.example) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate). (stop=secret-write)' ;;   # 966-TAG
     truncation)
-      printf '%s' ' Next: use the Write tool to create a new file, or edit one you have read; for anything else, stop and escalate (escape card §Stop and escalate).' ;;
+      printf '%s' ' Next: use the Write tool to create a new file, or edit one you have read; for anything else, stop and escalate (escape card §Stop and escalate). (stop=truncation)' ;;   # 966-TAG
     push-main)
-      printf '%s' ' Next: push a feature branch and open a PR instead; for anything else, stop and escalate (escape card §Stop and escalate).' ;;
+      printf '%s' ' Next: push a feature branch and open a PR instead; for anything else, stop and escalate (escape card §Stop and escalate). (stop=push-main)' ;;   # 966-TAG
     *)
-      printf '%s' ' Next: stop and escalate. No escape-card row gives an agent a retry for this shape; tell the owner the command and this reason, and do not re-spell it (escape card §Stop and escalate).' ;;
+      printf '%s (stop=%s)' ' Next: stop and escalate. No escape-card row gives an agent a retry for this shape; tell the owner the command and this reason, and do not re-spell it (escape card §Stop and escalate).' "$1" ;;   # 966-TAG
   esac
 }
+
 
 # control-plane paths an agent must never silently modify (guard integrity + gates).
 # scanner-config allowlists/ignores — an edit here can silently narrow a required gate (KW10):
@@ -2213,6 +2236,7 @@ _cp8b_mk_lt=$(printf '\022')
 _cp8b_mk_all="$_cp8b_mk_pipe$_cp8b_mk_semi$_cp8b_mk_amp$_cp8b_mk_gt$_cp8b_mk_lt"
 # Two users, both below: the mask walk's decline set (`_cp8b_mask_quoted`) and `_cp8b_strip_heredocs`.
 _cp8b_cr=$(printf '\r')
+_cp8b_tab=$(printf '\t')   # SWAS-946 E4/S4-2: a real tab byte for the 946-HDALLOW set, so no tr reads a backslash-t
 _cp8b_sq=$(printf '\047')
 # _cp8b_mask_bsset / _cp8b_mask_bs — the NARROWED backslash disqualifier (T8 review, commit B).
 # THE SET, on its own line, is the reviewable half: the three bytes a `\` may not immediately precede.
@@ -2331,6 +2355,42 @@ _cp8b_mask_gate_ok() {
   done
   return 0
 }
+# _cp8b_mask_dollar_strip "<joined one-line cmd>": SWAS-946 RB-15b. PRINTS the command with every double-quoted `${NAME}`, `${NAME-word}` and
+# `${NAME:-word}` cut out, so the mask's `$` decline reads what is left. NAME is a plain name ([A-Za-z_][A-Za-z0-9_]*, so no `${!N}`, no
+# positional, no arithmetic); the word holds no `$`, backtick, backslash, `"` or `'`, and the expansion must close with `}` inside the span. The `=`
+# and `:=` forms are NOT cut (they assign), and neither is a `$` outside a double-quoted span or inside single quotes: each keeps its `$` and so
+# keeps today's decline. Inside double quotes `<`, `>`, `|`, `;` and `&` are literal bytes, which is why the walk may mask them there. The span
+# state is the walk's own (the kind of the open quote), so the two agree. Reads the first line only; the caller never hands it a newline.
+_cp8b_mask_dollar_strip() {
+  printf '%s\n' "$1" | LC_ALL=C awk -v Q="$_cp8b_sq" '
+    function xend(s, i, n,   j, nm, c2, w) {
+      if (substr(s, i + 1, 1) != "{") return 0
+      j = i + 2; nm = ""
+      while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { nm = nm substr(s, j, 1); j++ }   # 946-MASKNAME
+      if (nm == "" || nm ~ /^[0-9]/) return 0
+      c2 = substr(s, j, 1)
+      if (c2 == "}") return j
+      if (c2 == ":") { j++; c2 = substr(s, j, 1) }
+      if (c2 != "-") return 0   # 946-MASKFORM
+      for (j++; j <= n; j++) {
+        w = substr(s, j, 1)
+        if (w == "}") return j
+        if (w == "$" || w == "`" || w == "\\" || w == "\"" || w == Q) return 0   # 946-MASKWORD
+      }
+      return 0
+    }
+    NR == 1 {
+      n = length($0); q = ""; out = ""
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (q == "") { if (c == "\"" || c == Q) q = c; out = out c; continue }
+        if (c == q)  { q = ""; out = out c; continue }
+        if (q == "\"" && c == "$" && (e = xend($0, i, n)) > 0) { i = e; continue }
+        out = out c
+      }
+      printf "%s", out
+    }'
+}
 # _cp8b_mask_quoted "<cmd>": PRINTS the string the CP arms should segment — the masked copy when every
 # decline passed and the gate held, otherwise the INPUT UNCHANGED. Exit status is informational only
 # (0 = mask kept); no caller may branch on it, because "declined" and "kept but identical" must be the
@@ -2340,7 +2400,20 @@ _cp8b_mask_quoted() {
   # subshell — which is the point: it prints NOTHING, and `_cp8b_walk_load` faults on the vanished result.
   _mqi=$(_cp8b_joinlines "$1") || _guard_fault mask-joinlines
   _guard_vanished mask-joinlines "$1" "$_mqi"
+  # SWAS-946 RB-15b: the `$` decline below reads `_mqz`, which is `_mqi` with each `${NAME}`, `${NAME-word}` and `${NAME:-word}` that sits INSIDE
+  # a double-quoted span cut out (see _cp8b_mask_dollar_strip). Any other `$` stays in `_mqz` and still declines the whole mask. A text with a
+  # newline or CR is never stripped (the strip reads the first line only), so it declines on the newline arm below exactly as before.
+  _mqz=$_mqi
   case "$_mqi" in
+    *'$'*)
+      case "$_mqi" in
+        *"$_cp8b_nl"*|*"$_cp8b_cr"*) : ;;
+        *)
+          _mqz=$(_cp8b_mask_dollar_strip "$_mqi") || _guard_fault mask-dollar   # 946-MASKDOLLAR
+          _guard_vanished mask-dollar "$_mqi" "$_mqz" ;;
+      esac ;;
+  esac
+  case "$_mqz" in
     *'`'*|*'$'*|*'<<'*)                        printf '%s' "$1"; return 1 ;;
     *"$_cp8b_nl"*|*"$_cp8b_cr"*)               printf '%s' "$1"; return 1 ;;
   esac
@@ -3247,11 +3320,11 @@ _cp8b_message_tip() {
       printf ' TIP: a multi-line commit/PR message body is scanned as data and can trip this; pass it from a FILE instead of an inline -m/--body — `git commit -F <file>` or `gh pr create --body-file <file>` (the file content is never executed).%s' "$_mt_ptr"
       return ;;
   esac
-  # Arm E's DECLINE cases land here: the heredoc body was NOT excluded (unquoted delimiter, `<<-`,
-  # >1 heredoc, an ambiguous terminator) so its lines were scanned as code. Name the cure.
+  # Under E4's final stop rule (946-STOPRULE) every heredoc body is scanned as code, whatever its
+  # delimiter, so every heredoc refusal lands here. Name the cure.
   case "$_mt_raw" in
     *'<<'*)
-      printf ' TIP: a heredoc BODY is scanned as data-mistaken-for-code unless it is inert. Use a quoted heredoc delimiter (`<<'"'"'EOF'"'"'` or `<<"EOF"`, terminator on its own line, no `<<-`), or pass the content from a file — an unquoted or tab-stripped delimiter cannot be bounded safely, so it stays scanned.%s' "$_mt_ptr"
+      printf ' TIP: every heredoc BODY is scanned as code, whatever its delimiter. Pass the content from a file instead: `git commit -F <file>` or `gh pr create --body-file <file>`.%s' "$_mt_ptr"
       return ;;
   esac
   # §3 kept-denied, keyed on the RAW LEAD because the offending segment is a FRAGMENT of the
@@ -4410,7 +4483,10 @@ _cp8b_piped_interp_hit() {
 # (`echo "hi" && cat <<'EOF'`) declines too and its body stays scanned — accepted, since the fail
 # direction is over-deny and the common heredoc spelling leads with the redirect verb, unquoted.
 # Mutant M-E8 removes that line and reopens the hole.
+# shellcheck disable=SC2317  # the body below the 946-STOPRULE return is kept unreachable on purpose, so the compound mutants can re-enable it
 _cp8b_strip_heredocs() {
+  # SWAS-946 erratum E4, final stop rule: the fourth adversarial read found a hole in the allowlisted strip, so the strip is disabled; every heredoc body is scanned.
+  printf '%s' "$1"; return   # 946-STOPRULE
   case "$1" in
     *'<<'*) : ;;
     *) printf '%s' "$1"; return ;;
@@ -4436,8 +4512,15 @@ _cp8b_strip_heredocs() {
   # REVIEW C2 — ENTRY guard: a quote byte BEFORE the `<<` on the start line means the `<<` is embedded
   # in an argument, not a heredoc operator. Decline (never strip). `${_hds%%'<<'*}` is the text before
   # the first `<<`; a `'` or `"` in it is the tell.
-  case "${_hds%%'<<'*}" in
-    *"'"*|*'"'*) printf '%s' "$1"; return ;;
+  # SWAS-946 erratum E4 (replacing E3's blacklist): an ALLOWLIST. The strip runs only when ALL the text before the first `<<`, on every line, is made of
+  # [A-Za-z0-9 ._/=:,@+-] and the tab byte. A newline is not on the list, so the `<<` must sit on the command's first line; `$`, braces, brackets, parentheses, quotes, a backtick,
+  # a backslash, `#`, `;`, `|`, `&`, `<`, `>`, `!`, `*`, `?`, `~`, `%` and every non-ASCII byte (the tr runs under LC_ALL=C) decline. No byte that can open a construct that
+  # closes on a later line can sit before the `<<`, which is the class three review rounds kept finding one member at a time.
+  # (A `#` sentinel is appended and expected back alone: a `$( )` would strip a trailing newline and read "newline then nothing" as an empty, allowed prefix.)
+  _hdr=$(printf '%s#' "${1%%'<<'*}" | LC_ALL=C tr -d 'A-Za-z0-9 ._/=:,@+'"$_cp8b_tab"'-') || _guard_fault hd-prefix   # 946-HDALLOW
+  case "$_hdr" in
+    '#') : ;;
+    *) printf '%s' "$1"; return ;;
     esac
   # GUARD-READ-LANE-2 T1, half 1 (design §5) — the CONSUMER gate. Arm E excluded a body on the
   # DELIMITER's quoting alone and never on WHO CONSUMES it, so `sh <<'EOF'` + a `cp` onto the guard's
@@ -4456,9 +4539,15 @@ _cp8b_strip_heredocs() {
   case "$_hds" in
     *'<<-'*) printf '%s' "$1"; return ;;
     esac              # tab-stripped terminator (M2)
+  # SWAS-946 erratum E2: the delimiter comes from ONE parser, _cp8b_hd_delim, shared with the R28 consumer. It accepts the text after the << only as W, 'W' or "W"
+  # (W is [A-Za-z0-9_]+) followed by blanks, or by blanks then one > or >> and one literal path; any other byte after the word declines the strip.
+  # SWAS-946 erratum E4: only a QUOTED delimiter is ever stripped, as on main. The unquoted reading (RB-18's "an unquoted heredoc whose body holds no $, backtick or backslash
+  # is the quoted form") was withdrawn after review found it unsafe; an unquoted delimiter keeps its body scanned.
+  _cp8b_hd_delim "${_hds#*'<<'}" || { printf '%s' "$1"; return; }   # 946-HDDELIM
+  [ "$_hdD_q" = 1 ] || { printf '%s' "$1"; return; }   # 946-HDQREQ
+  _hdw=$_hdD_w
+  _hdp1=${_hds%%'<<'*}; _hds="$_hdp1<<'$_hdw'$_hdD_r"
   _gmq heredoc-delimiter "$_hds" -q "<<-\{0,1\}['\"]" || { printf '%s' "$1"; return; }  # QUOTED delimiter only
-  _hdw=$(printf '%s' "$_hds" | sed -n 's/.*<<-\{0,1\}["'"'"']*\([A-Za-z0-9_][A-Za-z0-9_]*\).*/\1/p')
-  [ -n "$_hdw" ] || { printf '%s' "$1"; return; }
   if _cp8b_tad_redir_cp "$_hds"; then printf '%s' "$1"; return; fi
   # SWAS-230 — a quoted body is inert only OUTSIDE an open `$(`: under bash 3.2 (macOS /bin/bash and
   # /bin/sh) a `)` in the body closes a `$(` opened above and the rest of the body runs as code. So
@@ -4489,6 +4578,141 @@ _cp8b_strip_heredocs() {
     { post = post $0 "\n" }
     END { if (!seen || amb || (hs == 1 && par)) exit 3; printf "%s%s", pre, post }') || { printf '%s' "$1"; return; }
   printf '%s' "$_hdo"
+}
+
+# _cp8b_hd_delim "<the text after the first << on the start line>": SWAS-946 erratum E2, the ONE heredoc-delimiter parser. rc 0 only when the text is exactly
+#   W R   or   'W' R   or   "W" R          (W = [A-Za-z0-9_]+; the quote pair, if any, must close right after W)
+# with R either blanks only, or blanks, then exactly one > or >>, optional blanks, one path P ([A-Za-z0-9._/-]+, not dash-led) and blanks. Any other byte after the word
+# (a second word, a quote, $, a backtick, a backslash, ( ) { } # ; | & <) answers 1. It sets globals, not output: _hdD_w the word, _hdD_q 1 when the word was quoted,
+# _hdD_r the raw text after the word (and its closing quote). Callers call it directly, never in a substitution.
+_cp8b_hd_delim() {
+  _hdD_w=''; _hdD_q=0; _hdD_r=''
+  _hdt=$1; _hdq=''
+  case "$_hdt" in
+    "'"*) _hdq="'"; _hdt=${_hdt#?} ;;
+    '"'*) _hdq='"'; _hdt=${_hdt#?} ;;
+  esac
+  _hdw1=${_hdt%%[!A-Za-z0-9_]*}
+  [ -n "$_hdw1" ] || return 1
+  _hdt=${_hdt#"$_hdw1"}
+  if [ -n "$_hdq" ]; then
+    case "$_hdt" in
+      "$_hdq"*) _hdt=${_hdt#?} ;;
+      *) return 1 ;;   # 946-HDCLOSE
+    esac
+  fi
+  _hdD_r=$_hdt
+  case "$_hdt" in
+    ''|[[:space:]]*) : ;;
+    *) return 1 ;;   # 946-HDREST
+  esac
+  _hdt=${_hdt#"${_hdt%%[![:space:]]*}"}
+  case "$_hdt" in
+    '') : ;;
+    '>'*)
+      _hdt=${_hdt#'>'}; _hdt=${_hdt#'>'}
+      _hdt=${_hdt#"${_hdt%%[![:space:]]*}"}
+      _hdp=${_hdt%%[[:space:]]*}
+      case "$_hdp" in
+        ''|-*|*[!A-Za-z0-9._/-]*) return 1 ;;
+      esac
+      _hdt=${_hdt#"$_hdp"}
+      case "$_hdt" in
+        *[![:space:]]*) return 1 ;;
+      esac ;;
+    *) return 1 ;;   # 946-HDTAIL
+  esac
+  _hdD_w=$_hdw1
+  if [ -n "$_hdq" ]; then _hdD_q=1; fi
+  return 0
+}
+
+# SWAS-946 RB-18 - the body of an INERT heredoc does not reach R28 (_cp8b_subst_denied). Two parts.
+# _cp8b_hd_path_ok "<path>": 0 iff <path> is a plain literal ([A-Za-z0-9._/-], not flag-led), is not control plane, and is not `.git` or under any `.git/`
+# (case-folded, so `.GIT/hooks/x` is the same). It is the only redirect target the cat consumer below may carry.
+_cp8b_hd_path_ok() {
+  case "$1" in
+    ''|-*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  _hpl=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault hd-path-fold
+  _guard_vanished hd-path-fold "$1" "$_hpl"
+  case "$_hpl" in
+    .git|.git/*|*/.git|*/.git/*) return 1 ;;   # 946-HDGIT
+  esac
+  is_control_plane_target "$1" && return 1
+  return 0
+}
+# _cp8b_hd_r28_consumer "<text before the <<>" "<text after the << on the start line>": 0 iff the heredoc's consumer is EXACTLY `cat` (stdout, or `>`/`>>` to
+# one _cp8b_hd_path_ok path) or `git commit -F -` beside only the message flags --cleanup=<mode>, --amend, -q and --no-edit, and nothing but the delimiter follows the
+# `<<` (no pipe, no second command, no redirect). Every other consumer (an interpreter, `. /dev/stdin`, `sh /dev/fd/0`, a read loop, xargs, jq, grep, git tag, gh)
+# answers 1, so its body keeps today's verdict at R28. Hooks run because of the commit, not the body; `git -c core.hooksPath` is refused by its own arm.
+_cp8b_hd_r28_consumer() {
+  case "$1" in
+    *"$_cp8b_nl"*) return 1 ;;
+  esac
+  # The delimiter is a bare word, or a word in ONE MATCHING pair of quotes ('W' or "W"), and nothing but blanks follows it. An unmatched quote
+  # (<<'EOF, <<EOF', <<"EOF') or any other byte after the word (a substitution, a separator, a second word) declines, so the body view never drops text the shell runs.
+  # E2: the same parser the strip uses (_cp8b_hd_delim), so the two can never disagree about where the heredoc ends; nothing but blanks may follow the delimiter here.
+  _cp8b_hd_delim "$2" || return 1
+  [ "$_hdD_q" = 1 ] || return 1   # E4: only a quoted delimiter
+  case "$_hdD_r" in
+    *[![:space:]]*) return 1 ;;   # 946-HDQ
+  esac
+  _hcg=0; case "$-" in
+    *f*) _hcg=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  _hcr=1
+  case "${1:-}" in
+    cat)
+      shift
+      case $# in
+        0) _hcr=0 ;;
+        1) case "$1" in
+             '>>'?*) _cp8b_hd_path_ok "${1#'>>'}" && _hcr=0 ;;
+             '>'?*)  _cp8b_hd_path_ok "${1#'>'}" && _hcr=0 ;;
+           esac ;;
+        2) case "$1" in
+             '>'|'>>') _cp8b_hd_path_ok "$2" && _hcr=0 ;;
+           esac ;;
+      esac ;;
+    git)
+      if [ "${2:-}" = commit ]; then
+        shift 2
+        _hcf=0; _hcr=0
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -F) if [ "${2:-}" = - ]; then _hcf=1; shift; else _hcr=1; break; fi ;;
+            --cleanup=verbatim|--cleanup=whitespace|--cleanup=strip|--cleanup=default|--cleanup=scissors|--amend|-q|--no-edit) : ;;
+            *) _hcr=1; break ;;
+          esac
+          shift
+        done
+        [ "$_hcf" = 1 ] || _hcr=1
+      fi ;;
+    *) _hcr=1 ;;   # 946-HDCONS
+  esac
+  [ "$_hcg" = 1 ] || set +f
+  return $_hcr
+}
+# _cp8b_hd_body_view "<cmd>": PRINTS what R28 judges. The command with the heredoc BODY cut out (the strip above, which already refuses every ambiguous shape) when
+# the heredoc's consumer is one _cp8b_hd_r28_consumer admits; otherwise the input unchanged, which is today's text byte for byte.
+# shellcheck disable=SC2317  # the body below the 946-STOPRULE return is kept unreachable on purpose, so the compound mutants can re-enable it
+_cp8b_hd_body_view() {
+  # SWAS-946 erratum E4, final stop rule: R28's body view is disabled with the strip; the whole command is judged.
+  printf '%s' "$1"; return 0   # 946-STOPRULE-R28
+  _hbv=$(_cp8b_strip_heredocs "$1") || _guard_fault hd-body-strip
+  _guard_vanished hd-body-strip "$1" "$_hbv"
+  if [ "$_hbv" = "$1" ]; then printf '%s' "$1"; return 0; fi
+  _hbs=${1%%"$_cp8b_nl"*}
+  case "$_hbs" in
+    *'<<'*) : ;;
+    *) printf '%s' "$1"; return 0 ;;   # the heredoc is not on the first line: its consumer is not read here
+  esac
+  if _cp8b_hd_r28_consumer "${_hbs%%'<<'*}" "${_hbs#*'<<'}"; then printf '%s' "$_hbv"; return 0; fi
+  printf '%s' "$1"
 }
 
 # === SWAS-184 GUARD-SUBSTITUTION-GIT-WRITE =========================================================
@@ -4718,7 +4942,13 @@ _cp8b_control_plane_denied() {
   if _cp8b_piped_interp_hit "$1"; then _cp8b_deny_reason "$_cp8b_pi_seg"; _cp8b_pi_note; return 0; fi
   # SWAS-184: the text after the first substitution opener of the WHOLE command is judged before any segment is, so a
   # lead-based arm (a read lead, an assignment, a kit-exec script) cannot step past a body the segmenter would cut.
-  if _cp8b_subst_denied "$1"; then _cp8b_sub_reason; return 0; fi   # SWAS184-SITE-A
+  # SWAS-946 RB-18: R28 judges the body-free view when the command is one inert heredoc whose consumer is exactly `cat` or `git commit -F -` (see _cp8b_hd_body_view).
+  _s946v=$1
+  case "$1" in
+    *'<<'*) _s946v=$(_cp8b_hd_body_view "$1") || _guard_fault hd-body-view
+            _guard_vanished hd-body-view "$1" "$_s946v" ;;
+  esac
+  if _cp8b_subst_denied "$_s946v"; then _cp8b_sub_reason; return 0; fi   # SWAS184-SITE-A
   # GUARD-READ-LANE-2 T8 (design §3-F-a): segment the QUOTED-SPAN MASK when it was kept. It declines to
   # the identical string on every ambiguous byte and whenever the gate does not hold, so this line is a
   # no-op for every command that is not a read-led whole.
@@ -5543,6 +5773,15 @@ _cp8b_g_why_root() {
 # _cp8b_g_conf_pin_ok "<clone>": design §3.6. The clone's `.kit/tracker.conf` must hash equal to main's, both read in the ROOT's repository
 # context, so an edited conf in the clone (another tracker site) never reaches the credential.
 _cp8b_g_conf_pin_ok() {
+  # SWAS-905: an md project has no tracker conf, so the pin also passes on EQUAL ABSENCE, failing closed on both sides. The clone side is absent
+  # only when nothing is there (a directory, fifo or dangling link is not absent). The root side is absent only when `ls-tree` of origin/main SUCCEEDS
+  # and prints nothing for the conf, so a failed read (no origin/main, an unreadable repository) is never "conf absent". One side present and the
+  # other absent declines.
+  if [ ! -e "$1/.kit/tracker.conf" ] && [ ! -L "$1/.kit/tracker.conf" ]; then
+    _gc_ls=$(_cp8b_g_git -C "$PROTECTED_ROOT" ls-tree --name-only refs/remotes/origin/main -- .kit/tracker.conf 2>/dev/null) || return 1   # G4-CONFPIN-ABSENT
+    [ -z "$_gc_ls" ]
+    return
+  fi
   [ -f "$1/.kit/tracker.conf" ] && [ ! -L "$1/.kit/tracker.conf" ] || return 1
   _gc_want=$(_cp8b_g_git -C "$PROTECTED_ROOT" rev-parse "refs/remotes/origin/main:.kit/tracker.conf" 2>/dev/null) || return 1
   _gc_got=$(_cp8b_g_git -C "$PROTECTED_ROOT" hash-object --no-filters -- "$1/.kit/tracker.conf" 2>/dev/null) || return 1
@@ -5605,19 +5844,15 @@ _cp8b_g_file_ok() {
   [ "$_gf_n" = 1 ]   # G-NLINK
 }
 
-# _cp8b_g_key_ok "<tok>": a tracker key, [A-Z][A-Z0-9]*-[0-9]+.
+# _cp8b_g_key_ok "<tok>": a board row key, [A-Z0-9][A-Z0-9-]*, 1-128 bytes (SWAS-905: the board's one grammar; the first character is never
+# `-`, and the charset has no `.`, `/`, `@`, `{` or `:`, so the key is one safe argv token and a safe `refs/claims/<KEY>`).
 _cp8b_g_key_ok() {
   case "$1" in
-    [ABCDEFGHIJKLMNOPQRSTUVWXYZ]*-[0123456789]*) : ;;
-    *) return 1 ;;
+    '') return 1 ;;
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;;
   esac
-  _gq_p=${1%%-*}; _gq_n=${1#*-}
-  case "$_gq_p" in
-    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) return 1 ;;
-  esac
-  case "$_gq_n" in
-    ''|*[!0123456789]*) return 1 ;;
-  esac
+  [ "${#1}" -le 128 ] || return 1
   return 0
 }
 
@@ -5714,7 +5949,7 @@ _cp8b_g4_args() {
     list)    _cp8b_g_walk '' '--limit:n' "$@" ;;
     claim)   _cp8b_g_walk k '--branch:b' "$@" ;;
     release) _cp8b_g_walk k '' "$@" ;;
-    move)    _cp8b_g_walk kw '' "$@" ;;
+    move)    _cp8b_g_walk kw '--retro-file:f --blocked-on-file:f --pr:n' "$@" ;;
     create)  _cp8b_g_walk '' '--title-file:f --title:w --description-file:f --metric-file:f --size:w --risk:w --type:w --parent:k --label:w+' "$@" || return 1
              if _cp8b_g_seen --title-file && _cp8b_g_seen --title; then false; else true; fi ;;
     edit)    _cp8b_g_walk k '--title-file:f --description-file:f --metric-file:f --size:w --risk:w --label-add:w+ --label-remove:w+ --parent:k --dry-run:-' "$@" ;;
@@ -8032,6 +8267,12 @@ _cp8b_lane_tip() {
   # and its reason must stay byte-identical: keying on the flag would have appended noise to it.
   if [ "${_CP8B_RES_POISON_HIT:-0}" = 1 ]; then
     printf ' trigger=line-poison: an earlier segment on this line (`%s`) can change what a later verb RESOLVES to, so the read lane is closed for the REST of the line - run the read as its own command (env does not persist across tool calls anyway). (escape card R13 line-poison)' "${_CP8B_RES_POISON_LEAD:-?}"
+    # SWAS-946 RB-17a: a plain `NAME=value` statement is the commonest poisoning lead and no safe narrowing exists (any name could be one the next verb honours; D-240816-1
+    # forbids a list of harmless names), so the refusal stays and the tip names the retry that works. The tip text is appended AFTER the pointer, so every older substring holds.
+    case "${_CP8B_RES_POISON_LEAD:-}" in
+      [A-Za-z_]*=*)   # 946-ASSIGNTIP
+        printf ' TIP: for a plain NAME=value assignment, spell the path literally in the command that uses it, or run the assignment in its own call.' ;;
+    esac
   fi
 }
 # K-3a fix round 1, security F6 — THE KILL SWITCH IS NOT AN ANSWER TO A READ-LANE REFUSAL EITHER.
@@ -8121,12 +8362,14 @@ _cp8b_seg_poisons() {
     # ⚠️ THE PATTERN IS NAME-ANCHORED, not a bare `*(*`: a lone `(` is a GROUP OPENER, not a function
     # definition, and matching it would make the group peel unmutatable (K-3a-M2b measured exactly
     # that — the leg reported "verdict did not change" while the peel was dead code).
+    # SWAS-946 erratum E1: the test is the grammar a bash/POSIX definition can have, a name then an EMPTY `()` (`cat(){`, `cat()`, `f(){`) or a lead
+    # ending in a bare `(` (`cat( ) {`). A lead with an argument inside its parens (`console.log(v)"`, the fragment a quoted `;` cuts out of `node -e "a; b(v)"`) is a call, not a definition.
     # ⚠️ AND AN ASSIGNMENT IS EXCLUDED FIRST: `SELFTEST=$(whoami)` is a name, an `=` and a paren, and
     # matching it as a function definition made F2-KI2 / F2-KI2b unbindable (measured). A value's
     # command substitution is already `_cp8b_assign_val_safe`'s subject, not this one's.
     case "$_psw" in
       *=*) : ;;
-      [A-Za-z_]*'('*) _CP8B_RES_POISON_LEAD=$_psw; return 0 ;;
+      [A-Za-z_]*'()'*|[A-Za-z_]*'(') _CP8B_RES_POISON_LEAD=$_psw; return 0 ;;   # 946-FNDEF
     esac
     if _cp8b_in_list "$_psw" "$_CP8B_RESOLVE_LEADS"; then
       _CP8B_RES_POISON_LEAD=$_psw; return 0
@@ -8159,7 +8402,7 @@ _cp8b_seg_poisons() {
     _pss=${_psr#"${_psr%%[![:space:]]*}"}; _pss=${_pss#"${_pss%%[[:space:]]*}"}
     _pss=${_pss#"${_pss%%[![:space:]]*}"}
     case "$_pss" in
-      '()'*) _CP8B_RES_POISON_LEAD="$_psw ()"; return 0 ;;
+      '('*) _CP8B_RES_POISON_LEAD="$_psw ()"; return 0 ;;   # 946-FN2 (E2: a second token that STARTS with a paren: `name ()`, `name ( )`, the tab form)
       esac
     # `printf -v NAME` ASSIGNS a variable. `printf` stays a tier-1 read verb because it writes only to
     # stdout; the assignment form is a RESOLUTION change, and it belongs here rather than in the
@@ -9496,9 +9739,39 @@ guard_log_deny() {
   case "$_gld_arm" in
     ''|*[!0-9]*) _gld_arm='-' ;;
     esac
-  # trigger = the `trigger=<token>` the target arm carries; `-` when the reason has none.
-  _gld_trigger=$(printf '%s' "$_gld_reason" | sed -n 's/.*trigger=\([A-Za-z0-9_-][A-Za-z0-9_-]*\).*/\1/p' 2>/dev/null || printf '')
-  [ -n "$_gld_trigger" ] || _gld_trigger='-'
+  # SWAS-966: the trigger names the refusal's rule on EVERY path. It is read from the segment-FREE view only (the
+  # reason with its echoed `segment: [ … ]` span cut out, up to the segment's first `]`), so the agent's own text
+  # cannot set it (narrowed to the SWAS-331 residual; the log is an observation, T5). The first tier that matches
+  # wins; every result is clamped to [A-Za-z0-9_-] and 48 bytes, and is never `-` or empty.
+  case "$_gld_reason" in
+    *'segment: ['*)
+      _gld_head=${_gld_reason%%'segment: ['*}
+      _gld_rest=${_gld_reason#*'segment: ['}; _gld_rest=${_gld_rest#*]}
+      ;;
+    *)
+      _gld_head=$_gld_reason; _gld_rest=''
+      ;;
+  esac
+  _gld_view=$_gld_head$_gld_rest   # 966-VIEW
+  _gld_trigger=$(printf '%s' "$_gld_view" | sed -n 's/.*trigger=\([A-Za-z0-9_-][A-Za-z0-9_-]*\).*/\1/p' 2>/dev/null || printf '')   # 966-T1
+  [ -n "$_gld_trigger" ] || _gld_trigger=$(printf '%s\n' "$_gld_view" | LC_ALL=C awk 'r == "" && match($0, /escape card R[0-9][0-9a-z]* [a-z0-9-]*/) { r = substr($0, RSTART + 12, RLENGTH - 12); sub(/ /, "-", r) } ; f == "" && match($0, /escape card F-[A-Za-z0-9_-]*/) { f = substr($0, RSTART + 12, RLENGTH - 12) } ; END { if (r != "") print r; else if (f != "") print f }' 2>/dev/null || printf '')   # 966-T2
+  if [ -z "$_gld_trigger" ]; then
+    case "$_gld_view" in
+      *'(stop='*')'*)
+        _gld_t=${_gld_view#*'(stop='}; _gld_t=${_gld_t%%')'*}; _gld_trigger=stop-$_gld_t   # 966-T3
+        ;;
+    esac
+  fi
+  if [ -z "$_gld_trigger" ]; then
+    case "$_gld_view" in
+      *'internal fault at '*)
+        _gld_t=${_gld_view#*'internal fault at '}; _gld_t=${_gld_t%%[!A-Za-z0-9_-]*}; _gld_trigger=fault-$_gld_t   # 966-T4
+        ;;
+    esac
+  fi
+  _gld_trigger=$(printf '%s' "$_gld_trigger" | LC_ALL=C tr -cd 'A-Za-z0-9_-' 2>/dev/null | LC_ALL=C cut -c1-48 2>/dev/null || printf '')
+  [ -n "$_gld_trigger" ] || _gld_trigger='unmarked'   # 966-T5 966-CLAMP
+
   # segment = the text inside the reason's `segment: [...]`.
   # ⚠️ L1 (review round 1): this anchored on the FIRST `[` in the reason, which is WRONG — the sed
   # tip contains a literal `[,<m>|,$]`, so a tipped reason logged a fragment of the TIP as the
@@ -9523,9 +9796,7 @@ guard_log_deny() {
       # command that merely quotes a marker, but NOT one whose segment contains a `]` before the marker: the text after that
       # `]` is read as reason text and can move the bit. OPEN, boarded as SWAS-331 (design 301 §8 M7); the log is an
       # observation (T5), never a control. The R29 marker is also counted as a write marker unconditionally (review L2).
-      _gld_head=${_gld_reason%%'segment: ['*}
-      _gld_rest=${_gld_reason#*'segment: ['}; _gld_rest=${_gld_rest#*]}
-      case "$_gld_head$_gld_rest" in
+      case "$_gld_view" in
         *'escape card R30 cp-write'*|*'escape card R29 dev-clone-grammar'*|*'trigger=cwd-unknown'*) _gld_rs=0 ;;
         *) _gld_rs=1 ;;
       esac
@@ -9939,13 +10210,139 @@ _kbs_seg_denied() {
   return 1
 }
 
+# SWAS-957 - the R37 relief. `_lc957_relieved "<raw cmd>"` is consulted ONLY where 795-UNREF would refuse (below). rc 0 = relieved (skip that one refusal), rc 1 = not relieved
+# (today's refusal). Fail-by-disqualification (D-240813-3), never a parse: a closed list of gate legs G1-G6 on the RAW command (any one present -> rc 1), then the existing walk's
+# segments, each unmasked before it is judged. A segment is INERT only when its lead is byte-exact `echo` (not read from the stripped view, not after a prefix peel, never de-quoted)
+# and its own stripped text holds no config/remote or fetch/pull/push/send-pack word. The refusal stands iff a refspec-capable (non-inert) segment itself holds `$` or `{`. The colon test
+# stays line-wide, as 795-UNREF's. Every statement a mutant addresses ends in a 957-* marker. Design: docs/architecture/2026-11-19-guard-r37-segment-957-design.md (+ errata-1).
+# The control bytes are built once (printf escapes, no literal bytes): LF CR VT FF and every C0 byte except space and tab, plus DEL.
+_lc957_ctl=$(printf '\001\002\003\004\005\006\007\010\012\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037\177')
+# The blank set of the blank-segment skip: space and tab only, never [[:space:]] (a C-locale space class also holds VT and FF).
+_lc957_blank=" $_cp8b_tab"
+# The caller runs the relief in a subshell (a fault leaves only that subshell: rc 2 is mapped to _guard_fault in the main shell), so the walk's `_walk` and `_wl_*` never leak into the calling arm.
+# _lc957_braces_ok "<one unmasked segment>": 0 iff every `{` follows a `$`, every `}` closes a `${`, each `${` closes inside the segment with no nested `{`, and no `=` sits inside a `${...}` (G4, G6).
+_lc957_braces_ok() {
+  _l9b_r=$1
+  while :; do
+    case "$_l9b_r" in
+      *'}'*) _l9b_pc=${_l9b_r%%'}'*} ;;
+      *) _l9b_pc=$_l9b_r ;;
+    esac
+    case "$_l9b_r" in
+      *'{'*) _l9b_po=${_l9b_r%%'{'*} ;;
+      *) _l9b_po=$_l9b_r ;;
+    esac
+    if [ "${#_l9b_pc}" = "${#_l9b_po}" ]; then return 0; fi
+    if [ "${#_l9b_pc}" -lt "${#_l9b_po}" ]; then return 1; fi
+    case "$_l9b_po" in
+      *'$') : ;;
+      *) return 1 ;;
+    esac
+    _l9b_rest=${_l9b_r#*'{'}
+    case "$_l9b_rest" in
+      *'}'*) : ;;
+      *) return 1 ;;
+    esac
+    _l9b_body=${_l9b_rest%%'}'*}
+    case "$_l9b_body" in
+      *'{'*) return 1 ;;
+      *=*) return 1 ;;   # 957-G6
+    esac
+    _l9b_r=${_l9b_rest#*'}'}
+  done
+}
+# _lc957_quotes_ok "<one unmasked segment>": 0 iff the segment holds one quote kind only, in an even count (G5).
+_lc957_quotes_ok() {
+  _l9q_u=$1; _l9q_d=0
+  while :; do
+    case "$_l9q_u" in
+      *'"'*) _l9q_u=${_l9q_u#*'"'}; _l9q_d=$((_l9q_d + 1)) ;;
+      *) break ;;
+    esac
+  done
+  _l9q_u=$1; _l9q_s=0
+  while :; do
+    case "$_l9q_u" in
+      *"$_cp8b_sq"*) _l9q_u=${_l9q_u#*"$_cp8b_sq"}; _l9q_s=$((_l9q_s + 1)) ;;
+      *) break ;;
+    esac
+  done
+  if [ "$_l9q_d" -gt 0 ] && [ "$_l9q_s" -gt 0 ]; then return 1; fi
+  if [ $((_l9q_d % 2)) = 1 ]; then return 1; fi
+  if [ $((_l9q_s % 2)) = 1 ]; then return 1; fi
+  return 0
+}
+_lc957_relieved() {
+  [ -n "$_lc957_ctl" ] || _guard_fault lc957-ctl
+  case "$1" in
+    *["$_lc957_ctl"]*) return 1 ;;   # 957-G1
+  esac
+  case "$1" in
+    *'`'*|*'\'*|*'('*|*')'*|*'<'*|*'>'*) return 1 ;;   # 957-G2
+    *'|'*) return 1 ;;   # 957-G2P
+  esac
+  _l9_t=$1
+  while :; do
+    case "$_l9_t" in
+      *'&&'*) _l9_t=${_l9_t%%'&&'*}${_l9_t#*'&&'} ;;
+      *) break ;;
+    esac
+  done
+  case "$_l9_t" in
+    *'&'*) return 1 ;;   # 957-G3
+  esac
+  _cp8b_walk_load "$1"   # faults (exit 2) on a failed or vanished stage, as the CP arms do
+  _l9_w=$_walk
+  while [ -n "$_l9_w" ]; do
+    case "$_l9_w" in
+      *"$_cp8b_nl"*) _l9_seg=${_l9_w%%"$_cp8b_nl"*}; _l9_w=${_l9_w#*"$_cp8b_nl"} ;;
+      *) _l9_seg=$_l9_w; _l9_w='' ;;
+    esac
+    case "$_l9_seg" in
+      *[!"$_lc957_blank"]*) ;;
+      *) continue ;;
+    esac
+    case "$_l9_seg" in
+      *["$_cp8b_mk_all"]*)
+        _l9_um=$(_cp8b_unmask_quoted "$_l9_seg") || _guard_fault lc957-unmask
+        _guard_vanished lc957-unmask "$_l9_seg" "$_l9_um"
+        _l9_seg=$_l9_um ;;   # 957-UNMASK
+    esac
+    if ! _lc957_braces_ok "$_l9_seg"; then return 1; fi   # 957-G4
+    if ! _lc957_quotes_ok "$_l9_seg"; then return 1; fi   # 957-G5
+    _l9_s=$_l9_seg
+    while :; do
+      case "$_l9_s" in
+        ' '*|"$_cp8b_tab"*) _l9_s=${_l9_s#?} ;;
+        *) break ;;
+      esac
+    done
+    _l9_ld=${_l9_s%% *}
+    _l9_ld=${_l9_ld%%"$_cp8b_tab"*}
+    _l9_inert=0
+    if [ "$_l9_ld" = echo ]; then _l9_inert=1; fi   # 957-INERT
+    if [ "$_l9_inert" = 1 ]; then
+      _l9_v=$(printf '%s' "$_l9_seg" | tr -d '"$\\'"'") || _guard_fault lc957-view
+      _guard_vanished lc957-view "$_l9_seg" "$_l9_v"
+      if _gmq lc957-cfg "$_l9_v" -Eq -- '(^|[^[:alnum:]_])(config|remote)([[:space:]]|$)'; then _l9_inert=0; fi
+      if _gmq lc957-spec "$_l9_v" -Eq -- '(^|[^[:alnum:]_])(fetch|pull|push|send-pack)([[:space:]]|$)'; then _l9_inert=0; fi
+    fi
+    if [ "$_l9_inert" = 0 ]; then
+      case "$_l9_seg" in
+        *'$'*|*'{'*) return 1 ;;   # 957-VERDICT
+      esac
+    fi
+  done
+  return 0   # 957-RELIEVED
+}
+
 # SWAS-795 - raw git writes to refs/local-claims/* (the local claims area board-claim.sh writes before any remote exists).
 # _lc795_denied "<cmd>" "<the cmd, quotes/backslash/$ stripped>": PREDICATE (0 = deny). R18's shape over the same stripped view,
 # flat across the command: a git invocation, a WRITE verb, and a destination naming the namespace. One statement per line, each
 # ending in a marker the selftest mutants address. READS are untouched (for-each-ref, rev-parse, cat-file, show, log, a fetch with
 # no `:` destination). An update-ref / symbolic-ref operand that cannot be read ({ $ or a backtick after the verb) fails closed.
 # The caller already tested selfedit_allowed and the KIT_CLAIM_FRONT_DOOR sentinel (process environment only, as R18's is).
-_lc795_denied() {
+_lc795_judge() {
   # Both views are read with NEWLINES FOLDED to spaces, so a backslash-newline or a bare newline between the verb and its operand
   # (or inside a push) cannot split the text the patterns read. An unreadable operand sets _lc795_unread so the sentence can say so.
   _lc795_unread=0
@@ -9957,7 +10354,7 @@ _lc795_denied() {
     *[!\"\'\\[:space:]]*) _guard_vanished lc-view "$1" "$_lc_fu" ;;
   esac
   set -- "$1" "$_lc_fv" "$_lc_fu"
-  _gmq lc-git "$2" -Eq -- '(^|[^[:alnum:]_])git([[:space:]]|$)' || return 1   # 795-GIT
+  _gmq lc-git "$2" -Eq -- "$_lc969_gitre" || return 1   # 795-GIT
   if _gmq lc-refverb "$2" -Eq -- '(^|[^[:alnum:]_])(update-ref|symbolic-ref)([[:space:]]|$)'; then   # 795-REFVERB
     if _gmq lc-unres "$3" -Eq -- '(update-ref|symbolic-ref)[[:space:]].*[{$`]'; then _lc795_unread=1; return 0; fi   # 795-UNRES
     if _gmq lc-ns "$2" -Eiq -- '(^|[^[:alnum:]_])[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-NS
@@ -9966,15 +10363,55 @@ _lc795_denied() {
   if _gmq lc-cfgverb "$2" -Eq -- '(^|[^[:alnum:]_])(config|remote)([[:space:]]|$)'; then _lc_w=1; fi   # 795-CFGVERB
   if _gmq lc-spec "$2" -Eq -- '(^|[^[:alnum:]_])(fetch|pull|push|send-pack)([[:space:]]|$)'; then   # 795-SPEC
     _lc_w=1
-    if _gmq lc-dest "$2" -Eiq -- ':[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-DEST
     if _gmq lc-bare "$2" -Eiq -- '(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-BARE
+  fi
+  # SWAS-969: the destination is read whenever a fetching or config word is on the line (_lc_w), not only on a SPEC line, so `git -c remote.o.fetch=...:refs/local-claims/x remote update o` is judged.
+  if [ "$_lc_w" = 1 ]; then
+    if _gmq lc-dest "$2" -Eiq -- ':[^[:alnum:]]*refs/local-claims(/|$)'; then return 0; fi   # 795-DEST
   fi
   # A refspec verb (fetch, pull, push, send-pack, remote, config) with a `:` AND a { $ or backtick anywhere: the destination cannot be read.
   if [ "$_lc_w" = 1 ]; then
-    if _gmq lc-unref "$3" -Eq -- '(:.*[{$`])|([{$`].*:)'; then _lc795_unread=1; return 0; fi   # 795-UNREF
+    # 969-NORELIEF: in pass 2 (the joined text) the 957 relief is never consulted, so an UNREF match there is a denial.
+    if _gmq lc-unref "$3" -Eq -- '(:.*[{$`])|([{$`].*:)'; then _l957_rc=1; if [ "$_lc969_p2" = 0 ]; then _l957_rc=0; ( _lc957_relieved "$1" ) || _l957_rc=$?; [ "$_l957_rc" -le 1 ] || _guard_fault lc957-relief; fi; if [ "$_l957_rc" = 1 ]; then _lc795_unread=1; return 0; fi; fi   # 795-UNREF
   fi
   if _gmq lc-cfg "$2" -Eiq -- '(^|[^[:alnum:]_])config[[:space:]]+([^;&|]*[[:space:]])?remote\.[^[:space:]=]*\.(fetch|push)[[:space:]=][^;&|]*refs/local-claims(/|$)'; then return 0; fi   # 795-CFG
   return 1
+}
+# SWAS-969 - _lc969_join "<cmd>": prints the command with every backslash-newline pair deleted, as the shell's own first step does. printf '%s', never echo (dash's echo rewrites backslashes).
+_lc969_join() {
+  _l969_r=$1; _l969_o=''
+  while :; do
+    case "$_l969_r" in
+      *'\'"$_cp8b_nl"*) _l969_o=$_l969_o${_l969_r%%'\'"$_cp8b_nl"*}; _l969_r=${_l969_r#*'\'"$_cp8b_nl"} ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$_l969_o$_l969_r"
+}
+# _lc795_denied "<cmd>" "<the cmd, quotes/backslash/$ stripped>": the PREDICATE (0 = deny) the caller reads. Pass 1 judges the text as given (main's verdict, so no denial is ever lost). When the text holds a
+# backslash-newline pair, pass 2 judges it again with every pair deleted, with the git word's left boundary dropped (a wrong join can glue the command word to the text before it) and with the 957 relief off.
+# Either pass denying is a denial; neither can relieve. Design: docs/architecture/2026-11-19-guard-r37-dash-c-969-design.md.
+_lc795_denied() {
+  _lc969_p2=0
+  _lc969_gitre='(^|[^[:alnum:]_])git([[:space:]]|$)'
+  _lc795_judge "$1" "$2" && return 0   # 969-PASS1
+  [ -n "$_cp8b_nl" ] || _guard_fault lc969-nl   # 969-NL
+  case "$1" in
+    *'\'"$_cp8b_nl"*) ;;
+    *) return 1 ;;
+  esac   # 969-JPAIR
+  _lc969_j=$(_lc969_join "$1") || _guard_fault lc969-join
+  case "$1" in
+    *[!\\[:space:]]*) _guard_vanished lc969-join "$1" "$_lc969_j" ;;
+  esac
+  _lc969_jv=$(printf '%s' "$_lc969_j" | tr -d '"$\\'"'") || _guard_fault lc969-jview
+  case "$_lc969_j" in
+    *[!\"\'\\\$[:space:]]*) _guard_vanished lc969-jview "$_lc969_j" "$_lc969_jv" ;;
+  esac
+  _lc969_gitre='git([[:space:]]|$)'   # 969-GITW
+  _lc969_p2=1
+  _lc795_judge "$_lc969_j" "$_lc969_jv" || { _lc969_p2=0; return 1; }   # 969-PASS2
+  _lc969_p2=0; return 0
 }
 
 # SWAS-192 slice A - raw git writes to the CHECKOUT LEASE (scripts/checkout-lease.sh): its refs (refs/local-lease/*, refs/local-lease-log/*, and the
@@ -10406,6 +10843,48 @@ _kbs_nm() {
   return 1
 }
 
+# _kbs_readloop "<the segment, quotes/backslash/$ stripped and lowercased>" "<its lead word>": SWAS-946 RB-16, a TIP only (no verdict moves). Sets _kbs_rl_tip to
+# a sentence when the segment is led by `until`, `while`, `if` or `[` AND every `git` word in it is followed (after its global options) by a read subcommand
+# (rev-parse, log, show, diff, status, ls-remote); else sets it empty. So a loop head that merely carries a gh flag value such as `--event push` is told to run each
+# read as its own command, and a real git push in a loop head is never told it "looks like a read loop". It admits nothing: the refusal above is unchanged.
+_kbs_readloop() {
+  _kbs_rl_tip=''
+  case "$2" in
+    until|while|if|'[') : ;;
+    *) return 0 ;;
+  esac
+  _kbs_rlg=0; case "$-" in
+    *f*) _kbs_rlg=1 ;;
+    esac
+  set -f
+  _kbs_rln=0; _kbs_rlok=1
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      git|*/git)
+        _kbs_rln=1; shift
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -c)   [ $# -ge 2 ] || break; shift 2 ;;
+            -*)   shift ;;
+            *)    break ;;
+          esac
+        done
+        case "${1:-}" in
+          rev-parse|log|show|diff|status|ls-remote) : ;;   # 946-RLSUBS
+          *) _kbs_rlok=0 ;;
+        esac ;;
+    esac
+    [ $# -gt 0 ] && shift
+  done
+  [ "$_kbs_rlg" = 1 ] || set +f
+  if [ "$_kbs_rln" = 1 ] && [ "$_kbs_rlok" = 1 ]; then
+    _kbs_rl_tip=' TIP: this looks like a read loop (a gh or git read compared in a loop head): run each gh or git read as its own command, then compare the values in a later call.'
+  fi
+  return 0
+}
+
 # _kitbase_ref_denied "<cmd>" "<the cmd, quotes/backslash/$ stripped>": PREDICATE (0 = deny, prints the tip). The cheap
 # `kit` gate is fork-free; only a command that mentions it pays for the segment walk.
 _kitbase_ref_denied() {
@@ -10476,13 +10955,13 @@ _kitbase_ref_denied() {
     case "$_seg" in
       *[[:alnum:]]*) _guard_vanished kitbase-seg "$_seg" "$_kbs_s" ;;
     esac
-    if _kbs_seg_denied "$_kbs_s" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then printf '%s' "$_kbs_tip"; return 0; fi
+    if _kbs_seg_denied "$_kbs_s" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then _kbs_readloop "$_kbs_s" "$_kbs_lead"; printf '%s%s' "$_kbs_tip" "$_kbs_rl_tip"; return 0; fi   # 946-RLSITE
     # pinned twin (SWAS-717): the same pipeline with the byte fold and a byte-range sed; deny if EITHER denies
     _kbs_sc=$(printf '%s' "$_seg" | LC_ALL=C tr -d '"$\\'"'" | LC_ALL=C tr '()`' '   ' | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed -e 's#refs/kit/claim-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/notes-remote-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/promotions-presync-[a-z0-9_.-]*#claimscratch#g') || _guard_fault kitbase-seg-c
     case "$_seg" in
       *[[:alnum:]]*) _guard_vanished kitbase-seg-c "$_seg" "$_kbs_sc" ;;
     esac
-    if _kbs_seg_denied "$_kbs_sc" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then printf '%s' "$_kbs_tip"; return 0; fi
+    if _kbs_seg_denied "$_kbs_sc" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then _kbs_readloop "$_kbs_sc" "$_kbs_lead"; printf '%s%s' "$_kbs_tip" "$_kbs_rl_tip"; return 0; fi
   done
   return 1
 }
@@ -10813,9 +11292,25 @@ guard_check_command() {
   # complete-by-disqualification fix (invert to a positive metadata allowlist) is M-sized and boarded
   # separately. `_CP8B_READ_VERBS`' vetting of digests as harmless is UNCHANGED — a digest of a CONTROL-
   # PLANE config is genuinely harmless, so the secret/CP asymmetry is intentional and fixtured both ways.
+  # SWAS-971 (design §5): the path leg judges the command with ONE leading TLS-bundle assignment removed,
+  # so `SSL_CERT_FILE=/private/etc/ssl/cert.pem gh …` is not read as a `.pem` secret. The strip removes only
+  # the 39-byte literal plus exactly one space at byte 0 of the command, once and byte-exact; every other
+  # spelling (quoted, `env`/`export`, after a `cd` or a leading blank, behind a second assignment, another
+  # case, another path) leaves the remainder equal to the whole command, so doubt falls back to main's
+  # computation and its deny (D-240813-3: disqualification, never a parse). The remainder is still judged,
+  # and the verb leg keeps the whole command, so the only match removed is the prefix's own `cert.pem `.
+  # The constant must equal `_GHT_PIN` in scripts/gh-tls.sh:28; the P1 lock SWAS971-A4 fails if they differ.
+  # SWAS-980: a secret name also ends at a quote, `)`, `>`, `<`, a backtick, `$`, `{` or `}` (a quoted, substituted, redirected or brace-expanded name), the `secrets/` left anchor also sees a quote, `<`, `>`, `(`, a backtick, `{`, `,`, `\`, `*`, `}` or `)`, and a `,` also ends a name (a brace list: `{.env,x}`),
+  # and the verb's right anchor also takes `<` and `>` (`cat<.env`). `.` stays out of the right anchor, so `.env.example` and `.envrc` stay readable; the verb's LEFT anchor is unchanged, so `$(cat .env)` stays a disclosed residual.
+  _H3A_TLS_PREFIX='SSL_CERT_FILE=/private/etc/ssl/cert.pem'
+  case "$cmd" in
+    "$_H3A_TLS_PREFIX "*) _h3a_pv=${cmd#"$_H3A_TLS_PREFIX "} ;;
+    *) _h3a_pv=$cmd ;;
+  esac
+
   if ! selfedit_allowed \
-     && _gmq shell-secret-read "$cmd" -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
-     && _gmq shell-secret-read "$cmd" -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
+     && _gmq shell-secret-read "$cmd" -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]<>]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
+     && _gmq shell-secret-read "$_h3a_pv" -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*"'\''<>)`${},]|$)|\.(pem|key)([[:space:];|&*"'\''<>)`${},]|$)|id_rsa|(^|[[:space:]/;|&"'\''<>(`{,\*})])secrets?/'; then
     printf '%s%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated.' "$(_guard_stop_pointer secret-read)"; return 1
   fi
   # SWAS-332: a copy, move, link, archive or `dd if=` whose SOURCE is a secret is the read half of exfil under another name, and
@@ -10864,48 +11359,48 @@ guard_check_command() {
   # an absolute path, or a dotfile of record. Anchored to command position so a commit
   # message mentioning rm is not matched. Plain relative single files (rm stale.txt,
   # rm dist/bundle.js) remain ALLOWED to avoid over-blocking normal dev work.
-  if _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]'; then
-    if _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?(--[[:space:]]+)?[^;&|[:space:]]*[*?[][^;&|[:space:]]*([[:space:]]|$)' \
-       || _gmq rm-dangerous "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$)' \
-       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?/[^[:space:]]' \
-       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*(\.env|/\.git)([[:space:]]|$|/)' \
-       || _gmq rm-dangerous "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?\.env([[:space:]]|$)'; then
+  if _gmq rm-dangerous "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]]'; then   # 981-S1
+    if _gmq rm-dangerous "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?(--[[:space:]]+)?[^;&|[:space:]]*[*?[][^;&|[:space:]]*([[:space:]]|$)' \
+       || _gmq rm-dangerous "$cmd" -Eiq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]][^;&|]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$)' \
+       || _gmq rm-dangerous "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?/[^[:space:]]' \
+       || _gmq rm-dangerous "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]][^;&|]*(\.env|/\.git)([[:space:]]|$|/)' \
+       || _gmq rm-dangerous "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?\.env([[:space:]]|$)'; then
       { printf '%s' '13: rm of a glob, data file, absolute path, or dotfile-of-record can be irreversible - human-gated. For an ABSOLUTE scratch path the escape is a repo-relative one. (escape card R8 rm-absolute)'; return 1; }
     fi
   fi
   # 9b: non-rm destruction primitives. Binaries are anchored to COMMAND POSITION
   # (start, or after a ; && || | separator, optional sudo) so a word like "truncate"
   # inside a commit message is NOT matched — only an actually-invoked command is.
-  if _gmq destroy-primitive "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(truncate|shred|wipefs|blkdiscard|mkfs(\.[a-z0-9]+)?)([[:space:]]|$)'; then
+  if _gmq destroy-primitive "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?(truncate|shred|wipefs|blkdiscard|mkfs(\.[a-z0-9]+)?)([[:space:]]|$)'; then   # 981-S7
     { printf '%s%s' '13: in-place file/device destruction (truncate/shred/wipefs/blkdiscard/mkfs) is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # dd is a scalpel like rm: deny only when of= targets a device or a data-file extension
   # (dd of=test-fixture.img stays allowed; dd of=/dev/sda and dd of=db.sqlite are denied).
-  if _gmq dd-target "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?dd[[:space:]]' \
+  if _gmq dd-target "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?dd[[:space:]]' \
      && _gmq dd-target "$cmd" -Eiq 'of=(/dev/|[^[:space:]]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$))'; then
     { printf '%s%s' '13: dd of= a device or data file overwrites it irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # redirection/empty-source truncation of an existing target. GENERIC by target: the
   # patterns below match ANY destination ([^[:space:]&|;]+), so truncating a scanner-config
   # (e.g. `: > .gitleaks.toml`) is already covered here — no path enumeration needed (KW10).
-  if _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*):[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
+  if _gmq truncating-redirect "$cmd" -Eq "$_GD981_POS"':[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
      || _gmq truncating-redirect "$cmd" -Eq '/dev/null[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
-     || _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
-     || _gmq truncating-redirect "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
+     || _gmq truncating-redirect "$cmd" -Eq "$_GD981_POS"'(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
+     || _gmq truncating-redirect "$cmd" -Eq "$_GD981_POS"'echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
     { printf '%s%s' '13: redirection/empty-source truncation zeroes a file irreversibly - human-gated (a shell >/: truncation is denied because it can irreversibly zero an existing file).' "$(_guard_stop_pointer truncation)"; return 1; }
   fi
-  if _gmq bulk-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete([[:space:]]|$)' \
-     || _gmq bulk-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)([[:space:]]|$)' \
-     || _gmq bulk-delete "$cmd" -Eq '\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^|]*[[:space:]])?(rm|shred|truncate|unlink|wipefs)([[:space:]]|$)'; then
+  if _gmq bulk-delete "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete'"$_GD992_TL" \
+     || _gmq bulk-delete "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)'"$_GD992_TL" \
+     || _gmq bulk-delete "$cmd" -Eq '\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^|]*[[:space:]])?(rm|shred|truncate|unlink|wipefs)'"$_GD992_TL"; then
     { printf '%s%s' '13: bulk irreversible deletion (find -delete / -exec rm / pipe to xargs rm) - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq rsync-delete "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?rsync[[:space:]]+[^|]*--delete([[:space:]]|$|[^a-z])'; then
+  if _gmq rsync-delete "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?rsync[[:space:]]+[^|]*--delete([[:space:]]|$|[^a-z])'; then   # 981-S14
     { printf '%s%s' '13: rsync --delete mirrors a source and removes destination files irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq git-clean "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)git[[:space:]]+clean[[:space:]]+[^|]*-[a-z]*[fdx]'; then
+  if _gmq git-clean "$cmd" -Eq "$_GD981_POS"'git[[:space:]]+clean[[:space:]]+[^|]*-[a-z]*[fdx]'; then   # 981-S15
     { printf '%s%s' '13: git clean -f/-d/-x force-deletes untracked/ignored files irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq mv-to-null "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?mv[[:space:]]+[^;&|]*[[:space:]]/dev/null([[:space:]]|$)'; then
+  if _gmq mv-to-null "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?mv[[:space:]]+[^;&|]*[[:space:]]/dev/null([[:space:]]|$)'; then   # 981-S16
     { printf '%s%s' '13: moving a file onto /dev/null destroys its contents - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   if _gmq git-reset-hard "$cmd" -Eq 'git[[:space:]]+reset[[:space:]]+.*--hard'; then
@@ -11163,7 +11658,7 @@ guard_check_command() {
   fi
   # dropdb as an invoked command (start or after a shell separator), not when merely
   # mentioned in prose (e.g. a commit message "fix dropdb bug").
-  if _gmq dropdb "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)dropdb([[:space:]]|$)'; then
+  if _gmq dropdb "$cmd" -Eq "$_GD981_POS"'dropdb([[:space:]]|$)'; then   # 981-S17
     { printf '%s%s' '13: dropdb destroys a database irreversibly - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # ORM / framework DB destruction (drop/reset/wipe/fresh) across stacks
@@ -11186,18 +11681,18 @@ guard_check_command() {
     { printf '%s%s' '13: cloud resource deletion (storage/DB/instance) is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: cloud/infra destruction as capability families (verb-agnostic across vendors)
-  if _gmq terraform "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)terraform[[:space:]]+(destroy|apply)([[:space:]]|$)'; then
+  if _gmq terraform "$cmd" -Eq "$_GD981_POS"'terraform[[:space:]]+(destroy|apply)([[:space:]]|$)'; then   # 981-S18
     { printf '%s%s' '13: terraform destroy/apply changes real infrastructure - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq cloud-delete "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(aws|gcloud|az)[[:space:]][^|]*[[:space:]](delete|delete-[a-z-]+|terminate-[a-z-]+|remove|rb|destroy)([[:space:]]|$)'; then
+  if _gmq cloud-delete "$cmd" -Eiq "$_GD981_POS"'(aws|gcloud|az)[[:space:]][^|]*[[:space:]](delete|delete-[a-z-]+|terminate-[a-z-]+|remove|rb|destroy)([[:space:]]|$)'; then   # 981-S19
     { printf '%s%s' '13: cloud resource deletion/termination is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq workload-disrupt "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)helm[[:space:]]+(uninstall|delete)([[:space:]]|$)' \
-     || _gmq workload-disrupt "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)kubectl[[:space:]]+(drain|cordon)([[:space:]]|$)'; then
+  if _gmq workload-disrupt "$cmd" -Eq "$_GD981_POS"'helm[[:space:]]+(uninstall|delete)([[:space:]]|$)' \
+     || _gmq workload-disrupt "$cmd" -Eq "$_GD981_POS"'kubectl[[:space:]]+(drain|cordon)([[:space:]]|$)'; then   # 981-S21
     { printf '%s%s' '13: helm uninstall / kubectl drain disrupts running workloads - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   if _gmq database-drop "$cmd" -Eiq '(mongosh?|cockroach|psql|mysql)[^|]*(dropDatabase|drop[[:space:]]+database)' \
-     || _gmq database-drop "$cmd" -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then
+     || _gmq database-drop "$cmd" -Eiq "$_GD981_POS"'(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then   # 981-S22
     { printf '%s%s' '13: database drop via a client/migration tool is irreversible - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # SWAS-187: the shell name used to end on whitespace only, so a quote, a bracket or an operator right
@@ -11210,16 +11705,16 @@ guard_check_command() {
   # 9b: data-exfiltration channels (PARTIAL — binary-name denial only; interpreters
   # (python -c, node -e) remain channels. The real control is the platform network-egress
   # allowlist — see docs/enterprise/platform-safety-boundary.md. This is a speed bump.)
-  if _gmq exfil-channel "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?(scp|sftp)[[:space:]]' \
+  if _gmq exfil-channel "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?(scp|sftp)[[:space:]]' \
      || _gmq exfil-channel "$cmd" -Eq '(curl|wget)[[:space:]][^|]*(-T[[:space:]]|--upload-file|-F[[:space:]]*[^[:space:]&|;]*@|--data-binary[[:space:]]*@|--post-file)' \
      || _gmq exfil-channel "$cmd" -Eq '\|[[:space:]]*(nc|ncat|netcat)[[:space:]]+[^[:space:]]' \
-     || _gmq exfil-channel "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)rclone[[:space:]]+(copy|sync|move)[[:space:]][^|]*[a-zA-Z0-9_-]+:' \
+     || _gmq exfil-channel "$cmd" -Eq "$_GD981_POS"'rclone[[:space:]]+(copy|sync|move)[[:space:]][^|]*[a-zA-Z0-9_-]+:' \
      || _gmq exfil-channel "$cmd" -Eq '\|[[:space:]]*mail[[:space:]]'; then
     { printf '%s%s' '13: possible data exfiltration (scp/sftp/curl-upload/nc/rclone/mail). Partial guard - the boundary is the platform egress allowlist - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   # 9b: eval of a command substitution hides the real command from inspection.
   # Anchored to command position so "eval $(...)" inside a commit message is NOT matched.
-  if _gmq eval-substitution "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?eval[[:space:]]+[^;&|]*(\$\(|`)'; then
+  if _gmq eval-substitution "$cmd" -Eq "$_GD981_POS"'(sudo[[:space:]]+)?eval[[:space:]]+[^;&|]*(\$\(|`)'; then   # 981-S25
     { printf '%s%s' '13: eval of a command substitution obscures the executed command - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
   if _gmq production-deploy "$cmd" -Eiq '(vercel[[:space:]]+(deploy[[:space:]]+)?--prod|railway[[:space:]]+up|fly[[:space:]]+deploy|terraform[[:space:]]+apply|kubectl[[:space:]]+apply|helm[[:space:]]+(install|upgrade))'; then
@@ -11232,7 +11727,7 @@ guard_check_command() {
      && _gmq production-context "$cmd" -Eiq '(kubectl|helm)[[:space:]]([^|]*[[:space:]])?(apply|delete|create|replace|patch|scale|rollout|upgrade|install|uninstall|destroy)'; then
     { printf '%s%s' '13: mutating operation against a production context - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi
-  if _gmq production-env "$cmd" -Eq '(^[[:space:]]*|[;&|][[:space:]]*)([A-Z_]*ENV)=prod[a-z]*[[:space:]]' \
+  if _gmq production-env "$cmd" -Eq "$_GD981_POS"'([A-Z_]*ENV)=prod[a-z]*[[:space:]]' \
      && _gmq production-env "$cmd" -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
     { printf '%s%s' '13: destructive/deploy command in a production environment - human-gated.' "$(_guard_stop_pointer human-gated)"; return 1; }
   fi

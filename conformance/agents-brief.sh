@@ -98,7 +98,11 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # line is written `sh scripts/sparkwright start ...`, +11 bytes, because a bare `sparkwright` is "command not found" for a newcomer
 # (nothing puts it on PATH). The region measures 3073 bytes [M, the core on bedf87c1, this script's own ec_region_bytes], up from
 # 3062; the cap is 3073 + the 5-byte bite (GW_EC_BITE) = 3078. No other §1 wording moved. Owner's ruling: "148 (a)".
-EC_MAX_BYTES=3078
+# ⚠️ GOVERNED RE-MEASURE AT SWAS-947 (2026-11-19, erratum E2): act 5's reworded security-seat line (erratum E1) shrank
+# the region to 3065 bytes [M, this script's own ec_region_bytes; CLAUDE.md, AGENTS.md and the project template all
+# agree]. The cap was 3078 and is now 3070 = the measured 3065 + the bite conformance/guard-wired.sh holds it to
+# (GW_EC_BITE, 5). A ratchet down: no wording in the region moved for it.
+EC_MAX_BYTES=3070
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

@@ -218,6 +218,163 @@ ght_acl() {   # <label> <acl path> <named check> <pin> <parents> <marker file: a
   GHT_LSSED=''; : > "$GHT_T/aclpath"; : > "$GHT_T/entpath"
 }
 
+# ---- SWAS-945 TLS-C: the census. A static scan of every shipped scripts/*.sh, scripts/kit-guard and conformance/*.sh -----------------------------------------------
+# A file that matches a pattern below must name gh-tls.sh on a non-comment line (the source line) or sit on the exempt list (_GHT_EXEMPT), each entry with a reason.
+# THE PATTERNS (whole-line comments are skipped; each is an ERE over one line): gh-command = `gh ` at a command position (line start, after ; & | ( { ! or a backtick, or after
+# then/do/else/if/elif/while/until); command-gh = `command gh`; gh-var = "$GH", `$GH ` or ${GH}; curl-github = a `curl` line that names github.com (api.github.com too) or githubusercontent.com;
+# seam-gh = the seam default `:-gh ` (for example ${X_GH_CMD:-gh repo view}); env-gh = `env` with options or NAME=value words, then `gh `; assign-gh = a `NAME=value gh ` prefix;
+# timeout-gh = `timeout [-opts] N gh `; exec-gh = `exec gh `.
+# THE LIMIT, STATED: the census does NOT see a gh reached through a wrapper function or script whose own body uses a form not listed above; a `${GH:-gh}`-style default whose
+# text is not `:-gh ` followed by a space; `"$(command -v gh)"`; `xargs gh`; `nice gh`; `sh -c "gh ..."`; a string built and run by eval; a child binary; a host held in a
+# variable; or any file outside scripts/*.sh, scripts/kit-guard and conformance/*.sh (hooks/, scripts/sparkwright, subdirectories). An exemption is per FILE and is never
+# re-proved: a gh call added later to an exempt file is not seen. A script that merely names gh-tls.sh in a non-comment line passes (the census proves the source line
+# exists, not that the pin call sits before the first network call: the TLS-W cells and the reviewer read that).
+_GHT_CP_GH='(^|[;&|({!`])[[:space:]]*gh[[:space:]]'
+_GHT_CP_GH2='(^|[^A-Za-z0-9_./-])(then|do|else|if|elif|while|until)[[:space:]]+gh[[:space:]]'
+_GHT_CP_CMD='(^|[^A-Za-z0-9_./-])command[[:space:]]+gh([[:space:]]|$)'
+_GHT_CP_VAR='"\$GH"|\$GH[[:space:]]|\$\{GH\}'
+_GHT_CP_SEAM=':-gh[[:space:]]'
+_GHT_CP_ENV='(^|[^A-Za-z0-9_./-])env([[:space:]]+(-u[[:space:]]+[A-Za-z_][A-Za-z0-9_]*|-[A-Za-z-]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*[[:space:]]+gh[[:space:]]'
+_GHT_CP_ASSIGN='(^|[^A-Za-z0-9_./-])[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+gh[[:space:]]'
+_GHT_CP_TIMEOUT='(^|[^A-Za-z0-9_./-])timeout([[:space:]]+-[A-Za-z-]+)*[[:space:]]+[0-9][0-9.]*[smhd]?[[:space:]]+gh[[:space:]]'
+_GHT_CP_EXEC='(^|[^A-Za-z0-9_./-])exec[[:space:]]+gh[[:space:]]'
+_GHT_EXEMPT='scripts/gh-tls.sh|the library itself: its one probe call is the pin, so it cannot source itself
+scripts/new-profile.sh|prints doc text that names gh; it makes no gh call
+scripts/kit-guard|holds gh only as deny-cell strings for the guard battery; it makes no gh call
+conformance/agent-autonomy.sh|names gh only in allow and deny cell text; it makes no gh call
+conformance/tool-coverage.sh|names gh only in fixture and pattern text; it makes no gh call
+conformance/ratification-parity.sh|names gh only in text and fixtures; it makes no gh call
+conformance/permission-surface-audit.sh|names gh only as settings-pattern text; it makes no gh call
+conformance/agent-boundary.sh|names gh only as deny-pattern text and fixtures; it makes no gh call
+conformance/ci-gates.sh|its curl lines name github hosts only as workflow text it reads; it makes no network call of its own
+conformance/proportional-gate-wired.sh|its curl lines name github hosts only as workflow text it reads; it makes no network call of its own
+conformance/adopter-gates-parity.sh|names gh only in workflow fixtures it writes and greps; it makes no gh call
+conformance/poster-parity.sh|names gh only in workflow fixtures it scans; it makes no gh call
+conformance/promotion-actuate-wired.sh|names gh only as guard-verdict cell text and a fake gh shim; it makes no real gh call
+conformance/promotion-verify-wired.sh|names gh only in comments, cell text and a fake gh shim; it makes no real gh call'
+
+ght_hit() { grep -v '^[[:space:]]*#' "$1" | grep -Eq -e "$2"; }   # <file> <ERE>: rc 0 when a non-comment line matches
+ght_cmatch() {   # <file>: the names of the census patterns the file matches (empty = none)
+  _gcn_m=''
+  if ght_hit "$1" "$_GHT_CP_GH" || ght_hit "$1" "$_GHT_CP_GH2"; then _gcn_m="$_gcn_m gh-command"; fi
+  if ght_hit "$1" "$_GHT_CP_CMD"; then _gcn_m="$_gcn_m command-gh"; fi
+  if ght_hit "$1" "$_GHT_CP_VAR"; then _gcn_m="$_gcn_m gh-var"; fi
+  if ght_hit "$1" "$_GHT_CP_SEAM"; then _gcn_m="$_gcn_m seam-gh"; fi
+  if ght_hit "$1" "$_GHT_CP_ENV"; then _gcn_m="$_gcn_m env-gh"; fi
+  if ght_hit "$1" "$_GHT_CP_ASSIGN"; then _gcn_m="$_gcn_m assign-gh"; fi
+  if ght_hit "$1" "$_GHT_CP_TIMEOUT"; then _gcn_m="$_gcn_m timeout-gh"; fi
+  if ght_hit "$1" "$_GHT_CP_EXEC"; then _gcn_m="$_gcn_m exec-gh"; fi
+  if grep -v '^[[:space:]]*#' "$1" | grep -E 'curl' | grep -Eq 'github\.com|githubusercontent\.com'; then _gcn_m="$_gcn_m curl-github"; fi
+  printf '%s' "${_gcn_m# }"
+}
+# ght_census <root> <exempt-file>: one line per violation on stdout (empty = clean); the counts go to $GHT_T/census.stat.
+ght_census() {
+  _gcn_n=0; _gcn_w=0; _gcn_x=0
+  awk -F'|' 'NF < 2 || $2 == "" { print "census: exempt entry without a reason: " $1 }' "$2"
+  for _gcn_f in "$1"/scripts/*.sh "$1"/scripts/kit-guard "$1"/conformance/*.sh; do
+    [ -f "$_gcn_f" ] || continue
+    _gcn_m=$(ght_cmatch "$_gcn_f"); [ -n "$_gcn_m" ] || continue
+    _gcn_n=$((_gcn_n + 1)); _gcn_r=${_gcn_f#"$1"/}
+    if grep -v '^[[:space:]]*#' "$_gcn_f" | grep -Fq 'gh-tls.sh'; then _gcn_w=$((_gcn_w + 1)); continue; fi
+    if awk -F'|' -v r="$_gcn_r" '$1 == r && $2 != "" { f = 1 } END { exit !f }' "$2"; then _gcn_x=$((_gcn_x + 1)); continue; fi
+    printf 'census: %s matches [%s] and neither names gh-tls.sh on a non-comment line nor sits on the exempt list\n' "$_gcn_r" "$_gcn_m"
+  done
+  printf 'matched=%s wired=%s exempt=%s\n' "$_gcn_n" "$_gcn_w" "$_gcn_x" > "$GHT_T/census.stat"
+}
+ght_stat() { sed -n "s/^.*$1=\([0-9][0-9]*\).*\$/\1/p" "$GHT_T/census.stat"; }   # <matched|wired|exempt>
+ght_fixtree() {   # <dir> <name> <line> <src|nosrc>: a one-script tree whose script holds <line> and, for src, the library source line
+  mkdir -p "$1/scripts" "$1/conformance"
+  { printf '%s\n' '#!/bin/sh'
+    if [ "$4" = src ]; then printf '%s\n' '_x_ghtls=$(dirname -- "$0")/gh-tls.sh' 'if [ -f "$_x_ghtls" ]; then . "$_x_ghtls"; fi'
+    else printf '%s\n' '# shellcheck source=scripts/gh-tls.sh'; fi
+    printf '%s\n' "$3"; } > "$1/scripts/$2.sh"
+}
+
+# TLS-C1: the real tree is clean (and the scan is live: it saw matches and wired files).
+ghc_C1() {
+  _gcn_root=$(CDPATH='' cd -- "$(dirname -- "$GHT_SELF")/.." && pwd) || return 1
+  printf '%s\n' "$_GHT_EXEMPT" > "$GHT_T/exempt.txt"
+  ght_census "$_gcn_root" "$GHT_T/exempt.txt" > "$GHT_T/census.out"
+  if [ -s "$GHT_T/census.out" ]; then sed 's/^/    /' "$GHT_T/census.out"; return 1; fi
+  [ "$(ght_stat matched)" -gt 0 ] && [ "$(ght_stat wired)" -gt 0 ]
+}
+# TLS-C2: <name> <line>: with the source line the one-script tree is clean and the pattern matched; without it the census names the file.
+ghc_CF() {
+  : > "$GHT_T/none.txt"
+  rm -rf "$GHT_T/cen"; ght_fixtree "$GHT_T/cen" "$1" "$2" src
+  ght_census "$GHT_T/cen" "$GHT_T/none.txt" > "$GHT_T/cen.out"
+  [ ! -s "$GHT_T/cen.out" ] && [ "$(ght_stat matched)" = 1 ] && [ "$(ght_stat wired)" = 1 ] || return 1
+  rm -rf "$GHT_T/cen"; ght_fixtree "$GHT_T/cen" "$1" "$2" nosrc
+  ght_census "$GHT_T/cen" "$GHT_T/none.txt" > "$GHT_T/cen.out"
+  grep -Fq "census: scripts/$1.sh matches" "$GHT_T/cen.out"
+}
+ght_cenc() { if ghc_CF "$2" "$3"; then ght_ok "$1"; else ght_no "$1"; fi; }   # <label> <name> <line>
+# TLS-C2 on a REAL script: scripts/dora.sh with its gh-tls.sh lines deleted is named; the untouched copy is clean.
+ghc_CR() {
+  : > "$GHT_T/none.txt"; _gcr_src=$(dirname -- "$GHT_SELF")/dora.sh
+  rm -rf "$GHT_T/cen"; mkdir -p "$GHT_T/cen/scripts"; cp "$_gcr_src" "$GHT_T/cen/scripts/dora.sh"
+  ght_census "$GHT_T/cen" "$GHT_T/none.txt" > "$GHT_T/cen.out"; [ ! -s "$GHT_T/cen.out" ] || return 1
+  sed '/gh-tls\.sh/d' "$_gcr_src" > "$GHT_T/cen/scripts/dora.sh"
+  ght_census "$GHT_T/cen" "$GHT_T/none.txt" > "$GHT_T/cen.out"; grep -Fq 'census: scripts/dora.sh matches' "$GHT_T/cen.out"
+}
+# TLS-C3: no false alarm on a comment, on a script with no gh, or on a command -v probe; an exempt entry with a reason clears an unwired file, and one without is named.
+ghc_CN() {
+  : > "$GHT_T/none.txt"
+  rm -rf "$GHT_T/cen"; ght_fixtree "$GHT_T/cen" quiet '# gh api user is only a comment' nosrc
+  printf '%s\n' 'command -v gh >/dev/null 2>&1 || exit 0' 'echo hello' >> "$GHT_T/cen/scripts/quiet.sh"
+  ght_census "$GHT_T/cen" "$GHT_T/none.txt" > "$GHT_T/cen.out"; [ ! -s "$GHT_T/cen.out" ] || return 1
+  ght_fixtree "$GHT_T/cen" loud 'gh api user' nosrc
+  printf '%s\n' 'scripts/loud.sh|a fixture that holds the text only' > "$GHT_T/ex.txt"
+  ght_census "$GHT_T/cen" "$GHT_T/ex.txt" > "$GHT_T/cen.out"; [ ! -s "$GHT_T/cen.out" ] || return 1
+  printf '%s\n' 'scripts/loud.sh|' > "$GHT_T/ex.txt"
+  ght_census "$GHT_T/cen" "$GHT_T/ex.txt" > "$GHT_T/cen.out"; grep -Fq 'exempt entry without a reason' "$GHT_T/cen.out" && grep -Fq 'census: scripts/loud.sh matches' "$GHT_T/cen.out"
+}
+
+# ---- SWAS-945 TLS-W: the probe is the first gh call of each newly wired script (the CL14p shape) -------------------------------------------------------------------
+# ghc_WS <sed|''> <relpath> <need-gh-call: 0|1> [args...]: a COPY of the script (optionally mutated by the sed) sits in a fixture tree beside a STUB scripts/gh-tls.sh whose
+# kit_gh_tls_pin logs PROBE and exports SSL_CERT_FILE=<fixture>/pin/cert.pem; the fake gh logs its call (and that variable) to the same gh.log. The first line must be PROBE;
+# with need-gh-call=1 the second must be a gh call that carries the exported SSL_CERT_FILE (a pin run in a subshell would lose it).
+ghc_WS() {
+  _gws_sed=$1; _gws_rel=$2; _gws_n2=$3; shift 3
+  _gws_root=$GHT_T/ws; _gws_src=$(dirname -- "$GHT_SELF")/..
+  rm -rf "$_gws_root"; mkdir -p "$_gws_root/scripts" "$_gws_root/conformance"
+  printf 'kit_gh_tls_pin() { printf "PROBE\\n" >> "%s/gh.log"; SSL_CERT_FILE=%s/pin/cert.pem; export SSL_CERT_FILE; }\n' "$GHT_T" "$GHT_T" > "$_gws_root/scripts/gh-tls.sh"
+  if [ -n "$_gws_sed" ]; then sed -e "$_gws_sed" "$_gws_src/$_gws_rel" > "$_gws_root/$_gws_rel"; else cp "$_gws_src/$_gws_rel" "$_gws_root/$_gws_rel"; fi
+  printf '%s\n' '# checks' '```' 'ci' '```' > "$_gws_root/REQUIRED-CHECKS.md"
+  printf '%s\n' '**Security contact:** GitHub private vulnerability reporting' '**Channel repo:** `o/r`' > "$_gws_root/SECURITY.md"
+  if command -v git > /dev/null 2>&1; then git init -q "$_gws_root" > /dev/null 2>&1 && git -C "$_gws_root" remote add origin https://github.com/o/r.git; fi
+  : > "$GHT_T/gh.log"; printf 'Darwin\n' > "$GHT_T/os"; printf 'tls\n' > "$GHT_T/mode"
+  ( cd "$_gws_root" && env -u SSL_CERT_FILE -u SSL_CERT_DIR -u GIT_DIR -u CI PATH="$GHT_T/bin:$PATH" sh "$_gws_root/$_gws_rel" "$@" < /dev/null > "$GHT_T/out" 2> "$GHT_T/err" ) || :
+  [ "$(sed -n 1p "$GHT_T/gh.log")" = PROBE ] || return 1
+  [ "$_gws_n2" = 0 ] || {
+    _gws_l2=$(sed -n 2p "$GHT_T/gh.log"); [ -n "$_gws_l2" ] && [ "$_gws_l2" != PROBE ] || return 1
+    case "$_gws_l2" in *"|SSL_CERT_FILE=$GHT_T/pin/cert.pem") return 0 ;; *) return 1 ;; esac   # the gh call carries the pin: a subshell pin would lose it
+  }
+}
+# ght_ws <label> <relpath> <need-gh-call> [args...]: the cell, then its mutant (the pin call line deleted -> the first gh.log line is the gh call, not PROBE).
+ght_ws() {
+  _gwl=$1; _gwr=$2; _gwn=$3; shift 3; _gwm='/kit_gh_tls_pin; fi/d'
+  if ghc_WS '' "$_gwr" "$_gwn" "$@"; then ght_ok "$_gwl"; else ght_no "$_gwl"; fi
+  if sed -e "$_gwm" "$(dirname -- "$GHT_SELF")/../$_gwr" | cmp -s - "$(dirname -- "$GHT_SELF")/../$_gwr"; then ght_no "$_gwl mutant: the mutation matched nothing; the leg is unbound"
+  elif ghc_WS "$_gwm" "$_gwr" "$_gwn" "$@"; then ght_no "$_gwl mutant: the pin call deleted, and the cell still passes"
+  else ght_ok "$_gwl mutant: the pin call deleted -> the first gh call is not the probe"; fi
+  _gws2='s/then kit_gh_tls_pin; fi/then (kit_gh_tls_pin); fi/'
+  if sed -e "$_gws2" "$(dirname -- "$GHT_SELF")/../$_gwr" | cmp -s - "$(dirname -- "$GHT_SELF")/../$_gwr"; then ght_no "$_gwl subshell mutant: the mutation matched nothing; the leg is unbound"
+  elif ghc_WS "$_gws2" "$_gwr" "$_gwn" "$@"; then ght_no "$_gwl subshell mutant: the pin run in a subshell, and the cell still passes"
+  else ght_ok "$_gwl subshell mutant: the pin run in a subshell -> the gh call does not carry SSL_CERT_FILE"; fi
+}
+# TLS-W preflight (SWAS-945): a COPY of preflight.sh beside incept.sh and the REAL library copy (pointed at the fixture pin and a fake uname), run from the kit root with a fake gh
+# that fails x509 unless SSL_CERT_FILE is set: `gh auth status` reads valid only when the pin ran. <$1> is a sed expression for the copy ('' = none).
+ghc_PF() {
+  _gpf=$GHT_T/pf; _gpf_src=$(dirname -- "$GHT_SELF"); rm -rf "$_gpf"; mkdir -p "$_gpf"
+  ght_lib "$_gpf/gh-tls.sh"
+  if [ -n "$1" ]; then sed -e "$1" "$_gpf_src/preflight.sh" > "$_gpf/preflight.sh"; else cp "$_gpf_src/preflight.sh" "$_gpf/preflight.sh"; fi
+  cp "$_gpf_src/incept.sh" "$_gpf/incept.sh"
+  : > "$GHT_T/gh.log"; printf 'Darwin\n' > "$GHT_T/os"; printf 'tls\n' > "$GHT_T/mode"
+  ( cd "$_gpf_src/.." && env -u SSL_CERT_FILE -u SSL_CERT_DIR PATH="$GHT_T/bin:$PATH" sh "$_gpf/preflight.sh" < /dev/null > "$GHT_T/out" 2> "$GHT_T/err" ) || :
+  ght_in "$GHT_T/out" 'ok   gh auth (logged in)'
+}
+
 _ght_selftest() {
   GHT_SELF=$1; GHT_N=0; GHT_FAIL=0; GHT_LSSED=''
   GHT_T=$(mktemp -d "${TMPDIR:-/tmp}/ght-st.XXXXXX") || { echo "FAIL: gh-tls: mktemp failed"; return 1; }
@@ -274,6 +431,42 @@ _ght_selftest() {
   else
     echo "PASS: GH-W2 and its mutant: N/A - git is not available here (the leg was NOT exercised)"
   fi
+  # SWAS-945. TLS-C1: the census on the real tree; TLS-C2: one negative per pattern (the same one-script tree without its source line is named); TLS-C3: no false alarm, exempt list.
+  if ghc_C1; then ght_ok "TLS-C1 the census: every shipped script that reaches GitHub names gh-tls.sh or sits on the exempt list with a reason"; else ght_no "TLS-C1 the census: every shipped script that reaches GitHub names gh-tls.sh or sits on the exempt list with a reason"; fi
+  ght_cenc "TLS-C2 gh at the start of a line, source line deleted -> the file is named" c2a 'gh api user'
+  ght_cenc "TLS-C2 gh after \$( , source line deleted -> the file is named" c2b 'x=$(gh pr view 1)'
+  ght_cenc "TLS-C2 gh after if, source line deleted -> the file is named" c2c 'if gh auth status; then :; fi'
+  ght_cenc "TLS-C2 command gh, source line deleted -> the file is named" c2d 'command gh api user'
+  ght_cenc "TLS-C2 \"\$GH\", source line deleted -> the file is named" c2e '"$GH" api user'
+  ght_cenc "TLS-C2 \$GH followed by a space, source line deleted -> the file is named" c2f '$GH pr list'
+  ght_cenc "TLS-C2 \${GH}, source line deleted -> the file is named" c2g 'x=${GH}'
+  ght_cenc "TLS-C2 the seam default :-gh followed by a space, source line deleted -> the file is named" c2k 'x=${X_GH_CMD:-gh repo view}'
+  ght_cenc "TLS-C2 env with options then gh, source line deleted -> the file is named" c2l 'env -u SSL_CERT_FILE gh api user'
+  ght_cenc "TLS-C2 a NAME=value prefix on gh, source line deleted -> the file is named" c2m 'FOO=1 gh api user'
+  ght_cenc "TLS-C2 timeout N gh, source line deleted -> the file is named" c2n 'timeout 30 gh api user'
+  ght_cenc "TLS-C2 exec gh, source line deleted -> the file is named" c2o 'exec gh api user'
+  ght_cenc "TLS-C2 curl naming api.github.com,source line deleted -> the file is named" c2h 'curl -s https://api.github.com/user'
+  ght_cenc "TLS-C2 curl naming github.com, source line deleted -> the file is named" c2i 'curl -sL https://github.com/x/y/archive/z.tar.gz'
+  ght_cenc "TLS-C2 curl naming githubusercontent.com, source line deleted -> the file is named" c2j 'curl -s https://raw.githubusercontent.com/x/y/z'
+  if ghc_CR; then ght_ok "TLS-C2 the real scripts/dora.sh with its gh-tls.sh lines deleted is named"; else ght_no "TLS-C2 the real scripts/dora.sh with its gh-tls.sh lines deleted is named"; fi
+  if ghc_CN; then ght_ok "TLS-C3 a comment, a command -v probe and a gh-free script pass; an exempt entry needs its reason"; else ght_no "TLS-C3 a comment, a command -v probe and a gh-free script pass; an exempt entry needs its reason"; fi
+  # TLS-W: each newly wired script with a --selftest whose gh route this harness can drive without a network. The others (board-claim, board-drift, mirror-tag-protection,
+  # inception-done, prepush-lane --refresh-times, publish-public, release-tag, slice-resume, agent-trace) rest on the census alone: their gh route needs a fixture of its own.
+  ght_ws "TLS-W dora.sh: the probe is the first gh call" scripts/dora.sh 1
+  ght_ws "TLS-W security-channel-live.sh: the probe is the first gh call" conformance/security-channel-live.sh 1 .
+  ght_ws "TLS-W branch-protection-apply.sh: the probe is the first gh call" scripts/branch-protection-apply.sh 1 --repo=o/r
+  ght_ws "TLS-W branch-protection.sh: the probe is the first gh call" conformance/branch-protection.sh 1 --repo=o/r
+  if command -v git > /dev/null 2>&1; then
+    ght_ws "TLS-W doctor.sh --as agent: the probe is the first gh call" scripts/doctor.sh 1 --as agent
+  else
+    echo "PASS: TLS-W doctor.sh and its mutant: N/A - git is not available here (the leg was NOT exercised)"
+  fi
+  # TLS-W preflight: the auth read reads valid only when the pin ran; the mutant (the source line removed) reads invalid.
+  if ghc_PF ''; then ght_ok "TLS-W preflight.sh: with the pin the fake gh's auth read reads valid"; else ght_no "TLS-W preflight.sh: with the pin the fake gh's auth read reads valid"; fi
+  _gpm='/then \. "\$_pf_ghtls"; fi/d'
+  if sed -e "$_gpm" "$(dirname -- "$GHT_SELF")/preflight.sh" | cmp -s - "$(dirname -- "$GHT_SELF")/preflight.sh"; then ght_no "TLS-W preflight.sh mutant: the mutation matched nothing; the leg is unbound"
+  elif ghc_PF "$_gpm"; then ght_no "TLS-W preflight.sh mutant: the source line removed, and the auth read still reads valid"
+  else ght_ok "TLS-W preflight.sh mutant: the source line removed -> the auth read reads invalid"; fi
   rm -rf "$GHT_T"
   if [ "$GHT_FAIL" = 0 ]; then echo "OK: gh-tls selftest passed ($GHT_N cells)"; return 0; fi
   echo "FAIL: gh-tls selftest failed"; return 1

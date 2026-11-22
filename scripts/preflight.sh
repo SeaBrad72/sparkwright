@@ -4,7 +4,7 @@
 # failure later (jq is hard-required by the guard + conformance). Universal check
 # always; optional per-stack toolchain via --stack.
 #   sh scripts/preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest]
-# Exit: 0 = all present · 1 = a required tool missing OR the stack's runtime floor is not met · 2 = bad usage.
+# Exit: 0 = all present · 1 = a required tool missing OR the stack's runtime floor is not met OR (a plain run) a recorded run-env variable is unset or empty (run-env) · 2 = bad usage.
 # POSIX sh; dash-clean. New stack? add a row to stack_tools() (unknown degrades gracefully).
 # What it changes: Read-only — checks for required/recommended tools; mutates nothing.
 # Guardrails: exit 1 if a required tool is missing (recommended tools only warn); an unknown --stack degrades gracefully.
@@ -13,6 +13,7 @@ set -eu
 miss=0; rec=0
 bwarn=0; gpwarn=0   # SWAS-793: display-only counts for the summary line, never read by an exit. rec = advisory lines (each site adds one), bwarn = the boundary's notices (WARN lines and its lowercase warn lines), gpwarn = git-plants warnings
 bfail=0; bunv=0   # SWAS-355: bfail = an UNDECLARED opt-out or a malformed declaration (moves the exit); bunv = a boundary line that could not be judged
+_bj_act="opted out"   # SWAS-945: the verb boundary_judge prints in a declared WARN ("granted" for the local-bind grant, set around that one call)
 _bnd_egress_gap=0; _bnd_nonegress=0   # SWAS-474: which kind of bfail the exit summary names (egress = the strict step; nonegress = any other part, or a bad declaration). Display only: never read by an exit
 # RULE 3 THROUGHOUT THIS FILE (see the K11 refusal block, "THE THREE OUTPUT RULES"): `printf '%s\n'`,
 # never `echo`, for any line carrying a VARIABLE. dash's builtin echo expands backslash escapes and dash
@@ -52,6 +53,80 @@ recommend() {  # recommend <tool> <why+hint> — warns, never fails the run
     printf '%s\n' "  warn $1 — $2"
     rec=$((rec + 1))
   fi
+}
+
+# SWAS-934: the run-env leg. incept records the NAMES of the redirected run variables in .kit-run/run-env.names (never values); a plain run checks that each is still set and non-empty here.
+# Absent file = N/A, no line. Every line prints names and fixed text only: no value, no path (RULE 3: printf '%s\n').
+RUNENV_FILE=.kit-run/run-env.names
+RUNENV_FAILED=0; _rev_why=""; _rev_body=""; _rev_raw=""   # RUNENV_FAILED: this leg set miss, so the closing line can say to relaunch; _rev_body is the ONE read of the file, _rev_why the reason it is malformed
+run_env_validate() {  # validates the copy in _rev_body (never the file); sets _rev_why to the reason it is malformed, "" when well-formed
+  _rem_n=0; _rem_seen=" "; _rem_rest=$_rev_body; _rem_l=""
+  _rem_nl=$(printf '\n.'); _rem_nl=${_rem_nl%.}
+  if [ -z "$_rev_body" ]; then _rev_why="empty"; return 0; fi
+  while [ -n "$_rem_rest" ]; do
+    _rem_n=$((_rem_n + 1))
+    case "$_rem_rest" in
+      *"$_rem_nl"*) _rem_l=${_rem_rest%%"$_rem_nl"*}; _rem_rest=${_rem_rest#*"$_rem_nl"} ;;
+      *) _rem_l=$_rem_rest; _rem_rest="" ;;
+    esac
+    if [ "$_rem_n" -gt 4 ]; then _rev_why="more than 4 lines"; return 0; fi
+    case "$_rem_l" in
+      CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM) : ;;   # MUT-RUNENV-ALLOW
+      *) _rev_why="an unknown name"; return 0 ;;
+    esac
+    case "$_rem_seen" in
+      *" $_rem_l "*) _rev_why="a repeated name"; return 0 ;;
+    esac
+    _rem_seen="$_rem_seen$_rem_l "
+  done
+}
+run_env_malformed() {  # reads the names file ONCE (at most 5 lines) into _rev_body, then validates that copy; sets _rev_why ("" = well-formed)
+  _rev_why=""; _rev_body=""
+  if [ -L .kit-run ] || [ -L "$RUNENV_FILE" ]; then _rev_why="a symlink"; return 0; fi
+  if [ ! -f "$RUNENV_FILE" ]; then _rev_why="not a regular file"; return 0; fi
+  if [ ! -r "$RUNENV_FILE" ]; then _rev_why="unreadable"; return 0; fi
+  # ONE capped read: dd takes at most 513 bytes (one past the cap, so a file over 512 bytes is seen as such); the x keeps a trailing newline through the substitution
+  _rev_raw=$(dd bs=513 count=1 2>/dev/null < "$RUNENV_FILE"; printf x); _rev_raw=${_rev_raw%x}
+  if [ "${#_rev_raw}" -gt 512 ]; then _rev_why="over 512 bytes"; return 0; fi
+  if ! _rev_body=$(printf '%s' "$_rev_raw" | head -n 5); then _rev_why="unreadable"; return 0; fi
+  run_env_validate
+}
+run_env_report() {  # <text> -> a plain run: FAIL and miss=1; under --boundary-advisory: the same text as WARN, no counter moves
+  if [ "$BOUNDARY_ADVISORY" -eq 1 ]; then   # MUT-RUNENV-ADVISORY
+    printf '%s\n' "  WARN run-env: $1"
+  else
+    printf '%s\n' "  FAIL run-env: $1"
+    miss=1   # MUT-RUNENV-MISS
+    RUNENV_FAILED=1
+  fi
+}
+run_env_value_empty() {  # <name> -> 0 iff the variable is unset or empty here; the value itself is never kept or printed
+  case "$1" in
+    CLAUDE_CONFIG_DIR) [ -z "${CLAUDE_CONFIG_DIR:-}" ] ;;   # MUT-RUNENV-EMPTY
+    GH_CONFIG_DIR) [ -z "${GH_CONFIG_DIR:-}" ] ;;   # MUT-RUNENV-EMPTY
+    GIT_CONFIG_GLOBAL) [ -z "${GIT_CONFIG_GLOBAL:-}" ] ;;   # MUT-RUNENV-EMPTY
+    GIT_CONFIG_NOSYSTEM) [ -z "${GIT_CONFIG_NOSYSTEM:-}" ] ;;   # MUT-RUNENV-EMPTY
+  esac
+}
+check_run_env() {
+  [ -e "$RUNENV_FILE" ] || [ -L "$RUNENV_FILE" ] || return 0   # absent: N/A, no line
+  run_env_malformed
+  if [ -n "$_rev_why" ]; then
+    run_env_report ".kit-run/run-env.names is malformed ($_rev_why), so the run environment cannot be checked. Fix: delete the file and re-run preflight."
+    return 0
+  fi
+  _rev_all=""; _rev_gone=""
+  for _rev_l in $_rev_body; do   # the validated copy only: every word is one of the four glob-free names
+    _rev_all="${_rev_all:+$_rev_all }$_rev_l"
+    if run_env_value_empty "$_rev_l"; then _rev_gone="${_rev_gone:+$_rev_gone }$_rev_l"; fi
+  done
+  if [ -z "$_rev_gone" ]; then
+    printf '%s\n' "  ok   run-env: the session has every variable recorded at inception ($_rev_all)"
+    return 0
+  fi
+  for _rev_n in $_rev_gone; do
+    run_env_report "$_rev_n was set when this project was incepted and is empty or unset in this session, so a resume or /remote-control may have dropped the run environment. Fix: end this session and relaunch with the \"Start your agent session here\" line incept printed, from a shell where $_rev_n is set; or, if this session is meant to run without the redirect, delete .kit-run/run-env.names."
+  done
 }
 
 # SWAS-775: the one line a run that ends in FAIL closes with, so a person who sees red finds the one-page operator card. Called only on the boundary FAIL exit, after the closing summary
@@ -250,7 +325,8 @@ boundary_read_scope() {  # <file> -> "absent", "unreadable", or one JSON line of
       st: (try (.sandbox.network.strictAllowlist == true) catch false),
       wf: (try (any(.permissions.deny[]?; . == "WebFetch")) catch false),
       ax: (try (.sandbox.filesystem | if type == "object" and has("allowRead") then (.allowRead | if type == "array" then any(.[]; . != "**/.env.example" and . != "**/.env.sample") else true end) else false end) catch false),
-      au: (try (.sandbox.allowUnsandboxedCommands | (. != null and . != false)) catch false)
+      au: (try (.sandbox.allowUnsandboxedCommands | (. != null and . != false)) catch false),
+      lb: (try (.sandbox.network.allowLocalBinding | if . == true then "true" elif . == false then "false" else "unset" end) catch "unset")
     }' "$1" 2>/dev/null) || { echo unreadable; return 0; }
   # Exactly ONE non-empty line: `jq -c` prints one line per JSON document (rc 0), so a two-document file would be read as its first document, and an empty or
   # whitespace-only file prints nothing. Claude Code rejects both, so both are unreadable.
@@ -600,7 +676,7 @@ boundary_decl_record() {  # <line>: rc 0 and sets _br_part, _br_since and _br_lo
     esac
   done
   case "$_br_part" in
-    read-deny|egress|write-protect|all) ;;
+    read-deny|egress|write-protect|local-bind|all) ;;   # local-bind (SWAS-945) names a GRANT that is ON; the other three name a protection that is OFF
     *) BD_WHY="an unknown part name"; return 1 ;;
   esac
   boundary_date_ok "$_br_since" || { BD_WHY="since is not a real date, or is in the future"; return 1; }
@@ -669,6 +745,7 @@ bd_covered() {  # <tokens: a part, @all or @every> -> 0 iff every token is decla
         if ! bd_lookup all exact; then
           bd_lookup read-deny exact && bd_lookup write-protect exact && bd_lookup egress exact || return 1
         fi ;;
+      =*) bd_lookup "${_bc_t#=}" exact || return 1 ;;   # MUT-LBEXACT: a grant is declared by its own record only; part=all does not cover it
       *) bd_lookup "$_bc_t" || return 1 ;;
     esac
     [ -n "$_bc_s" ] || { _bc_s=$_bcs; _bc_l=$_bcl; }
@@ -693,7 +770,7 @@ boundary_judge() {
         # owner ruling "Let's proceed with your Warn recommendation" (amends D-241023-2 4(c)): the declared opt-out is loud (WARN) and exits 0.
         # The kit's own consequence sentence is printed once: when the repo's lost= sentence is identical to it, the "(kit: ...)" suffix is dropped.
         _bj_k=${7:-$5}; _bj_ks=" (kit: $_bj_k)"; [ "$_bcl" != "$_bj_k" ] || _bj_ks=""
-        printf '%s\n' "  WARN $1: $2$_bj_dp $_bleg (opted out $_bcs, declared in .kit/boundary-optout.conf). Lost: $_bcl$_bj_ks"   # MUT-DECLWARN
+        printf '%s\n' "  WARN $1: $2$_bj_dp $_bleg ($_bj_act $_bcs, declared in .kit/boundary-optout.conf). Lost: $_bcl$_bj_ks"   # MUT-DECLWARN
         bwarn=$((${bwarn:-0} + 1))   # MUT-BWARN: SWAS-793, a boundary notice for the summary line (display only: never miss, rec, bfail or bunv)
         :   # MUT-DECLARED
       else
@@ -715,6 +792,8 @@ boundary_stale() {  # doctor --boundary only: a recorded part that is ON in this
     esac
     [ "$_bs_st" != ON ] || printf '%s\n' "  warn boundary: declaration for part=$_bs_p is STALE (the part is ON in this checkout)"   # MUT-STALE
   done
+  # SWAS-945: a GRANT is stale the other way round: declared while the effective allowLocalBinding is not true (the protection is back, nothing to declare)
+  [ "${_blbs:-OFF}" != OFF ] || ! bd_lookup local-bind exact || printf '%s\n' "  warn boundary: declaration for part=local-bind is STALE (allowLocalBinding is not true in this checkout)"   # MUT-LBSTALE
 }
 boundary_user_hosts() {  # <user settings file>: how many hosts the user-level allowedDomains holds. A COUNT, never a host (SWAS-407 owns the grading).
   [ -f "$1" ] || return 0
@@ -818,6 +897,24 @@ boundary_has_tty() {  # rc 0 iff a terminal is attached (stdin, stdout or stderr
   [ -t 0 ] || [ -t 1 ] || [ -t 2 ]   # S32: stderr counts too (`preflight </dev/null >log` from a terminal is not CI)
 }
 
+# boundary_local_bind (SWAS-945, D-241119-1): the local-bind line. A GRANT, so the polarity is the reverse of the three protections: it is judged when the effective allowLocalBinding is ON (_blbs), only
+# while the sandbox is on, against a record of its own (the exact lookup: part=all never covers it). ON and undeclared FAILs; declared is a loud WARN; a user scope that cannot be read from the agent's shell is
+# UNVERIFIED, never ON and never OFF. A value is never printed. Reads _bmode, _blbs and _bleg from check_boundary.
+boundary_local_bind() {
+  [ "$_bmode" = on ] || return 0
+  case "$_blbs" in
+    UNV)
+      bunv=1; bwarn=$((${bwarn:-0} + 1))
+      printf '%s\n' "  warn local-bind: UNVERIFIED (user scope not readable here) $_bleg — whether the agent may bind on a local address cannot be read from this shell; run 'sh scripts/preflight.sh' from a terminal to read it" ;;   # MUT-LBUNV
+    ON)
+      _blc="the agent's processes can bind on 0.0.0.0, so a server it starts is reachable from your LAN; its shell reaches every local listener (local proxies, browser debugging ports, local databases); and a script it writes can run a fake GitHub on loopback that a kit verb then talks to (the review label is a drift control, not authentication; branch protection still binds the merge)"
+      _blf="the owner declares it in .kit/boundary-optout.conf (part=local-bind), or a person removes allowLocalBinding from .claude/settings.local.json"
+      _bj_act=granted
+      boundary_judge local-bind ON "" =local-bind "$_blc" "$_blf" "$_blc"
+      _bj_act="opted out" ;;
+  esac
+}
+
 check_boundary() {
   _bnd_egress_gap=0; _bnd_nonegress=0; _bpread=0   # SWAS-474: the summary's two kinds of bfail, and whether the project scope was readable (the egress block reads its allowedDomains only then)
   _bfile=".claude/settings.json"; _bloc=".claude/settings.local.json"; _buser="${HOME:-}/.claude/settings.json"
@@ -844,6 +941,7 @@ check_boundary() {
   [ -z "${SANDBOX_RUNTIME:-}" ] || _bleg="$_bleg, agent-reported"   # MUT-AGENTMARK
   _bleg="[$_bleg]"
   _beff=""; _bblock=""; _brt=0; _brh=0; _bwp=0; _bwu=0; _bst=0; _bstrepo=0; _bwf=0; _buserunv=0; _bax=0; _bau=0
+  _blbv=""; _blbblock=""; _blbs=OFF   # SWAS-945: the effective allowLocalBinding (first scope that sets it, like enabled), the scope that blocked the read, and the state OFF | ON | UNV
   for _bn in managed local project user; do
     if [ "$_bci" -eq 1 ] && [ "$_bn" = local ]; then continue; fi   # MUT-CILOCAL
     if [ "$_bci" -eq 1 ] && { [ "$_bn" = user ] || [ "$_bn" = managed ]; }; then continue; fi   # MUT-CIUSER
@@ -855,12 +953,14 @@ check_boundary() {
       unreadable)
         [ "$_bn" != user ] || _buserunv=1
         [ -n "$_beff" ] || [ -n "$_bblock" ] || _bblock=$_bn
+        [ -n "$_blbv" ] || [ -n "$_blbblock" ] || _blbblock=$_bn
         continue ;;
     esac
     [ "$_bn" != project ] || _bpread=1
-    _bv=$(printf '%s' "$_bs" | jq -r '[.e, .rt, .rh, .wp, .wu, .st, .wf, .ax, .au] | join(" ")')
-    # shellcheck disable=SC2086  # deliberate word-split: nine plain words (a state word and eight booleans)
+    _bv=$(printf '%s' "$_bs" | jq -r '[.e, .rt, .rh, .wp, .wu, .st, .wf, .ax, .au, .lb] | join(" ")')
+    # shellcheck disable=SC2086  # deliberate word-split: ten plain words (a state word, eight booleans and the local-bind word)
     set -- $_bv
+    if [ -z "$_blbv" ] && [ -z "$_blbblock" ] && [ "${10:-unset}" != unset ]; then _blbv=${10}; fi
     if [ -z "$_beff" ] && [ -z "$_bblock" ] && [ "$1" != unset ]; then _beff=$1; fi
     [ "$2" != true ] || _brt=1
     [ "$3" != true ] || _brh=1
@@ -895,11 +995,16 @@ check_boundary() {
     *) if [ -n "$_bblock" ]; then _bmode=unv; _prd=UNV; _pwr=UNV; _peg=UNV; else _bmode=nosandbox; _bevery=1; fi ;;
   esac
   [ "$_bau" -eq 0 ] || { _prd=OFF; _pwr=OFF; _peg=OFF; }
+  if [ -n "$_blbv" ]; then   # SWAS-945: the effective allowLocalBinding; an unset key with an unreadable scope above or below it cannot be called OFF
+    [ "$_blbv" != true ] || _blbs=ON
+  elif [ -n "$_blbblock" ]; then
+    _blbs=UNV
+  fi
   # The declaration is read only when some part is not ON (an all-ON session makes no network call for it), by `--boundary-only` (the doctor leg,
   # which also judges STALE), and never under CI: a shallow CI checkout lacks the default branch tip, so the declared tier never gates on it.
   _bds=unread
   boundary_decl_gates() {  # rc 0 iff some boundary part is OFF and so needs the declaration (the ONE gate for an UNTRUSTED declaration; S20 may widen it here)
-    [ -n "$_boff" ] || [ "$_bevery" -eq 1 ] || [ "$_begn" -eq 1 ] || [ "$_bau" -eq 1 ]
+    [ -n "$_boff" ] || [ "$_bevery" -eq 1 ] || [ "$_begn" -eq 1 ] || [ "$_bau" -eq 1 ] || [ "$_blbs" = ON ]   # MUT-LBGATE: a grant that is ON needs the declaration too
   }
   if [ "$_bci" -eq 0 ] && { [ "$BOUNDARY_ONLY" -eq 1 ] || boundary_decl_gates; }; then
     boundary_decl_load
@@ -923,7 +1028,9 @@ check_boundary() {
         _bds=offline
         bunv=1   # S26: a plain preflight still exits 0 (the owner ruling), but doctor --boundary reads UNVERIFIED, never PASS   # MUT-OFFLINEUNV
       else
-        printf '%s\n' "  FAIL boundary: declaration UNVERIFIED ($BD_WHY) while a part is OFF. Remedy: $(boundary_unv_remedy)"
+        _bgw="a part is OFF"   # SWAS-945: the gate is also a grant that is ON; the old wording stays whenever a part is OFF
+        if [ "$_blbs" = ON ] && [ -z "$_boff" ] && [ "$_bevery" -eq 0 ] && [ "$_begn" -eq 0 ] && [ "$_bau" -eq 0 ]; then _bgw="a grant is ON"; fi
+        printf '%s\n' "  FAIL boundary: declaration UNVERIFIED ($BD_WHY) while $_bgw. Remedy: $(boundary_unv_remedy)"
         bfail=1; _bnd_nonegress=1   # MUT-UNVGATE
       fi
     fi
@@ -977,6 +1084,7 @@ check_boundary() {
         boundary_webfetch_allows "$_bloc" open
       fi ;;
   esac
+  boundary_local_bind
   if [ "$BOUNDARY_ONLY" -eq 1 ] && [ "$_bci" -eq 0 ]; then
     case "$_bds" in
       ok) boundary_stale ;;
@@ -5488,6 +5596,77 @@ EOF
   if [ "$_br_rc" -eq 0 ]; then echo "PASS: boundary-only [advisory] --boundary-advisory keeps the exit at 0"; else echo "FAIL: boundary-only [advisory] exited $_br_rc"; fail=1; fi
   _g_env=""; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent
   # (the mutant helper _bnd_kill is defined in st_bnd_setup, top of the selftest block)
+  # ==== SWAS-945 (PR 3), D-241119-1: the local-bind GRANT. Cells LB-D1 (the grammar), LB-P1 to LB-P4 (the line, per state and scope) and the LB-M mutants. A grant is judged when it is ON, the reverse of a protection.
+  printf '{"sandbox":{"network":{"allowLocalBinding":true}}}\n' > "$_bnd/lb-local.json"
+  printf '{"env":{"KIT_TRACKER_TOKEN":"kit-PLANTEDSECRET-placeholder-token"},"sandbox":{"network":{"strictAllowlist":true,"allowLocalBinding":true}}}\n' > "$_bnd/user-lb.json"
+  printf '%s\n' "part=local-bind reason=tests listen on a port lost=the agent can bind on 0.0.0.0 since=2026-11-18" > "$_bnd/d-lb.conf"
+  printf '%s\n' "part=all reason=r lost=l since=2026-11-18" > "$_bnd/d-all2.conf"
+  printf '%s\n' "part=read-deny reason=r lost=l since=2026-11-18" "part=write-protect reason=r lost=l since=2026-11-18" "part=egress reason=r lost=l since=2026-11-18" "part=local-bind reason=r lost=l since=2026-11-18" > "$_bnd/d-four.conf"
+  printf '%s\n' "part=all reason=r lost=l since=2026-11-18" "part=local-bind reason=r lost=l since=2026-11-18" > "$_bnd/m-lball.conf"
+  printf '%s\n' "part=local-binding reason=r lost=l since=2026-11-18" > "$_bnd/m-lbtypo.conf"
+  { cat "$_bnd/d-four.conf"; printf '%s\n' "part=local-bind reason=r lost=l since=2026-11-18"; } > "$_bnd/m-lbfive.conf"
+  # LB-D1: the grammar. Red on the old code: the first three (local-bind was an unknown part there).
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-lball.conf"
+  bnd_has lb-d1-beside-all 'declaration MALFORMED (.kit/boundary-optout.conf: part=all appears with another part'
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-lbfive.conf"
+  bnd_has lb-d1-cap-stays-four 'line 5: more than 4 records'
+  bnd_case "$_bnd/off.json" "" "" "" "" "" "$_bnd/m-lbtypo.conf"
+  bnd_has lb-d1-misspelt-part 'line 1: an unknown part name'
+  _g_proj="$_bnd/full.json"; _g_user="$_bnd/user-strict.json"; _g_local=""; _g_env=""; _g_decl="$_bnd/d-four.conf"
+  _bo lb-d1-four-records-parse 0 'declaration for part=local-bind is STALE' 'MALFORMED'
+  # LB-P1: declared and ON (a local scope sets it): the loud WARN, exit 0, and no STALE on a grant that is ON.
+  _g_local="$_bnd/lb-local.json"; _g_decl="$_bnd/d-lb.conf"
+  _bo lb-p1-declared 0 'WARN local-bind: ON [static] (granted 2026-11-18, declared in .kit/boundary-optout.conf). Lost: the agent can bind on 0.0.0.0' 'UNDECLARED'
+  _bo lb-p1-declared-not-stale 0 'ok   boundary: ON [static]' 'STALE'
+  _bnd_exit lb-p1-declared-no-exit no
+  # LB-P2: ON and undeclared is the one FAIL (exit 1); a part=all declaration does not cover a grant.
+  _g_decl=@absent
+  _bo lb-p2-undeclared 1 'FAIL local-bind: ON and UNDECLARED [static] — the agent'"'"'s processes can bind on 0.0.0.0' ''
+  _bo lb-p2-fix-names-the-part 1 'Fix: the owner declares it in .kit/boundary-optout.conf (part=local-bind), or a person removes allowLocalBinding from .claude/settings.local.json' ''
+  _bnd_exit lb-p2-undeclared-moves-the-exit yes
+  _g_decl="$_bnd/d-all2.conf"
+  _bo lb-p2-all-does-not-cover-a-grant 1 'local-bind: ON and UNDECLARED' ''
+  _g_decl=@unreadable
+  _bo lb-p2-unreadable-gates-while-on 1 'declaration UNVERIFIED (no origin read under the selftest) while a grant is ON. Remedy:' ''
+  # LB-P3: declared while the effective value is not true (no scope sets it): the stale WARN, exit 0.
+  _g_local=""; _g_decl="$_bnd/d-lb.conf"
+  _bo lb-p3-stale 0 'warn boundary: declaration for part=local-bind is STALE (allowLocalBinding is not true in this checkout)' 'local-bind: ON'
+  # LB-P4: a user-scope true. A terminal reads it (ON); the agent's shell cannot, so the line is UNVERIFIED and never ON.
+  _g_user="$_bnd/user-lb.json"; _g_decl="$_bnd/d-lb.conf"
+  _bo lb-p4-user-scope-terminal 0 'WARN local-bind: ON [static] (granted 2026-11-18' 'PLANTEDSECRET'
+  _g_env=SANDBOX_RUNTIME=1; _g_decl=@absent
+  _bo lb-p4-user-scope-agent-shell 2 'warn local-bind: UNVERIFIED (user scope not readable here) [static, agent-reported]' 'local-bind: ON'
+  _g_env=""
+  # LB-M: each mutant must lose the line its cell proves.
+  _g_local="$_bnd/lb-local.json"; _g_user="$_bnd/user-strict.json"; _g_decl="$_bnd/d-all2.conf"
+  _bnd_kill lb-exact-lookup-dropped '/MUT-LBEXACT/s/bd_lookup "\${_bc_t#=}" exact/bd_lookup "${_bc_t#=}"/' "--boundary-only --boundary-advisory" has 'local-bind: ON and UNDECLARED'
+  _g_local=""; _g_decl="$_bnd/d-lb.conf"
+  _bnd_kill lb-stale-silent '/MUT-LBSTALE/s/printf /: /' "--boundary-only --boundary-advisory" has 'declaration for part=local-bind is STALE'
+  _g_local="$_bnd/lb-local.json"
+  _bnd_kill lb-gate-dropped '/MUT-LBGATE/s/ || \[ "\$_blbs" = ON \]//' "--boundary-advisory" has 'WARN local-bind: ON'
+  _g_local=""; _g_user="$_bnd/user-lb.json"; _g_env=SANDBOX_RUNTIME=1; _g_decl=@absent
+  _bnd_kill lb-unverified-silent '/MUT-LBUNV/s/printf /: /' "--boundary-only --boundary-advisory" has 'local-bind: UNVERIFIED (user scope not readable here)'
+  _g_env=""; _g_local=""; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent
+  # LB-I1: incept prints the local-bind step (the fragment, the declaration line and what it opens) for a stack whose scaffold tests listen on a port, and nothing for one whose tests do not.
+  if [ -f "$_sd/incept.sh" ]; then
+    _lbi=$(sh "$_sd/incept.sh" __emit-local-bind typescript-node 2>&1) || _lbi="<failed>"
+    case "$_lbi" in
+      *'{"sandbox":{"network":{"allowLocalBinding":true}}}'*"part=local-bind reason="*"0.0.0.0"*"fake GitHub on loopback"*) echo "PASS: lb-i1 [incept-step] a stack whose tests bind gets the fragment, the declaration line and what it opens" ;;
+      *) echo "FAIL: lb-i1 [incept-step] the local-bind step is missing a part ($_lbi)"; fail=1 ;;
+    esac
+    _lbi=$(sh "$_sd/incept.sh" __emit-local-bind go 2>&1) || _lbi="<failed>"
+    if [ -z "$_lbi" ]; then echo "PASS: lb-i1 [incept-step-none] a stack whose tests do not bind prints no local-bind step"; else echo "FAIL: lb-i1 [incept-step-none] printed ($_lbi)"; fail=1; fi
+    _lbm=$(mktemp -d); sed '/MUT-LBSTEP/s/typescript-node)/none-such)/' "$_sd/incept.sh" > "$_lbm/incept.sh"
+    if cmp -s "$_sd/incept.sh" "$_lbm/incept.sh"; then echo "FAIL: mutant lb-step-never-printed did not apply"; fail=1
+    else
+      _lbi=$(sh "$_lbm/incept.sh" __emit-local-bind typescript-node 2>&1) || _lbi=""
+      if [ -z "$_lbi" ]; then echo "PASS: mutant lb-step-never-printed is killed"; else echo "FAIL: mutant lb-step-never-printed survived"; fail=1; fi
+    fi
+    rm -rf "$_lbm"
+  else
+    echo "PASS: (skip) lb-i1 cells: no scripts/incept.sh beside this script"
+  fi
+  _g_env=""; _g_proj="$_bnd/off.json"; _g_user=""; _g_decl=@absent
   # Owner ruling (amends D-241023-2 4(c)): the declared opt-out line is WARN, and the kit's consequence sentence is not repeated when the repo's lost= equals it.
   _g_proj="$_bnd/off.json"; _g_user=""; _g_decl="$_bnd/d-all.conf"; _g_env=""
   _bnd_kill declared-line-prefix-reverted-to-fail '/MUT-DECLWARN/s/"  WARN /"  FAIL /' "--boundary-only --boundary-advisory" has 'WARN boundary: OFF [static] (opted out'
@@ -6281,10 +6460,11 @@ EOF
     _ic=$(mktemp -d); mkdir -p "$_ic/scripts" "$_ic/profiles/typescript-node" "$_ic/adapters/generic"
     printf '{}\n' > "$_ic/adapters/generic/adapter.json"
     printf 'Engineering Principles & Definition of Done\n' > "$_ic/CLAUDE.md"
-    printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> calls' 'case " $* " in' '  *" --boundary-advisory "*) ;;' '  *) exit 1 ;;' 'esac' 'case " $* " in' '  *" --stack "*) exit 1 ;;' 'esac' 'exit 0' > "$_ic/scripts/preflight.sh"
-    _ic_run() {  # <incept copy> -> _ic_out; leaves the stub's recorded calls in $_ic/calls
-      rm -f "$_ic/calls"; cp "$1" "$_ic/scripts/incept.sh"
-      _ic_out=$( cd "$_ic" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME sh scripts/incept.sh --name T --intent-owner O --stack typescript-node --harness generic < /dev/null 2>&1 ) || true
+    printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> calls' 'if [ -f .kit-run/run-env.names ]; then echo present >> seen; else echo gone >> seen; fi' 'case " $* " in''  *" --boundary-advisory "*) ;;' '  *) exit 1 ;;' 'esac' 'case " $* " in' '  *" --stack "*) exit 1 ;;' 'esac' 'exit 0' > "$_ic/scripts/preflight.sh"
+    _ic_run() {  # <incept copy> [NAME=value ...] -> _ic_out; leaves the stub's recorded calls in $_ic/calls and, per call, whether the run-env names file existed in $_ic/seen (SWAS-934)
+      _ic_cp=$1; shift
+      rm -f "$_ic/calls" "$_ic/seen"; cp "$_ic_cp" "$_ic/scripts/incept.sh"
+      _ic_out=$( cd "$_ic" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME -u CLAUDE_CONFIG_DIR -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM "$@" sh scripts/incept.sh --name T --intent-owner O --stack typescript-node --harness generic < /dev/null 2>&1 ) || true
     }
     _ic_run "$_sd/incept.sh"
     _ic_n=$(grep -c -e '--boundary-advisory' "$_ic/calls" 2>/dev/null || true); _ic_n=${_ic_n:-0}
@@ -6307,9 +6487,149 @@ EOF
       _ic_n=$(grep -c -e '--boundary-advisory' "$_ic/calls" 2>/dev/null || true); _ic_n=${_ic_n:-0}
       if [ "$_ic_n" -lt 2 ]; then echo "PASS: mutant incept-drops-advisory (--stack) is killed (the floor call records no flag)"; else echo "FAIL: mutant incept-drops-advisory (--stack) survived"; fail=1; fi
     fi
+    # SWAS-934, re-incept: a stale names file is gone before the FIRST preflight call, so incept's own calls never read it; a redirected run writes it (names only) before that call too.
+    mkdir -p "$_ic/.kit-run"; printf 'GH_CONFIG_DIR\n' > "$_ic/.kit-run/run-env.names"
+    _ic_run "$_sd/incept.sh"
+    _ic_seen=$(head -n 1 "$_ic/seen" 2>/dev/null || true)
+    case "$_ic_out" in
+      *"below its declared floor"*)
+        if [ "$_ic_seen" = gone ] && [ ! -e "$_ic/.kit-run/run-env.names" ]; then echo "PASS: run-env-reincept a stale names file was removed before incept's first preflight call, and incept completed past the gate"; else echo "FAIL: run-env-reincept the stale names file survived (first call saw '$_ic_seen')"; fail=1; fi ;;
+      *) echo "FAIL: run-env-reincept incept did not reach the stack floor call ($_ic_out)"; fail=1 ;;
+    esac
+    sed 's#rm -f \.kit-run/run-env\.names 2>/dev/null || true;#true;#' "$_sd/incept.sh" > "$_ic/m3.sh"
+    if cmp -s "$_sd/incept.sh" "$_ic/m3.sh"; then echo "FAIL: run-env-reincept mutant (no removal) did not apply"; fail=1; else
+      printf 'GH_CONFIG_DIR\n' > "$_ic/.kit-run/run-env.names"; _ic_run "$_ic/m3.sh"
+      _ic_seen=$(head -n 1 "$_ic/seen" 2>/dev/null || true)
+      if [ "$_ic_seen" = present ]; then echo "PASS: run-env-reincept mutant (no removal) is killed (the stale file reaches the first call)"; else echo "FAIL: run-env-reincept mutant (no removal) survived (first call saw '$_ic_seen')"; fail=1; fi
+    fi
+    rm -f "$_ic/.kit-run/run-env.names"
+    _ic_run "$_sd/incept.sh" CLAUDE_CONFIG_DIR=sentinel-claude-4e1b GIT_CONFIG_NOSYSTEM=sentinel-nosys-4e1b
+    _ic_seen=$(head -n 1 "$_ic/seen" 2>/dev/null || true)
+    _ic_file=$(cat "$_ic/.kit-run/run-env.names" 2>/dev/null || true)
+    if [ "$_ic_seen" = present ] && [ "$_ic_file" = "$(printf 'CLAUDE_CONFIG_DIR\nGIT_CONFIG_NOSYSTEM')" ]; then echo "PASS: run-env-record a redirected incept wrote exactly the set trigger and carried names, in order, before its first preflight call"; else echo "FAIL: run-env-record the names file reads '$_ic_file' (first call saw '$_ic_seen')"; fail=1; fi
+    case "$_ic_out$_ic_file" in
+      *sentinel-*) echo "FAIL: run-env-sentinel a variable's value reached incept's output or the names file"; fail=1 ;;
+      *) echo "PASS: run-env-sentinel no variable's value is in incept's output or the names file" ;;
+    esac
     rm -rf "$_ic"
   else
     echo "PASS: (skip) incept cells: no scripts/incept.sh beside this script"
+  fi
+
+  # SWAS-934: the run-env leg. A fixture is an export-class directory (a CLAUDE.md with the principles heading) that is its own git repository, so the leg, which sits after the CP-11 and CP-4 refusals, is reached; every run unsets the four names first, so this shell's own never leak in.
+  _re_run() {  # <dir> <flags> [NAME=value ...] -> _re_out, _re_rc
+    _rt_dir=$1; _rt_fl=$2; shift 2; _re_rc=0
+    mkdir -p "$_bnd/emptyhome"
+    # shellcheck disable=SC2086  # $_rt_fl is a short flag list
+    _re_out=$( cd "$_rt_dir" && env -u CI -u GITHUB_ACTIONS -u CLAUDE_CONFIG_DIR -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$_bnd/emptyhome" PREFLIGHT_GH_CMD=false "$@" sh "$_self" --boundary-offline $_rt_fl 2>&1 ) || _re_rc=$?
+  }
+  _re_fix() {  # <names file content, or @none> -> _re_d: a fresh fixture
+    _re_d=$(mktemp -d); printf 'Engineering Principles & Definition of Done\n' > "$_re_d/CLAUDE.md"
+    git init -q "$_re_d" >/dev/null 2>&1 || true
+    if [ "$1" != "@none" ]; then mkdir "$_re_d/.kit-run"; printf '%s\n' "$1" > "$_re_d/.kit-run/run-env.names"; fi
+  }
+  _re_has() {
+    case "$_re_out" in
+      *"$2"*) echo "PASS: $1: $3" ;;
+      *) echo "FAIL: $1: $3 (missing '$2')"; fail=1 ;;
+    esac
+  }
+  _re_hasnt() {
+    case "$_re_out" in
+      *"$2"*) echo "FAIL: $1: $3 (found '$2')"; fail=1 ;;
+      *) echo "PASS: $1: $3" ;;
+    esac
+  }
+  _re_rcis() { if [ "$_re_rc" -eq "$2" ]; then echo "PASS: $1: $3"; else echo "FAIL: $1: $3 (exit $_re_rc, wanted $2)"; fail=1; fi; }
+  _re_ok_text="  ok   run-env: the session has every variable recorded at inception (CLAUDE_CONFIG_DIR GH_CONFIG_DIR)"
+  _re_gone_text="was set when this project was incepted and is empty or unset in this session"
+  _re_fix "$(printf 'CLAUDE_CONFIG_DIR\nGH_CONFIG_DIR')"
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=/sentinel/c GH_CONFIG_DIR=/sentinel/g
+  _re_has run-env-ok "$_re_ok_text" "every recorded name present reads ok"
+  _re_hasnt run-env-ok "FAIL run-env" "no FAIL when every recorded name is present"
+  rm -rf "$_re_d"
+  _re_fix GH_CONFIG_DIR
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=/sentinel/c
+  _re_has run-env-unset "  FAIL run-env: GH_CONFIG_DIR $_re_gone_text" "a recorded name unset reads FAIL"
+  _re_has run-env-unset "delete .kit-run/run-env.names." "the Fix line names deleting the names file"
+  _re_hasnt run-env-unset "  ok   run-env" "an unset name is never read ok"
+  _re_rcis run-env-unset 1 "a plain run exits 1"
+  rm -rf "$_re_d"
+  _re_fix GH_CONFIG_DIR
+  _re_run "$_re_d" "" GH_CONFIG_DIR=
+  _re_has run-env-empty "  FAIL run-env: GH_CONFIG_DIR $_re_gone_text" "a recorded name set but empty reads FAIL (the references gap)"
+  _re_rcis run-env-empty 1 "an empty name exits 1"
+  rm -rf "$_re_d"
+  _re_mal() {  # <id> <reason> : the fixture in $_re_d is malformed; preflight, with every name and a token variable set, reads no name from it
+    _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=/sentinel/c GH_CONFIG_DIR=/sentinel/g GH_TOKEN=/sentinel/t
+    _re_has "$1" "  FAIL run-env: .kit-run/run-env.names is malformed ($2), so the run environment cannot be checked." "reads FAIL malformed ($2)"
+    _re_hasnt "$1" "  ok   run-env" "a malformed file is never read as a name list"
+    _re_hasnt "$1" "/sentinel/t" "no variable's value reaches the output"
+    _re_rcis "$1" 1 "a malformed file exits 1"
+    rm -rf "$_re_d"
+  }
+  _re_fix GH_TOKEN; _re_mal run-env-malformed-token "an unknown name"
+  _re_fix @none; mkdir "$_re_d/.kit-run"; dd if=/dev/zero bs=600 count=1 2>/dev/null | tr '\0' 'A' > "$_re_d/.kit-run/run-env.names"; _re_mal run-env-malformed-big "over 512 bytes"
+  _re_fix GH_CONFIG_DIR; chmod 000 "$_re_d/.kit-run/run-env.names"
+  if [ "$(id -u)" -eq 0 ] || [ -r "$_re_d/.kit-run/run-env.names" ]; then
+    echo "SKIP: run-env-unreadable this user reads a mode-000 file, so the case cannot be built here: not exercised"; _pf_skips=$((_pf_skips + 1)); rm -rf "$_re_d"
+  else
+    _re_mal run-env-unreadable "unreadable"
+  fi
+  _re_fix "$(printf 'GH_CONFIG_DIR\nGH_CONFIG_DIR')"; _re_mal run-env-malformed-repeat "a repeated name"
+  _re_fix "$(printf 'CLAUDE_CONFIG_DIR\nGH_CONFIG_DIR\nGIT_CONFIG_GLOBAL\nGIT_CONFIG_NOSYSTEM\nCLAUDE_CONFIG_DIR')"; _re_mal run-env-malformed-five "more than 4 lines"
+  _re_fix @none; mkdir "$_re_d/.kit-run"; printf 'GH_CONFIG_DIR\n' > "$_re_d/real.names"; ln -s "$_re_d/real.names" "$_re_d/.kit-run/run-env.names"; _re_mal run-env-malformed-symlink "a symlink"
+  _re_fix @none; mkdir -p "$_re_d/.kit-run/run-env.names"; _re_mal run-env-malformed-dir "not a regular file"
+  _re_fix @none
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=/sentinel/c
+  _re_has run-env-absent "Recommended (GitHub-based flows" "the run reached the leg's place in the output"
+  _re_hasnt run-env-absent "run-env" "no names file is N/A, with no line"
+  _re_run "$_re_d" "--boundary-advisory"; _re_base=$_re_rc
+  rm -rf "$_re_d"
+  _re_fix GH_CONFIG_DIR
+  _re_run "$_re_d" "--boundary-advisory"
+  _re_has run-env-advisory "  WARN run-env: GH_CONFIG_DIR $_re_gone_text" "under --boundary-advisory a missing name reads WARN"
+  _re_hasnt run-env-advisory "FAIL run-env" "under --boundary-advisory it is never a FAIL"
+  if [ "$_re_rc" -eq "$_re_base" ]; then echo "PASS: run-env-advisory this leg moves no exit under --boundary-advisory (exit $_re_rc, the same as with no names file)"; else echo "FAIL: run-env-advisory the leg moved the exit ($_re_rc against $_re_base)"; fail=1; fi
+  rm -rf "$_re_d"
+  _re_fix "$(printf 'CLAUDE_CONFIG_DIR\nGH_CONFIG_DIR\nGIT_CONFIG_GLOBAL\nGIT_CONFIG_NOSYSTEM')"
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=sentinel-claude-7a1 GH_CONFIG_DIR=sentinel-gh-7a1 GIT_CONFIG_GLOBAL=sentinel-git-7a1 GIT_CONFIG_NOSYSTEM=sentinel-nosys-7a1
+  _re_has run-env-sentinel "  ok   run-env:" "the all-present run reads ok"
+  _re_hasnt run-env-sentinel "sentinel-" "no variable's value is in preflight's output (ok branch)"
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=sentinel-claude-7a1 GIT_CONFIG_GLOBAL=sentinel-git-7a1 GIT_CONFIG_NOSYSTEM=sentinel-nosys-7a1
+  _re_has run-env-sentinel "  FAIL run-env: GH_CONFIG_DIR" "the one-missing run reads FAIL"
+  _re_hasnt run-env-sentinel "sentinel-" "no variable's value is in preflight's output (FAIL branch)"
+  rm -rf "$_re_d"
+  _re_fix GH_TOKEN
+  _re_run "$_re_d" "" CLAUDE_CONFIG_DIR=sentinel-claude-7a1 GH_CONFIG_DIR=sentinel-gh-7a1 GIT_CONFIG_GLOBAL=sentinel-git-7a1 GIT_CONFIG_NOSYSTEM=sentinel-nosys-7a1
+  _re_has run-env-sentinel "is malformed (an unknown name)" "the malformed run, with all four variables set, reads FAIL malformed"
+  _re_hasnt run-env-sentinel "sentinel-" "no variable's value is in preflight's output (malformed branch)"
+  rm -rf "$_re_d"
+  # the exit counter, proved directly (the file's _bcell shape): one check_run_env call in a subshell with one recorded name missing; miss moves to 1 on a plain run and stays 0 under the flag.
+  _rm_cell() {  # <BOUNDARY_ADVISORY value> -> miss after one check_run_env call in the fixture
+    ( unset CLAUDE_CONFIG_DIR GH_CONFIG_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+      miss=0; BOUNDARY_ADVISORY=$1; RUNENV_FAILED=0
+      cd "$_re_d" && check_run_env >/dev/null
+      printf '%s' "$miss" )
+  }
+  _re_fix GH_CONFIG_DIR
+  _rm_plain=$(_rm_cell 0) || _rm_plain="<aborted>"
+  _rm_adv=$(_rm_cell 1) || _rm_adv="<aborted>"
+  rm -rf "$_re_d"
+  if [ "$_rm_plain" = 1 ]; then echo "PASS: run-env-miss-plain a missing recorded name moves miss to 1 on a plain run"; else echo "FAIL: run-env-miss-plain miss is '$_rm_plain', expected 1"; fail=1; fi
+  if [ "$_rm_adv" = 0 ]; then echo "PASS: run-env-miss-advisory a missing recorded name leaves miss at 0 under --boundary-advisory"; else echo "FAIL: run-env-miss-advisory miss is '$_rm_adv', expected 0"; fail=1; fi
+  _re_names() {  # [NAME=value ...] -> _re_nout: what incept would record, from a clean slate
+    _re_nout=$(env -u CLAUDE_CONFIG_DIR -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM -u XDG_CONFIG_HOME "$@" sh "$_sd/incept.sh" __run-env-names 2>&1) || true
+  }
+  _re_eq() { if [ "$_re_nout" = "$2" ]; then echo "PASS: $1: $3"; else echo "FAIL: $1: $3 (got '$_re_nout')"; fail=1; fi; }
+  if [ -f "$_sd/incept.sh" ]; then
+    _re_names CLAUDE_CONFIG_DIR=/sentinel/c; _re_eq run-env-names "CLAUDE_CONFIG_DIR" "CLAUDE_CONFIG_DIR alone is recorded"
+    _re_names XDG_CONFIG_HOME=/sentinel/x; _re_eq run-env-names "" "XDG_CONFIG_HOME alone records nothing"
+    _re_names GIT_CONFIG_NOSYSTEM=1; _re_eq run-env-names "" "GIT_CONFIG_NOSYSTEM alone records nothing"
+    _re_names GH_CONFIG_DIR= ; _re_eq run-env-names "" "an empty trigger records nothing"
+    _re_names GIT_CONFIG_NOSYSTEM=1 GH_CONFIG_DIR=/sentinel/g; _re_eq run-env-names "$(printf 'GH_CONFIG_DIR\nGIT_CONFIG_NOSYSTEM')" "GIT_CONFIG_NOSYSTEM rides along when a trigger is set"
+  else
+    echo "PASS: (skip) run-env names cells: no scripts/incept.sh beside this script"
   fi
 
   # ---- security triage at d0a955ac: exactly one document, a regular file, and a banner on seam runs.
@@ -6933,6 +7253,12 @@ check_guard_killswitch
 echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
 if command -v gh >/dev/null 2>&1; then
+  # SWAS-945: inside the macOS agent sandbox a bare `gh auth status` reads a valid token as invalid (x509 OSStatus -26276). The kit's own reader sets its own trust store
+  # (scripts/gh-tls.sh; one probe, here in the parent shell, before the first gh read: this auth read and the repo-class read below). A missing library means no probe.
+  _pf_ghtls=$(dirname -- "$0")/gh-tls.sh
+  # shellcheck source=scripts/gh-tls.sh
+  if [ -f "$_pf_ghtls" ]; then . "$_pf_ghtls"; fi
+  if command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
   # shellcheck disable=SC2034  # rec mirrors miss for recommended tools; warnings don't fail the run
   if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=$((rec + 1)); fi
 fi
@@ -6975,6 +7301,9 @@ if ! owns_itself "$PWD" && [ "$ALLOW_NESTED" -eq 0 ]; then
   echo "If this nesting is intentional (e.g. a monorepo package), re-run with --allow-nested." >&2
   exit 1
 fi
+
+# SWAS-934: the run-env leg, after the CP-11 and CP-4 refusals (a tree we do not own is never judged) and before K11. N/A (no line) without .kit-run/run-env.names; a plain-run FAIL sets miss, so the closing exit carries it.
+check_run_env
 
 # K11 (CP7R5) — THE CALL SITE. Deliberately DOWNSTREAM of the CP-11 git-dir refusal and the CP-4
 # ownership refusal above: we must not pass judgment on a repository we do not own, and both of those
@@ -7355,6 +7684,7 @@ if [ "$GUARD_REFUSE" -eq 1 ]; then
 fi
 
 if [ "$miss" -ne 0 ]; then
+  if [ "$RUNENV_FAILED" -eq 1 ]; then printf '%s\n' "A run-env FAIL above is not a missing tool: follow its Fix line."; fi   # SWAS-934
   echo "Missing prerequisites above — install them, then re-run."
   operator_card_pointer   # SWAS-775: the card follows the missing-prerequisite exit too
   exit 1

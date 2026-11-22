@@ -50,6 +50,10 @@ cd "$(dirname "$0")/.." 2>/dev/null || true
 # backlog-current.sh use. Never re-derive "a row" or "the PR column" here: two parsers WILL drift, and
 # then the gates disagree about what the board even says.
 . conformance/backlog-lib.sh
+# SWAS-945: the trust-store library for the gh reads below (one probe, at the dispatch at the end of this file). We are in the tree root here.
+_bd_ghtls=scripts/gh-tls.sh
+# shellcheck source=scripts/gh-tls.sh
+if [ -f "$_bd_ghtls" ]; then . "$_bd_ghtls"; fi
 
 # bd_safe_id <text> -> strips C0/DEL control bytes before any diagnostic use. TBG-SEAM-CONSUMERS-
 # DERIVED (D-240919-3 §8 L1): board-drift becomes a NEW seam consumer this slice (it now calls
@@ -881,12 +885,18 @@ selftest() {
   return "$st"
 }
 
+# SWAS-945: pr_state and merged_rows reach gh (pr_state inside command substitutions, so a pin set there would die with the subshell). The trust-store probe
+# (scripts/gh-tls.sh) runs ONCE here, in the parent shell, before the first gh call, and only when the route reaches the real gh (its injectable seam is unset).
+# A missing library means no probe: today's behaviour.
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
   --merged-rows)
     _bd_mr_dir=${2:-.}
+    if [ -z "${BOARD_DRIFT_MERGED_ROWS:-}" ] && command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
     cd "$_bd_mr_dir" || exit 2
     merged_rows
     exit $? ;;
-  *)          check "${1:-.}"; exit $? ;;
+  *)
+    if [ -z "${BOARD_DRIFT_PR_STATE:-}" ] && command -v kit_gh_tls_pin >/dev/null 2>&1; then kit_gh_tls_pin; fi
+    check "${1:-.}"; exit $? ;;
 esac
