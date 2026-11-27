@@ -11,8 +11,8 @@
 # `$0`-relative via $here — never $PWD), which runs checks and writes nothing to the tree or refs;
 # `new` is new.sh, the one-command greenfield start (export · preflight · incept · preflight into a
 # new <dest-dir>) — its writes are its own, and it never writes inside the kit checkout; `adopt` is
-# adopt.sh, which composes one reviewed patch for an existing repository's `.claude/` and `.gitignore`
-# into a file outside that repository — it never applies the patch; `team` is
+# adopt.sh, which composes one reviewed patch for an existing repository, covering the guard files and the brownfield files incept
+# stamps, into a file outside that repository — it never applies the patch; `team` is
 # solo-to-team.sh, which moves a solo project to team (or adds people to a team) by editing up to three files — its writes are its own.
 # Guardrails: no privileges of its own; empty/-h/--help prints usage and exits 2; an unknown subcommand
 # exits 2 without dispatching; all behavior is delegated to the subcommand it execs.

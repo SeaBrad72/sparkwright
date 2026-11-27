@@ -496,8 +496,57 @@ _job_calls_render_exit() { _job_block "$1" "$2" | grep -qF 'agent-boundary.sh --
 # and PASSES HERE. What bounds that is not this anchor but the SPLIT — the decision's home is
 # render_exit, selftest-driven over every state, so a computed override reads as a visible
 # re-implementation in review. A green here means "it does not decide in any KNOWN form", no more.
+#
+# ★ ONE NAMED, PINNED EXCEPTION (SWAS-1010 errata R3-M1, owner GO 2026-11-23, D-240828-1 amendment): the
+# ratification job's ADOPTION ARM. On an adoption PR the base commit holds no kit, so there is no
+# agent-boundary.sh to ask for a verdict; the arm prints the notice and ends the step green with one bare
+# `exit 0`. That is the fail-open spelling this anchor exists to refuse, so it is admitted ONLY as a block:
+#   1. exactly ONE `# ADOPTION-ARM-BEGIN` / `# ADOPTION-ARM-END` pair in the job, the BEGIN being the first
+#      code of the step (the line before it is `run: |`) and both before the step's first `set +e`;
+#   2. the text between the markers equals _arm_literal, line for line;
+#   3. the block is DELETED and the four checks below run on the rest, so mutant B2 still bites outside it;
+#   4. `ADOPTION:` is bound exactly to `${{ steps.adopt.outputs.adoption }}`, in the arm's own step.
+# It is an EXCEPTION, not a pattern: a second one needs its own owner ruling. A computed exit still escapes
+# this lock, which is the ceiling stated above.
+_arm_literal() {
+  _aq="'"
+  printf '%s\n' '          if [ "$ADOPTION" = 1 ]; then'
+  printf '%s\n' "            _anote=${_aq}control-plane-ratification: SKIPPED (adoption PR) — the base commit carries no kit (no ratification.yml, conformance/verify.sh, conformance/agent-boundary.sh or .kit/), so there is no trusted gate to judge from. This PR is ratified by its one hand merge: docs/adoption/brownfield.md#your-first-pr${_aq}"
+  printf '%s\n' "            printf ${_aq}%s\\n${_aq} \"\$_anote\" | tee -a \"\$GITHUB_STEP_SUMMARY\""
+  printf '%s\n' "            printf ${_aq}::notice title=control-plane-ratification: SKIPPED (adoption PR)::%s\\n${_aq} \"\$_anote\""
+  printf '%s\n' '            exit 0'
+  printf '%s\n' '          fi'
+}
+# _job_raw <file> <job-key> -> that job's lines, comments KEPT (the markers are comments).
+_job_raw() { awk -v k="  $2:" '$0==k{f=1;next} f&&/^  [A-Za-z0-9_-]+:[[:space:]]*$/{f=0} f' "$1" 2>/dev/null; }
+# _arm_pinned <raw-job-block> -> 0 iff pins 1, 2 and 4 hold.
+_arm_pinned() {
+  # WHOLE LINES ONLY: a marker is a line that is nothing but the comment. A substring match let code ride
+  # on a marker line (`exit 0 # ADOPTION-ARM-BEGIN`), which was then deleted with the block (M-R6).
+  _anb=$(printf '%s\n' "$1" | grep -c -E '^[[:space:]]*# ADOPTION-ARM-BEGIN[[:space:]]*$' || true)
+  _ane=$(printf '%s\n' "$1" | grep -c -E '^[[:space:]]*# ADOPTION-ARM-END[[:space:]]*$' || true)
+  [ "$_anb" = 1 ] && [ "$_ane" = 1 ] || return 1
+  _abl=$(printf '%s\n' "$1" | grep -n -E '^[[:space:]]*# ADOPTION-ARM-BEGIN[[:space:]]*$' | cut -d: -f1)
+  _ael=$(printf '%s\n' "$1" | grep -n -E '^[[:space:]]*# ADOPTION-ARM-END[[:space:]]*$' | cut -d: -f1)
+  [ "$_abl" -lt "$_ael" ] || return 1
+  printf '%s\n' "$1" | awk -v b="$_abl" 'NR < b && $0 !~ /^[[:space:]]*#/ && $0 !~ /^[[:space:]]*$/ { last = $0 } END { exit (last == "        run: |") ? 0 : 1 }' || return 1
+  _asl=$(printf '%s\n' "$1" | grep -n '^[[:space:]]*set +e' | head -1 | cut -d: -f1)
+  [ -z "$_asl" ] || [ "$_asl" -gt "$_ael" ] || return 1
+  [ "$(printf '%s\n' "$1" | awk -v b="$_abl" -v e="$_ael" 'NR > b && NR < e')" = "$(_arm_literal)" ] || return 1
+  printf '%s\n' "$1" | awk '
+    /^      - / { env = 0 }
+    /^[[:space:]]*ADOPTION:/ { if ($0 == "          ADOPTION: ${{ steps.adopt.outputs.adoption }}") env++; else bad = 1 }
+    /^[[:space:]]*# ADOPTION-ARM-BEGIN[[:space:]]*$/ { ok = (env == 1) }
+    END { exit (ok && !bad) ? 0 : 1 }'
+}
 _job_exits_on_render() {
-  _rb=$(_job_block "$1" "$2")
+  _rawb=$(_job_raw "$1" "$2")
+  if printf '%s\n' "$_rawb" | grep -q -e 'ADOPTION-ARM-BEGIN' -e 'ADOPTION-ARM-END'; then
+    _arm_pinned "$_rawb" || return 1
+    _rb=$(printf '%s\n' "$_rawb" | awk '/^[[:space:]]*# ADOPTION-ARM-BEGIN[[:space:]]*$/ { s = 1 } !s { print } /^[[:space:]]*# ADOPTION-ARM-END[[:space:]]*$/ { s = 0 }' | grep -v '^[[:space:]]*#')
+  else
+    _rb=$(_job_block "$1" "$2")
+  fi
   printf '%s\n' "$_rb" | grep -qF 'exit "$_exit"' || return 1
   printf '%s\n' "$_rb" | grep -qF "grep -q -- '--render-exit' conformance/agent-boundary.sh" || return 1
   printf '%s\n' "$_rb" | grep -qE '_exit=[01]([^0-9]|$)' && return 1
@@ -1377,6 +1426,62 @@ selftest() {
   cp "$_mx/rat-ok.yml" "$_mx/rat-mut0.yml"
   printf '          exit 0\n' >> "$_mx/rat-mut0.yml"
   _job_exits_on_render "$_mx/rat-mut0.yml" control-plane-ratification && { echo "FAIL: mutant B2 — a bare \`exit 0\` must NOT pass: it is the fail-OPEN spelling of the same self-made decision"; st=1; }
+  # ★ THE ADOPTION ARM (SWAS-1010 R3-M1): the one pinned exception to the fail-open spelling. The clean arm
+  # fixture is rat-ok plus the pinned block as the step's first code; it must pass. Each mutant breaks ONE
+  # pin (or places a bare exit outside the block) and must NOT pass _job_exits_on_render.
+  _mk_rat_arm() {  # <out> — rat-ok with the arm, its env binding and its marker pair
+    {
+      printf 'jobs:\n  control-plane-ratification:\n    runs-on: ubuntu-latest\n    steps:\n'
+      printf '      - env:\n          ADOPTION: ${{ steps.adopt.outputs.adoption }}\n        run: |\n'
+      printf '          # ADOPTION-ARM-BEGIN\n'; _arm_literal; printf '          # ADOPTION-ARM-END\n'
+      sed -n '6,$p' "$_mx/rat-ok.yml"
+    } > "$1"
+  }
+  _mk_rat_arm "$_mx/arm-ok.yml"
+  _job_exits_on_render "$_mx/arm-ok.yml" control-plane-ratification || { echo "FAIL: arm — the clean fixture with the pinned adoption arm must satisfy _job_exits_on_render"; st=1; }
+  _arm_mut() {  # <id> <what> <mutant-file>
+    cmp -s "$3" "$_mx/arm-ok.yml" && { echo "FAIL: arm $1 setup — the planted mutant did not differ from the clean arm fixture"; st=1; return 0; }
+    if _job_exits_on_render "$3" control-plane-ratification; then echo "FAIL: arm $1 — $2 must NOT pass _job_exits_on_render"; st=1
+    else echo "OK: arm $2 -> RED ($1)"; fi
+    return 0
+  }
+  awk '{ print } /# ADOPTION-ARM-END/ { print "          exit 0" }' "$_mx/arm-ok.yml" > "$_mx/arm-m1.yml"
+  _arm_mut M-R1 "an exit 0 placed after the END marker (a bare exit outside the block)" "$_mx/arm-m1.yml"
+  sed 's|\[ "\$ADOPTION" = 1 \]|[ "$ADOPTION" != 0 ]|' "$_mx/arm-ok.yml" > "$_mx/arm-m2a.yml"
+  _arm_mut M-R2a "the test spelled != 0" "$_mx/arm-m2a.yml"
+  sed 's|\[ "\$ADOPTION" = 1 \]|[ -n "$ADOPTION" ]|' "$_mx/arm-ok.yml" > "$_mx/arm-m2b.yml"
+  _arm_mut M-R2b "the test spelled -n" "$_mx/arm-m2b.yml"
+  sed 's#\[ "\$ADOPTION" = 1 \]#[ "$ADOPTION" = 1 ] || [ 1 = 1 ]#' "$_mx/arm-ok.yml" > "$_mx/arm-m2c.yml"
+  _arm_mut M-R2c "the test widened with || [ 1 = 1 ]" "$_mx/arm-m2c.yml"
+  awk '/# ADOPTION-ARM-(BEGIN|END)/ { next } /render-exit/ && !b { print "          # ADOPTION-ARM-BEGIN"; b = 1 } { print } END { print "          # ADOPTION-ARM-END" }' "$_mx/arm-ok.yml" > "$_mx/arm-m3.yml"
+  _arm_mut M-R3 "the markers moved to enclose the --render-exit block" "$_mx/arm-m3.yml"
+  { cat "$_mx/arm-ok.yml"; printf '          # ADOPTION-ARM-BEGIN\n          # ADOPTION-ARM-END\n'; } > "$_mx/arm-m4.yml"
+  _arm_mut M-R4 "a second marker pair" "$_mx/arm-m4.yml"
+  sed '/^          ADOPTION:/s|.*|          ADOPTION: 1|' "$_mx/arm-ok.yml" > "$_mx/arm-m5.yml"
+  _arm_mut M-R5 "ADOPTION bound to the literal 1" "$_mx/arm-m5.yml"
+  # M-R6: CODE RIDING ON A MARKER LINE. A substring match counted `exit 0 # ADOPTION-ARM-END` as the END
+  # marker and deleted it with the block, an unconditional green B2 never saw (security finding, High).
+  sed 's|^          # ADOPTION-ARM-END$|          exit 0 # ADOPTION-ARM-END|' "$_mx/arm-ok.yml" > "$_mx/arm-m6.yml"
+  _arm_mut M-R6 "code on the END marker line" "$_mx/arm-m6.yml"
+  sed 's|^          # ADOPTION-ARM-BEGIN$|          exit 0 # ADOPTION-ARM-BEGIN|' "$_mx/arm-ok.yml" > "$_mx/arm-m6b.yml"
+  _arm_mut M-R6b "code on the BEGIN marker line" "$_mx/arm-m6b.yml"
+  # the arm itself, RUN: every value but exactly `1` falls through; `1` ends the step with rc 0 and the notice.
+  if [ -f profiles/ratification.yml ]; then
+    _job_raw profiles/ratification.yml control-plane-ratification | awk '/# ADOPTION-ARM-BEGIN/ { on = 1; next } /# ADOPTION-ARM-END/ { exit } on { print }' | sed 's/^          //' > "$_mx/arm-run.sh"
+    printf '%s\n' 'echo FELL-THROUGH' >> "$_mx/arm-run.sh"
+    : > "$_mx/arm-sum.txt"
+    for _av in '' 0 '1 ' x; do
+      _ao=$(ADOPTION="$_av" GITHUB_STEP_SUMMARY="$_mx/arm-sum.txt" sh "$_mx/arm-run.sh" 2>&1) || true
+      [ "$_ao" = FELL-THROUGH ] || { echo "FAIL: arm cell — ADOPTION='$_av' did not fall through to the gate (got: $_ao)"; st=1; }
+    done
+    if _ao=$(ADOPTION=1 GITHUB_STEP_SUMMARY="$_mx/arm-sum.txt" sh "$_mx/arm-run.sh" 2>&1); then
+      case "$_ao" in *FELL-THROUGH*) echo "FAIL: arm cell — ADOPTION=1 did not exit 0 before the gate"; st=1 ;; *'::notice title=control-plane-ratification: SKIPPED (adoption PR)::'*) echo "OK: the arm falls through for empty, 0, '1 ' and x, and exits 0 with its notice for 1" ;; *) echo "FAIL: arm cell — ADOPTION=1 printed no notice (got: $_ao)"; st=1 ;; esac
+    else
+      echo "FAIL: arm cell — ADOPTION=1 did not exit 0"; st=1
+    fi
+  else
+    echo "FAIL: arm cell — profiles/ratification.yml is missing; the arm cannot be run"; st=1
+  fi
   # mutant C: THE CALL REMOVED — the decision comes home to the YAML, where it cannot be unit-tested.
   grep -v -- '--render-exit' "$_mx/rat-ok.yml" > "$_mx/rat-nocall.yml"
   _job_calls_render_exit "$_mx/rat-nocall.yml" control-plane-ratification && { echo "FAIL: mutant C — a job that no longer invokes --render-exit must NOT pass _job_calls_render_exit"; st=1; }

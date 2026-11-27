@@ -449,10 +449,23 @@ _kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
   # SWAS-720 errata 2 (R2, R3): installer, check, the KIT_CHANGED clear, the gating if: of the listing step, then the verify line — in that order.
   printf '%s\n' "$_kw_s" | awk -v a="$_KST_GH_INST" -v b="$_KST_GH_CHK" -v d="$_KST_GH_CLEAR" -v g="$_KST_GH_IF" -v c="$_KST_GH_LINE" '$0 == a { s = 1 } $0 == b && s == 1 { s = 2 } $0 == d && s == 2 { s = 3 } $0 == g && s == 3 { s = 4 } $0 == c && s == 4 { s = 5 } END { exit s == 5 ? 0 : 1 }' || { echo "K5: $1 lacks the pinned shellcheck install ('$_KST_GH_INST', then '$_KST_GH_CHK') before the KIT_CHANGED clear, the listing step and the verify line"; _kw_rc=1; }
   printf '%s\n' "$_kw_s" | grep -qxF -e "$_KST_GH_CLEAR" || { echo "K5: $1 lacks the pinned KIT_CHANGED clear: $_KST_GH_CLEAR (nothing an earlier step wrote may survive to the verify step)"; _kw_rc=1; }
+  # SWAS-1008 (E42): inside the kit:owned changed-listing block the clear step sits DIRECTLY before the listing step and the listing step DIRECTLY before
+  # the verify step, each once (a step number is the count of lines opening with a dash, `- x` or a dash alone, up to it; comment lines are dropped first).
+  _kw_b=$(_drift_block changed-listing "$1" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^[[:space:]]*//') || _kw_b=""
+  printf '%s\n' "$_kw_b" | awk -v c="$_KST_GH_CLEAR" -v g="$_KST_GH_IF" '
+    /^-([[:space:]]|$)/ { n++ }
+    $0 == c { nc++; pc = n }
+    $0 == g { ng++; pg = n }
+    END { exit (nc == 1 && ng == 1 && pg == pc + 1) ? 0 : 1 }' || { echo "K5: $1's kit:owned changed-listing block must run the KIT_CHANGED clear step directly before the listing step, each once (step order lock)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_b" | awk -v g="$_KST_GH_IF" -v v="$_KST_GH_LINE" '
+    /^-([[:space:]]|$)/ { n++ }
+    $0 == g { ng++; pg = n }
+    $0 == v { nv++; pv = n }
+    END { exit (ng == 1 && nv == 1 && pv == pg + 1) ? 0 : 1 }' || { echo "K5: $1's kit:owned changed-listing block must run the listing step directly before the verify step, each once (step order lock)"; _kw_rc=1; }
   printf '%s\n' "$_kw_s" | awk -v a="$_KST_GH_INST" -v b="$_KST_GH_CHK" '
     function flush() { if (inst && soft) bad = 1; inst = 0; soft = 0 }
-    /^- / { flush() }
-    { l = $0; sub(/^- /, "", l) }
+    /^-([[:space:]]|$)/ { flush() }
+    { l = $0; sub(/^-[[:space:]]+/, "", l) }
     l == a || l == b { inst = 1 }
     l ~ /^continue-on-error:/ || l ~ /^if:/ { soft = 1 }
     END { flush(); exit bad ? 1 : 0 }' || { echo "K5: $1's shellcheck installer step is softened (a continue-on-error or an if: inside it): the lint could quietly run on the image's shellcheck 0.9.0"; _kw_rc=1; }
@@ -946,6 +959,26 @@ KSTGLOLDEOF
   _kst_mut installer-if            '/install-shellcheck.sh "/i\
         if: always()' 'is softened'
   _kst_mut no-kit-changed-clear   '/echo "KIT_CHANGED=" >>/d' 'lacks the pinned KIT_CHANGED clear'
+  # SWAS-1008 (E42): the step-order lock inside the kit:owned changed-listing block: clear DIRECTLY before the listing, listing DIRECTLY before
+  # verify, each once. Each mutant carries its own refusal text, and each breaks only its own adjacency.
+  _kst_mut clear-after-listing '/<<< kit:owned changed-listing/i\
+      - name: Clear the changed-path listing\
+        run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"
+/^      - name: Clear the changed-path listing$/{
+N
+d
+}' 'run the KIT_CHANGED clear step directly before the listing step'
+  _kst_mut step-between-clear-and-listing '/^      - name: Changed-path listing$/i\
+      - name: A step between the clear and the listing\
+        run: echo between' 'run the KIT_CHANGED clear step directly before the listing step'
+  _kst_mut step-between-listing-and-verify '/^      - name: Conformance aggregate$/i\
+      - name: A step between the listing and the verify\
+        run: echo between' 'run the listing step directly before the verify step'
+  # a YAML step whose dash stands alone (the dash ends its line) is a step too (security S1): the counter reads `-` followed by a blank or the end of the line
+  _kst_mut bare-dash-step-between-listing-and-verify '/^      - name: Conformance aggregate$/i\
+      -\
+        name: A bare-dash step between the listing and the verify\
+        run: echo between' 'directly before the verify step'
   _kst_mut no-schedule      '/^  schedule:/d;/cron:/d'
   _kst_mut daily-cron       's/\* \* 1/* * */'
   _kst_mut no-pr-gate       '/^        if: /d'

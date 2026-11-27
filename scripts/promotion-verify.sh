@@ -51,6 +51,7 @@
 #
 # Exit: 0 = ok . 1 = MISMATCH (loud: "SHIPPED != APPROVED") . 2 = usage/args . 5 = the checkout lease refused (`record`, `land` and `actuate`,
 # only in a checkout that opted in with `kit.checkoutLease`: they need `--lease-token <sha>`; the check runs before the verb's own argument checks).
+# 6 = `land --update-behind` asked the forge to update a behind head: update REQUESTED (202), NOT merged (nothing recorded; wait for CI on the new head, land again).
 #
 # HONEST CEILING (do not overclaim):
 #   * `shipped == approved` is the GATEABLE guarantee — the record's existence, its SHA-binding,
@@ -704,6 +705,9 @@ usage() {
   echo "        land also writes a LAND record beside the GO (one transaction) and refuses a head that origin's default branch is not an" >&2
   echo "        ancestor of (serial land; it assumes the PR targets that branch). Exit 3 = the merge HAPPENED but origin's new tip carries a" >&2
   echo "        tree that is not the landed tree (SHIPPED != APPROVED): never read 3 as 'refused, nothing merged'." >&2
+  echo "        --update-behind (land only, never passed to record): on a head that origin's default branch is not an ancestor of, ask the forge to" >&2
+  echo "        update the PR branch (pinned to the head land was given: the approved head where a forge approval is read; under a solo relationship, the --approved-sha given), then exit 6 = update REQUESTED (202), NOT merged and nothing recorded: wait for CI on the new head and land again." >&2
+  echo "        A merge head must be a plain update from main (two parents, the second on origin's default branch, merge-tree's tree) or land refuses it (rc 1)." >&2
   echo "        Verb-scoped: land refuses a recordless merge on its OWN path; the universal net for a" >&2
   echo "        recordless merge is the recordless-merge backstop (promotion-verify.sh trace --recent: the kit's CI runs it; on GitHub an adopter's trunk-trace job in adopter-trunk-trace.yml runs it on each push to the default branch, observe by default; on another host, run it on your trunk yourself)." >&2
   echo "  BOARD TAIL (land AND actuate): after the merge both verbs release the row's claim and, on a JIRA" >&2
@@ -3861,6 +3865,57 @@ pv_land_class_refuse() {
   echo "              \`actuate\` for this class (land never had their label bar; the CP/direct path" >&2
   echo "              does not)." >&2
 }
+# pv_land_update_behind <pr number> <full head sha> — SWAS-1031 (design 4.4): ask the forge to update the PR branch, pinned to the head
+# the approval is on. It records nothing and merges nothing; rc 6 = "update requested (202), not merged", rc 1 = the forge refused the update.
+pv_land_update_behind() {
+  if ! gh api -X PUT "repos/{owner}/{repo}/pulls/$1/update-branch" -f expected_head_sha="$2" >/dev/null 2>&1; then   # MUT-1031-EXPECT
+    echo "LAND REFUSED: --update-behind: the forge did not update PR $1 (it refuses when the branch moved since $(printf '%s' "$2" | cut -c1-12), or has a conflict)." >&2
+    echo "              Update the branch by hand, then record and land again. Nothing was recorded or merged." >&2
+    return 1
+  fi
+  echo "land: the forge was asked to update PR $1 (pinned to $(printf '%s' "$2" | cut -c1-12)): UPDATE REQUESTED (202), NOT MERGED (rc 6). Nothing was recorded." >&2
+  echo "      Wait for CI on the new head, then land again; a re-approval is owed only if the update changed the PR's diff." >&2
+  return 6
+}
+# pv_land_belt <head sha> <origin's default-branch tip> — SWAS-1031 (design 3.3): the belt. A head that is a MERGE must be a plain update
+# from main, judged on B1-B3 only; a head that is not a merge is not judged. It runs no classify and no per-path test (those are the held
+# lane's), so a code move on main lands on its full CI run. It writes nothing: it runs after step 0f and before the record.
+pv_land_belt() {
+  _pb_line="$(git -C "$ROOT" rev-list --parents -n 1 "$1" 2>/dev/null || true)"
+  _pb_n="$(printf '%s\n' "$_pb_line" | awk '{print NF - 1}')"
+  if [ "$_pb_n" -le 1 ] && [ -n "$_pb_line" ]; then return 0; fi
+  _pb_why=""
+  if [ -z "$_pb_line" ]; then _pb_why="the head's parents could not be read"; fi
+  if [ -z "$_pb_why" ] && [ "$_pb_n" -ne 2 ]; then _pb_why="B1: it has $_pb_n parents, not two"; fi   # MUT-1031-BELT-B1
+  _pb_p1="$(printf '%s\n' "$_pb_line" | awk '{print $2}')"
+  _pb_p2="$(printf '%s\n' "$_pb_line" | awk '{print $3}')"
+  if [ -z "$_pb_why" ] && ! git -C "$ROOT" merge-base --is-ancestor "$_pb_p2" "$2" >/dev/null 2>&1; then   # MUT-1031-BELT-B2
+    _pb_why="B2: its second parent $(printf '%s' "$_pb_p2" | cut -c1-12) is not an ancestor of origin's tip"
+  fi
+  _pb_mt=""
+  if [ -z "$_pb_why" ]; then
+    # the exit code is read, never masked: 0 = a clean tree on the first line, 1 = conflicts, anything else (or no output) = merge-tree could not run
+    _pb_mrc=0
+    _pb_mo="$(git -C "$ROOT" merge-tree --write-tree --allow-unrelated-histories "$_pb_p2" "$_pb_p1" 2>/dev/null)" || _pb_mrc=$?
+    _pb_mt="$(printf '%s\n' "$_pb_mo" | head -n 1)"
+    if [ "$_pb_mrc" -eq 1 ]; then
+      _pb_why="B3: the update conflicts (merge-tree exit 1): rebase onto origin's default branch"
+    elif [ "$_pb_mrc" -ne 0 ] || [ -z "$_pb_mt" ]; then
+      _pb_why="B3: \`git merge-tree --write-tree\` could not run (needs git 2.38 or later): rebase onto origin's default branch"
+    fi
+  fi
+  _pb_ht="$(git -C "$ROOT" rev-parse -q --verify "$1^{tree}" 2>/dev/null || true)"
+  if [ -z "$_pb_why" ] && { [ -z "$_pb_mt" ] || [ "$_pb_mt" != "$_pb_ht" ]; }; then   # MUT-1031-BELT-B3
+    _pb_why="B3: its tree is not merge-tree's result for its two parents (a hand-resolved or evil merge)"
+  fi
+  # MUT-1031-BELTB4: a per-path "main's bytes only" test (the held lane's B4) would be added HERE; the belt has none.
+  # MUT-1031-BELTLANE: a classify / B5 / B6 call (the held lane's predicate) would be added HERE; the belt has none.
+  if [ -z "$_pb_why" ]; then return 0; fi
+  echo "LAND REFUSED: the head is a merge that is not a plain update from main ($_pb_why). Nothing was recorded or merged." >&2
+  echo "              A re-approval does not release this: the head itself is not a plain update. Update the branch afresh (\`land ... --update-behind\`)" >&2
+  echo "              or rebase it onto origin's default branch, resolving conflicts in ordinary commits, then wait for CI and an approval on the new head." >&2
+  return 1
+}
 
 # do_land — ONE transactional actuation verb for the DIRECT / control-plane path (SESSION-SURFACE
 # slice 3d F3, design 2026-09-10 §3 F3, Option A; owner GO 2026-09-10).
@@ -3908,6 +3963,8 @@ do_land() {
   # SWAS-727: land_gate and land_tok_given are PEEKED, never consumed (the pass-through arm still moves them on to record), so the
   # S2-1 argv reading below is unchanged. PV_REC_* are reset here so nothing from an earlier call in this process reaches record.
   land_gate=""; land_rung=""; land_tok_given=0; _land_noncp=0; _land_rkind=""
+  # SWAS-1031: --update-behind is CONSUMED (like --ref), never re-appended, so it cannot reach record.
+  land_upd=0
   PV_REC_GOACT=""; PV_REC_GOWORDS=""; PV_REC_GOSHA=""
   # Strip land's OWN two flags (--ref, --merge-cmd) and PEEK --approved-sha / --class / --approved-by /
   # --go-by / --scope (shared with record: record binds the note to the sha, the merge pins
@@ -3964,6 +4021,8 @@ do_land() {
       --merge-cmd)
         [ "$_argc" -ge 2 ] || { echo "land: --merge-cmd needs a value" >&2; usage; return 2; }
         merge_cmd="$2"; shift 2; _argc=$((_argc-2)) ;;
+      --update-behind)
+        land_upd=1; shift; _argc=$((_argc-1)) ;;
       --approved-sha)
         [ "$_argc" -ge 2 ] || { echo "land: --approved-sha needs a value" >&2; usage; return 2; }
         asha="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
@@ -4184,15 +4243,23 @@ do_land() {
   _land_brc=0
   if [ -n "$_land_base" ]; then git -C "$ROOT" merge-base --is-ancestor "$_land_base" "${_land_full:-$asha}" >/dev/null 2>&1 || _land_brc=$?; fi
   if [ -z "$_land_base" ] || [ "$_land_brc" -ne 0 ]; then
+    #     SWAS-1031 (design 4.4): with --update-behind, a readable tip and a full head sha to pin to, the forge updates the branch instead of
+    #     the refusal below: rc 6 ("update requested (202), not merged"), no record, no merge. The helper prints its own lines.
+    if [ "$land_upd" = 1 ] && [ -n "$_land_base" ] && [ -n "$_land_full" ]; then
+      _lub=0; pv_land_update_behind "$_land_sn" "$_land_full" || _lub=$?
+      return "$_lub"
+    fi
     echo "LAND REFUSED: serial land needs an up-to-date head; the train computes prefixes." >&2
     if [ -z "$_land_base" ]; then
       echo "              Origin's ${_land_bref#refs/heads/} tip could not be read, so the head cannot be shown to be up to date. Nothing was recorded or merged." >&2
     else
-      echo "              Origin's ${_land_bref#refs/heads/} tip $(printf '%s' "$_land_base" | cut -c1-12) is not an ancestor of the approved head $(printf '%s' "${_land_full:-$asha}" | cut -c1-12) (or is not in this clone): run \`git fetch origin ${_land_bref#refs/heads/}\` first, then update the branch, re-review, and record and land again. Nothing was recorded or merged." >&2
+      echo "              Origin's ${_land_bref#refs/heads/} tip $(printf '%s' "$_land_base" | cut -c1-12) is not an ancestor of the approved head $(printf '%s' "${_land_full:-$asha}" | cut -c1-12) (or is not in this clone): run \`git fetch origin ${_land_bref#refs/heads/}\` first, then \`land ... --update-behind\` asks the forge to update the branch; wait for CI on the new head, then land again; a re-approval is owed only if the update changed the PR's diff. Nothing was recorded or merged." >&2
     fi
     echo "              (land assumes the PR targets origin's default branch, ${_land_bref#refs/heads/}; it does not read the PR's own base.)" >&2
     return 1
   fi
+  #     SWAS-1031 (design 3.3): the belt, on a merge head only; after the serial precondition, before any record, so a refusal writes nothing.
+  pv_land_belt "${_land_full:-$asha}" "$_land_base" || return 1
 
   # 1. RECORD FIRST — the whole point of the verb. do_record is a self-unwinding transaction (fetch,
   #    refuse on divergence, write, publish, unwind its own unpublished note on push reject); land

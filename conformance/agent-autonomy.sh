@@ -888,6 +888,7 @@ aa_site_of() {   # <pristine reason> -> its emit site on stdout, or '-'
 # labels, and seven are cut before a quote, a backtick or a backslash, because a $(cat <<'EOF' ...) body with an unbalanced quote
 # does not parse under bash 3.2 (the macOS /bin/sh). A prefix can match a longer label, so the site check and the generator leg
 # above are what keep it honest, not the label text.
+# SWAS-1007: the last two entries, [SWAS1007-R-N50 ] and [SWAS1007-R-N59 ], moved ABSENT to PRESENT at E6; the PR's date skip (D-241122-1 item 4) lets the control-plane write arm refuse them, the same refusal as R-N51; no verdict moved; the precedent for a gain is the GOV-DIR note above. (The comment sits here, not inside the list: a # line in the heredoc would read as an entry.)
 AA_EXPECTED_KS_DELTA=$(cat <<'AA_EXPECTED_KS_EOF'
 [SWAS187 Q3 paren close]
 [SWAS187 Q4 backtick close]
@@ -1125,6 +1126,8 @@ AA_EXPECTED_KS_DELTA=$(cat <<'AA_EXPECTED_KS_EOF'
 [SWAS184 I13: a pipe-fed interpreter whose output is redirected]
 [SWAS184 I14: a pipe-fed interpreter followed by a sequence]
 [SWAS184 I15: a top-level pipe into an interpreter after a substitution]
+[SWAS1007-R-N50 ]
+[SWAS1007-R-N59 ]
 AA_EXPECTED_KS_EOF
 )
 aa_ks_expected() {
@@ -1454,6 +1457,63 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [SWAS980-O1 ]
 [SWAS980-O2 ]
 [SWAS980-O6 ]
+# SWAS-996 (the Bash judge refuses a shell write into a secret file; design docs/architecture/2026-11-21-guard-secret-write-shell-996-design.md): the plain deny cells below are ALLOW on main by the design's reading and end DENY; each is named
+# exactly, the trailing space stops D1 from matching D10. They are deny cells, so only ALLOW to DENY is excused. The fixture cells (D12, D25 to D29, D32, D34 to D45) carry a top-level cwd or are unit cells, so the delta
+# recorder skips them and they owe no entry; no SWAS996-PIN cell is on one. A plain cell measured DENY on the base loses its entry when the red-first run says so (plan task 2). The red-first run measured D15, D23, D24 and D30 as DENY on main, so they owe no entry.
+[SWAS996-D1 ]
+[SWAS996-D2 ]
+[SWAS996-D3 ]
+[SWAS996-D4 ]
+[SWAS996-D5 ]
+[SWAS996-D6 ]
+[SWAS996-D7 ]
+[SWAS996-D8 ]
+[SWAS996-D9 ]
+[SWAS996-D10 ]
+[SWAS996-D11 ]
+[SWAS996-D13 ]
+[SWAS996-D14 ]
+[SWAS996-D16 ]
+[SWAS996-D17 ]
+[SWAS996-D18 ]
+[SWAS996-D19 ]
+[SWAS996-D20 ]
+[SWAS996-D21 ]
+[SWAS996-D22 ]
+[SWAS996-D31 ]
+[SWAS996-D33 ]
+# SWAS-996 fix round 2: the plain deny cells F1a to F1d, F2a, F2b, F4a and F6a (ALLOW on main by the seats' reading; CI guard-delta is the check), each named exactly with its trailing space.
+[SWAS996-F1a ]
+[SWAS996-F1b ]
+[SWAS996-F1c ]
+[SWAS996-F1d ]
+[SWAS996-F2a ]
+[SWAS996-F2b ]
+[SWAS996-F4a ]
+[SWAS996-F6a ]
+# SWAS-996 fix round 3: the plain deny cells R1a, R4a and R4b (ALLOW on main by the review's reading; CI guard-delta is the check), each named exactly with its trailing space.
+[SWAS996-R1a ]
+[SWAS996-R4a ]
+[SWAS996-R4b ]
+# SWAS-1007 (the guard admits the kit's own read-only verbs; design docs/architecture/2026-11-22-guard-kit-verbs-1007-design.md, errata rounds 1 to 4; the DENY-REMOVALS ruling is DECISIONS.md D-241122-1 item 1): NO entry. Every admission cell
+# (K-A1 to K-A3 and K-A4) is a cwd cell, which the delta recorder skips. The plain root admission cell of the first build was removed: the exported kit tree has no `.github/workflows/<name>.yml` (.gitattributes export-ignores them all), so a
+# plain cell on the real tree cannot measure the row on every tree the battery runs on; K-A4 now runs on the gx root fixture, which plants its own workflow.
+# SWAS-1007 PR 2 (family R; the DENY-REMOVALS ruling is DECISIONS.md D-241122-1 items 2 to 4): the thirteen plain admission cells, each named exactly with its trailing space (R-A1 to R-A6 the five rg flags and a cluster, R-A7 to R-A11 the
+# `-e` relief, R-A12 and R-A13 R28's leading `$(date ...)`). They are `allow` cells, so only DENY to ALLOW is excused. No pin (`PIN R-P`) and no twin (`R-N`) is on an entry. The base verdicts are in the errata, round 5.
+[SWAS1007-R-A1 ]
+[SWAS1007-R-A2 ]
+[SWAS1007-R-A3 ]
+[SWAS1007-R-A4 ]
+[SWAS1007-R-A5 ]
+[SWAS1007-R-A6 ]
+[SWAS1007-R-A7 ]
+[SWAS1007-R-A8 ]
+[SWAS1007-R-A9 ]
+[SWAS1007-R-A10 ]
+[SWAS1007-R-A11 ]
+[SWAS1007-R-A12 ]
+[SWAS1007-R-A13 ]
+[SWAS1007-R-A14 ]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -5740,12 +5800,14 @@ if [ "${GPAB_G:-}" != "" ]; then
       *) echo "PASS mutant : $1 (present -> absent, killed as required)" ;;
     esac
   }
+  # SWAS-996: the write arm (the `# 996-CALL` site) also denies a destination-side or unreadable-operand form of these commands, so each SC mutant below that names it turns the write arm's call off in the same mutant copy: it proves the SWAS-332 leg alone.
+  _S996_CALLOFF='/# 996-CALL$/ s@_scw_rc=0; _scw_out=\$(_guard_secret_write_denied "\$cmd" "\${2:-}") || _scw_rc=\$?@_scw_rc=1; _scw_out=ok@'
   gpab_mutant "SC-M1: the call neutered -> cp .env notes.txt flips to ALLOW" \
     's#_guard_secret_copy_denied "\$cmd" "\${2:-}"#{ printf ok; false; }#' "$(scpj 'cp .env notes.txt')" allow
   gpab_mutant "SC-M2: every operand judged (the destination exclusion off) -> cp .env.example .env flips to DENY" \
     's# || \[ "\$_scp_i" -lt "\$_scp_nops" \]# || :#' "$(scpc "$GPAB_ROOT/scp-ok" 'cp .env.example .env')" deny
   gpab_mutant "SC-M3: rsync gets the control-plane arm's bound-value-is-the-destination binding -> rsync -t .env /tmp/x flips to ALLOW" \
-    's@cp|install|mv|ln|gcp|ginstall|gmv|gln) _scp_grp=tdir@cp|install|mv|ln|gcp|ginstall|gmv|gln|rsync|ditto) _scp_grp=tdir@; s@\[ "\$_scp_grp" = tdir \] && _scp_all=1@[ "$_scp_grp" = tdir ] \&\& { [ $# -gt 0 ] \&\& shift; }@' \
+    's@cp|install|mv|ln|gcp|ginstall|gmv|gln) _scp_grp=tdir@cp|install|mv|ln|gcp|ginstall|gmv|gln|rsync|ditto) _scp_grp=tdir@; s@\[ "\$_scp_grp" = tdir \] && _scp_all=1@[ "$_scp_grp" = tdir ] \&\& { [ $# -gt 0 ] \&\& shift; }@; '"$_S996_CALLOFF" \
     "$(scpj 'rsync -t .env /tmp/x')" allow
   gpab_mutant "SC-M4: the basename cut dropped -> /bin/cp .env notes.txt flips to ALLOW" \
     's@_scp_slash=1; _scp_t=\${_scp_t##\*/}@_scp_slash=1; :@' "$(scpj '/bin/cp .env notes.txt')" allow
@@ -5754,19 +5816,19 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "SC-M6: the dd if= clause dropped -> dd if=.env flips to ALLOW" \
     's@if=\*) _scp_ops@ifx=*) _scp_ops@' "$(scpj 'dd if=.env')" allow
   gpab_mutant "SC-M8: the -t and --t binding dropped -> cp -t /tmp .env flips to ALLOW" \
-    's@\[ "\$_scp_grp" = tdir \] && _scp_all=1@:@g' "$(scpj 'cp -t /tmp .env')" allow
+    's@\[ "\$_scp_grp" = tdir \] && _scp_all=1@:@g; '"$_S996_CALLOFF" "$(scpj 'cp -t /tmp .env')" allow
   gpab_mutant "SC-M9: the cluster binding matches -t exactly only -> cp -vt /tmp .env flips to ALLOW" \
-    's@^          \*t\*) @          t) @' "$(scpj 'cp -vt /tmp .env')" allow
+    's@^          \*t\*) @          t) @; '"$_S996_CALLOFF" "$(scpj 'cp -vt /tmp .env')" allow
   gpab_mutant "SC-M10: the verb looked up at the lead only -> sudo cp .env x flips to ALLOW" \
     's@if _scp_verb_of "\$_scp_leg"; then@if [ "$_scp_lead" = 1 ] \&\& _scp_verb_of "$_scp_leg"; then@' "$(scpj 'sudo cp .env x')" allow
   gpab_mutant "SC-M11: the unreadable-segment leg off -> cp \$OPTS .env flips to ALLOW" \
-    '/^_scp_unparse() {/,/^}/ s@return 0 ;;@return 1 ;;@' "$(scpj 'cp $OPTS .env')" allow
+    '/^_scp_unparse() {/,/^}/ s@return 0 ;;@return 1 ;;@; '"$_S996_CALLOFF" "$(scpj 'cp $OPTS .env')" allow
   gpab_mutant "SC-M12: the whole-command scope off (the segment only) -> F=.env; cp \$F x flips to ALLOW" \
     's@_scp_scan_all "\$_scp_cmd"@_scp_scan_all "$_seg"@' "$(scpj 'F=.env; cp $F x')" allow
   gpab_mutant "SC-M13: the secrets/ directory form dropped -> cp -r secrets /tmp/x flips to ALLOW" \
     's@_is_secret_hit "\$1/" && return 0@:@' "$(scpj 'cp -r secrets /tmp/x')" allow
   gpab_mutant "SC-M14: one operand treated as the destination -> ln -s /x/.env flips to ALLOW" \
-    's@ || \[ "\$_scp_nops" -le 1 \]@@' "$(scpj 'ln -s /x/.env')" allow
+    's@ || \[ "\$_scp_nops" -le 1 \]@@; '"$_S996_CALLOFF" "$(scpj 'ln -s /x/.env')" allow
   gpab_mutant "SC-M15: the de-quote of operands dropped -> cp \".env\" x flips to ALLOW" \
     's@_scp_nm=\$(_cp8b_dequote "\$_scp_nm") || exit 2@:@' "$(scpj 'cp \".env\" x')" allow
   gpab_mutant "SC-M16: the fast exit and the secret-text gate on raw bytes only -> c\\p .e''nv x flips to ALLOW" \
@@ -5793,7 +5855,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "SC-M26: the de-quote before the dd key test dropped -> dd \"if=.env\" flips to ALLOW" \
     's@_scp_ad=\$(printf .%s. "\$_scp_a" | sed -e.*|| exit 2 ;;@: ;;@' "$(scpj 'dd \"if=.env\"')" allow
   gpab_mutant "SC-M27: the de-quote before the flag test dropped -> cp \"-t\" /tmp .env flips to ALLOW" \
-    's@_scp_ad=\$(printf .%s. "\$_scp_a" | sed -e.*|| exit 2 ;;@: ;;@' "$(scpj 'cp \"-t\" /tmp .env')" allow
+    's@_scp_ad=\$(printf .%s. "\$_scp_a" | sed -e.*|| exit 2 ;;@: ;;@; '"$_S996_CALLOFF" "$(scpj 'cp \"-t\" /tmp .env')" allow
   gpab_mutant "SC-M29: the whole-command scan without resolution -> cp notes.txt \"\$D\" flips to ALLOW" \
     's@if _scp_src_hit "\$_scp_a"; then@if _scp_name_hit "$_scp_a"; then@' "$(scpc "$GPAB_ROOT/scp-sl" 'cp notes.txt \"$D\"')" allow
   gpab_mutant "SC-M31: link dropped from the copy set -> link .env x flips to ALLOW" \
@@ -9339,6 +9401,7 @@ scripts/kit-guard|cmd|cat conformance/verify.sh
 scripts/kit-guard|mcp|mcp__probe__read
 conformance/promotion-readiness.sh|--class|--changed $_fl_d/listing.txt
 conformance/agent-boundary.sh|--changed|$_fl_d/listing.txt --ratified 0
+conformance/ci-gates.sh|.github/workflows/ci.yml|
 conformance/branch-protection.sh|--declared-only|profiles/python/BRANCH-PROTECTION.md
 scripts/tracker-conf.sh|get|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
 scripts/tracker-conf.sh|get-all|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
@@ -17442,6 +17505,344 @@ if [ "${GPAB_G:-}" != "" ]; then
   }
   # END SWAS278A
 
+  # BEGIN SWAS1007K
+  # === SWAS-1007 PR 1 (family K): the guard admits the kit's own read-only verbs in a dev clone and at the root, and its refusals name the retry =====
+  # Design docs/architecture/2026-11-22-guard-kit-verbs-1007-design.md section 8.1, with its errata (rounds 1 and 2); plan PR 1 task 1 (cells first, measured on the base core).
+  # K-A = admissions (all four are gx cells with a cwd, so the delta replay skips them and they owe no entry), PIN K-P = ALLOW pins,
+  # K-N = DENY twins (K-N1 to K-N24 the design's twins, K-N25 to K-N29 the `git -C` write cells of erratum E2-N3, each asserting its OWN arm's escape-card pointer, K-N30 the `cd -` root pin of E2-N2),
+  # K-T = text cells (the new advice sentence and no "make this change in a dev clone"). K-T9 is lane B's adopter-export refusal, pinned with the verdict and text it should have.
+  # k7_why prints the guard's reason on the core under test as an INFO line (a measurement aid for the base run; it spawns no counted cell).
+  k7_C="$GPAB_TMP/k7clone"; gx_mkclone "$k7_C"
+  mkdir -p "$k7_C/.github/workflows" "$k7_C/.claude/hooks" "$k7_C/profiles/x" "$k7_C/other"
+  for k7_f in .github/workflows/ci.yml .github/workflows/ci2.yaml .github/workflows/base2.yml conformance/review-lane.sh conformance/review-lane-x.sh other/review-lane.sh .claude/hooks/guard-core.sh profiles/x/ci.yml scripts/adopter-export.sh conformance/inception-done.sh; do
+    printf 'exit 0\n' > "$k7_C/$k7_f"
+  done
+  mkdir -p "$gx_rt/.github/workflows"; printf 'name: x\n' > "$gx_rt/.github/workflows/ci.yml"   # the gx root's own workflow, for the root kit-query row's gx cell and its mutant
+  ln "$k7_C/.github/workflows/base2.yml" "$k7_C/.github/workflows/two.yml"      # a workflow file with two links
+  ln -s "$gx_rt/l.txt" "$k7_C/.github/workflows/lnk.yml"                        # a workflow name that is a symlink to a root file
+  printf 'exit 0\n' > "$gx_rt/scripts/inception-scan.sh"
+  k7_mk() { gx_mkclone "$1"; printf 'exit 0\n' > "$1/conformance/review-lane.sh"; }   # <dir> - a gx clone that also holds the G7 script
+  k7_W="$GPAB_TMP/k7wt"; mkdir -p "$k7_W/conformance"; printf 'gitdir: /nonexistent/worktrees/k7\n' > "$k7_W/.git"; printf 'exit 0\n' > "$k7_W/conformance/review-lane.sh"
+  k7_L="$GPAB_TMP/k7gl"; mkdir -p "$k7_L/conformance"; ln -s "$k7_C/.git" "$k7_L/.git"; printf 'exit 0\n' > "$k7_L/conformance/review-lane.sh"
+  k7_M="$GPAB_TMP/k7cm"; k7_mk "$k7_M"; printf '%s\n' "$gx_rt/.git" > "$k7_M/.git/commondir"
+  mkdir -p "$gx_home/hclone/conformance"; printf 'exit 0\n' > "$gx_home/hclone/conformance/review-lane.sh"
+  k7_H="$GPAB_TMP/k7hk"; k7_mk "$k7_H"; mkdir -p "$k7_H/.git/hooks"; printf '#!/bin/sh\nexit 0\n' > "$k7_H/.git/hooks/pre-push"; chmod +x "$k7_H/.git/hooks/pre-push"
+  k7_F="$GPAB_TMP/k7fs"; k7_mk "$k7_F"; gx_cfg "$k7_F" core.fsmonitor x
+  k7_O="$GPAB_TMP/k7or"; k7_mk "$k7_O"; gx_cfg "$k7_O" remote.origin.url https://other.example/x.git
+  k7_a() { gx_a "SWAS1007-$1" "$gx_R" "$2"; }   # <label> <command> - run from the root
+  k7_d() { gx_d "SWAS1007-$1" "$gx_R" "$2"; }
+  k7_why() {   # <label> <cwd> <command>
+    [ "$AA_MODE" = run ] || return 0
+    k7_w=$(printf '%s' "$(gx_in "$2" "$3")" | sh "$GX_G" 2>/dev/null) || :
+    echo "INFO: SWAS1007 $1 reason on the core under test: $(printf '%s' "$k7_w" | cut -c1-700)"
+  }
+  k7_t() {   # <label> <cwd> <command> <has> [<lacks> [<has2>]] - denies, the reason holds <has> and <has2> and lacks <lacks>
+    aa_cell_skip "SWAS1007-$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    k7_o=$(printf '%s' "$(gx_in "$2" "$3")" | sh "$GX_G" 2>/dev/null) || :
+    k7_ok=1
+    case "$k7_o" in
+      *'"permissionDecision":"deny"'*) : ;;
+      *) k7_ok=0 ;;
+    esac
+    case "$k7_o" in
+      *"$4"*) : ;;
+      *) k7_ok=0 ;;
+    esac
+    if [ -n "${5:-}" ]; then
+      case "$k7_o" in
+        *"$5"*) k7_ok=0 ;;
+      esac
+    fi
+    if [ -n "${6:-}" ]; then
+      case "$k7_o" in
+        *"$6"*) : ;;
+        *) k7_ok=0 ;;
+      esac
+    fi
+    if [ "$k7_ok" = 1 ]; then echo "PASS text : SWAS1007-$1"; else echo "FAIL (deny + reason has '$4', lacks '${5:-}', has '${6:-}'): SWAS1007-$1"; fail=1; fi
+  }
+  # --- admissions ---
+  k7_a "K-A1 [root] G2: cd <clone> && ci-gates.sh .github/workflows/ci.yml" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/ci.yml"
+  k7_a "K-A2 [root] G2: the .yaml spelling" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/ci2.yaml"
+  k7_a "K-A3 [root] G7: cd <clone> && review-lane.sh --pre-push" "cd $k7_C && sh conformance/review-lane.sh --pre-push"
+  k7_a "K-A4 [root] kit-query row: ci-gates.sh <workflow> on a root that carries the workflow (the gx root plants its own; the exported kit tree has none, so a plain cell cannot run there)" "sh conformance/ci-gates.sh .github/workflows/ci.yml"
+  # --- ALLOW pins ---
+  k7_a "PIN K-P1 [root] G3 in a clone with a scratch listing" "cd $k7_C && sh conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt"
+  assert_allow "SWAS1007-PIN K-P2 root promotion-readiness --class --changed <scratch>" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/promotion-readiness.sh --class --changed /private/tmp/swas1007-listing.txt"}}'
+  assert_allow "SWAS1007-PIN K-P3 root review-lane --pre-push" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/review-lane.sh --pre-push"}}'
+  assert_allow "SWAS1007-PIN K-P4 root inception-scan ." '{"tool_name":"Bash","tool_input":{"command":"sh scripts/inception-scan.sh ."}}'
+  assert_allow "SWAS1007-PIN K-P5 root inception-scan . > a new scratch file" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/inception-scan.sh . > /private/tmp/swas1007-new.md"}}'
+  # --- DENY twins K-N1 to K-N24 ---
+  k7_d "K-N1 [root] G7 from a git WORKTREE (a .git file)" "cd $k7_W && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N2 [root] G7 from a clone whose .git is a SYMLINK to a directory" "cd $k7_L && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N3 [root] G7 from a clone with a .git/commondir" "cd $k7_M && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N4 [root] G7 from a clone outside temp" "cd $gx_homep/hclone && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N5 [root] G7 --pre-push --pr 1 (closed argv)" "cd $k7_C && sh conformance/review-lane.sh --pre-push --pr 1"
+  k7_d "K-N6 [root] G7 --stamp" "cd $k7_C && sh conformance/review-lane.sh --stamp"
+  k7_d "K-N7 [root] G7 --pre-push > .claude/x (a control-plane redirect)" "cd $k7_C && sh conformance/review-lane.sh --pre-push > .claude/x"
+  k7_d "K-N8 [root] G2 ../x.yml" "cd $k7_C && sh conformance/ci-gates.sh ../x.yml"
+  k7_d "K-N9 [root] G2 an absolute path into the root" "cd $k7_C && sh conformance/ci-gates.sh $gx_R/.github/workflows/ci.yml"
+  k7_d "K-N10 [root] G2 two operands (exact arity)" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/ci.yml --expect-seams"
+  k7_d "K-N11 [root] G2 .claude/hooks/guard-core.sh (the path form)" "cd $k7_C && sh conformance/ci-gates.sh .claude/hooks/guard-core.sh"
+  k7_d "K-N12 [root] G2 profiles/x/ci.yml (the directory test)" "cd $k7_C && sh conformance/ci-gates.sh profiles/x/ci.yml"
+  k7_d "K-N13 [root] G2 a workflow name that is a symlink to a root file" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/lnk.yml"
+  k7_d "K-N14 [root] G2 a workflow file with two links" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/two.yml"
+  # K-N15 was designed as a DENY twin and MEASURED ALLOW on the base (red-first run, 2026-11-22): `other/review-lane.sh` is no kit script (it is neither under conformance/ nor scripts/), so the guard
+  # never judged it and G7 is not consulted. It is kept as an ALLOW pin (no delta entry): the head must not start judging it either, and the dispatch names exact scripts.
+  k7_a "K-N15 [root] PIN, ALLOW on the base and the head: a script that is no kit script is not G7's (other/review-lane.sh)" "cd $k7_C && sh other/review-lane.sh --pre-push"
+  k7_d "K-N16 [root] a non-kit script name: conformance/review-lane-x.sh" "cd $k7_C && sh conformance/review-lane-x.sh --pre-push"
+  k7_d "K-N17 [root] G7 in a clone with a live pre-push hook" "cd $k7_H && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N18 [root] G7 in a clone with core.fsmonitor set" "cd $k7_F && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N19 [root] G7 in a clone whose origin differs from the root's" "cd $k7_O && sh conformance/review-lane.sh --pre-push"
+  k7_d "K-N20 [root] the absolute clone script from the root (SWAS-77 D2.1, Q1: stays refused)" "sh $k7_C/conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt"
+  k7_d "K-N21 [root] printf ...; cd <clone> && ... (the cd is not the first segment)" "printf x > $gx_S/k7.txt; cd $k7_C && sh conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt"
+  assert_deny "SWAS1007-K-N22 root kit-query: ci-gates.sh <workflow> > conformance/x" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/ci-gates.sh .github/workflows/ci.yml > conformance/x"}}'
+  assert_deny "SWAS1007-K-N23 root kit-query: ci-gates.sh ../r/.github/workflows/ci.yml" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/ci-gates.sh ../r/.github/workflows/ci.yml"}}'
+  assert_deny "SWAS1007-K-N24 root kit-query: ci-gates.sh with two workflows (exact arity)" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/ci-gates.sh .github/workflows/ci.yml .github/workflows/x.yml"}}'
+  # K-N17 to K-N19 each also name their OWN check on the head (the base denies them by the verb gate, so these three are red on the base by design)
+  hla_deny_has "$GX_G" "SWAS1007-K-N17r G7 hooks check names itself" "$(gx_in "$gx_R" "cd $k7_H && sh conformance/review-lane.sh --pre-push")" "declined this shape: hooks"
+  hla_deny_has "$GX_G" "SWAS1007-K-N18r G7 config allowlist names itself" "$(gx_in "$gx_R" "cd $k7_F && sh conformance/review-lane.sh --pre-push")" "declined this shape: config-key core.fsmonitor"
+  hla_deny_has "$GX_G" "SWAS1007-K-N19r G7 origin check names itself" "$(gx_in "$gx_R" "cd $k7_O && sh conformance/review-lane.sh --pre-push")" "declined this shape: origin"
+  # K-N25 to K-N29 (erratum E2-N3): `git -C <clone>` writes are judged by their own arm, DENY on main and on the head, each asserting its own escape-card pointer
+  hla_deny_has "$GX_G" "SWAS1007-K-N25 [root] git -C <clone> push origin :refs/claims/X (R18)" "$(gx_in "$gx_R" "git -C $k7_C push origin :refs/claims/X")" "escape card R18 claims"
+  hla_deny_has "$GX_G" "SWAS1007-K-N26 [root] git -C <clone> update-ref refs/kit/base HEAD (R22)" "$(gx_in "$gx_R" "git -C $k7_C update-ref refs/kit/base HEAD")" "escape card R22 kit-base-write"
+  hla_deny_has "$GX_G" "SWAS1007-K-N27 [root] git -C <clone> update-ref refs/local-claims/X HEAD (R37)" "$(gx_in "$gx_R" "git -C $k7_C update-ref refs/local-claims/X HEAD")" "escape card R37 local-claims"
+  hla_deny_has "$GX_G" "SWAS1007-K-N28 [root] git -C <clone> update-ref refs/leases/land HEAD (R38)" "$(gx_in "$gx_R" "git -C $k7_C update-ref refs/leases/land HEAD")" "escape card R38 checkout-lease"
+  hla_deny_has "$GX_G" "SWAS1007-K-N29 [root] git -C <clone> checkout HEAD -- conformance/verify.sh (the control-plane git-write arm)" "$(gx_in "$gx_R" "git -C $k7_C checkout HEAD -- conformance/verify.sh")" "escape card R30 cp-write"
+  k7_d "K-N30 [root] cd - && ci-gates.sh <workflow> (the root row is not reached off the confident root; E2-N2)" "cd - && sh conformance/ci-gates.sh .github/workflows/ci.yml"
+  # --- text cells (the advice; H1 to H5, H8, and lane B's adopter-export refusal) ---
+  k7_t "K-T1 [root] H1: a kit script with an argv outside the gate, in a clone" "$gx_R" "cd $k7_C && sh conformance/x.sh --y" "a kit script takes no argument" "make this change in a dev clone" "escape card R29 dev-clone-grammar"
+  k7_t "K-T2 [root] H2: the absolute clone spelling prints the cd-first retry" "$gx_R" "sh $k7_C/conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt" "run it as cd " "make this change in a dev clone" "escape card R29 dev-clone-grammar"
+  k7_t "K-T2b [root] H2 fallback (E-n4): an argv that fits nothing prints H1's text" "$gx_R" "sh $k7_C/conformance/x.sh --y" "a kit script takes no argument" "run it as cd "
+  k7_t "K-T3 [root] H3: a cd that is not the first segment" "$gx_R" "printf x > $gx_S/k7.txt; cd $k7_C && sh conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt" "must open the command" "make this change in a dev clone" "escape card R29 dev-clone-grammar"
+  k7_t "K-T4 [parent of the root] H4: a kit script by a path that is not root-relative" "$(dirname "$gx_rt")" "sh $(basename "$gx_rt")/scripts/inception-scan.sh $gx_rt" "kit scripts from the repository root" "make this change in a dev clone" "escape card R30 cp-write"
+  k7_t "K-T5 [root] H5: a non-literal redirect target on a kit script" "$gx_R" 'sh scripts/inception-scan.sh . > $TMPDIR/scan.out' "redirect to a literal path" "make this change in a dev clone" "escape card R4 redir-nonliteral"
+  k7_t "K-T6 [root] H8: git behind an unfollowed cd names git -C" "$gx_R" "cd $k7_C && git fetch origin && git checkout main" "use git -C "
+  k7_t "K-T7 [root] SWAS-309's waiver text keeps precedence inside a clone" "$gx_R" "cd $k7_C && sh conformance/x.sh --y WAIVER-REGISTER.md" "filled by a person" "a kit script takes no argument" "escape card R30 cp-write"
+  assert_reason_has "SWAS1007-K-T8 R30's sentence is unchanged for a plain control-plane write at the root" '{"tool_name":"Bash","tool_input":{"command":"cp /private/tmp/swas1007-x conformance/verify.sh"}}' "Next: make this change in a dev clone (escape card R30 cp-write)."
+  k7_t "K-T9 [root] lane B: adopter-export with a destination in a /tmp clone gets H1's text" "$gx_R" "cd $k7_C && sh scripts/adopter-export.sh $gx_S/exp-dest --profile typescript-node" "a kit script takes no argument" "make this change in a dev clone" "escape card R29 dev-clone-grammar"
+  k7_t "K-T10 [clone cwd] lane B: inception-done --quick <dir> in a clone gets H1's text, not the R30 sentence" "$k7_C" "sh conformance/inception-done.sh --quick $gx_S/fix" "a kit script takes no argument" "make this change in a dev clone" "escape card R29 dev-clone-grammar"
+  # base-run reason lines for every text cell and the git -C cells
+  k7_why K-T1 "$gx_R" "cd $k7_C && sh conformance/x.sh --y"
+  k7_why K-T2 "$gx_R" "sh $k7_C/conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt"
+  k7_why K-T2b "$gx_R" "sh $k7_C/conformance/x.sh --y"
+  k7_why K-T3 "$gx_R" "printf x > $gx_S/k7.txt; cd $k7_C && sh conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt"
+  k7_why K-T4 "$(dirname "$gx_rt")" "sh $(basename "$gx_rt")/scripts/inception-scan.sh $gx_rt"
+  k7_why K-T5 "$gx_R" 'sh scripts/inception-scan.sh . > $TMPDIR/scan.out'
+  k7_why K-T6 "$gx_R" "cd $k7_C && git fetch origin && git checkout main"
+  k7_why K-T7 "$gx_R" "cd $k7_C && sh conformance/x.sh --y WAIVER-REGISTER.md"
+  k7_why K-T9 "$gx_R" "cd $k7_C && sh scripts/adopter-export.sh $gx_S/exp-dest --profile typescript-node"
+  k7_why K-N17 "$gx_R" "cd $k7_H && sh conformance/review-lane.sh --pre-push"
+  k7_why K-N25 "$gx_R" "git -C $k7_C push origin :refs/claims/X"
+  k7_why K-N26 "$gx_R" "git -C $k7_C update-ref refs/kit/base HEAD"
+  k7_why K-N27 "$gx_R" "git -C $k7_C update-ref refs/local-claims/X HEAD"
+  k7_why K-N28 "$gx_R" "git -C $k7_C update-ref refs/leases/land HEAD"
+  k7_why K-N29 "$gx_R" "git -C $k7_C checkout HEAD -- conformance/verify.sh"
+  # --- mutants (design section 9; plan PR 1 task 5). Each runs the cell on a copy of the core with ONE edit, addressed by the marker on the line; the cell must flip. A `&` in a sed replacement is written \&. ---
+  gx_m "SWAS1007-M-K1: the G7 dispatch arm dropped -> K-A3 flips to DENY" '/# G7-DISPATCH$/d' "$gx_R" "cd $k7_C && sh conformance/review-lane.sh --pre-push" deny
+  gx_m "SWAS1007-M-K2: the G2 workflow arm dropped -> K-A1 flips to DENY" '/# G2-WF$/d' "$gx_R" "cd $k7_C && sh conformance/ci-gates.sh .github/workflows/ci.yml" deny
+  gx_m "SWAS1007-M-K3: the kit-query row dropped -> K-A4 flips to DENY" '/# KQ-CIGATES-ROW$/d' "$gx_R" "sh conformance/ci-gates.sh .github/workflows/ci.yml" deny
+  gx_m "SWAS1007-M-K4: the workflow form test dropped -> the .claude/hooks/guard-core.sh operand (K-N11) flips to ALLOW" '/# G2-WF-NAME$/ s@{@{ return 0;@' "$gx_R" "cd $k7_C && sh conformance/ci-gates.sh .claude/hooks/guard-core.sh" allow
+  gx_m "SWAS1007-M-K5: the G7 config allowlist call dropped -> the fsmonitor twin (K-N18) flips to ALLOW" '/# G7C-ALLOWLIST$/d' "$gx_R" "cd $k7_F && sh conformance/review-lane.sh --pre-push" allow
+  gx_m "SWAS1007-M-K6: the G7 hooks call dropped -> the hooked twin (K-N17) flips to ALLOW" '/# G7C-HOOKS$/d' "$gx_R" "cd $k7_H && sh conformance/review-lane.sh --pre-push" allow
+  gx_m "SWAS1007-M-K7: the G7 origin call dropped -> the foreign-origin twin (K-N19) flips to ALLOW" '/# G7C-ORIGIN$/d' "$gx_R" "cd $k7_O && sh conformance/review-lane.sh --pre-push" allow
+  gx_m "SWAS1007-M-K8: the G7 arity test dropped -> --pre-push --pr 1 (K-N5) flips to ALLOW" '/# G7-ARGV$/d' "$gx_R" "cd $k7_C && sh conformance/review-lane.sh --pre-push --pr 1" allow
+  k7_mt() {   # <label> <sed> <cwd> <command> <has> - a TEXT mutant: the reason on the pristine core holds <has>, the mutated one does not
+    aa_cell_skip "$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    k7_jm=$(gx_in "$3" "$4")
+    k7_p=$(printf '%s' "$k7_jm" | sh "$GX_G" 2>/dev/null) || :
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GX_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GX_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GX_GC"; echo "FAIL mutant : $1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1; return 0
+    fi
+    if ! sh -n "$GX_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GX_GC"; echo "FAIL mutant : $1 - the mutant does not parse (sh -n)"; fail=1; return 0
+    fi
+    k7_m=$(printf '%s' "$k7_jm" | sh "$GX_G" 2>/dev/null) || :
+    cp "$GPAB_TMP/gc.pristine" "$GX_GC"
+    k7_hp=0; k7_hm=0
+    case "$k7_p" in
+      *"$5"*) k7_hp=1 ;;
+    esac
+    case "$k7_m" in
+      *"$5"*) k7_hm=1 ;;
+    esac
+    if [ "$k7_hp" = 1 ] && [ "$k7_hm" = 0 ]; then echo "PASS mutant : $1 (the reason held '$5' before and lacks it after, killed the leg as required)"
+    else echo "FAIL mutant : $1 - the reason's '$5' did not flip (before $k7_hp, after $k7_hm); the leg proves nothing"; fail=1; fi
+  }
+  k7_mt "SWAS1007-M-K9: the H2 branch dropped -> K-T2's cd-first sentence is gone" '/# H2-BRANCH$/d' "$gx_R" "sh $k7_C/conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt" "run it as cd "
+  k7_mt "SWAS1007-M-K10: the H3 branch dropped -> K-T3's must-open sentence is gone" '/# H3-BRANCH$/d' "$gx_R" "printf x > $gx_S/k7.txt; cd $k7_C && sh conformance/promotion-readiness.sh --class --changed $gx_S/listing.txt" "must open the command"
+  # END SWAS1007K
+
+  # BEGIN SWAS1007R
+  # === SWAS-1007 PR 2 (family R): five more rg flags, an `-e` pattern under H3a, a closed leading `$(date ...)` under R28, and the advice texts H6, H7 and H9 =====
+  # Design docs/architecture/2026-11-22-guard-kit-verbs-1007-design.md sections 6, 8.2 and 9, with its errata (E-M1, E-M2, E-m3, E-m4, E-m8, E-n2, E2-N1); plan PR 2 task 1 (cells first, measured on the base core).
+  # R-A = admissions (plain cells, so each owes an AA_EXPECTED_DELTA entry), PIN R-P = ALLOW pins (the relief's verdict equals the verdict with each pattern replaced by 'x'), R-N = DENY twins
+  # (R-N1 to R-N8 the rg set stays closed, R-N9 to R-N38 the `-e` twins, R-N39 to R-N52 the R28 twins), R-T = text cells (H6, H7, H9), M-R/M-B = mutants (a belt is a test the parity argument does not need: M-B).
+  # Commands go through jq, so no JSON escape is hand-written; a heredoc body is built at run time with r7_nl (no literal control byte in this file).
+  r7_json() { jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
+  r7_a() { assert_allow "SWAS1007-$1" "$(r7_json "$2")"; }        # <label> <command>: an admission (ALLOW on the head, DENY on the base)
+  r7_p() { assert_allow "SWAS1007-PIN $1" "$(r7_json "$2")"; }    # <label> <command>: an ALLOW pin (no delta entry: any movement reds)
+  r7_d() { assert_deny "SWAS1007-$1" "$(r7_json "$2")"; }         # <label> <command>: a DENY twin
+  r7_m() { gpab_mutant "SWAS1007-$1" "$2" "$(r7_json "$3")" "$4"; }   # <label> <sed> <command> <want after the mutation>
+  r7_nl=$(printf '\n.'); r7_nl=${r7_nl%.}
+  r7_t() {   # <label> <command> <has> [<lacks> [<has2>]] - denies on the repo guard, the reason holds <has> and <has2> and lacks <lacks>
+    aa_cell_skip "SWAS1007-$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    r7_o=$(printf '%s' "$(r7_json "$2")" | sh "$GUARD" 2>/dev/null) || :
+    r7_ok=1
+    case "$r7_o" in
+      *'"permissionDecision":"deny"'*) : ;;
+      *) r7_ok=0 ;;
+    esac
+    case "$r7_o" in
+      *"$3"*) : ;;
+      *) r7_ok=0 ;;
+    esac
+    if [ -n "${4:-}" ]; then
+      case "$r7_o" in
+        *"$4"*) r7_ok=0 ;;
+      esac
+    fi
+    if [ -n "${5:-}" ]; then
+      case "$r7_o" in
+        *"$5"*) : ;;
+        *) r7_ok=0 ;;
+      esac
+    fi
+    if [ "$r7_ok" = 1 ]; then echo "PASS text : SWAS1007-$1"; else echo "FAIL (deny + reason has '$3', lacks '${4:-}', has '${5:-}'): SWAS1007-$1"; fail=1; echo "INFO: SWAS1007 $1 reason: $(printf '%s' "$r7_o" | cut -c1-500)"; fi
+  }
+  # --- admissions: rg's flags (a to c are run C's lane refusals), the `-e` relief, and R28's leading date ---
+  r7_a "R-A1 rg -n -c counts matches" 'rg -n -c -e X conformance/verify.sh'
+  r7_a "R-A2 rg --files-with-matches" 'rg -n -e X conformance/ --files-with-matches'
+  r7_a "R-A3 rg -n -l" 'rg -n -l -e X conformance/'
+  r7_a "R-A4 rg -n -q" 'rg -n -q -e X conformance/verify.sh'
+  r7_a "R-A5 rg -n -i" 'rg -n -i -e X conformance/verify.sh'
+  r7_a "R-A6 rg -nlc, a cluster of new letters" 'rg -nlc -e X conformance/'
+  r7_a "R-A7 git grep -n -e a secret-shaped pattern -- index.js (run C item 30c)" 'git grep -n -e "process.env" -- index.js'
+  r7_a "R-A8 rg -n -e process.env src/" "rg -n -e 'process.env' src/"
+  r7_a "R-A9 grep -rn -e import.meta.env src/" "grep -rn -e 'import.meta.env' src/"
+  r7_a "R-A10 grep -n -e a CA-bundle path docs (run C item 50b)" 'grep -n -e "SSL_CERT_FILE=/private/etc/ssl/cert.pem gh" docs/operations/runtime-guards.md'
+  r7_a "R-A11 grep -n -e .env -e secrets/ README.md" "grep -n -e '.env' -e 'secrets/' README.md"
+  r7_a "R-A12 a leading closed date substitution, then prose naming git push, to a new scratch file" "T=\$(date -u +%FT%TZ); printf '%s\\n' 'the git push rule' > /private/tmp/swas1007-r28-new.txt"
+  r7_a "R-A13 the same with a heredoc body that holds git push prose and no opener" "T=\$(date -u +%FT%TZ); cat > /private/tmp/swas1007-r28-new2.txt <<'EOF'${r7_nl}the git push rule${r7_nl}EOF"
+  # --- ALLOW pins: R-A7 to R-A13 with the pattern or the substitution replaced (the relief equals ignoring the pattern), and the shell sweep that is ALLOW on main ---
+  r7_p "R-P1 git grep -n -e x -- index.js" "git grep -n -e 'x' -- index.js"
+  r7_p "R-P2 rg -n -e x src/" "rg -n -e 'x' src/"
+  r7_p "R-P3 grep -rn -e x src/" "grep -rn -e 'x' src/"
+  r7_p "R-P4 grep -n -e x docs" "grep -n -e 'x' docs/operations/runtime-guards.md"
+  r7_p "R-P5 grep -n -e x -e x README.md" "grep -n -e 'x' -e 'x' README.md"
+  r7_p "R-P6 R-A12 with a literal word for the date substitution" "T=2026; printf '%s\\n' 'the git push rule' > /private/tmp/swas1007-r28-new.txt"
+  r7_p "R-P7 R-A13 with a literal word for the date substitution" "T=2026; cat > /private/tmp/swas1007-r28-new2.txt <<'EOF'${r7_nl}the git push rule${r7_nl}EOF"
+  r7_p "R-P8 grep -rn -e KEY . (the shell sweep, ALLOW on main by inference)" "grep -rn -e 'KEY' ."
+  # --- DENY twins: rg's set stays closed (the flags that run a program stay out) ---
+  r7_d "R-N1 rg -n -z (decompression spawns programs)" 'rg -n -z -e X conformance/'
+  r7_d "R-N2 rg -nz" 'rg -nz -e X conformance/'
+  r7_d "R-N3 rg -lz" 'rg -lz -e X conformance/'
+  r7_d "R-N4 rg --pre cat" 'rg -n --pre cat -e X conformance/verify.sh'
+  r7_d "R-N5 rg --pre=cat" 'rg -n --pre=cat -e X conformance/verify.sh'
+  r7_d "R-N6 rg quoted --pre=/tmp/e" 'rg -n "--pre=/tmp/e" -e X conformance/verify.sh'
+  r7_d "R-N7 rg --search-zip" 'rg -n --search-zip -e X conformance/'
+  r7_d "R-N8 rg --hostname-bin=/bin/sh" 'rg -n --hostname-bin=/bin/sh -e X conformance/'
+  # --- DENY twins: the `-e` relief (each is stopped by the one test named, and by that test only) ---
+  r7_d "R-N9 cat -e .env (cat is no search verb)" 'cat -e .env'
+  r7_d "R-N10 cat -e quoted .env (the lead-verb test, M-R8)" "cat -e '.env'"
+  r7_d "R-N11 grep -e x .env (an unquoted file)" 'grep -e x .env'
+  r7_d "R-N12 grep -e .env x .env (an unquoted .env operand)" "grep -e '.env' x .env"
+  r7_d "R-N13 grep -f -e .env (patterns read from a file named -e; the no-value set, M-R9)" "grep -f -e '.env'"
+  r7_d "R-N14 grep -nf -e .env (a cluster ending in f)" "grep -nf -e '.env'"
+  r7_d "R-N15 rg -n -r -e .env x (rg -r is --replace and takes a value; M-R9)" "rg -n -r -e '.env' x"
+  r7_d "R-N16 grep -n -- -e .env (after --, -e is a pattern and the next word a file; the order test, M-R10)" "grep -n -- -e '.env'"
+  r7_d "R-N17 grep -n x -e .env (an operand before the -e; the order test, M-R10)" "grep -n x -e '.env'"
+  r7_d "R-N18 git grep -n x -e .env (the order test, M-R10)" "git grep -n x -e '.env'"
+  r7_d "R-N19 grep -m -e .env x (-m takes -e as its value)" "grep -m -e '.env' x"
+  r7_d "R-N20 grep -n -e backtick cat .env backtick x (the backtick test, M-R11a)" "grep -n -e \"\`cat .env\`\" x"
+  r7_d "R-N21 grep -n -e dollar-paren cat .env x (substitution bytes, M-R11b)" 'grep -n -e "$(cat .env)" x'
+  r7_d "R-N22 grep -e .env x; cat .env (a second command)" "grep -e '.env' x; cat .env"
+  r7_d "R-N23 grep -e .env x | head (a pipe)" "grep -e '.env' x | head"
+  r7_d "R-N24 grep -e .env x > a scratch file (a redirect disqualifies; priced)" "grep -e '.env' x > /private/tmp/o"
+  r7_d "R-N25 grep -e .env x with the pattern unquoted" 'grep -e .env x'
+  r7_d "R-N26 grep -e a-backslash-dot-env x (a backslash)" "grep -e 'a\\.env' x"
+  r7_d "R-N27 git grep -e x HEAD:.env (a revision path)" 'git grep -e x HEAD:.env'
+  r7_d "R-N28 rg -e .env --pre cat x" "rg -e '.env' --pre cat x"
+  r7_d "R-N29 cat the CA bundle itself" 'cat /private/etc/ssl/cert.pem'
+  r7_d "R-N30 git grep -n process.env -- index.js (the positional pattern stays refused)" 'git grep -n "process.env" -- index.js'
+  r7_d "R-N31 grep -n -e x then a quoted .env operand (the span placement test, M-R13)" "grep -n -e 'x' '.env'"
+  r7_d "R-N32 grep -n -e HOME/.env x (a belt, M-B1)" 'grep -n -e "$HOME/.env" x'
+  r7_d "R-N33 grep -n -e a;.env x (a belt, M-B2)" "grep -n -e 'a;.env' x"
+  r7_d "R-N34 grep -n -e a-backslash-pipe .env x (a belt, M-B3)" "grep -n -e 'a\\|.env' x"
+  r7_d "R-N35 grep -n -e .env with a glob operand (a belt, M-B4)" "grep -n -e '.env' .e?v"
+  r7_d "R-N36 grep -n -e -e .env (the first -e takes -e as its pattern; rule 3b, M-R17)" "grep -n -e -e '.env'"
+  r7_d "R-N37 rg -n -e -e .env (rule 3b, M-R17)" "rg -n -e -e '.env'"
+  r7_d "R-N38 git grep -n -e -e .env (rule 3b, M-R17)" "git grep -n -e -e '.env'"
+  # --- DENY twins: R28 after a leading date substitution ---
+  r7_d "R-N39 a second command inside the date substitution" 'T=$(date; git checkout x -- conformance/y)'
+  r7_d "R-N40 date then a glued second substitution" 'T=$(date)$(git checkout x)'
+  r7_d "R-N41 a backtick opener is not skipped" 'T=`date`; echo git checkout x'
+  r7_d "R-N42 the lead is not date (the lead test, M-R15)" 'T=$(pwd); echo git checkout x'
+  r7_d "R-N43 date -d with a nested substitution" 'T=$(date -d "$(git checkout x)")'
+  r7_d "R-N44 date with a quoted format" "T=\$(date '+%F'); echo git checkout x"
+  r7_d "R-N45 a case compound inside the substitution" 'T=$(case x in x) git checkout y;; esac)'
+  r7_d "R-N46 a heredoc after the date whose body holds a substitution (the retry is the Write tool)" "T=\$(date); cat <<'EOF'${r7_nl}\$(git checkout x)${r7_nl}EOF"
+  r7_d "R-N47 other arms still judge the text after the date (a force push)" 'X=$(date); git push -f origin main'
+  r7_d "R-N48 date --file reads a file (the word test, M-R16)" 'T=$(date --file=notes.txt); echo git checkout x'
+  r7_d "R-N49 date -s sets the clock (the word test, M-R16)" 'T=$(date -s 0); echo git checkout x'
+  r7_d "R-N50 date then a heredoc into sh (the control-plane arm decides)" "T=\$(date); sh <<'EOF'${r7_nl}git checkout x -- conformance/y${r7_nl}EOF"
+  r7_d "R-N51 the same heredoc into sh with no substitution" "sh <<'EOF'${r7_nl}git checkout x -- conformance/y${r7_nl}EOF"
+  r7_d "R-N52 a date format holding a nested substitution (the byte test, M-R16b)" 'T=$(date +%F"$(git+checkout+x"); echo ok'
+  # --- round 6 option (B): only a standalone assignment statement NAME=$(date ...) followed by ;, && or a newline is skipped; a prefix form, an echo or any other leading substitution is not ---
+  r7_d "R-N53 an assignment PREFIX with a date body, then git push -f (errata R6-1 M1: not a standalone statement)" 'T=$(date -u +%FT%TZ) git push -f origin main'
+  r7_d "R-N54 an assignment prefix with a date body, then git checkout into the control plane (M1)" 'T=$(date -u +%F) git checkout x -- conformance/y'
+  r7_d "R-N55 echo of a date substitution, then git add (R28 as on main; not an assignment statement)" 'echo $(date); git add f'
+  r7_d "R-N56 a prefix form whose rest only R28 refuses (the prefix twin of S11j; only the follow test, M-R19)" 'T=$(date -u +%F) GIT_X=1 true'
+  r7_d "R-N57 NAME alone: an echo before the assignment word (only the name test, M-R20)" 'echo T=$(date); GIT_X=1 true'
+  r7_a "R-A14 the statement followed by a newline, then plain prose (the newline follow; the newline is built at run time)" "T=\$(date -u +%FT%TZ)${r7_nl}printf '%s\\n' 'the git push rule' > /private/tmp/swas1007-r28-new3.txt"
+  r7_d "R-N58 the date statement, a newline, then git push -f (the newline follow does not hide the next command)" "T=\$(date -u +%F)${r7_nl}git push -f origin main"
+  r7_d "R-N59 the date statement, a newline, then git checkout into the control plane" "T=\$(date -u +%F)${r7_nl}git checkout x -- conformance/y"
+  r7_p "R-P9 R-A14 with a literal word for the date statement (parity: ALLOW on the base and the head)" "T=2026${r7_nl}printf '%s\\n' 'the git push rule' > /private/tmp/swas1007-r28-new3.txt"
+  # --- text cells: H6 (the secret-read pointer), H7 (the search-verb sentence), H9 (R1's rg escape, the redirect-read-as-quote sentence) ---
+  r7_t "R-T1 H6: the secret-read pointer names the Read tool, not the shell, and no bare 'read .env.example instead'" 'cat .env' 'with the Read tool' 'or ask for a redacted value) instead' '(stop=secret-read)'
+  r7_t "R-T2 H7: a search verb's refusal names the Grep tool and the -e form" 'git grep -n "process.env" -- index.js' 'use the Grep tool where your session has one' '' '(stop=secret-read)'
+  r7_t "R-T2b H7 fires on a search verb only: cat .env gets no search sentence" 'cat .env' '(stop=secret-read)' 'use the Grep tool where your session has one'
+  r7_t "R-T3 H9: R1's escape names the rg spelling" "rg -n 'a\\|b' conformance/verify.sh" 'rg -n -e A -e B' '' 'escape card R1 quoted-alternation'
+  r7_t "R-T4 H9: a > inside a quoted search pattern is named as read-as-a-redirect, the R30 pointer kept" "rg -n -e 'a > .claude/x' docs/" 'read as a redirect' '' 'escape card R30 cp-write'
+  # --- mutants (design section 9 and the E-M2 table). Each runs the cell on a copy of the core with ONE edit, addressed by the marker on the line; the cell must flip. ---
+  r7_m "M-R1: -c dropped from rg's set -> R-A1 flips to DENY" '/^_CP8B_RG_BARE=/ s/ -c / /' 'rg -n -c -e X conformance/verify.sh' deny
+  r7_m "M-R2: --files-with-matches dropped -> R-A2 flips to DENY" '/^_CP8B_RG_BARE=/ s/ --files-with-matches//' 'rg -n -e X conformance/ --files-with-matches' deny
+  r7_m "M-R3: -l dropped -> R-A3 flips to DENY" '/^_CP8B_RG_BARE=/ s/ -l / /' 'rg -n -l -e X conformance/' deny
+  r7_m "M-R4: -q dropped -> R-A4 flips to DENY" '/^_CP8B_RG_BARE=/ s/ -q / /' 'rg -n -q -e X conformance/verify.sh' deny
+  r7_m "M-R5: -i dropped -> R-A5 flips to DENY" '/^_CP8B_RG_BARE=/ s/ -i / /' 'rg -n -i -e X conformance/verify.sh' deny
+  r7_m "M-R6: -z added to the set -> R-N1 flips to ALLOW" "/^_CP8B_RG_BARE=/ s/='-n /='-n -z /" 'rg -n -z -e X conformance/' allow
+  r7_m "M-R7: the -e relief call dropped -> R-A7 flips to DENY" '/# H3A-E-CALL$/d' 'git grep -n -e "process.env" -- index.js' deny
+  r7_m "M-R8: the lead-verb test dropped (any lead is taken as grep) -> cat -e .env quoted (R-N10) flips to ALLOW" '/# H3A-E-LEAD$/ s/return 1 ;;/_hev_set=g; _hev_o=x ;;/' "cat -e '.env'" allow
+  r7_m "M-R9: the no-value set test dropped -> grep -f -e .env (R-N13) flips to ALLOW" '/# H3A-E-R4$/d' "grep -f -e '.env'" allow
+  r7_m "M-R9b: the same -> rg -n -r -e .env x (R-N15) flips to ALLOW" '/# H3A-E-R4$/d' "rg -n -r -e '.env' x" allow
+  r7_m "M-R10: the order test dropped -> grep -n x -e .env (R-N17) flips to ALLOW" '/# H3A-E-R5$/d' "grep -n x -e '.env'" allow
+  r7_m "M-R10b: the same -> git grep -n x -e .env (R-N18) flips to ALLOW" '/# H3A-E-R5$/d' "git grep -n x -e '.env'" allow
+  r7_m "M-R10c: the same -> grep -n -- -e .env (R-N16) flips to ALLOW" '/# H3A-E-R5$/d' "grep -n -- -e '.env'" allow
+  r7_m "M-R11a: the backtick dropped from rule 1a -> R-N20 flips to ALLOW" '/# H3A-E-R1A-TICK$/d' "grep -n -e \"\`cat .env\`\" x" allow
+  r7_m "M-R11b: dollar, open and close paren dropped from rules 1a and 1b together -> R-N21 flips to ALLOW" '/# H3A-E-R1A-PAREN$/d;/# H3A-E-R1B-DOLLAR$/d' 'grep -n -e "$(cat .env)" x' allow
+  r7_m "M-R13: the span placement test dropped (every quoted span is stripped) -> R-N31 flips to ALLOW" '/# H3A-E-PLACE$/d' "grep -n -e 'x' '.env'" allow
+  r7_m "M-R17: rule 3b dropped -> grep -n -e -e .env (R-N36) flips to ALLOW" '/# H3A-E-R3B$/d' "grep -n -e -e '.env'" allow
+  r7_m "M-R17b: the same -> rg -n -e -e .env (R-N37) flips to ALLOW" '/# H3A-E-R3B$/d' "rg -n -e -e '.env'" allow
+  r7_m "M-R17c: the same -> git grep -n -e -e .env (R-N38) flips to ALLOW" '/# H3A-E-R3B$/d' "git grep -n -e -e '.env'" allow
+  r7_m "M-B1 (a belt): dollar dropped from rule 1b -> R-N32 flips to ALLOW" '/# H3A-E-R1B-DOLLAR$/d' 'grep -n -e "$HOME/.env" x' allow
+  r7_m "M-B2 (a belt): semicolon dropped from rule 1b -> R-N33 flips to ALLOW" '/# H3A-E-R1B-SEMI$/d' "grep -n -e 'a;.env' x" allow
+  r7_m "M-B3 (a belt): the rest of rule 1b dropped -> R-N34 flips to ALLOW" '/# H3A-E-R1B-REST$/d' "grep -n -e 'a\\|.env' x" allow
+  r7_m "M-B4 (a belt): rule 6 dropped -> R-N35 flips to ALLOW" '/# H3A-E-R6$/d' "grep -n -e '.env' .e?v" allow
+  r7_m "M-R14: the date skip dropped -> R-A12 flips to DENY" '/# SWAS1007-DATE-CALL$/d' "T=\$(date -u +%FT%TZ); printf '%s\\n' 'the git push rule' > /private/tmp/swas1007-r28-new.txt" deny
+  r7_m "M-R15: the date lead test dropped -> R-N42 (T=\$(pwd)) flips to ALLOW" '/# SWAS1007-DATE-LEAD$/ s/break/:/' 'T=$(pwd); echo git checkout x' allow
+  r7_m "M-R16: the date word test dropped -> R-N48 (--file) flips to ALLOW" '/# SWAS1007-DATE-WORD$/ s/_s84dk=1; break/:/' 'T=$(date --file=notes.txt); echo git checkout x' allow
+  r7_m "M-R16a: the same -> R-N49 (-s) flips to ALLOW" '/# SWAS1007-DATE-WORD$/ s/_s84dk=1; break/:/' 'T=$(date -s 0); echo git checkout x' allow
+  r7_m "M-R16b: the date byte test dropped -> R-N52 flips to ALLOW" '/# SWAS1007-DATE-BYTES$/ s/_s84dk=1; break/:/' 'T=$(date +%F"$(git+checkout+x"); echo ok' allow
+  r7_m "M-R18: the skip widened back to each leading substitution (the standalone-statement test dropped) -> SWAS184 S11j flips to ALLOW" '/# SWAS1007-DATE-STMT$/ s/break/:/;/# SWAS1007-DATE-NAME$/ s/break/:/' 'echo $(date); GIT_X=1 true' allow
+  r7_m "M-R18b: the same -> SWAS184 I15 flips to ALLOW" '/# SWAS1007-DATE-STMT$/ s/break/:/;/# SWAS1007-DATE-NAME$/ s/break/:/' 'echo $(date); printf x | sh' allow
+  r7_m "M-R19: the follow test dropped (a prefix form is skipped) -> R-N56 flips to ALLOW" '/# SWAS1007-DATE-FOLLOW$/ s/break/:/' 'T=$(date -u +%F) GIT_X=1 true' allow
+  r7_m "M-R20: the name test alone relaxed -> R-N57 (echo T=) flips to ALLOW" '/# SWAS1007-DATE-NAME$/ s/break/:/' 'echo T=$(date); GIT_X=1 true' allow
+  # END SWAS1007R
+
   # === SWAS184 - GUARD-SUBSTITUTION-GIT-WRITE (SWAS-184): a git command inside a command substitution =================
   # A substitution body is judged as a command: a git command in one is allowed only as a measured read (rev-parse, log,
   # show, diff, status, describe, merge-base, ls-files, rev-list), with no -c/--config-env/--exec-path/--namespace before the
@@ -17612,7 +18013,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $(git rev-list --max-count=1 --objects HEAD)"}}'
   # A3 (design section 12). F1: a git write in a SECOND substitution, not at a run's command position, in four glued shapes.
   assert_deny "SWAS184 F1a: a second substitution after a plain word" \
-    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) x $(git -C . checkout abc1234 -- conformance)"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(pwd) x $(git -C . checkout abc1234 -- conformance)"}}'
   assert_deny "SWAS184 F1b: a second substitution glued to the first" \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(date)x$(git -C . checkout abc1234 -- conformance)"}}'
   assert_deny "SWAS184 F1c: a second body in a process substitution" \
@@ -17668,7 +18069,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   assert_allow "SWAS184 A3d: head -c" \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(head -c 8 f)"}}'
   assert_allow "SWAS184 A3e: an inline-code flag is only denied right after an interpreter" \
-    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) && mkdir -p d && bash x.sh"}}'
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(pwd) && mkdir -p d && bash x.sh"}}'
   assert_allow "SWAS184 A5b: a stop token ends the run after a bare git word" \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(which git) && ls"}}'
   assert_allow "SWAS184 A5c: the documented hooks-path substitution" \
@@ -17680,7 +18081,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   assert_allow "SWAS184 A5g: a heredoc commit message carrying trailers" \
     '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"$(cat <<'"'"'EOF'"'"'\nfix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nKit-Row: SWAS-1\nEOF\n)\""}}'
   assert_allow "SWAS184 A5e: the text before the first opener is outside the window" \
-    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(date)\""}}'
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(pwd)\""}}'
   assert_allow "SWAS184 A4: a date substitution" \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(date +%Y)"}}'
   assert_allow "SWAS184 A5: a bare git word that is not the command word" \
@@ -17754,7 +18155,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $((git -C . switch x) )"}}' allow
   gpab_mutant "SWAS184-M-WIN: the window becomes the whole command -> A5e flips to DENY" \
     '/# SWAS184-DOLLAR$/s/.*/  if [ "${#_s84a}" -lt "$_s84m" ]; then _s84m=${#_s84a}; _s84_win=$1; _s84_n=1; fi/' \
-    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(date)\""}}' deny
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(pwd)\""}}' deny
   gpab_mutant "SWAS184-M-STOP: stop tokens become plain spaces -> A5b flips to DENY" \
     '/# SWAS184-STOP$/s@/ ; /g@/ /g@' \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(which git) && ls"}}' deny
@@ -17766,7 +18167,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $({gi,checkou}t abc1234)"}}' allow
   gpab_mutant "SWAS184-M-GLUE-SHARED: the paren glue put back into the shared stop text -> F1a (a second substitution) flips to ALLOW" \
     '/# SWAS184-DQUOTE$/s/ -e .s\/\[()\]\/ ; \/g./ -e "$_s84gl"&/' \
-    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) x $(git -C . checkout abc1234 -- conformance)"}}' allow
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(pwd) x $(git -C . checkout abc1234 -- conformance)"}}' allow
   gpab_mutant "SWAS184-M-FUNSUB-BLANK: the funsub opener narrowed back to a blank -> F3a (a tab) flips to ALLOW" \
     '/# SWAS184-FUNSUB$/s/\[!A-Za-z0-9_#!@.*\]\*/ */' \
     '{"tool_name":"Bash","tool_input":{"command":"echo ${\tgit switch x; }"}}' allow
@@ -17802,7 +18203,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"echo $(env -S ls)"}}' allow
   gpab_mutant "SWAS184-M-ADJ: the inline-code test goes window-wide -> A3e flips to DENY" \
     '/# SWAS184-ADJ$/s/.*/  if true; then/' \
-    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) && mkdir -p d && bash x.sh"}}' deny
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(pwd) && mkdir -p d && bash x.sh"}}' deny
   gpab_mutant "SWAS184-M-CFLAG: the -c test goes window-wide -> A3b (wc -c) flips to DENY" \
     '/# SWAS184-CFLAG$/s/.*/  case $_s84t in -c) return 0 ;; esac; if [ "$_s84s" = 1 ]; then/' \
     '{"tool_name":"Bash","tool_input":{"command":"echo $(wc -c <f)"}}' deny
@@ -19031,6 +19432,256 @@ s992_m "M-TX: the xargs arm's tail back to the literal -> X3 flips to ALLOW" '/b
 s992_m "M-TX: ... X4 flips to ALLOW" '/bulk-delete.*xargs/ s@"\$_GD992_TL"@"([[:space:]]|$)"@' '(ls | xargs rm)' allow
 s992_m "M-WIDE: _GD992_TL widened to the rsync tail -> PIN A2 flips to DENY" '/# 992-TL$/ s@^_GD992_TL=.*@_GD992_TL="([[:space:]]|$|[^a-z])"@' 'find . -delete-me-not' deny
 
+# === SWAS-996: the Bash judge refuses a shell write into a secret file ==============================================
+# Design docs/architecture/2026-11-21-guard-secret-write-shell-996-design.md section 6; plan task 2 (cells first). The arm `_guard_secret_write_denied` lands in plan task 3, so every D cell
+# below FAILS (wanted deny) until then, and the two unit cells D32 and D37 fail as a missing function; that red is the red-first base. D = deny cells, PIN = pins (P = deny pins already DENY on main,
+# A = ALLOW pins). Plain cells (the command alone, judged on the repo guard) are recorded for --delta and carry an AA_EXPECTED_DELTA entry; every fixture cell carries a top-level cwd, so the delta
+# recorder skips it (the GUARD-CWD-CONFIDENCE-UNKNOWN note on aa_cell_record) and it owes none. fresh = a cwd with no .env; filled = a cwd whose .env exists.
+s996_d() { assert_deny "SWAS996-$1" "$(s981_json "$2")"; }
+s996_a() { assert_allow "SWAS996-PIN $1" "$(s981_json "$2")"; }
+s996_p() { assert_deny "SWAS996-PIN $1" "$(s981_json "$2")"; }
+# the unit-cell form (D32, D37): no cell sets KIT_GUARD_SELFEDIT for a judge call, so these call the arm directly with it on; the arm's contract is rc 0 when it denies
+s996_u() {  # <label> <cwd> <command>
+  aa_cell_skip "SWAS996-$1" && return 0
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  _s996_rc=0
+  ( . ./.claude/hooks/guard-core.sh
+    KIT_GUARD_SELFEDIT=1; export KIT_GUARD_SELFEDIT
+    _guard_secret_write_denied "$3" "$2" ) >/dev/null 2>&1 || _s996_rc=$?
+  if [ "$_s996_rc" = 0 ]; then echo "PASS deny : SWAS996-$1"; else echo "FAIL (wanted deny, _guard_secret_write_denied rc=$_s996_rc): SWAS996-$1"; fail=1; fi
+}
+s996_jat() { jq -cn --arg d "$1" --arg c "$2" '{cwd:$d,tool_name:"Bash",tool_input:{command:$c}}'; }
+# plain deny cells (the command alone)
+s996_d "D1 echo x > .env" 'echo x > .env'
+s996_d "D2 echo KEY=x >> .env" 'echo KEY=x >> .env'
+s996_d "D3 printf x >| .env" 'printf x >| .env'
+s996_d "D4 echo x > config/.env.local" 'echo x > config/.env.local'
+s996_d "D5 echo x > server.pem" 'echo x > server.pem'
+s996_d "D6 echo x > tls/server.key" 'echo x > tls/server.key'
+s996_d "D7 echo x > secrets/token.txt" 'echo x > secrets/token.txt'
+s996_d "D8 echo x > .ENV" 'echo x > .ENV'
+s996_d "D9 tee .env" 'echo x | tee .env'
+s996_d "D10 tee -a .env" 'echo x | tee -a .env'
+s996_d "D11 tee, a secret among two operands" 'echo x | tee out.log server.key'
+s996_d "D13 cp notes.txt server.pem" 'cp notes.txt server.pem'
+s996_d "D14 cp notes.txt secrets/" 'cp notes.txt secrets/'
+s996_d "D15 cp -t secrets notes.txt (DENY on main already)" 'cp -t secrets notes.txt'
+s996_d "D16 mv notes.txt .env" 'mv notes.txt .env'
+s996_d "D17 mv notes.txt deploy.key" 'mv notes.txt deploy.key'
+s996_d "D18 ln -sf notes.txt .env" 'ln -sf notes.txt .env'
+s996_d "D19 rsync notes.txt .env" 'rsync notes.txt .env'
+s996_d "D20 dd of=.env" 'dd if=notes.txt of=.env'
+s996_d "D21 dd of=server.pem" 'dd if=/dev/zero of=server.pem bs=1 count=1'
+s996_d "D22 sh -c with a redirect onto .env" "sh -c 'echo x > .env'"
+s996_d "D23 a redirect onto \$HOME/.env (DENY on main already)" 'echo x > "$HOME/.env"'
+s996_d "D24 an assigned name, a redirect onto the variable (DENY on main already)" 'F=.env; echo x > $F'
+s996_d "D30 a redirect target with secret text only in its pieces (DENY on main already)" 'echo x > ${A}.env${B}'
+s996_d "D31 a quoted redirect target with a blank" 'echo x > "my dir/.env"'
+s996_d "D33 sudo tee .env" 'echo x | sudo tee .env'
+# fix round 2 (review and security seat): F1 a quoted or backslashed spelling reaches the legs (the fast exit reads the view), F2 a non-literal tee destination, F4 a verb inside an assignment's substitution, F6 a glued -tDIR
+s996_d "F1a cp notes.txt .e''nv (a quote splits the name)" "cp notes.txt .e''nv"
+s996_d "F1b c''p notes.txt .env (a quote splits the verb)" "c''p notes.txt .env"
+s996_d "F1c tee spelled t''ee onto .env" "echo x | t''ee .env"
+s996_d "F1d mv notes.txt .e\\nv (a backslash splits the name)" 'mv notes.txt .e\nv'
+s996_d "F2a tee onto a variable set earlier (the NAME=value scan)" 'F=.env; echo x | tee $F'
+s996_d "F2b tee onto a name built from pieces" 'echo x | tee ${A}.env${B}'
+s996_d "F4a a tee inside an assignment's substitution" 'X=$(tee .env)'
+s996_d "F6a cp -tsecrets notes.txt (a glued -tDIR)" 'cp -tsecrets notes.txt'
+# fix round 3: R1 a quoted '>' is a filename, not a redirect word; R4 a plain assignment value is not the verb
+s996_d "R1a ln -sf '>' .env (a quoted > is an operand, not a redirect)" "ln -sf '>' .env"
+s996_d "R4a X=dd cp notes.txt .env (a plain assignment value does not end the verb search)" 'X=dd cp notes.txt .env'
+s996_d "R4b X=dd tee .env (a plain assignment value does not end the verb search)" 'X=dd tee .env'
+# the deny pins already DENY on main (another arm), and the allow pins that need no fixture
+s996_p "P1 cat .env.example > .env (H3a already denies; the escape is cp)" 'cat .env.example > .env'
+s996_p "P2 cp .env notes.txt (the SWAS-332 source arm)" 'cp .env notes.txt'
+s996_p "P3 a redirect onto a variable (DENY on main already; the A15 allow premise was false)" 'echo x > "$OUT"'
+s996_a "A7 echo x > .env.example" 'echo x > .env.example'
+s996_a "A8 echo x >> .env.sample" 'echo x >> .env.sample'
+s996_a "A9 echo x > notes.txt" 'echo x > notes.txt'
+s996_a "A10 echo x > keyboard.txt" 'echo x > keyboard.txt'
+s996_a "A11 echo x > environment.txt" 'echo x > environment.txt'
+s996_a "A12 cp .env.example config/" 'cp .env.example config/'
+s996_a "A13 echo x 2>&1 > out.log" 'echo x 2>&1 > out.log'
+s996_a "A14 dd to out.bin" 'dd if=notes.txt of=out.bin'
+s996_a "A16 a commit message that names the card" 'git commit -m "SWAS-996: deny shell writes into secret files"'
+# the fixture cells: the SWAS-332 idiom (scpc, assert_allow_at on the planted $GPAB_ROOT guard copy, a fixture cwd under the non-temp root)
+if [ "${GPAB_G:-}" != "" ]; then
+  mkdir -p "$GPAB_ROOT/s996-fresh/app" "$GPAB_ROOT/s996-fresh/config" "$GPAB_ROOT/s996-filled/app" "$GPAB_ROOT/s996-appenv/app" "$GPAB_ROOT/s996-tlink" "$GPAB_ROOT/s996-dang"
+  for _s996_fx in s996-fresh s996-filled; do
+    for _s996_t in .env.example .env.sample .env.template .env.dist notes.txt app/.env.example; do printf 'T=1\n' > "$GPAB_ROOT/$_s996_fx/$_s996_t"; done
+  done
+  printf 'S=1\n' > "$GPAB_ROOT/s996-filled/.env"
+  printf 'T=1\n' > "$GPAB_ROOT/s996-appenv/.env.example"; printf 'T=1\n' > "$GPAB_ROOT/s996-appenv/app/.env.example"; printf 'S=1\n' > "$GPAB_ROOT/s996-appenv/app/.env"
+  printf 'S=1\n' > "$GPAB_ROOT/s996-tlink/real.env"; ln -s real.env "$GPAB_ROOT/s996-tlink/.env.example"
+  printf 'T=1\n' > "$GPAB_ROOT/s996-dang/.env.example"; ln -s gone-target "$GPAB_ROOT/s996-dang/.env"
+  s996_df() { assert_deny_at "$GPAB_G" "SWAS996-$1" "$(s996_jat "$GPAB_ROOT/$2" "$3")"; }
+  s996_af() { assert_allow_at "$GPAB_G" "SWAS996-PIN $1" "$(s996_jat "$GPAB_ROOT/$2" "$3")"; }
+  s996_df "D12 cp notes.txt .env (fresh; no template source)" s996-fresh 'cp notes.txt .env'
+  s996_df "D25 cp .env.example .env (filled: the template would overwrite it)" s996-filled 'cp .env.example .env'
+  s996_df "D26 cp -f .env.example .env (fresh: a flag other than -n)" s996-fresh 'cp -f .env.example .env'
+  s996_df "D27 cp .env.example server.pem (fresh: not an env-family destination)" s996-fresh 'cp .env.example server.pem'
+  s996_df "D28 cd app && cp .env.example .env (a fresh root, app/.env exists)" s996-appenv 'cd app && cp .env.example .env'
+  s996_df "D29 mv .env.example .env (fresh: the verb is not cp)" s996-fresh 'mv .env.example .env'
+  s996_df "D34 cp .env.example .env.pem (fresh: key material wins)" s996-fresh 'cp .env.example .env.pem'
+  s996_df "D38 cp -n .env.example .env (.env a dangling symlink)" s996-dang 'cp -n .env.example .env'
+  s996_df "D39 builtin cd app; cp .env.example .env (app/.env exists)" s996-appenv 'builtin cd app; cp .env.example .env'
+  s996_df "D40 if cd app; then cp .env.example .env; fi (app/.env exists)" s996-appenv 'if cd app; then cp .env.example .env; fi'
+  s996_df "D41 (cd app; cp .env.example .env) (app/.env exists) (DENY on main already)" s996-appenv '(cd app; cp .env.example .env)'
+  s996_df "D42 env -C app cp .env.example .env (app/.env exists)" s996-appenv 'env -C app cp .env.example .env'
+  s996_df "D43 sudo -D app cp .env.example .env (app/.env exists)" s996-appenv 'sudo -D app cp .env.example .env'
+  s996_df "D44 true;cd app;cp .env.example .env (app/.env exists)" s996-appenv 'true;cd app;cp .env.example .env'
+  s996_df "D45 ./cp .env.example .env (fresh: a slashed verb word)" s996-fresh './cp .env.example .env'
+  # fix round 2: fixtures and judge deny cells (a fixture cell carries a cwd, so it owes no delta entry)
+  mkdir -p "$GPAB_ROOT/s996-hl"
+  printf 'S=1\n' > "$GPAB_ROOT/s996-hl/.env"; printf 'T=1\n' > "$GPAB_ROOT/s996-hl/.env.dist"; ln "$GPAB_ROOT/s996-hl/.env" "$GPAB_ROOT/s996-hl/.env.sample"
+  s996_df "F3a cp .env.example .env 2>/dev/null (filled: a redirect word is not the destination)" s996-filled 'cp .env.example .env 2>/dev/null'
+  s996_df "F5a a cp function defined, then cp -n over a filled .env" s996-filled 'cp() { command cp -f "$2" "$3"; }; cp -n .env.example .env'
+  s996_df "F5b a sourced file, then cp -n over a filled .env" s996-filled '. ./setup.sh; cp -n .env.example .env'
+  s996_df "F8a cp .env.example prod.env (fresh: not .env or .env.<suffix>)" s996-fresh 'cp .env.example prod.env'
+  s996_df "F8b cp -n .env.dist .env.sample (.env.sample a hardlink of a filled .env)" s996-hl 'cp -n .env.dist .env.sample'
+  # fix round 4: a function head in any spelling (G1b: no $, so SWAS-332 does not mask it), and . or source after a keyword or prefix (G2a, G2b; H3a masks them, so G2 also has unit cells)
+  s996_df "G1b cp( ) { :; }; cp -n .env.example .env (a function head with a space inside the parens; filled)" s996-filled 'cp( ) { :; }; cp -n .env.example .env'
+  s996_df "G2a if [ -f ./setup.sh ]; then . ./setup.sh; fi; cp -n .env.example .env (. after then; filled)" s996-filled 'if [ -f ./setup.sh ]; then . ./setup.sh; fi; cp -n .env.example .env'
+  s996_df "G2b builtin source ./setup.sh; cp -n .env.example .env (source after a prefix; filled)" s996-filled 'builtin source ./setup.sh; cp -n .env.example .env'
+  s996_u "D32 cp other/.env ./ (selfedit on, the arm called directly)" "$GPAB_ROOT/s996-fresh" 'cp other/.env ./'
+  s996_u "D37 cp .env.example .env (.env.example a symlink to real.env; selfedit on, the arm called directly)" "$GPAB_ROOT/s996-tlink" 'cp .env.example .env'
+  # D35 and D36: the judge runs from a FRESH process cwd, so under M-CWD (the fall back to the process cwd) test 6 reads "no .env" and allows; the cwd argument names a missing directory (D35) or is empty (D36)
+  _s996_home=$PWD
+  cd "$GPAB_ROOT/s996-fresh" || fail=1
+  assert_deny_at "$GPAB_G" "SWAS996-D35 cp .env.example .env (process cwd fresh; the cwd argument is a missing directory) (DENY on main already)" "$(s996_jat "$GPAB_ROOT/s996-missing" 'cp .env.example .env')"
+  assert_deny_at "$GPAB_G" "SWAS996-D36 cp .env.example .env (process cwd fresh; the cwd argument is empty)" "$(s996_jat "" 'cp .env.example .env')"
+  cd "$_s996_home" || fail=1
+  # the allow pins that need a fixture; A1 is the hard constraint (adopter setup)
+  s996_af "A1 cp .env.example .env (fresh; the hard constraint)" s996-fresh 'cp .env.example .env'
+  s996_af "A2 cp .env.sample .env (fresh)" s996-fresh 'cp .env.sample .env'
+  s996_af "A3 cp .env.template .env.local (fresh)" s996-fresh 'cp .env.template .env.local'
+  s996_af "A4 cp app/.env.example app/.env (fresh)" s996-fresh 'cp app/.env.example app/.env'
+  s996_af "A5 cp -n .env.example .env (filled)" s996-filled 'cp -n .env.example .env'
+  s996_af "A6 cp --no-clobber .env.dist .env (filled)" s996-filled 'cp --no-clobber .env.dist .env'
+  s996_af "A17 cp -n .env.example .env && ls . (fresh; a . argument is not a sourcing command)" s996-fresh 'cp -n .env.example .env && ls .'
+  # SWAS-996 mutants (design section 7; plan task 4). Each runs the cell on a copy of the core with ONE edit, addressed by the `996-<TAG>` marker on the arm's line; the cell must flip. A `&` in a sed replacement is written \&.
+  # Five legs are masked in the whole judge by an older arm that denies the same command (M-TDIR: D15, DENY on main by the SWAS-332 source arm; M-DIRJOIN and M-SRCRES: D32 and D37, the SWAS-332 arm; M-PIECE and M-ASSIGN: D30 and D24, the control-plane
+  # arm's non-literal redirect bail), so they are proved by unit mutants (s996_um, below): the arm is called directly on a mutant core copy with KIT_GUARD_SELFEDIT=1, so no older arm can mask the leg.
+  s996_m() { gpab_mutant "SWAS996-$1" "$2" "$3" "$4"; }
+  s996_mp() { s996_m "$1" "$2" "$(s981_json "$3")" "$4"; }
+  s996_mf() { s996_m "$1" "$2" "$(s996_jat "$GPAB_ROOT/$3" "$4")" "$5"; }
+  s996_mp "M-RDR: the redirect leg off -> D1 flips to ALLOW" '/# 996-RDR$/ s@if _scw_redir "\$_scp_cmd"; then@if false; then@' 'echo x > .env' allow
+  s996_mp "M-TEE: the tee leg off -> D9 flips to ALLOW" '/# 996-TEE$/ s@if _scw_hit "\$_scw_a"; then@if false; then@' 'echo x | tee .env' allow
+  s996_mp "M-TEELEAD: the tee verb read only at the segment lead -> D33 flips to ALLOW" '/# 996-TEELEAD$/ s@if \[ "\$_scp_n" = tee \]; then@if [ "$_scp_n" = tee ] \&\& [ "$_scw_idx" = 1 ]; then@' 'echo x | sudo tee .env' allow
+  s996_mp "M-CPD: the copy-destination leg off -> D16 flips to ALLOW" '/# 996-CPD$/ s@\[ -n "\$_scw_dst" \] || return 1@return 1@' 'mv notes.txt .env' allow
+  s996_mp "M-DD: the of= leg off -> D20 flips to ALLOW" '/# 996-DD$/ s@if _scw_hit "\${_scw_ad#of=}"; then@if false; then@' 'dd if=notes.txt of=.env' allow
+  s996_mp "M-QUOTE: the quoted-word judge off -> D31 flips to ALLOW" '/# 996-QUOTE$/ s@if _scw_hit "\$_scw_t"; then@if false; then@' 'echo x > "my dir/.env"' allow
+  s996_mf "M-EXIST: exemption test 6 (no clobber) off -> D25 flips to ALLOW" '/# 996-EXIST$/ s@if \[ -e "\$_sx_dst" \] && \[ "\$_scw_nclob" != 1 \]; then@if false; then@' s996-filled 'cp .env.example .env' allow
+  s996_mf "M-LINK: test 6's -L check off -> D38 (cp -n over a dangling symlink) flips to ALLOW" '/# 996-LINK$/ s@\[ ! -L "\$_sx_dst" \] || return 1@:@' s996-dang 'cp -n .env.example .env' allow
+  s996_mf "M-FLAG: test 3 widened to any flag -> D26 flips to ALLOW" '/# 996-FLAG$/ s@\[ "\$_scw_flags" = 0 \] || return 1@:@' s996-fresh 'cp -f .env.example .env' allow
+  s996_mf "M-TSRC: test 4 (template source name) off -> D12 flips to ALLOW" '/# 996-TSRC$/ s@_scp_tpl "\${_sx_src##\*/}" || return 1@:@' s996-fresh 'cp notes.txt .env' allow
+  s996_mf "M-TDST: test 5 (env-family destination) off -> F8a (prod.env: secret by name, not .env or .env.<suffix>) flips to ALLOW" '/# 996-TDST$/ s@case "\${_sx_dst##\*/}" in@case .env in@' s996-fresh 'cp .env.example prod.env' allow
+  s996_mf "M-KEYMAT: the key-material line (.pem, .key, id_rsa, secrets/) off -> D34 (.env.pem) flips to ALLOW" '/# 996-KEYMAT$/ s@return 1 ;;@: ;;@' s996-fresh 'cp .env.example .env.pem' allow
+  s996_mf "M-TPLDST: the template-name destination test off -> F8b (a template name that is a hardlink of .env) flips to ALLOW" '/# 996-TPLDST$/ s@if _scp_tpl "\${_sx_dst##\*/}"; then@if false; then@' s996-hl 'cp -n .env.dist .env.sample' allow
+  s996_mp "M-FASTVIEW: the fast exit back to the raw bytes -> F1a flips to ALLOW" '/# 996-FASTVIEW$/ s@_scw_fast "\$_scp_vw"@_scw_fast "$_scp_cmd"@' "cp notes.txt .e''nv" allow
+  s996_mp "M-NLSET: an unreadable tee destination no longer sets the non-literal flag -> F2a (the NAME=value scan) flips to ALLOW" '/# 996-NLSET$/ s@_scw_nonlit=1@:@' 'F=.env; echo x | tee $F' allow
+  s996_mp "M-NLPIECE: the piece judge on an unreadable destination off -> F2b flips to ALLOW" '/# 996-NLPIECE$/ s@if _scp_pieces_hit "\$1"; then@if false; then@' 'echo x | tee ${A}.env${B}' allow
+  s996_mp "M-NLTEE: the unreadable-destination call on the tee leg off -> F2b flips to ALLOW" '/# 996-NLTEE$/ s@if _scw_nl_op "\$_scw_a"; then@if false; then@' 'echo x | tee ${A}.env${B}' allow
+  s996_mp "M-ASGVERB: an assignment value no longer tried as a verb -> F4a flips to ALLOW" '/# 996-ASGVERB$/ s@_scp_norm "\${_scw_a#\*=}" ;;@continue ;;@' 'X=$(tee .env)' allow
+  s996_mp "M-ASGSKIP: a plain assignment value tried as a verb again -> R4a (X=dd cp notes.txt .env) flips to ALLOW" '/# 996-ASGSKIP$/ s@\*) continue ;;@*) _scp_norm "${_scw_a#*=}" ;;@' 'X=dd cp notes.txt .env' allow
+  s996_mp "M-RAWREDIR: the redirect classification back on the de-quoted word -> R1a (ln -sf '>' .env) flips to ALLOW" '/# 996-RAWREDIR$/ s@_scw_rw "\$_scw_a"@_scw_rw "$_scw_ad"@' "ln -sf '>' .env" allow
+  s996_mf "M-REDEFANY: . and source counted as any word again -> A17 (cp -n ... && ls .) flips to DENY" '/# 996-REDEF$/ s@chdir|function@chdir|.|source|function@' s996-fresh 'cp -n .env.example .env && ls .' deny
+  s996_mp "M-TGLUE: a glued -tDIR no longer reads its directory -> F6a flips to ALLOW" '/# 996-TGLUE$/ s@_scw_tg=\${1#\*t}@_scw_tg=@' 'cp -tsecrets notes.txt' allow
+  s996_mf "M-CD: test 7 (the cd disqualifier) off -> D28 flips to ALLOW" '/# 996-CD$/ s@\[ "\$_scw_hascd" = 0 \] || return 1@:@' s996-appenv 'cd app && cp .env.example .env' allow
+  s996_mf "M-CDANY: test 7 reads only a cd that is the first word of the command -> D39 flips to ALLOW" '/# 996-CDANY$/ s@cd|pushd|popd) _scw_hascd=1; break ;;@cd|pushd|popd) if [ "$_scw_w" = "${_walk%%[[:space:]]*}" ]; then _scw_hascd=1; break; fi ;;@' s996-appenv 'builtin cd app; cp .env.example .env' allow
+  s996_mf "M-RAWSPLIT: test 7 reads the raw text split on blanks, not the segmented tokens -> D44 flips to ALLOW" '/# 996-RAWSPLIT$/ s@in \$_walk; do@in $_scp_cmd; do@' s996-appenv 'true;cd app;cp .env.example .env' allow
+  s996_mf "M-LEAD: test 1's first-word requirement off -> D42 flips to ALLOW" '/# 996-LEAD$/ s@\[ "\$_scw_vidx" = 1 \] || return 1@:@' s996-appenv 'env -C app cp .env.example .env' allow
+  s996_mf "M-SLASH: test 1's no-slash requirement off -> D45 flips to ALLOW" '/# 996-SLASH$/ s@\[ "\$_scw_vsl" = 0 \] || return 1@:@' s996-fresh './cp .env.example .env' allow
+  s996_mf "M-VERB: test 1 widened to the whole copy group -> D29 flips to ALLOW" '/# 996-VERB$/ s@\[ "\$_scw_vn" = cp \] || return 1@:@' s996-fresh 'mv .env.example .env' allow
+  s996_mf "M-NOEX: the exemption always declines -> A1 (adopter setup) flips to DENY" '/# 996-NOEX$/ s@if _scw_exempt "\$_scw_dst" "\${_scw_srcs# }"; then@if false; then@' s996-fresh 'cp .env.example .env' deny
+  s996_mp "M-HIT: the destination predicate _is_secret_hit to _is_secret_path -> A7 (a template destination) flips to DENY" '/# 996-HIT$/ s@_is_secret_hit@_is_secret_path@' 'echo x > .env.example' deny
+  # M-CWD: the judge runs from a fresh process cwd (as D36), so with the known-cwd condition off test 6 reads "no .env" there and allows
+  cd "$GPAB_ROOT/s996-fresh" || fail=1
+  s996_m "M-CWD: test 6's known-cwd condition off -> D36 flips to ALLOW" '/# 996-CWD$/ s@\[ "\$_scw_cdok" = 1 \] || return 1@:@' "$(s996_jat "" 'cp .env.example .env')" allow
+  cd "$_s996_home" || fail=1
+  # The unit deny cells and unit mutants for the five legs the whole judge masks (the arm is called directly, KIT_GUARD_SELFEDIT=1, so no older arm denies first).
+  s996_u "U1 cp -t secrets notes.txt (the -t binding; the destination is the -t operand)" "$GPAB_ROOT/s996-fresh" 'cp -t secrets notes.txt'
+  s996_u "U2 echo x > \${A}.env\${B} (a non-literal redirect target judged by its pieces)" "$GPAB_ROOT/s996-fresh" 'echo x > ${A}.env${B}'
+  s996_u "U3 F=.env; echo x > \$F (a redirect onto a variable, the NAME=value scan)" "$GPAB_ROOT/s996-fresh" 'F=.env; echo x > $F'
+  # fix round 2: unit cells for the legs the whole judge masks (the SWAS-332 arm or H3a denies the same command first)
+  s996_u "U4 D=.env; cp notes.txt \$D (an unreadable copy destination, the NAME=value scan)" "$GPAB_ROOT/s996-fresh" 'D=.env; cp notes.txt $D'
+  s996_u "U5 dd if=x of=\${A}.env\${B} (an unreadable of= value judged by its pieces; a trailing \${B} keeps the whole name from matching *.env)" "$GPAB_ROOT/s996-fresh" 'dd if=x of=${A}.env${B}'
+  s996_u "U6 cp notes.txt .env 2>/dev/null (a glued redirect word is not the destination)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env 2>/dev/null'
+  s996_u "U7 cp notes.txt .env > /dev/null (a spaced redirect and its word are not operands)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env > /dev/null'
+  s996_u "U8 cp notes.txt .env # x (an unquoted # word ends the operands)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env # x'
+  s996_u "U9 install notes.txt .env -m 600 (a permuted flag: every operand is a destination)" "$GPAB_ROOT/s996-fresh" 'install notes.txt .env -m 600'
+  s996_u "U10 X=\$(cp notes.txt .env) (a cp inside an assignment's substitution)" "$GPAB_ROOT/s996-fresh" 'X=$(cp notes.txt .env)'
+  s996_u "U11 cp \"\$HOME/.env.example\" .env (test 2: an unreadable operand declines the exemption)" "$GPAB_ROOT/s996-fresh" 'cp "$HOME/.env.example" .env'
+  s996_u "U12 . ./setup.sh; cp -n .env.example .env (a sourced file may redefine cp; filled)" "$GPAB_ROOT/s996-filled" '. ./setup.sh; cp -n .env.example .env'
+  # fix round 3 unit cells: R1 redirect words classified on the raw word, R2 a function head and a spaced ( ) disqualify the exemption, and the any-word list
+  s996_u "R1b cp notes.txt .env >& /dev/null (a spaced >& and its word are not operands)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env >& /dev/null'
+  s996_u "R1c cp notes.txt .env 10>/dev/null (a two-digit fd prefix)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env 10>/dev/null'
+  s996_u "R1d cp notes.txt .env {fd}>/dev/null (a {name} fd prefix)" "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env {fd}>/dev/null'
+  s996_u "R2a cp ( ) { ...; }; cp -n .env.example .env (a spaced function head; filled)" "$GPAB_ROOT/s996-filled" 'cp ( ) { command cp -f "$2" "$3"; }; cp -n .env.example .env'
+  s996_u "R2e cp() { :; }; cp -n .env.example .env (a function head name(); filled)" "$GPAB_ROOT/s996-filled" 'cp() { :; }; cp -n .env.example .env'
+  s996_u "U13 alias x=y; cp -n .env.example .env (an alias word anywhere; filled)" "$GPAB_ROOT/s996-filled" 'alias x=y; cp -n .env.example .env'
+  s996_u "G1a cp () { ...; }; cp -n .env.example .env (a function head with a space before the parens; filled)" "$GPAB_ROOT/s996-filled" 'cp () { command cp -f "$2" "$3"; }; cp -n .env.example .env'
+  s996_u "G1c cp( ){ ...; }; cp -n .env.example .env (a ) word glued to the brace; filled)" "$GPAB_ROOT/s996-filled" 'cp( ){ command cp -f "$@"; }; cp -n .env.example .env'
+  s996_u "G2u1 if [ -f ./setup.sh ]; then . ./setup.sh; fi; cp -n .env.example .env (. after then; filled)" "$GPAB_ROOT/s996-filled" 'if [ -f ./setup.sh ]; then . ./setup.sh; fi; cp -n .env.example .env'
+  s996_u "G2u2 builtin source ./setup.sh; cp -n .env.example .env (source after a prefix; filled)" "$GPAB_ROOT/s996-filled" 'builtin source ./setup.sh; cp -n .env.example .env'
+  # s996_ur <core-file> <cwd> <command>: sets _s996_r to the arm's rc on that core, sourced in a subshell with KIT_GUARD_SELFEDIT=1
+  s996_ur() {
+    _s996_r=0
+    # shellcheck disable=SC1090  # the core to source is the point: the pristine copy and the mutant copy are chosen at run time
+    ( . "$1"
+      KIT_GUARD_SELFEDIT=1; export KIT_GUARD_SELFEDIT
+      _guard_secret_write_denied "$3" "$2" ) >/dev/null 2>&1 || _s996_r=$?
+  }
+  # s996_um <label> <sed-expr> <cwd> <command>: the unit mutant. The arm must deny (rc 0) on the pristine core copy and not deny (rc 1) on the mutant copy (gpab_mutant's checks, without the judge)
+  s996_um() {
+    aa_cell_skip "SWAS996-$1" && return 0
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+    s996_ur "$GPAB_TMP/gc.pristine" "$3" "$4"; _s996_pv=$_s996_r
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/gc.s996um"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/gc.s996um"; then echo "FAIL mutant : SWAS996-$1 - the mutation expression matched NOTHING; the leg is unbound"; fail=1; return; fi
+    if ! sh -n "$GPAB_TMP/gc.s996um" 2>/dev/null; then echo "FAIL mutant : SWAS996-$1 - the mutant does not parse (sh -n); a no-deny is a lockout, not a kill"; fail=1; return; fi
+    s996_ur "$GPAB_TMP/gc.s996um" "$3" "$4"; _s996_mv=$_s996_r
+    if [ "$_s996_pv" = 0 ] && [ "$_s996_mv" = 1 ]; then echo "PASS mutant : SWAS996-$1 (deny -> no deny, killed the leg as required)"
+    else echo "FAIL mutant : SWAS996-$1 - the arm's rc was $_s996_pv before and $_s996_mv after (wanted 0 then 1); the leg proves nothing"; fail=1; fi
+  }
+  s996_um "M-TDIR: the -t/--target-directory binding off -> U1 (no deny)" '/# 996-TDIR$/ s@if \[ -n "\$_scw_tdir" \]; then _scw_srcs@if false; then _scw_srcs@' "$GPAB_ROOT/s996-fresh" 'cp -t secrets notes.txt'
+  s996_um "M-DIRJOIN: the <dir>/<source name> judge off -> D32's command (no deny)" '/# 996-DIRJOIN$/ s@if \[ "\$_scw_isdir" = 1 \]; then@if false; then@' "$GPAB_ROOT/s996-fresh" 'cp other/.env ./'
+  s996_um "M-SRCRES: test 4's alias check on the source off -> D37's command (no deny)" '/# 996-SRCRES$/ s@if _scp_alias_hit "\$_sx_src"; then@if false; then@' "$GPAB_ROOT/s996-tlink" 'cp .env.example .env'
+  s996_um "M-PIECE: the piece judge on a non-literal target off -> U2 (no deny)" '/# 996-PIECE$/ s@if _scp_pieces_hit "\$_scw_a"; then@if false; then@' "$GPAB_ROOT/s996-fresh" 'echo x > ${A}.env${B}'
+  s996_um "M-ASSIGN: the NAME=value scan off -> U3 (no deny)" '/# 996-ASSIGN$/ s@if _scw_hit "\$_scw_a"; then@if false; then@' "$GPAB_ROOT/s996-fresh" 'F=.env; echo x > $F'
+  s996_um "M-NLCP: the unreadable-destination call on the copy leg off -> U4 (no deny)" '/# 996-NLCP$/ s@if _scw_nl_op "\$_scw_dst"; then@if false; then@' "$GPAB_ROOT/s996-fresh" 'D=.env; cp notes.txt $D'
+  s996_um "M-NLDD: the unreadable-destination call on the dd leg off -> U5 (no deny)" '/# 996-NLDD$/ s@if _scw_nl_op "\${_scw_ad#of=}"; then@if false; then@' "$GPAB_ROOT/s996-fresh" 'dd if=x of=${A}.env${B}'
+  s996_um "M-REDIRGLUED: a glued redirect word kept as an operand -> U6 (no deny)" '/# 996-REDIRDROP$/ s@) continue ;;@) : ;;@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env 2>/dev/null'
+  s996_um "M-REDIRBARE: a spaced redirect word and its word kept as operands -> U7 (no deny)" '/# 996-REDIRDROP$/ s@_scw_skip=1; continue ;;@: ;;@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env > /dev/null'
+  s996_um "M-COMMENT: an unquoted # word no longer ends the operands -> U8 (no deny)" '/# 996-COMMENT$/ s@) break ;;@) : ;;@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env # x'
+  s996_um "M-PERM: a flag after the first operand no longer marks the copy permuted -> U9 (no deny)" '/# 996-PERM$/ s@_scw_perm=1@:@' "$GPAB_ROOT/s996-fresh" 'install notes.txt .env -m 600'
+  s996_um "M-LIT: exemption test 2 (both operands literal) off -> U11 (no deny)" '/# 996-LIT$/ s@_scw_lit "\$_sx_src" && _scw_lit "\$_sx_dst" || return 1@:@' "$GPAB_ROOT/s996-fresh" 'cp "$HOME/.env.example" .env'
+  s996_um "M-REDEF: alias, eval, function, enable and chdir no longer disqualify the exemption -> U13 (no deny)" '/# 996-REDEF$/ s@_scw_hascd=1@:@' "$GPAB_ROOT/s996-filled" 'alias x=y; cp -n .env.example .env'
+  s996_um "M-REDEFPOS: a . or source command word no longer disqualifies the exemption -> U12 (no deny)" '/# 996-REDEFPOS$/ s@_scw_hascd=1@:@' "$GPAB_ROOT/s996-filled" '. ./setup.sh; cp -n .env.example .env'
+  s996_um "M-REDEFANYFN: a word holding () no longer disqualifies the exemption -> G1a (cp () {...}; no deny)" '/# 996-REDEFANYFN$/ s@_scw_hascd=1@:@' "$GPAB_ROOT/s996-filled" 'cp () { command cp -f "$2" "$3"; }; cp -n .env.example .env'
+  s996_mf "M-REDEFANYSP: a word ending in ( followed by a ) word no longer disqualifies the exemption -> G1b (cp( ) { :; }) flips to ALLOW" '/# 996-REDEFANYSP$/ s@_scw_hascd=1@:@' s996-filled 'cp( ) { :; }; cp -n .env.example .env' allow
+  s996_um "M-REDEFANYGLUE: the ) word test back to the exact word ) -> G1c (cp( ){ ...; }, the ) glued to the brace; no deny)" '/# 996-REDEFGLUE$/ s@.).\*)@")")@' "$GPAB_ROOT/s996-filled" 'cp( ){ command cp -f "$@"; }; cp -n .env.example .env'
+  s996_um "M-CMDSKIP: the reserved words (if, then, ...) no longer skipped before the command-position test -> G2 unit cell (no deny)" '/# 996-CMDSKIP$/ s@|if|then|elif@|zz|yy|elif@' "$GPAB_ROOT/s996-filled" 'if [ -f ./setup.sh ]; then . ./setup.sh; fi; cp -n .env.example .env'
+  s996_um "M-CMDSKIPPFX: the prefixes (command, builtin, ...) no longer skipped before the command-position test -> G2 unit cell (no deny)" '/# 996-CMDSKIP$/ s@|command|builtin@|zz|yy@' "$GPAB_ROOT/s996-filled" 'builtin source ./setup.sh; cp -n .env.example .env'
+  s996_um "M-RDFD: a digit fd prefix not stripped from a redirect word -> R1c (no deny)" '/# 996-RDFD$/ s@\[0-9\]\*)@[x]*)@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env 10>/dev/null'
+  s996_um "M-RDBRACE: a {name} fd prefix not stripped from a redirect word -> R1d (no deny)" '/# 996-RDBRACE$/ s@.{.\*.}.\*)@zz)@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env {fd}>/dev/null'
+  s996_um "M-RDOP: the operator run limited to < and > (no & or |) -> R1b (no deny)" '/# 996-RDOP$/ s@\[!.<>&|.\]@[!<>]@' "$GPAB_ROOT/s996-fresh" 'cp notes.txt .env >& /dev/null'
+fi
+# F9: the quoted-word awk of _scw_qwords is a copy of the one in _redir_targets (comment lines apart); a static lock (it spawns no guard and is not a counted cell)
+aa_qw_body() {  # <guard-core> <function>: that function's quoted-word awk program, comment lines dropped
+  awk -v fn="$2" '
+    index($0, fn "() {") == 1 { inf = 1; next }
+    inf && /^}/ { inf = 0 }
+    inf && !ina && index($0, "awk -v Q=") > 0 { ina = 1; next }
+    ina && index($0, "  }" "\047") == 1 { ina = 0; inf = 0 }
+    ina && $0 !~ /^[ \t]*#/ { print }
+  ' "$1"
+}
+_s996_qa=$(aa_qw_body .claude/hooks/guard-core.sh _redir_targets)
+_s996_qb=$(aa_qw_body .claude/hooks/guard-core.sh _scw_qwords)
+if [ -n "$_s996_qa" ] && [ "$_s996_qa" = "$_s996_qb" ]; then echo "PASS static : SWAS996-K-QWORDS _scw_qwords carries the same quoted-word awk as _redir_targets"
+else echo "FAIL static : SWAS996-K-QWORDS the quoted-word awk of _scw_qwords differs from _redir_targets' (or an extraction came back empty)"; fail=1; fi
+
 # SWAS-374: the per-trial gates in aa_fc_one nest inside this one
 if [ "$AA_DELTA" = 0 ]; then
   if ! aa_cell_skip "fork-cap"; then
@@ -19869,7 +20520,31 @@ case "${1:-}" in --selftest) _aa_top=$fail; selftest; aa_selftest_exit "$_aa_top
 #     26 assert_deny (D1 to D3, D5 to D7, D9 to D24, O1, O2, O3, O6; D4 and D8 are residuals with no cell under Q1; D18 to D24 are the security fix rounds, D22 to D24 the F-2 split), 1 assert_reason_has (O7, battery round) and 24 gpab_mutant legs (M1, M1b, M1c, M2, M3, M4, M5, M6, M9, M11, M11b, M13, M14, M15, M16, M17, M18, M19, M20, M21, M22, M23, M24, M25; M7 and M8
 #     are not built, Q1; M12 is dropped in the battery round: measured not to flip) -> 4379 + 56 = 4435 (written as 4340 + 42 = 4382 on its branch; re-based onto SWAS-992's 4379 at the merge of main). SWAS903-MH3A-T1's neighbours MP3 and MCILOG-T2 are re-pointed in place
 #     (their seds follow the new anchors; same count); M17 and M18 are re-pointed in place for the added comma (same count). Battery round: SC-P2 and SC-M22 are re-pointed in place to an `ack` subject (same count), O7 adds 1 and the M12 drop removes 1, so the floor stays 4435. Counted from the diff, not measured.
-AA_CELL_FLOOR=4435
+#   + SWAS-996 (the Bash judge refuses a shell write into a secret file), in the `SWAS996-` block after the SWAS-992 mutants, none behind a skip: 63 counted cells (counted, not measured): 45 deny cells (D1 to D45; D32 and D37 are
+#     unit cells that call the arm directly), 3 deny pins (P1, P2, P3; P3 replaced A15, whose allow premise was false) and 15 allow pins (A1 to A14 and A16), no mutant legs yet (the 25 design mutants come in plan task 4) -> 4435 + 63 = 4498. Counted from the diff, not measured.
+#     Plan task 4 (the mutants): 20 more counted gpab_mutant legs, none behind a skip, in the same block (M-RDR, M-TEE, M-TEELEAD, M-CPD, M-DD, M-QUOTE, M-EXIST, M-LINK, M-FLAG, M-TSRC, M-TDST, M-CD, M-CDANY, M-RAWSPLIT, M-LEAD, M-SLASH, M-VERB, M-NOEX,
+#     M-HIT, M-CWD) -> 4498 + 20 = 4518. Task 4b: 8 more counted cells, none behind a skip: 3 unit deny cells (U1, U2, U3) and 5 unit mutants (s996_um: M-TDIR, M-DIRJOIN, M-SRCRES, M-PIECE, M-ASSIGN), the five legs the whole judge masks
+#     -> 4518 + 8 = 4526. Counted from the diff, not measured.
+#     Fix round 2 (review and security seat): 38 more counted cells, none behind a skip, counted from the diff (not measured): 8 plain deny cells (F1a to F1d, F2a, F2b, F4a, F6a), 5 fixture deny cells (F3a, F5a, F5b, F8a, F8b), 9 unit deny cells
+#     (U4 to U12) and 16 mutant legs: 8 through the judge (M-KEYMAT, M-TPLDST, M-FASTVIEW, M-NLSET, M-NLPIECE, M-NLTEE, M-ASGVERB, M-TGLUE) and 8 unit mutants (M-NLCP, M-NLDD, M-REDIRGLUED, M-REDIRBARE, M-COMMENT, M-PERM, M-LIT, M-REDEF).
+#     M-TDST is re-pointed in place to F8a (same count); the static SWAS996-K-QWORDS lock spawns no guard and is not counted. 4526 + 38 = 4564, counted from the diff, not measured.
+#     Fix round 3 (security and review re-reads): 19 more counted cells, none behind a skip, counted from the diff (not measured): 3 plain deny cells (R1a, R4a, R4b), 1 fixture allow pin (A17), 6 unit deny cells (R1b, R1c, R1d, R2a, R2e, U13)
+#     and 9 new mutant legs (M-ASGSKIP, M-RAWREDIR, M-REDEFANY, M-REDEFPOS, M-REDEFFN, M-REDEFSP, M-RDFD, M-RDBRACE, M-RDOP). M-ASGVERB and M-REDEF are re-pointed in place (same count). 4564 + 19 = 4583, counted from the diff, not measured.
+#     Fix round 4 (the last round): 8 more counted cells, none behind a skip, counted from the diff (not measured): 6 deny cells (G1a, G1b, G2a, G2b, G2u1, G2u2) and 2 net mutant legs (M-REDEFFN and M-REDEFSP are retired and folded into the
+#     any-word checks; M-REDEFANYFN, M-REDEFANYSP, M-CMDSKIP and M-CMDSKIPPFX are added). 4583 + 8 = 4591, counted from the diff, not measured.
+#     Fix round 5: 2 more counted cells, none behind a skip, counted from the diff (not measured): 1 unit deny cell (G1c) and 1 unit mutant (M-REDEFANYGLUE). 4591 + 2 = 4593, counted from the diff, not measured.
+#   + SWAS-1007 PR 1 (family K: the kit's verbs and their advice), in the `SWAS1007K` block after SWAS278A, none behind a skip: 63 counted cells, counted from the diff (not measured): 4 admissions (K-A1 to K-A4; the plain root cell was removed in the #1114 fix, the exported tree has no workflow),
+#     6 allow pins (K-P1 to K-P5 and K-N15, the twin the red-first run measured ALLOW), 23 deny twins (K-N1 to K-N14 and K-N16 to K-N24),
+#     3 arm-naming cells (K-N17r to K-N19r), 6 more (K-N25 to K-N29, the `git -C` cells each asserting its own arm's escape-card pointer, and K-N30, the `cd -` root pin of erratum E2-N2), 11 text cells (K-T1 to K-T10 with K-T2b, and K-T8)
+#     and 10 mutant legs (M-K1 to M-K10): 4 + 6 + 23 + 3 + 6 + 11 + 10 = 63 -> 4593 + 63 = 4656.
+#   + SWAS-1007 PR 2 (family R: rg's flags, the `-e` relief, R28's leading date, and the advice H6, H7, H9), in the `SWAS1007R` block after `SWAS1007K`, none behind a skip: 106 counted cells, counted from the diff (not measured):
+#     13 admissions (R-A1 to R-A13), 8 allow pins (R-P1 to R-P8), 52 deny twins (R-N1 to R-N52), 5 text cells (R-T1, R-T2, R-T2b, R-T3, R-T4) and 28 mutant legs
+#     (M-R1 to M-R7 7, M-R8 1, M-R9 and M-R9b 2, M-R10 to M-R10c 3, M-R11a and M-R11b 2, M-R13 1, M-R17 to M-R17c 3, M-B1 to M-B4 4, M-R14 and M-R15 2, M-R16, M-R16a, M-R16b 3):
+#     13 + 8 + 52 + 5 + 28 = 106 -> 4656 + 106 = 4762.
+#     Round 6 fix (option B): 3 more twins (R-N53 to R-N55) and 2 more mutant legs (M-R18, M-R18b); SWAS184 S11j and I15 are back to deny cells (same count): 106 + 5 = 111 -> 4656 + 111 = 4767.
+#     Round 7 fix: 2 more twins (R-N56, R-N57), 1 more admission (R-A14, the newline follow) and 2 more mutant legs (M-R19, M-R20): 111 + 5 = 116 -> 4656 + 116 = 4772.
+#     Round 7 measure: 2 more twins (R-N58, R-N59, the newline forms) and 1 more pin (R-P9): 116 + 3 = 119 -> 4656 + 119 = 4775.
+AA_CELL_FLOOR=4775
 # SWAS-374: the bottoms of --list-cells and --shard (the bare path and every other mode never reach these two lines).
 if [ "$AA_MODE" = list ]; then exit 0; fi
 if [ "$AA_MODE" = shard ]; then aa_shard_finish && exit 0; exit 1; fi

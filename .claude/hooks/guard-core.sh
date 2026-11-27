@@ -62,7 +62,7 @@ _guard_stop_pointer() {
   esac
   case "$1" in
     secret-read)
-      printf '%s' ' Next: read .env.example (or ask for a redacted value) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate). (stop=secret-read)' ;;   # 966-TAG
+      printf '%s' ' Next: for variable names, read the template (.env.example) with the Read tool; if that is refused, ask the owner for the names, and do not re-route the read through the shell; for a value, ask for a redacted one; for the real secret, stop and escalate to the owner (escape card §Stop and escalate). (stop=secret-read)' ;;   # 966-TAG
     secret-write)
       printf '%s' ' Next: write the template (.env.example) instead; for the real secret, stop and escalate to the owner (escape card §Stop and escalate). (stop=secret-write)' ;;   # 966-TAG
     truncation)
@@ -3334,7 +3334,7 @@ _cp8b_message_tip() {
     grep|egrep|fgrep|rg)
       case "$_mt_raw" in
         *'|'*)
-          printf ' TIP: a quoted alternation/pipe is scanned as a command SEPARATOR (segmentation is deliberately quote-blind — a quote-aware split fails OPEN on a real `; rm -rf`). Use one pattern per invocation, `grep -e A -e B`, or the Grep tool. (escape card R1 quoted-alternation)'
+          printf ' TIP: a quoted alternation/pipe is scanned as a command SEPARATOR (segmentation is deliberately quote-blind — a quote-aware split fails OPEN on a real `; rm -rf`). Use one pattern per invocation, `grep -e A -e B` or `rg -n -e A -e B <path>`, or the Grep tool. (escape card R1 quoted-alternation)'
           return ;;
       esac ;;
     for|while|until)
@@ -3383,7 +3383,7 @@ _cp8b_message_tip() {
   # pointer there would send the agent two ways (review I1).
   if _cp8b_seg_read_shaped "$_mt_seg" "$_mt_raw"; then
     if _cp8b_fh_strip_prefix "$_mt_seg" >/dev/null 2>&1; then
-      printf ' TIP: this segment starts or ends in a quote the quote-blind splitter orphaned (a quoted |, ; or && inside a pattern splits the command, so the fragment cannot be judged). Use one pattern per invocation (`grep -e A -e B`), unquote the leading word, or use the Read/Grep tool. (escape card R1 quoted-alternation)'
+      printf ' TIP: this segment starts or ends in a quote the quote-blind splitter orphaned (a quoted |, ; or && inside a pattern splits the command, so the fragment cannot be judged). Use one pattern per invocation (`grep -e A -e B`, or `rg -n -e A -e B <path>`), unquote the leading word, or use the Read/Grep tool. (escape card R1 quoted-alternation)'
       return
     fi
     # (2) A `$` expansion or command substitution ($(...) or backticks) inside the segment: its body is code, never data.
@@ -3732,7 +3732,168 @@ _cp8b_seg_read_shaped() {
 _cp8b_write_route_hint() {
   _cp8b_seg_read_shaped "$1" "${2:-}" && return 0
   [ -z "${_CP8B_G_NOTE:-}" ] || return 0
+  _cp8b_advice_hint "$1" "${2:-}" && return 0   # SWAS-1007: the kit-script shapes name their own retry
   printf ' Next: make this change in a dev clone (escape card R30 cp-write).'
+  _cp8b_h9_text "$1" || :
+}
+# _cp8b_h9_text "<segment>": SWAS-1007 H9, REASON TEXT ONLY. A search verb whose segment holds a quote and a `>` is, most often, a pattern that quotes a `>`: the splitter and the
+# redirect reader are quote-blind (by standing ruling), so the byte is read as a redirect. Prints one more sentence AFTER the R30 sentence (that pointer stays: the deny log keys on it).
+_cp8b_h9_text() {
+  _h9_l=$(_cp8b_lead "$1")
+  case "$_h9_l" in
+    grep|egrep|fgrep|rg) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *'>'*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *\'*|*\"*) : ;;
+    *) return 1 ;;
+  esac
+  printf ' If the > is inside a quoted search pattern, it is read as a redirect: keep the byte out of the pattern or use the Grep or Read tool (escape card R1 quoted-alternation).'
+}
+# === SWAS-1007 (family K): the advice for a kit script the guard refused. REASON TEXT ONLY: no verdict moves. ===================================
+# The write-route sentence above ("make this change in a dev clone") is wrong for a kit script: the session may already BE in a dev clone (H1), may
+# have spelled the clone by its absolute path (H2), may have put the `cd` anywhere but first (H3), may have run the script from a directory that is not
+# the root (H4) or redirected to a `$`-rooted target (H5). `_cp8b_advice_hint "<segment>" "<raw>"` prints ONE sentence for the first shape that fits
+# and returns 0, or prints nothing and returns 1 (the caller then prints the R30 sentence, unchanged). It never prints for a command that names the
+# root waiver register: that leaf keeps the R30 sentence so SWAS-309's person-writes sentence replaces it (the shared predicate `_cp8b_names_waiver`).
+# The retries named here are shapes the guard already admits (a cd-first run in its own call, the root-relative run, a literal redirect target); no
+# sentence names a bypass, and none claims more than the shape it was matched on.
+# _cp8b_names_waiver "<text>": 0 iff the text names the root `waiver-register.md` (case-folded, `templates/waiver-register.md` peeled first). The one
+# leaf test of SWAS-309's `_cp8b_waiver_hint` and of the advice below.
+_cp8b_names_waiver() {
+  _nw_s=$1
+  case "$_nw_s" in
+    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*)
+      _nw_s=$(printf '%s' "$_nw_s" | LC_ALL=C tr 'A-Z' 'a-z') || return 1 ;;
+  esac
+  while :; do
+    case "$_nw_s" in
+      *templates/waiver-register.md*)
+        _nw_s=${_nw_s%%templates/waiver-register.md*}${_nw_s#*templates/waiver-register.md} ;;
+      *) break ;;
+    esac
+  done
+  case "$_nw_s" in
+    *waiver-register.md*) return 0 ;;
+  esac
+  return 1
+}
+# _cp8b_adv_lead "<segment>": sets _al_tok (the script word, after an optional bare sh/bash/dash) and _al_rest (the words after it).
+_cp8b_adv_lead() {
+  _cp8b_pop_tok "$1"; _al_tok=$_pt_tok; _al_rest=$_pt_rest
+  case "$_al_tok" in
+    sh|bash|dash) _cp8b_pop_tok "$_al_rest"; _al_tok=$_pt_tok; _al_rest=$_pt_rest ;;
+  esac
+}
+# _cp8b_adv_kitrel "<word>": 0 iff the word is a root-relative kit script spelling.
+_cp8b_adv_kitrel() {
+  case "${1#./}" in
+    conformance/*.sh|scripts/*.sh|scripts/kit-guard|scripts/sparkwright) return 0 ;;
+  esac
+  return 1
+}
+# _cp8b_raw_cd_clone "<raw>": 0 iff a `cd <abs>` word PAST the first word of the raw command names a dev clone; sets _rc_c to its physical path.
+_cp8b_raw_cd_clone() {
+  _rc_c=''
+  _rc_g=0; case "$-" in
+    *f*) _rc_g=1 ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 1 ]; do
+    if [ "$1" = cd ]; then
+      case "$2" in
+        /*) if _rc_p=$(_cp8b_dev_clone_phys "$2"); then _rc_c=$_rc_p; break; fi ;;
+      esac
+    fi
+    shift
+  done
+  [ "$_rc_g" = 1 ] || set +f
+  [ -n "$_rc_c" ]
+}
+# _cp8b_h2_fits "<segment>" "<clone>": 0 iff the segment, run from inside <clone>, would be admitted (the verb gate or a grammar). A subshell, so none of
+# the grammar's globals leaks.
+_cp8b_h2_fits() {
+  (
+    _CP8B_CLONE=$2; _CP8B_EFF_UNKNOWN=1; _CP8B_ENVSET_PRIOR=0; _CP8B_G_NOTE=''
+    _cp8b_tad_is_clone_exec "$1" && exit 0
+    _cp8b_tad_is_clone_grammar "$1" && exit 0
+    exit 1
+  )
+}
+# _cp8b_h2_text "<segment>": H2. 0 (and the sentence printed) iff the script word is an absolute path to a kit script of a dev clone. When the argv would
+# be refused in that clone too, the cd-first retry would be refused as well, so H1's sentence is printed instead (E-n4).
+_cp8b_h2_text() {
+  case "$_al_tok" in
+    *..*|*[!A-Za-z0-9._/@:+,-]*) return 1 ;;
+  esac
+  _h2_p=$(_resolve_physical "$_al_tok") || return 1
+  case "$_h2_p" in
+    */conformance/*.sh) _h2_c=${_h2_p%/conformance/*}; _h2_r=conformance/${_h2_p##*/conformance/} ;;
+    */scripts/*.sh|*/scripts/kit-guard|*/scripts/sparkwright) _h2_c=${_h2_p%/scripts/*}; _h2_r=scripts/${_h2_p##*/scripts/} ;;
+    *) return 1 ;;
+  esac
+  case "$_h2_r" in
+    */*/*) return 1 ;;
+  esac
+  _h2_d=$(_cp8b_dev_clone_phys "$_h2_c") || return 1
+  if ! _cp8b_h2_fits "$1" "$_h2_d"; then
+    printf ' Next: in a dev clone a kit script takes no argument, --selftest or --help, or one of the closed shapes in runtime-guards (Running checks in a dev clone); run any other argv from the repository root. (escape card R29 dev-clone-grammar)'
+    return 0
+  fi
+  _h2_a=$(printf '%s' "$_al_rest" | cut -c1-160)
+  printf ' Next: this script is in dev clone %s; run it as cd %s && sh %s %s, with the cd first and nothing before it, in its own call. (escape card R29 dev-clone-grammar)' "$_h2_d" "$_h2_d" "$_h2_r" "$_h2_a"
+}
+# _cp8b_h3_text "<raw>": H3. 0 (and the sentence printed) iff a `cd <abs>` past the first word of the raw command names a dev clone.
+_cp8b_h3_text() {
+  _cp8b_raw_cd_clone "$1" || return 1
+  printf ' Next: the cd %s && must open the command; run the earlier step (a listing written with the Write tool, say) in its own call first. (escape card R29 dev-clone-grammar)' "$_rc_c"
+}
+# _cp8b_h5_text "<segment>": H5. 0 (and the sentence printed) iff the segment has a redirect whose target is not a literal (`_redir_targets` rc 3).
+_cp8b_h5_text() {
+  _ah_rc=0; _redir_targets "$1" >/dev/null 2>&1 || _ah_rc=$?
+  [ "$_ah_rc" = 3 ] || return 1
+  # the R30 pointer stays beside R4: the guard-delta message half counts it at write-route site E5
+  printf ' Next: a $-rooted redirect target cannot be judged; redirect to a literal path (> /private/tmp/<name>). (escape card R4 redir-nonliteral) (escape card R30 cp-write)'
+}
+_cp8b_advice_hint() {
+  _cp8b_names_waiver "$1" && return 1
+  _cp8b_names_waiver "${2:-}" && return 1
+  _cp8b_adv_lead "$1"
+  if [ -n "${_CP8B_CLONE:-}" ]; then
+    _cp8b_clone_script_rel "$_al_tok" || return 1
+    printf ' Next: in a dev clone a kit script takes no argument, --selftest or --help, or one of the closed shapes in runtime-guards (Running checks in a dev clone); run any other argv from the repository root. (escape card R29 dev-clone-grammar)'   # H1-BRANCH
+    return 0
+  fi
+  case "$_al_tok" in
+    /*) _cp8b_h2_text "$1" && return 0; return 1 ;;   # H2-BRANCH
+  esac
+  if _cp8b_adv_kitrel "$_al_tok"; then
+    _cp8b_h3_text "${2:-}" && return 0   # H3-BRANCH
+    _cp8b_h5_text "$1" && return 0   # H5-BRANCH
+    return 1
+  fi
+  [ "${_CP8B_EFF_UNKNOWN:-0}" = 1 ] || return 1
+  case "$_al_tok" in
+    */scripts/*.sh|*/conformance/*.sh) : ;;
+    *) return 1 ;;
+  esac
+  case "$_al_tok" in
+    */conformance/*.sh) _ah_t=conformance/${_al_tok##*/conformance/} ;;
+    *) _ah_t=scripts/${_al_tok##*/scripts/} ;;
+  esac
+  case "$_ah_t" in
+    */*/*) return 1 ;;
+  esac
+  [ -n "${PROTECTED_ROOT:-}" ] && [ -f "$PROTECTED_ROOT/$_ah_t" ] || return 1
+  printf ' Next: run kit scripts from the repository root: cd %s && sh %s ... in its own call. (escape card R30 cp-write)' "$PROTECTED_ROOT" "$_ah_t"   # H4-BRANCH
+  return 0
 }
 # SWAS-309: the refusal reason for the adopter's root waiver register. A waiver row is a PERSON's act, so for
 # this leaf alone the generic "make this change in a dev clone" cure is the wrong one, and a dev clone that
@@ -3755,21 +3916,7 @@ _cp8b_waiver_hint() {
     *'escape card R30 cp-write'*) ;;
     *) printf '%s' "$_wrh_r"; return 0 ;;
   esac
-  case "$_wrh_s" in
-    *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*)
-      _wrh_s=$(printf '%s' "$_wrh_s" | LC_ALL=C tr 'A-Z' 'a-z') || { printf '%s' "$_wrh_r"; return 0; } ;;
-  esac
-  while :; do
-    case "$_wrh_s" in
-      *templates/waiver-register.md*)
-        _wrh_s=${_wrh_s%%templates/waiver-register.md*}${_wrh_s#*templates/waiver-register.md} ;;
-      *) break ;;
-    esac
-  done
-  case "$_wrh_s" in
-    *waiver-register.md*) ;;
-    *) printf '%s' "$_wrh_r"; return 0 ;;
-  esac
+  _cp8b_names_waiver "$_wrh_s" || { printf '%s' "$_wrh_r"; return 0; }   # SWAS-1007: the leaf test, shared with the advice hints
   _wrh_sent=' Next: make this change in a dev clone (escape card R30 cp-write).'
   _wrh_pre=$_wrh_r
   _wrh_post=''
@@ -4890,12 +5037,71 @@ _cp8b_sub_tok() {
   [ "$_s84xa" = 1 ] && [ "$_s84w" = 1 ]   # SWAS184-XARGS
 }
 
+# _cp8b_sub_skip_date "<cmd>": SWAS-1007 (family R, design 6.3, erratum E-m8 and round 6 option B). Sets _s84dv to the command with a LEADING standalone assignment statement `NAME=$(date ...)` replaced by `NAME=x`,
+# so R28 starts at the next opener (text with no later opener is not R28's to judge; every other arm still reads the whole command). Fail by disqualification: the skip applies only when the command OPENS with
+# `NAME=` straight before the first `$(` (an `echo $(date)`, a prefix form `T=$(date) git ...`, a backtick, `<(` or `>(` is not skipped), a `)` closes it and is directly followed by `;`, `&&` or a newline
+# (the follow test is a CONTROL, not a belt: for a prefix form `T=$(date -u +%F) git ...` the prefix `T=` passes the statement and name tests, so the follow test is the only thing that stops the skip), the body is exactly `date` and then words that are each `-u` or start with `+` (a format),
+# and every body byte is in the plain set. `-f`, `--file`, `-s`, `-d`, `-r` and every other flag disqualify (GNU date -f reads a file, -s sets the clock). Anything else leaves the command as it was.
+_cp8b_sub_skip_date() {
+  _s84dv=$1
+  while :; do
+    case "$_s84dv" in
+      *'$('*) : ;;
+      *) break ;;
+    esac
+    _s84dp=${_s84dv%%'$('*}
+    case "$_s84dp" in
+      [A-Za-z_]*=) : ;;
+      *) break ;;   # SWAS1007-DATE-STMT
+    esac
+    case "${_s84dp%=}" in
+      *[!A-Za-z0-9_]*) break ;;   # SWAS1007-DATE-NAME
+    esac
+    _s84dr=${_s84dv#*'$('}
+    case "$_s84dr" in
+      *')'*) : ;;
+      *) break ;;
+    esac
+    case "${_s84dr#*')'}" in
+      ';'*|'&&'*|"$_cp8b_nl"*) : ;;
+      *) break ;;   # SWAS1007-DATE-FOLLOW
+    esac
+    _s84db=${_s84dr%%')'*}
+    case "$_s84db" in
+      date|'date '*) : ;;
+      *) break ;;   # SWAS1007-DATE-LEAD
+    esac
+    case "$_s84db" in
+      *' '*) _s84dq=${_s84db#* } ;;
+      *) _s84dq='' ;;
+    esac
+    _s84dk=0
+    while [ -n "$_s84dq" ]; do
+      case "$_s84dq" in
+        ' '*) _s84dq=${_s84dq# }; continue ;;
+      esac
+      _s84dw=${_s84dq%% *}
+      _s84dq=${_s84dq#"$_s84dw"}
+      case "$_s84dw" in
+        *[!A-Za-z0-9._/+:,@%=-]*) _s84dk=1; break ;;   # SWAS1007-DATE-BYTES
+      esac
+      case "$_s84dw" in
+        -u|+*) : ;;
+        *) _s84dk=1; break ;;   # SWAS1007-DATE-WORD
+      esac
+    done
+    [ "$_s84dk" = 0 ] || break
+    _s84dv=${_s84dp}x${_s84dr#*')'}
+  done
+}
+
 # _cp8b_subst_denied "<cmd>": SWAS-184 - PREDICATE, 0 = deny. Gate: the command holds an opener. Window: the text after the
 # first one (so every body is in it). Lead pass: a private copy marks every opener, makes `; & | )` stops and glues a paren to
 # the word before it; the first word after each marker must be plain. Word-test pass (the shared stop text): `(` is a stop
 # too, a `$` right before a quote is deleted (`gi$'t'` is git), the text is de-quoted (`g\it`, `"g"it` are git) and split on
 # whitespace; a git word must then be followed by a measured read, and an interpreter must name a script.
 _cp8b_subst_denied() {
+  _cp8b_sub_skip_date "$1"; set -- "$_s84dv"   # SWAS1007-DATE-CALL
   case "$1" in
     *'$('*|*'<('*|*'>('*|*'`'*|*'${'[!A-Za-z0-9_\#!@*?\$-]*) : ;;
     *) return 1 ;;
@@ -5989,6 +6195,7 @@ _cp8b_g1() {
 
 # _cp8b_g2 <args...>: G2, `ci-gates.sh --own-tree [dir]` (design §4.2). The operand is `.` or inside the clone.
 _cp8b_g2() {
+  if [ "$#" = 1 ] && _cp8b_g_wf_name_ok "$1"; then _cp8b_g_file_ok "$1" 0; return; fi   # G2-WF
   [ "${1:-}" = --own-tree ] || return 1
   case $# in
     1) return 0 ;;
@@ -5999,6 +6206,30 @@ _cp8b_g2() {
        _cp8b_clone_arg_ok "$2" ;;   # G2-OPERAND
     *) return 1 ;;
   esac
+}
+
+# _cp8b_g_wf_name_ok "<word>": SWAS-1007. 0 iff the word is exactly `.github/workflows/<name>.yml` or `.yaml` with <name> in [A-Za-z0-9._-]+ and no further `/`.
+# The one spelling of the workflow operand, for G2's file arm and for the root kit-query row (`_cp8b_kq_ci_gates_ok`).
+_cp8b_g_wf_name_ok() {   # G2-WF-NAME
+  case "$1" in
+    .github/workflows/*.yml|.github/workflows/*.yaml) : ;;
+    *) return 1 ;;
+  esac
+  _gw_n=${1#.github/workflows/}
+  case "$_gw_n" in
+    ''|.yml|.yaml|*/*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# _cp8b_g7 <args...>: SWAS-1007, G7, `review-lane.sh --pre-push`: exactly that one flag. review-lane runs git in the clone (it reads git objects and the
+# working tree's shipped docs and changes nothing: its own header), so the clone must be clean as G4 and G5 require: the git-config allowlist, no live
+# hooks, and the origin equal to the root's.
+_cp8b_g7() {
+  [ "$#" = 1 ] && [ "$1" = --pre-push ] || return 1   # G7-ARGV
+  _cp8b_g_cfg_allow "$_CP8B_CLONE" || { _CP8B_G_WHY="config-key $(_cp8b_g_clean "${_gbk:-}")"; return 1; }   # G7C-ALLOWLIST
+  _cp8b_g_hooks_ok "$_CP8B_CLONE" || { _CP8B_G_WHY=hooks; return 1; }   # G7C-HOOKS
+  _cp8b_g_origin_ok "$_CP8B_CLONE" || { _CP8B_G_WHY=origin; return 1; }   # G7C-ORIGIN
 }
 
 # _cp8b_g3 <args...>: G3, `promotion-readiness.sh --class --changed <listing>` (design §4.3), the two flags once each in either order.
@@ -6247,6 +6478,7 @@ _cp8b_g_dispatch() {
       if [ "${1:-}" = new ]; then _cp8b_g6 "$@"; else _cp8b_g1 "$@"; fi ;;   # G6-DISPATCH
     conformance/ci-gates.sh) _CP8B_G_KNOWN=1; _cp8b_g2 "$@" ;;
     conformance/promotion-readiness.sh) _CP8B_G_KNOWN=1; _cp8b_g3 "$@" ;;
+    conformance/review-lane.sh) _CP8B_G_KNOWN=1; _cp8b_g7 "$@" ;;   # G7-DISPATCH
     *) return 1 ;;
   esac
 }
@@ -6280,7 +6512,7 @@ _cp8b_g_decline() {   # <segment> <why>: always rc 1. When the segment's lead LO
   esac
   _gdk=0
   case "$_gdl" in
-    scripts/sparkwright|conformance/ci-gates.sh|conformance/promotion-readiness.sh|*/scripts/sparkwright|*/conformance/ci-gates.sh|*/conformance/promotion-readiness.sh|"${PROTECTED_ROOT:-/nonexistent}"/scripts/board.sh) _gdk=1 ;;
+    scripts/sparkwright|conformance/ci-gates.sh|conformance/promotion-readiness.sh|conformance/review-lane.sh|*/scripts/sparkwright|*/conformance/ci-gates.sh|*/conformance/promotion-readiness.sh|*/conformance/review-lane.sh|"${PROTECTED_ROOT:-/nonexistent}"/scripts/board.sh) _gdk=1 ;;
     pipx) _cp8b_pop_tok "$_gdr"; [ "$_pt_tok" = run ] && _gdk=1 ;;
   esac
   if [ "$_gdk" = 1 ]; then
@@ -6469,7 +6701,11 @@ _CP8B_READ_VERBS_TIERED='grep egrep fgrep rg diff column file'
 _CP8B_GREP_BARE='-E -F -I -a -c -i -l -n -o -q -r -v -w -x -<digits> --count'
 _CP8B_GREP_OPND='-e -f -m -A -B --include --regexp'
 _CP8B_GITGREP_EXTRA='--cached -p'
-_CP8B_RG_BARE='-n'
+# SWAS-1007 (family R): rg's bare set. Each flag changes what is PRINTED, never what is read or run: -n numbers lines, -c counts matches, -i folds case, -l and
+# --files-with-matches print the names of matching files, -q prints nothing and sets the exit status. None takes a value. `--pre`, `--pre-glob`, `-z`/`--search-zip`
+# (it spawns decompressors) and `--hostname-bin` (it runs a program) stay ABSENT by design, as does -r (--replace takes a value): a cluster passes only if every
+# letter is on this set, so -lz and -nz still decline on the z.
+_CP8B_RG_BARE='-n -c -i -l -q --files-with-matches'
 _CP8B_RG_OPND='-A -e -f -g -t'
 _CP8B_DIFF_BARE='-q -r -u'
 _CP8B_DIFF_OPND='-U --exclude'
@@ -7465,7 +7701,8 @@ _cp8b_tad_is_kit_exec() {
 # write path reds that lock. A grep-lock over this list would have been fail-by-hope.
 #
 # Decline-on-ANY (each is a disqualifier, so a bug here over-denies):
-#   · any redirect byte (`<` or `>`) in the segment — `… --path CLAUDE.md > conformance/out.txt`
+#   · any `<`, and any `>` that is not one literal absolute outside-root target on a script of the D3a list (SWAS-77 D3a, `_cp8b_kq_strip_redirs`) —
+#     `… --path CLAUDE.md > conformance/out.txt`; a script not on that list (`ci-gates.sh`) declines on any `>` (SWAS-1007)
 #   · any `$` / backtick — the guard reads PRE-shell-parse bytes and cannot resolve them
 #   · any `..` byte in the script token (belt; the anchored exact table match is the primary)
 #   · a script token that is not an EXACT table key after `./`-stripping (no path-alias spellings)
@@ -7517,7 +7754,31 @@ _cp8b_kit_query_toks() {
     # `.publish-identifiers` is a control-plane token in argv, which is why kit-exec declines `--screen .publish-identifiers`
     # and a query row is needed at all.
     scripts/board.sh)                   printf '%s' 'migrate' ;;
+    # SWAS-1007: the kit's own workflow-drift check, `ci-gates.sh .github/workflows/<name>.yml|.yaml`, ONE operand, validated by
+    # `_cp8b_kq_ci_gates_ok` (this set names the shape it may carry). The operand is a control-plane path, which is why kit-exec declines it
+    # and a query row is needed at all. The file mode only reads the workflow and the kit's dispatch lines (conformance/ci-gates.sh: it
+    # greps $WORKFLOW and calls check_kit_seams); the coupling lock RUNS the pair and asserts the worktree is unchanged.
+    conformance/ci-gates.sh)            printf '%s' '.github/workflows/<name>.yml' ;;   # KQ-CIGATES-ROW
   esac
+}
+# _cp8b_kq_ci_gates_ok "<args…>": 0 iff the arguments after `conformance/ci-gates.sh` are exactly ONE workflow operand: `.github/workflows/<name>.yml|.yaml`
+# (`_cp8b_g_wf_name_ok`), relative to the CONFIDENT root, not a symlink, resolving physically under `<root>/.github/workflows/`, a regular file with one
+# link. Any other argument declines to today's verdict. It does NOT join the D3a redirect list: a `>` on this row declines (kit-query returns 1 for it).
+_cp8b_kq_ci_gates_ok() {
+  # belt, unmutatable behind `_kroot` (the call site's gate is the control, as for the board.sh row): never off the confident root
+  if [ -n "${_CP8B_EFF:-}" ] || [ "${_CP8B_EFF_UNKNOWN:-0}" != 0 ]; then return 1; fi
+  [ $# = 1 ] || return 1   # KQ-CIGATES-ARITY
+  _cp8b_g_wf_name_ok "$1" || return 1   # KQ-CIGATES-FORM
+  [ -n "${PROTECTED_ROOT:-}" ] || return 1
+  [ ! -L "$PROTECTED_ROOT/$1" ] && [ -f "$PROTECTED_ROOT/$1" ] || return 1
+  _kcr=$(_resolve_physical "$PROTECTED_ROOT") || return 1
+  _kcp=$(_resolve_physical "$PROTECTED_ROOT/$1") || return 1
+  case "$_kcp" in
+    "$_kcr"/.github/workflows/*) : ;;
+    *) return 1 ;;
+  esac
+  _kcn=$(_nlink_of "$_kcp") || return 1
+  [ "$_kcn" = 1 ]
 }
 # _cp8b_kq_tracker_contract_ok "<args…>": 0 iff the arguments after `conformance/tracker-contract.sh` are exactly
 # `--preflight` once, `--conf .kit/tracker.conf|./.kit/tracker.conf` once, and `--as ci|dev|agent` at most once, in any
@@ -7723,6 +7984,11 @@ _cp8b_tad_is_kit_query() {
         *) _kqr=1 ;;
       esac
     else _kqr=1; fi
+    [ "$_kqg" = 1 ] || set +f
+    return "$_kqr"
+  fi
+  if [ "$_kqs" = conformance/ci-gates.sh ]; then   # SWAS-1007: `ci-gates.sh <workflow>`, one operand, confident root only
+    _cp8b_kq_ci_gates_ok "$@" && _kqr=0 || _kqr=1
     [ "$_kqg" = 1 ] || set +f
     return "$_kqr"
   fi
@@ -8244,7 +8510,20 @@ _cp8b_cwd_redir_in() {
 # What is left is the two escapes that were MEASURED to work, and they are what the message now says.
 _cp8b_cwd_unknown_reason() {
   _cus=$(printf '%s' "$1" | cut -c1-160)
-  printf '13: a relative write after a directory change the guard could not follow (`cd -`, a bare `cd`, `pushd`/`popd`, a quoted / flagged / glob-bearing / variable / absolute / `~`-rooted `cd`, or a cwd inherited from a PRIOR tool call) cannot be proven to land outside the control plane - denied (fail-closed; trigger=cwd-unknown). Offending segment: [%s]. TIP: while the cwd is unknown EVERY operand is disqualifying, absolute ones included - so use the Edit/Write tool, or put the write in a call whose `cd` the guard CAN follow (one literal relative `cd` from the repo root: no flags, no quotes, no globs, no variables, no `..`). (escape card R11 cwd-unknown)' "$_cus"
+  printf '13: a relative write after a directory change the guard could not follow (`cd -`, a bare `cd`, `pushd`/`popd`, a quoted / flagged / glob-bearing / variable / absolute / `~`-rooted `cd`, or a cwd inherited from a PRIOR tool call) cannot be proven to land outside the control plane - denied (fail-closed; trigger=cwd-unknown). Offending segment: [%s]. TIP: while the cwd is unknown EVERY operand is disqualifying, absolute ones included - so use the Edit/Write tool, or put the write in a call whose `cd` the guard CAN follow (one literal relative `cd` from the repo root: no flags, no quotes, no globs, no variables, no `..`). (escape card R11 cwd-unknown)%s' "$_cus" "$(_cp8b_h8_text "$1")"
+}
+# _cp8b_h8_text "<segment>": SWAS-1007 H8. For a segment that leads with git while a dev clone is the directory the walk could not follow, name the
+# form the guard judges as it judges the same command at the root: `git -C <abs-clone> <subcommand>`. REASON TEXT ONLY. (The `git -C` equivalence
+# is [doc] for push-to-main and force-push, and measured by cells K-N25 to K-N29 for the ref arms; the sentence names the clone's own config and hooks.)
+_cp8b_h8_text() {
+  _cp8b_pop_tok "$1"
+  [ "$_pt_tok" = git ] || return 0
+  _h8_c=${_CP8B_CLONE:-}
+  if [ -z "$_h8_c" ]; then
+    _cp8b_raw_cd_clone "${_tad_raw:-${_cp8b_raw:-}}" || return 0
+    _h8_c=$_rc_c
+  fi
+  printf ' For git in a dev clone, use git -C %s <subcommand> from the root: the guard judges it as it judges the same command at the root. It runs that clone'"'"'s own config and hooks, so re-clone if either was changed.' "$_h8_c"
 }
 
 # GUARD-READ-EXEC-LANE (K-3a) — the TWO NEW REASON TOKENS, appended by the arm that set them. The
@@ -11307,11 +11586,19 @@ guard_check_command() {
     "$_H3A_TLS_PREFIX "*) _h3a_pv=${cmd#"$_H3A_TLS_PREFIX "} ;;
     *) _h3a_pv=$cmd ;;
   esac
+  # SWAS-1007 (family R, design 6.2, errata E-M1, E-M2, E2-N1): the path leg also ignores an `-e '<quoted pattern>'` of a search verb, under the disqualifying tests of `_h3a_epat_walk`
+  # (defined with the other helpers at the end of the file). It judges the VIEW of the command with each such pair dropped; on any failed test the view is unchanged, so the verdict is
+  # main's (fail by disqualification, D-240813-3). The verb leg, the pattern, the message and every other arm still read the whole command.
+  if _h3a_epat_walk "$_h3a_pv"; then _h3a_pv=$_HEV_OUT; fi   # H3A-E-CALL
+  _h3a_hint=''
+  case "$cmd" in
+    'grep '*|'egrep '*|'fgrep '*|'rg '*|'git grep '*) _h3a_hint=" If no file you name is a secret and the secret-shaped text is only the search pattern, use the Grep tool where your session has one, or pass the pattern as -e '<pattern>', one quoted word of plain text only, placed before the first file." ;;
+  esac
 
   if ! selfedit_allowed \
      && _gmq shell-secret-read "$cmd" -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]<>]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
      && _gmq shell-secret-read "$_h3a_pv" -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*"'\''<>)`${},]|$)|\.(pem|key)([[:space:];|&*"'\''<>)`${},]|$)|id_rsa|(^|[[:space:]/;|&"'\''<>(`{,\*})])secrets?/'; then
-    printf '%s%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated.' "$(_guard_stop_pointer secret-read)"; return 1
+    printf '%s%s%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated.' "$_h3a_hint" "$(_guard_stop_pointer secret-read)"; return 1
   fi
   # SWAS-332: a copy, move, link, archive or `dd if=` whose SOURCE is a secret is the read half of exfil under another name, and
   # the path-prefixed reader (`/bin/cat .env`) is judged the same way (see _guard_secret_copy_denied, end of file). ADD-ONLY: a
@@ -11322,6 +11609,13 @@ guard_check_command() {
     if [ "$_scp_rc" = 1 ] && [ "$_scp_out" != ok ]; then _guard_fault secret-copy; fi
     if [ "$_scp_rc" = 0 ]; then printf '%s' "$_scp_out"; return 1; fi
   fi
+  # SWAS-996: a shell WRITE (`>`, `>>`, `tee`, a copy, move or link destination, `dd of=`) into a secret file is refused as the Write
+  # tool refuses it (guard_check_path). UNGATED, like that arm (design D6): not behind selfedit_allowed. ADD-ONLY: a no-deny falls
+  # through. The template setup `cp .env.example .env` (no .env yet) is the one exemption (_scw_exempt, design D4).
+  _scw_rc=0; _scw_out=$(_guard_secret_write_denied "$cmd" "${2:-}") || _scw_rc=$?   # 996-CALL
+  [ "$_scw_rc" -le 1 ] || _guard_fault secret-write-shell
+  if [ "$_scw_rc" = 1 ] && [ "$_scw_out" != ok ]; then _guard_fault secret-write-shell; fi
+  if [ "$_scw_rc" = 0 ]; then printf '%s' "$_scw_out"; return 1; fi
   # --- destructive matrix: moved VERBATIM from the PRE-SPLIT guard.sh (see git history; the line
   #     range that stood here died with the split) ---
   # CP-8a: the leading verb decides whether the ARGUMENTS are code or data. These carry
@@ -13169,7 +13463,7 @@ _ssr_denied() {
 # moved them to SWAS-336 with the over-deny measurement they owe.
 # It fails by disqualification (D-240813-3): the verb is found anywhere in a segment, de-quoted, basenamed and case-folded, and a
 # segment it cannot read (`$`, a backtick, `<(`) has every token of the whole command judged. A destination that is a secret is
-# a write, not a read, and stays allowed. Each operand is judged as written and cut at the first of ( ) < > ` { } (so
+# a write, not a read: this arm does not judge it (SWAS-996's _guard_secret_write_denied, below, does). Each operand is judged as written and cut at the first of ( ) < > ` { } (so
 # `dd if=.env>x` and `cp .env</dev/null x` are `.env`), and every flag or key test runs on the de-quoted token. A literal source that
 # exists is resolved (symlink, hardlink alias, a resolved `secrets` directory), with the template conjunction. A verb written as a
 # substitution, variable or brace has every token of its segment judged. A command of more tokens than _SCP_TOKCAP is refused
@@ -13585,3 +13879,578 @@ _guard_secret_copy_denied() (
   printf '%s' ok
   return 1
 )
+
+# ================================================================================================
+# SWAS-996 GUARD-SECRET-WRITE-SHELL (design docs/architecture/2026-11-21-guard-secret-write-shell-996-design.md, D1 to D7).
+# The Write/Edit route refuses a secret file (guard_check_path); the shell reached the same bytes with `>`, `>>`, `tee`, `cp`, `mv`,
+# `dd of=`. This arm judges the DESTINATION of those writes with the same predicate as the Write route (_is_secret_hit: a template
+# name stays a legal destination), reusing the SWAS-332 walk's parts (_scp_norm, _scp_group, _scp_cutat, _scp_alias_hit,
+# _scp_pieces_hit, the caps) and _redir_targets. ADD-ONLY: it denies or falls through. Ungated (D6): not behind selfedit_allowed.
+# The ONE allowed secret destination is the template-setup copy (D4, _scw_exempt): `cp .env.example .env` while no .env exists.
+# Each leg and each exemption test carries a `# 996-<TAG>` marker, so a mutant addresses it by that tag.
+# ================================================================================================
+# _scw_fast "<view>": 0 iff the command could write a secret (secret-shaped text AND a redirect, tee, copy word or of=). Fork-free. It reads
+# _scp_view's view (the raw text plus its quote- and backslash-deleted form), so `.e''nv` and `c''p` are seen; an ANSI-C `$'..\..'` word
+# (which can spell any name or verb) always proceeds, as _scp_copy_word does.
+_scw_fast() {
+  case "$1" in
+    *'$'"'"*'\'*) return 0 ;;
+  esac
+  _scp_secretish "$1" || return 1
+  case "$1" in
+    *'>'*|*'of='*|*[tT][eE][eE]*|*[cC][pP]*|*[mM][vV]*|*[lL][nN]*|*[lL][iI][nN][kK]*|*[iI][nN][sS][tT][aA][lL][lL]*|*[rR][sS][yY][nN][cC]*|*[dD][iI][tT][tT][oO]*|*[dD][dD]*) return 0 ;;
+  esac
+  return 1
+}
+# _scw_dq "<token>": sets _scw_ad to the de-quoted token (as the SWAS-332 operand loop does).
+_scw_dq() {
+  _scw_ad=$1
+  case "$1" in
+    *"'"*|*'"'*|*'\'*)
+      _scw_ad=$(printf '%s' "$1" | sed -e "s/\$'/'/g" -e 's/\$"/"/g' -e "s/'//g" -e 's/"//g' -e 's/\\//g') || exit 2 ;;
+  esac
+}
+# _scw_name_test "<name>": 0 iff the name is secret-shaped, with the template exemption of _is_secret_hit (the Write route's predicate).
+_scw_name_test() {
+  [ -n "$1" ] || return 1
+  _scp_secretish "$1" || return 1
+  _is_secret_hit "$1" && return 0   # 996-HIT
+  _is_secret_hit "$1/" && return 0   # 996-HIT
+  return 1
+}
+# _scw_hit "<token>": 0 iff a DESTINATION is secret by name or by what an existing literal resolves to (leaves the hit name in _scp_nm).
+_scw_hit() {
+  _scp_nm=$1
+  case "$_scp_nm" in
+    *"'"*|*'"'*|*'\'*)
+      _scw_dq "$_scp_nm"; _scp_nm=$_scw_ad ;;
+  esac
+  _scp_cutat "$_scp_nm"
+  _scp_nc=$_scp_cut
+  case "$_scp_nm" in
+    *=*) _scp_nm=${_scp_nm#*=} ;;
+  esac
+  case "$_scp_nc" in
+    *=*) _scp_nc=${_scp_nc#*=} ;;
+  esac
+  if _scw_name_test "$_scp_nm"; then return 0; fi
+  if [ "$_scp_nc" != "$_scp_nm" ] && _scw_name_test "$_scp_nc"; then _scp_nm=$_scp_nc; return 0; fi
+  _scp_alias_hit "$_scp_nm" && return 0
+  if [ "$_scp_nc" != "$_scp_nm" ] && _scp_alias_hit "$_scp_nc"; then _scp_nm=$_scp_nc; return 0; fi
+  return 1
+}
+# _scw_qwords "<cmd>": prints each QUOTED redirect-target word, de-quoted, one per line (the awk _redir_targets keeps for its control-plane check).
+_scw_qwords() {
+  printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C awk -v Q="$_cp8b_sq" '{
+    n = length($0); oq = ""
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (oq == "" && c == "\\") { i++; continue }
+      if (oq == "\"" && c == "\\") { i++; continue }
+      if (oq != "") { if (c == oq) oq = ""; continue }
+      if (c == "\"" || c == Q) { oq = c; continue }
+      if (c != ">") continue
+      j = i + 1
+      while (substr($0, j, 1) ~ /[|>&]/) j++
+      while (substr($0, j, 1) == " " || substr($0, j, 1) == "\t") j++
+      w = ""; hasq = 0; q = ""
+      for (; j <= n; j++) {
+        c = substr($0, j, 1)
+        if (c == "\\" && q != Q) { j++; w = w substr($0, j, 1); continue }
+        if (q == "") { if (c == " " || c == "\t") break; if (c == "\"" || c == Q) { q = c; hasq = 1; continue } }
+        else if (c == q) { q = ""; continue }
+        w = w c
+      }
+      if (hasq) print w
+      i = j
+    }
+  }'
+}
+# _scw_redir "<cmd>": the redirect leg. rc 0 = a redirect target is secret (name in _scw_hn). A non-literal target (rc 3) sets _scw_nonlit,
+# so the caller judges the tokens of that segment and every NAME=value; a non-literal target with no secret-shaped text stays ALLOW.
+_scw_redir() {
+  case "$1" in
+    *'>'*) : ;;
+    *) return 1 ;;
+  esac
+  _scw_rrc=0
+  _scw_rt=$(_redir_targets "$1") || _scw_rrc=$?
+  case "$_scw_rrc" in
+    0|3) : ;;
+    *) exit 2 ;;
+  esac
+  if [ "$_scw_rrc" = 3 ]; then _scw_nonlit=1; fi
+  for _scw_t in $_scw_rt; do
+    if _scw_hit "$_scw_t"; then _scw_hn=$_scp_nm; return 0; fi
+  done
+  _scw_q=$(_scw_qwords "$1") || exit 2
+  while [ -n "$_scw_q" ]; do
+    _scw_t=${_scw_q%%"$_cp8b_nl"*}
+    case "$_scw_q" in
+      *"$_cp8b_nl"*) _scw_q=${_scw_q#*"$_cp8b_nl"} ;;
+      *) _scw_q='' ;;
+    esac
+    [ -n "$_scw_t" ] || continue
+    if _scw_hit "$_scw_t"; then _scw_hn=$_scp_nm; return 0; fi   # 996-QUOTE
+  done
+  return 1
+}
+# _scw_nl_seg "<segment>": 0 iff a token of a segment that carries a non-literal redirect target is secret-shaped, by name or by its pieces.
+_scw_nl_seg() {
+  # shellcheck disable=SC2086
+  set -- $1
+  for _scw_a in "$@"; do
+    if _scw_hit "$_scw_a"; then _scw_hn=$_scp_nm; return 0; fi
+    if _scp_pieces_hit "$_scw_a"; then _scw_hn=$_scp_hn; return 0; fi   # 996-PIECE
+  done
+  return 1
+}
+# _scw_assign_scan: 0 iff the value of any NAME=value word in the command is secret-shaped (`F=.env; echo x > $F`).
+_scw_assign_scan() {
+  _cp8b_segments_load "$_scp_cmd"
+  while _cp8b_next_seg; do
+    # shellcheck disable=SC2086
+    set -- $_seg
+    for _scw_a in "$@"; do
+      case "$_scw_a" in
+        *=*) if _scw_hit "$_scw_a"; then _scw_hn=$_scp_nm; return 0; fi ;;   # 996-ASSIGN
+      esac
+    done
+  done
+  return 1
+}
+# _scw_cdscan: sets _scw_hascd to 1 iff any segmented token of the command normalises to cd, pushd or popd, or to function, alias, eval, enable or
+# chdir (words that can change the directory or redefine a verb the exemption reads), or is a function head in any spelling: a word holding `()`,
+# or a word ending in `(` followed by a `)` word (`cp () {`, `cp ( ) {`, `cp( ) {`) (D4 test 7). `.` and source are read by _scw_cmdpos_scan, in
+# command position only.
+_scw_cdscan() {
+  _scw_hascd=0; _scw_pw=''
+  for _scw_w in $_walk; do   # 996-RAWSPLIT
+    _scp_norm "$_scw_w"
+    case "$_scp_n" in
+      cd|pushd|popd) _scw_hascd=1; break ;;   # 996-CDANY
+      chdir|function|alias|eval|enable) _scw_hascd=1; break ;;   # 996-REDEF
+    esac
+    case "$_scw_w" in
+      *'()'*) _scw_hascd=1; break ;;   # 996-REDEFANYFN
+    esac
+    case "$_scw_w" in
+      ')'*)   # 996-REDEFGLUE
+        case "$_scw_pw" in
+          *'(') _scw_hascd=1; break ;;   # 996-REDEFANYSP
+        esac ;;
+    esac
+    _scw_pw=$_scw_w
+  done
+}
+# _scw_cmdpos_seg "<segment>": sets _scw_hascd to 1 iff the first command word of the segment is `.` or source. It first skips NAME=value words, the
+# reserved words if then elif else do while until and !, a word that normalises to nothing (`{`, `(`) and the prefixes command, builtin, time, exec and nohup.
+_scw_cmdpos_seg() {
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      *=*) shift; continue ;;
+    esac
+    _scp_norm "$1"
+    case "$_scp_n" in
+      ''|if|then|elif|else|do|while|until|'!'|command|builtin|time|exec|nohup) shift ;;   # 996-CMDSKIP
+      *) break ;;
+    esac
+  done
+  [ $# -gt 0 ] || return 0
+  case "$_scp_n" in
+    .|source) _scw_hascd=1 ;;   # 996-REDEFPOS
+  esac
+}
+# _scw_cmdpos_scan: runs _scw_cmdpos_seg over every segment (it reloads the segmenter, so the caller reloads it again before its own walk).
+_scw_cmdpos_scan() {
+  _cp8b_segments_load "$_scp_cmd"
+  while _cp8b_next_seg; do
+    _scw_cmdpos_seg "$_seg"
+    [ "$_scw_hascd" = 0 ] || return 0
+  done
+  return 0
+}
+# _scw_lit "<operand>": 0 iff the operand is a plain literal (no dollar, backtick, process substitution, glob, brace or tilde byte).
+_scw_lit() {
+  if _scp_unparse "$1"; then return 1; fi
+  if _scp_wild "$1"; then return 1; fi
+  case "$1" in
+    *'~'*) return 1 ;;
+  esac
+  return 0
+}
+# _scw_exempt "<dst>" "<src>": 0 iff the copy is the template setup (D4): every test must hold, else the destination hit denies.
+_scw_exempt() {
+  _sx_dst=$1; _sx_src=$2
+  [ "$_scw_kind" = tdir ] || return 1
+  [ -z "$_scw_tdir" ] || return 1
+  [ "$_scw_vn" = cp ] || return 1   # 996-VERB
+  [ "$_scw_vidx" = 1 ] || return 1   # 996-LEAD
+  [ "$_scw_vsl" = 0 ] || return 1   # 996-SLASH
+  [ "$_scw_nops" = 2 ] || return 1
+  _scw_lit "$_sx_src" && _scw_lit "$_sx_dst" || return 1   # 996-LIT
+  [ "$_scw_flags" = 0 ] || return 1   # 996-FLAG
+  _scp_tpl "${_sx_src##*/}" || return 1   # 996-TSRC
+  if _scp_alias_hit "$_sx_src"; then return 1; fi   # 996-SRCRES
+  case "${_sx_dst##*/}" in   # 996-TDST
+    .env|.env.?*) : ;;
+    *) return 1 ;;
+  esac
+  if _scp_tpl "${_sx_dst##*/}"; then return 1; fi   # 996-TPLDST
+  case "$_sx_dst" in
+    *.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*) return 1 ;;   # 996-KEYMAT
+  esac
+  [ "$_scw_cdok" = 1 ] || return 1   # 996-CWD
+  [ ! -L "$_sx_dst" ] || return 1   # 996-LINK
+  if [ -e "$_sx_dst" ] && [ "$_scw_nclob" != 1 ]; then return 1; fi   # 996-EXIST
+  [ "$_scw_hascd" = 0 ] || return 1   # 996-CD
+  return 0
+}
+# _scw_nl_op "<operand>": an unreadable destination ($, a backtick, <(, a glob or brace byte) sets _scw_nonlit (the NAME=value scan then runs) and is
+# judged by its pieces. rc 0 = a piece is secret (name in _scw_hn).
+_scw_nl_op() {
+  if _scp_unparse "$1" || _scp_wild "$1"; then :; else return 1; fi
+  _scw_nonlit=1   # 996-NLSET
+  if _scp_pieces_hit "$1"; then _scw_hn=$_scp_hn; return 0; fi   # 996-NLPIECE
+  return 1
+}
+# _scw_findverb "<segment>": finds the tee, dd or copy-group verb anywhere in the segment (an assignment's value is tried as a verb too, `X=$(tee .env)`)
+# and leaves the words after it in _scw_rest; sets _scw_kind (tee, tdir, pos, dd, or empty), _scw_vn, _scw_vidx (its position) and _scw_vsl (a slash in it).
+_scw_findverb() {
+  _scw_kind=''; _scw_vn=''; _scw_vidx=0; _scw_vsl=0; _scw_idx=0; _scw_rest=''
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    _scw_a=$1; shift; _scw_idx=$((_scw_idx + 1))
+    _scp_norm "$_scw_a"
+    case "$_scw_a" in
+      -*) continue ;;
+      *=*)
+        case "${_scw_a#*=}" in
+          '$('*|'`'*) _scp_norm "${_scw_a#*=}" ;;   # 996-ASGVERB
+          *) continue ;;   # 996-ASGSKIP
+        esac ;;
+    esac
+    if [ "$_scp_n" = tee ]; then _scw_kind='tee'; break; fi   # 996-TEELEAD
+    _scp_group "$_scp_n"
+    case "$_scp_grp" in
+      tdir|pos|dd) _scw_kind=$_scp_grp; _scw_vn=$_scp_n; _scw_vidx=$_scw_idx; _scw_vsl=$_scp_slash; break ;;
+    esac
+  done
+  _scw_rest="$*"
+}
+# _scw_tee_leg: every non-flag operand after tee is a destination.
+_scw_tee_leg() {
+  # shellcheck disable=SC2086
+  set -- $_scw_rest
+  while [ $# -gt 0 ]; do
+    _scw_a=$1; shift
+    case "$_scw_a" in
+      -*) continue ;;
+    esac
+    if _scw_nl_op "$_scw_a"; then return 0; fi   # 996-NLTEE
+    if _scw_hit "$_scw_a"; then _scw_hn=$_scp_nm; return 0; fi   # 996-TEE
+  done
+  return 1
+}
+# _scw_dd_leg: the of= operand is the destination.
+_scw_dd_leg() {
+  # shellcheck disable=SC2086
+  set -- $_scw_rest
+  while [ $# -gt 0 ]; do
+    _scw_a=$1; shift
+    _scw_dq "$_scw_a"
+    case "$_scw_ad" in
+      of=*)
+        if _scw_nl_op "${_scw_ad#of=}"; then return 0; fi   # 996-NLDD
+        if _scw_hit "${_scw_ad#of=}"; then _scw_hn=$_scp_nm; return 0; fi ;;   # 996-DD
+    esac
+  done
+  return 1
+}
+# _scw_flag "<flag>": one flag word of a copy. Sets _scw_flags (any flag but -n and --no-clobber), _scw_nclob, the -t binding (a glued -tDIR, or the next word) and
+# _scw_perm (a flag after the first operand: a GNU permuted option, so the destination is not the last operand).
+_scw_flag() {
+  if [ "$_scw_nops" -gt 0 ]; then _scw_perm=1; fi   # 996-PERM
+  case "$1" in
+    --no-clobber|-n) _scw_nclob=1 ;;
+    --t*=*)
+      if [ "$_scw_kind" = tdir ]; then _scw_tdir=${1#*=}; fi
+      _scw_flags=1 ;;
+    --t*)
+      if [ "$_scw_kind" = tdir ]; then _scw_tnext=1; fi
+      _scw_flags=1 ;;
+    --*) _scw_flags=1 ;;
+    *)
+      _scw_flags=1
+      case "${1#-}" in
+        *t*)
+          if [ "$_scw_kind" = tdir ]; then
+            _scw_tg=${1#*t}   # 996-TGLUE
+            if [ -n "$_scw_tg" ]; then _scw_tdir=$_scw_tg; else _scw_tnext=1; fi
+          fi ;;
+      esac ;;
+  esac
+}
+# _scw_rw "<raw word>": sets _scw_rk to bare (a redirect operator and nothing after it: the next word is its target), glued (an operator with bytes after
+# it) or none. Read on the RAW word, so a quoted or backslashed `>` is a filename: an optional fd prefix (digits, or {name}), then a run of < > & |
+# that holds a < or a >.
+_scw_rw() {
+  _scw_rk=none
+  _scw_r=$1
+  case "$_scw_r" in
+    [0-9]*) _scw_r=${_scw_r#"${_scw_r%%[!0-9]*}"} ;;   # 996-RDFD
+    '{'*'}'*)   # 996-RDBRACE
+      _scw_cb='}'
+      _scw_in=${_scw_r%%"$_scw_cb"*}
+      _scw_in=${_scw_in#'{'}
+      case "$_scw_in" in
+        ''|[0-9]*|*[!A-Za-z0-9_]*) return 0 ;;
+      esac
+      _scw_r=${_scw_r#*"$_scw_cb"} ;;
+  esac
+  _scw_o=${_scw_r%%[!'<>&|']*}   # 996-RDOP
+  case "$_scw_o" in
+    *'<'*|*'>'*) : ;;
+    *) return 0 ;;
+  esac
+  if [ "$_scw_o" = "$_scw_r" ]; then _scw_rk=bare; else _scw_rk=glued; fi
+}
+# _scw_copy_parse: the operands, flags and -t binding of a copy-group verb from _scw_rest. A redirect word (and the word it binds) and everything from an
+# unquoted `#` word on are not operands.
+_scw_copy_parse() {
+  _scw_ops=''; _scw_nops=0; _scw_tdir=''; _scw_tnext=0; _scw_flags=0; _scw_nclob=0; _scw_skip=0; _scw_perm=0
+  # shellcheck disable=SC2086
+  set -- $_scw_rest
+  while [ $# -gt 0 ]; do
+    _scw_a=$1; shift
+    case "$_scw_a" in
+      '#'*) break ;;   # 996-COMMENT
+    esac
+    _scw_dq "$_scw_a"
+    if [ "$_scw_skip" = 1 ]; then _scw_skip=0; continue; fi
+    _scw_rw "$_scw_a"   # 996-RAWREDIR
+    case "$_scw_rk" in
+      bare) _scw_skip=1; continue ;;   # 996-REDIRDROP
+      glued) continue ;;   # 996-REDIRDROP
+    esac
+    if [ "$_scw_tnext" = 1 ]; then _scw_tdir=$_scw_ad; _scw_tnext=0; continue; fi
+    case "$_scw_ad" in
+      --|-) continue ;;
+      -*) _scw_flag "$_scw_ad" ;;
+      *) _scw_ops="$_scw_ops $_scw_ad"; _scw_nops=$((_scw_nops + 1)) ;;
+    esac
+  done
+}
+# _scw_perm_legs: a permuted flag (`install notes.txt .env -m 600`) hides which operand is the destination, so every operand and the -t value is judged
+# as one, and the template exemption is not reached.
+_scw_perm_legs() {
+  for _scw_d in $_scw_ops $_scw_tdir; do
+    if _scw_nl_op "$_scw_d"; then return 0; fi
+    if _scw_hit "$_scw_d"; then _scw_hn=$_scp_nm; return 0; fi
+  done
+  return 1
+}
+# _scw_copy_legs: the copy-group destination (the last operand, or the -t value), the template exemption, and the <dir>/<source name> join.
+_scw_copy_legs() {
+  _scw_dst=''; _scw_srcs=''
+  for _scw_o in $_scw_ops; do
+    if [ -n "$_scw_dst" ]; then _scw_srcs="$_scw_srcs $_scw_dst"; fi
+    _scw_dst=$_scw_o
+  done
+  if [ -n "$_scw_tdir" ]; then _scw_srcs=$_scw_ops; _scw_dst=$_scw_tdir; fi   # 996-TDIR
+  [ -n "$_scw_dst" ] || return 1   # 996-CPD
+  if [ "$_scw_perm" = 1 ]; then _scw_perm_legs; return $?; fi
+  if _scw_nl_op "$_scw_dst"; then return 0; fi   # 996-NLCP
+  if _scw_hit "$_scw_dst"; then
+    _scw_hn=$_scp_nm
+    if _scw_exempt "$_scw_dst" "${_scw_srcs# }"; then return 1; fi   # 996-NOEX
+    return 0
+  fi
+  _scw_isdir=0
+  if [ -n "$_scw_tdir" ] || [ -d "$_scw_dst" ]; then _scw_isdir=1; fi
+  case "$_scw_dst" in
+    */|.|*/.) _scw_isdir=1 ;;
+  esac
+  if [ "$_scw_isdir" = 1 ]; then   # 996-DIRJOIN
+    for _scw_s in $_scw_srcs; do
+      if _scw_hit "${_scw_dst%/}/${_scw_s##*/}"; then _scw_hn=$_scp_nm; return 0; fi
+    done
+  fi
+  return 1
+}
+# _scw_judge_seg "<segment>": the tee, dd and copy-group legs. rc 0 = a secret destination that is not the template setup (name in _scw_hn).
+_scw_judge_seg() {
+  _scw_findverb "$1"
+  [ -n "$_scw_kind" ] || return 1
+  case "$_scw_kind" in
+    tee) _scw_tee_leg; return $? ;;
+    dd) _scw_dd_leg; return $? ;;
+  esac
+  _scw_copy_parse
+  _scw_copy_legs
+}
+# _scw_reason "<name>": the refusal, the Write route's text (guard_check_path) plus the trigger and, for an env-family name, the template tip.
+_scw_reason() {
+  _scw_rn=$(printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-80) || exit 2
+  printf '%s' "13: writing secret material ($_scw_rn) - human-gated (trigger=secret-write-shell)."
+  case "${_scw_rn##*/}" in
+    .[eE][nN][vV]|.[eE][nN][vV].*|*.[eE][nN][vV])
+      printf '%s' ' To start a .env from its template, run cp .env.example .env while no .env exists; a person fills in the values.' ;;
+  esac
+  _guard_stop_pointer secret-write
+}
+# _scw_deny: prints the refusal for the hit in _scw_hn (a budget that ran out in the alias leg is carried by _scp_capfire).
+_scw_deny() {
+  if [ -n "${_scp_capfire:-}" ]; then _scp_reason cap 1 "$_scp_capfire"; return 0; fi
+  _scw_reason "$_scw_hn"
+}
+# _guard_secret_write_denied "<cmd>" "<cwd>": rc 0 = deny (the reason on stdout), rc 1 = no deny (prints `ok`), rc 2 = a fault (the caller faults).
+# A brace body (the GMQ-LOCK pin counts subshell bodies): every caller runs it in its own subshell (the judge in a command substitution, the
+# unit cells in a `( . core; ... )` group), so the walk's globals, `set -f` and `cd` never leak. Relative names resolve against the hook's cwd.
+_guard_secret_write_denied() {
+  _scp_cmd=$1; _scp_cwd=${2:-}
+  _scp_nres=0; _scp_nfind=0; _scp_hcache=''; _scp_capfire=''
+  _scw_nonlit=0; _scw_hn=''; _scw_cdok=0; _scw_hascd=0
+  _scp_view "$_scp_cmd"
+  if ! _scw_fast "$_scp_vw"; then printf '%s' ok; return 1; fi   # 996-FASTVIEW
+  if [ -n "$_scp_cwd" ] && [ -d "$_scp_cwd" ]; then
+    if CDPATH='' cd "$_scp_cwd" >/dev/null 2>&1; then _scw_cdok=1; fi
+  fi
+  set -f
+  _scp_sepn=$(printf '%s' "$_scp_cmd" | tr -cd ';&|\n' | wc -c | tr -d ' ') || exit 2
+  [ -n "$_scp_sepn" ] || exit 2
+  case "$_scp_cmd" in
+    *';'*|*'&'*|*'|'*|*"$_cp8b_nl"*) [ "$_scp_sepn" -gt 0 ] || exit 2 ;;
+  esac
+  if [ "$_scp_sepn" -gt "$_SCP_SEGCAP" ]; then _scp_reason cap 1 "$_scp_sepn segments"; return 0; fi
+  _scp_piecen=$(printf '%s' "$_scp_cmd" | tr -cd '${}' | wc -c | tr -d ' ') || exit 2
+  [ -n "$_scp_piecen" ] || exit 2
+  case "$_scp_cmd" in
+    *'$'*|*'{'*|*'}'*) [ "$_scp_piecen" -gt 0 ] || exit 2 ;;
+  esac
+  if [ "$_scp_piecen" -gt "$_SCP_PIECECAP" ]; then _scp_reason cap 1 "$_scp_piecen dollar, open-brace and close-brace bytes"; return 0; fi
+  _cp8b_segments_load "$_scp_cmd"
+  # shellcheck disable=SC2086  # deliberate word-splitting (the segments are newline-joined); globbing is off above
+  set -- $_walk
+  if [ "$#" -gt "$_SCP_TOKCAP" ]; then _scp_reason cap 1 "$# tokens"; return 0; fi
+  _scw_cdscan
+  if [ "$_scw_hascd" = 0 ]; then _scw_cmdpos_scan; fi
+  _cp8b_segments_load "$_scp_cmd"
+  if _scw_redir "$_scp_cmd"; then _scw_deny; return 0; fi   # 996-RDR
+  while _cp8b_next_seg; do
+    if [ "$_scw_nonlit" = 1 ]; then
+      case "$_seg" in
+        *'>'*) if _scw_nl_seg "$_seg"; then _scw_deny; return 0; fi ;;
+      esac
+    fi
+    if _scw_judge_seg "$_seg"; then _scw_deny; return 0; fi
+  done
+  if [ "$_scw_nonlit" = 1 ]; then
+    if _scw_assign_scan; then _scw_deny; return 0; fi
+  fi
+  printf '%s' ok
+  return 1
+}
+
+# === SWAS-1007 (family R): H3a ignores an `-e '<quoted pattern>'` of a search verb ===========================================================================
+# `_h3a_epat_walk "<view>"`: rc 0 and _HEV_OUT = the view with each `-e '<span>'` pair dropped, iff the WHOLE command passes every test below; rc 1 (nothing set) otherwise. The caller then
+# keeps the view unchanged, so a failed test gives main's verdict (fail by disqualification, D-240813-3; never a parse). It feeds H3a's PATH leg only.
+# For a command that passes, the grep family, rg and git grep take an `-e` value as a pattern and never as a file, so the files read are the words that stay, and the path leg still judges those:
+# the verdict equals the verdict of the same command with each pattern replaced by 'x'. CONTROLS (each is load-bearing and has a mutant): 1a no `(`, `)` or backtick anywhere (a substitution in a
+# double-quoted span runs a command); the lead is a search verb (`cat -e .env` reads a file); a quoted span is stripped only straight after a standalone `-e` that is not itself the value of an
+# earlier `-e` (rule 3b: `-e -e '.env'` makes the second `-e` the pattern and `.env` a file); every `-`-led word outside a span is on the verb's closed no-value set (`-f -e '.env'`, rg `-r`);
+# the order (options and `-e` pairs, then at most one `--`, then plain operands; a `-`-led word or an `-e` after an operand or after `--` disqualifies: `grep -n x -e '.env'`, `grep -n -- -e '.env'`).
+# BELTS (kept as defence in depth; without one the verdict would still equal the no-secret verdict): 1b no `$ ; & | < > { } \` or newline anywhere, and rule 6, every word outside a span is plain.
+# The sets: grep, egrep, fgrep -n -i -l -c -q -r -w -H -h -I -F -E; rg -n -i -l -c -q -w -F; git grep -n -i -l -c -q -w -F -E.
+_hev_nl='
+'
+_HEV_OUT=''
+_h3a_epat_walk() {
+  _hev_s=$1; _HEV_OUT=''
+  case "$_hev_s" in
+    *' -e '*) : ;;
+    *) return 1 ;;
+  esac
+  case "$_hev_s" in
+    *'('*|*')'*) return 1 ;;   # H3A-E-R1A-PAREN
+  esac
+  case "$_hev_s" in
+    *'`'*) return 1 ;;   # H3A-E-R1A-TICK
+  esac
+  case "$_hev_s" in
+    *'$'*) return 1 ;;   # H3A-E-R1B-DOLLAR
+  esac
+  case "$_hev_s" in
+    *';'*) return 1 ;;   # H3A-E-R1B-SEMI
+  esac
+  case "$_hev_s" in
+    *'&'*|*'|'*|*'<'*|*'>'*|*'{'*|*'}'*|*'\'*|*"$_hev_nl"*) return 1 ;;   # H3A-E-R1B-REST
+  esac
+  _hev_v=${_hev_s%% *}
+  _hev_s=${_hev_s#* }
+  case "$_hev_v" in
+    grep|egrep|fgrep) _hev_set=g; _hev_o=$_hev_v ;;
+    rg) _hev_set=r; _hev_o=rg ;;
+    git)
+      case "$_hev_s" in
+        'grep '*) _hev_set=t; _hev_o='git grep'; _hev_s=${_hev_s#* } ;;
+        *) return 1 ;;
+      esac ;;
+    *) return 1 ;;   # H3A-E-LEAD
+  esac
+  _hev_afe=0; _hev_late=0; _hev_np=0
+  while [ -n "$_hev_s" ]; do
+    case "$_hev_s" in
+      ' '*) _hev_s=${_hev_s# }; continue ;;
+    esac
+    case "$_hev_s" in
+      "'"*|'"'*)
+        [ "$_hev_afe" = 1 ] || return 1   # H3A-E-PLACE
+        _hev_q=${_hev_s%"${_hev_s#?}"}
+        _hev_r=${_hev_s#?}
+        case "$_hev_r" in
+          *"$_hev_q"*) : ;;
+          *) return 1 ;;
+        esac
+        _hev_s=${_hev_r#*"$_hev_q"}
+        case "$_hev_s" in
+          ''|' '*) : ;;
+          *) return 1 ;;
+        esac
+        _hev_afe=0; _hev_np=$((_hev_np + 1))
+        continue ;;
+    esac
+    _hev_w=${_hev_s%% *}
+    _hev_s=${_hev_s#"$_hev_w"}
+    [ "$_hev_afe" = 0 ] || return 1   # H3A-E-R3B
+    case "$_hev_w" in
+      *[!A-Za-z0-9._/@:+=,-]*) return 1 ;;   # H3A-E-R6
+    esac
+    case "$_hev_w" in
+      -*) [ "$_hev_late" = 0 ] || return 1 ;;   # H3A-E-R5
+    esac
+    case "$_hev_w" in
+      -e) _hev_afe=1 ;;
+      --) _hev_late=1; _hev_o="$_hev_o --" ;;
+      -|--*) return 1 ;;
+      -*)
+        _hev_c=${_hev_w#-}
+        while [ -n "$_hev_c" ]; do
+          _hev_l=${_hev_c%"${_hev_c#?}"}
+          _hev_c=${_hev_c#?}
+          case "$_hev_set$_hev_l" in
+            gn|gi|gl|gc|gq|gr|gw|gH|gh|gI|gF|gE|rn|ri|rl|rc|rq|rw|rF|tn|ti|tl|tc|tq|tw|tF|tE) : ;;
+            *) return 1 ;;   # H3A-E-R4
+          esac
+        done
+        _hev_o="$_hev_o $_hev_w" ;;
+      *) _hev_late=1; _hev_o="$_hev_o $_hev_w" ;;
+    esac
+  done
+  [ "$_hev_afe" = 0 ] && [ "$_hev_np" -gt 0 ] || return 1
+  _HEV_OUT=$_hev_o
+  return 0
+}

@@ -26,7 +26,7 @@
 # the credential seam (B4): its OFFLINE declaration-integrity leg (--declared-only — no gh, no
 # network) IS registered below; its LIVE forge-comparison leg still needs repo-admin gh and runs
 # operator-side, not here. "aggregate" means representative.
-#   usage: sh conformance/verify.sh [--require] [--kit-selftests-on-change] [--kit-selftests] [--changed <listing-file>] [--summary-file <path>] [--timing-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
+#   usage: sh conformance/verify.sh [--require] [--kit-selftests-on-change | --kit-selftests-by-manifest [--event <pull_request|push|schedule>] [--first-push]] [--kit-selftests] [--changed <listing-file>] [--summary-file <path>] [--timing-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
 #
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE — `--changed <listing>` (a newline-delimited changed-paths file) lets an
 # ADOPTER's pull-request run, or its push to the default branch (the emitted pipeline builds the listing for
@@ -701,6 +701,7 @@ if [ "$_of_cnt" -gt 0 ]; then
   if [ "$_of_take" = 1 ] || [ -z "$_of_path" ]; then echo "verify: usage error — --output-file needs a path" >&2; exit 2; fi
   if [ "$_of_first" = "--selftest" ]; then echo "verify: usage error — --output-file cannot be combined with --selftest" >&2; exit 2; fi
   for _of_f in "$@"; do if [ "$_of_f" = "--kit-selftests-on-change" ]; then echo "verify: usage error — --kit-selftests-on-change cannot be combined with --output-file (the record would claim a full enforced run)" >&2; exit 2; fi; done   # E2:of
+  for _of_f in "$@"; do if [ "$_of_f" = "--kit-selftests-by-manifest" ]; then echo "verify: usage error — --kit-selftests-by-manifest cannot be combined with --output-file (the record would claim a full enforced run)" >&2; exit 2; fi; done   # SM:of
   for _of_seam in VERIFY_SELFTEST_REGISTRY VERIFY_CLASSIFIER VERIFY_SKIP_PREFLIGHT; do
     eval "_of_sv=\${$_of_seam:-}"
     if [ -n "$_of_sv" ]; then
@@ -752,12 +753,16 @@ if [ "$MERGE" = 1 ]; then REQUIRE=1; fi
 # only an ABSENT --changed skips (a given-but-unusable one runs everything, errata 2). Values are made absolute BEFORE use.
 KS_CHANGED=""; KS_SUMMARY=""; KS_TIMING=""; _ks_prev=""; RS_SPEC=""
 KS_ON_CHANGE=0; KS_ALL=0; KS_NOLIST=0; KS_GIVEN=0   # E2:init
+KS_BYMAN=0; KS_EVENT=""; KS_FIRSTPUSH=0; SM_ON=0; SM_SKIP=" "; SM_SKIPPED=""; SM_REASON=""; SM_ACCEPT=""; SM_RUNROWS=""; SM_EDITED=""; SM_VER=""; SM_SHA=""   # SWAS-1008 slice 4 (manifest mode)
 for _ks_a in "$@"; do
+  [ "$_ks_a" = "--kit-selftests-by-manifest" ] && KS_BYMAN=1
+  [ "$_ks_a" = "--first-push" ] && KS_FIRSTPUSH=1
   [ "$_ks_a" = "--kit-selftests-on-change" ] && KS_ON_CHANGE=1
   [ "$_ks_a" = "--kit-selftests" ] && KS_ALL=1
   [ "$_ks_a" = "--changed" ] && KS_GIVEN=1
   case "$_ks_prev" in
     --changed) KS_CHANGED=$_ks_a ;;
+    --event) KS_EVENT=$_ks_a ;;
     --summary-file) KS_SUMMARY=$_ks_a ;;
     --timing-file) KS_TIMING=$_ks_a ;;
     --shard) RS_SPEC=$_ks_a ;;
@@ -772,6 +777,8 @@ case "$KS_CHANGED" in ''|/*) ;; *) KS_CHANGED="$_KS_ORIG_PWD/$KS_CHANGED" ;; esa
 case "$KS_SUMMARY" in ''|/*) ;; *) KS_SUMMARY="$_KS_ORIG_PWD/$KS_SUMMARY" ;; esac
 case "$KS_TIMING" in ''|/*) ;; *) KS_TIMING="$_KS_ORIG_PWD/$KS_TIMING" ;; esac
 [ -z "$KS_TIMING" ] || : > "$KS_TIMING" 2>/dev/null || true   # truncate ONCE per run: a reused path never mixes runs
+# SWAS-1008 slice 4 (errata E35): --first-push says "no listing, because this is the first push of the default branch", so a listing beside it is a contradiction.
+if [ "$KS_FIRSTPUSH" = 1 ] && [ "$KS_GIVEN" = 1 ]; then echo "verify: usage error — --first-push cannot be combined with --changed (a first push has no listing)" >&2; exit 2; fi   # SM:fp
 
 ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0; nas=0; misconfigured=0
 _rs_idx=0; _rs_rows=""   # SWAS-393: the ordinal of the current `check` call, and this shard's rows (` ordinal:name`)
@@ -950,6 +957,12 @@ check() {
     # listing; it renders through the SAME N-A path and counters as --kitself — no new verdict kind.
     if [ "$SKIP_KS" = "1" ]; then
       line "[$kind]" "$name" "N-A"; nas=$((nas+1)); SKIPPED_KS="$SKIPPED_KS $name"; _rt_log "$name" 0 "N-A"; return 0
+    fi
+    # SWAS-1008 slice 4: the manifest mode decided once (above the registry) which rows are proven; the same N-A path and counters, its own list and notice.
+    if [ "$SM_ON" = 1 ]; then
+      case "$SM_SKIP" in
+        *" $name "*) line "[$kind]" "$name" "N-A"; nas=$((nas+1)); SM_SKIPPED="$SM_SKIPPED $name"; _rt_log "$name" 0 "N-A"; return 0 ;;
+      esac
     fi
   elif [ "${1:-}" = "--kitself" ]; then
     shift
@@ -1185,6 +1198,406 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -q "^verify-output-end: v1 rc=$_wp_rc " "$_vsd/rec-live" || _vs_die "WRITER-RECORD: the trailer does not carry the child's status ($_wp_rc)"
   [ -z "$(find "$_vsd" -name '.verify-rec.*')" ] || _vs_die "WRITER-RECORD: the writer left a .verify-rec.* capture or staging file behind"
   if sed -n 1p "$_vsd/rec-live" | grep -q ' shard='; then _vs_die "WRITER-RECORD: a plain recorded run carries a shard= field — a full run would read as a shard record"; fi
+
+  # ── SM (SWAS-1008 slice 4) — `--kit-selftests-by-manifest`: design 3.3 and 5, errata E5 E6 E7 E19 E27 E35 E37 E43; controls C6-C9, B1, M1, M2 ──────────
+  # Each cell is a function over a SOURCE script that builds a fresh git work tree around a COPY of it, a stub map, a stub release manifest and a
+  # stub registry (the existing VERIFY_SELFTEST_REGISTRY seam), and runs the copy. The same cell runs on the shipped file (must pass) and on a MUTANT
+  # of it (must fail): a cell no mutant can redden is vacuous. Mutants select their line by its `# SM:<tag>` end-of-line tag. The legs sit here, before
+  # the nested aggregate, so a red cell shows in seconds. Nothing in the real map carries an `@hermetic` line yet, so the fixture map does.
+  _sm_hash() {  # <file> -> its sha256 (the hasher the mode itself would pick), or nothing
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 -- "$1" 2>/dev/null | cut -d' ' -f1
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1
+    fi
+  }
+  _sm_c=0123456789abcdef0123456789abcdef01234567
+  _sm_c2=fedcba9876543210fedcba9876543210fedcba98
+  _sm_paths='a/one.txt a/two.txt b/x.txt b/y.txt c/one.txt d/real.conf d/stamp.conf conformance/selftest-inputs.tsv conformance/verify.sh'
+  _sm_nl='
+'
+  _sm_tab=$(printf '\t')
+  _sm_why=""; _sm_o=""; _sm_rc=0
+  _sm_git() { _smg=$1; shift; git -C "$_smg" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" >/dev/null 2>&1; }
+  _sm_mfst() {  # <dir> <header-commit> : the release manifest of the mapped files as they are on disk NOW (the release's bytes)
+    {
+      printf '# kit-release v1.2.3 %s\n' "$2"
+      for _smp in $_sm_paths; do printf '%s  %s\n' "$(_sm_hash "$1/$_smp")" "$_smp"; done
+    } > "$1/conformance/kit-release.sha256"
+  }
+  _sm_mk() {  # <verify-source> <dir> [kit] : a committed work tree around a copy of <verify-source>; rowa, rowb are @hermetic, rowc is mapped WITHOUT @hermetic
+    _smd=$2
+    rm -rf "$_smd"; mkdir -p "$_smd/conformance" "$_smd/a" "$_smd/b" "$_smd/c" "$_smd/d" || return 1
+    cp "$1" "$_smd/conformance/verify.sh" || return 1
+    printf 'one\n' > "$_smd/a/one.txt"; printf 'two\n' > "$_smd/a/two.txt"; printf 'x\n' > "$_smd/b/x.txt"; printf 'y\n' > "$_smd/b/y.txt"; printf 'c1\n' > "$_smd/c/one.txt"
+    printf 'r\n' > "$_smd/d/real.conf"; printf 's\n' > "$_smd/d/stamp.conf"
+    # rowd is agent-autonomy's shape (E9): a glob and one exact `!` exclusion (an incept-stamped file); rowa names that very file, so the exclusion must stay rowd's alone
+    printf '%s\n' '# stub map' "@all${_sm_tab}conformance/selftest-inputs.tsv" "@all${_sm_tab}conformance/verify.sh" \
+      "rowa${_sm_tab}a/one.txt" "rowa${_sm_tab}a/two.txt" "rowa${_sm_tab}d/stamp.conf" "rowa${_sm_tab}@hermetic${_sm_tab}docs/reviews/stub.md" \
+      "rowb${_sm_tab}b/*.txt" "rowb${_sm_tab}@hermetic${_sm_tab}docs/reviews/stub.md" \
+      "rowc${_sm_tab}c/one.txt" \
+      "rowd${_sm_tab}d/*.conf" "rowd${_sm_tab}!d/stamp.conf" "rowd${_sm_tab}@hermetic${_sm_tab}docs/reviews/stub.md" > "$_smd/conformance/selftest-inputs.tsv"
+    printf 'commit %s\nversion 1.2.3\n' "$_sm_c" > "$_smd/.kit-source"
+    _sm_mfst "$_smd" "$_sm_c"
+    if [ "${3:-}" = kit ]; then mkdir -p "$_smd/docs" && : > "$_smd/docs/ROADMAP-KIT.md" || return 1; fi
+    _sm_git "$_smd" init -q && _sm_git "$_smd" add -A && _sm_git "$_smd" commit -q -m t
+  }
+  printf '#!/bin/sh\necho "OK: stub verified"\nexit 0\n' > "$_vsd/sm-pass.sh"
+  printf '%s\n' "check control rowa --kitselftest sh $_vsd/sm-pass.sh" "check control rowb --kitselftest sh $_vsd/sm-pass.sh" \
+    "check control rowc --kitselftest sh $_vsd/sm-pass.sh" "check control rowd --kitselftest sh $_vsd/sm-pass.sh" "check control plain sh $_vsd/sm-pass.sh" > "$_vsd/sm.registry"
+  _sm_sh=$(command -v sh)
+  _sm_run() {  # <dir> [args...] : the fixture's verify.sh under the stub registry (rc and the output are kept)
+    _smr=$1; shift
+    _sm_o=$( cd "$_smr" && env -u CI -u GITHUB_ACTIONS VERIFY_SKIP_PREFLIGHT=1 VERIFY_SELFTEST_REGISTRY="$_vsd/sm.registry" "$_sm_sh" "$_smr/conformance/verify.sh" "$@" 2>&1 ) && _sm_rc=0 || _sm_rc=$?
+  }
+  _sm_is() { printf '%s\n' "$_sm_o" | grep -Eq "\\[control\\] +$1 +$2\$"; }
+  _sm_exp() {  # <rowa> <rowb> <rowc> [rowd] : each row's verdict (PASS = it ran, N-A = shown proven); the plain row always runs. rowd defaults to PASS when rowa and rowb both ran, else N-A
+    _sme_d=${4:-N-A}; if [ -z "${4:-}" ] && [ "$1" = PASS ] && [ "$2" = PASS ]; then _sme_d=PASS; fi
+    _sm_is rowa "$1" || { _sm_why="rowa is not $1"; return 1; }
+    _sm_is rowb "$2" || { _sm_why="rowb is not $2"; return 1; }
+    _sm_is rowc "$3" || { _sm_why="rowc is not $3"; return 1; }
+    _sm_is rowd "$_sme_d" || { _sm_why="rowd is not $_sme_d"; return 1; }
+    _sm_is plain PASS || { _sm_why="the plain row stopped running"; return 1; }
+    if printf '%s\n' "$_sm_o" | grep -e '^kit selftests ' -e '^edited kit files: ' | grep -qi 'passed'; then _sm_why="a notice says 'passed'"; return 1; fi
+  }
+  _sm_note() { printf '%s\n' "$_sm_o" | grep -e '^kit selftests ' -e '^edited kit files: ' | grep -qF -e "$1" || { _sm_why="the notice lacks: $1"; return 1; }; }
+  _sm_lst() { printf '%s\n' "$2" > "$_vsd/sm-$1.lst"; }   # <name> <content>
+  _sm_all_run() { _sm_exp PASS PASS PASS; }   # every eligible row ran
+  _sm_nohash_bin() {  # <dir> : links to every command on PATH except the two hashers
+    mkdir -p "$1" || return 1
+    printf '%s\n' "$PATH" | tr ':' '\n' | while read -r _smb_d; do
+      [ -d "$_smb_d" ] || continue
+      for _smb_f in "$_smb_d"/*; do
+        _smb_n=${_smb_f##*/}
+        case "$_smb_n" in shasum|sha256sum) continue ;; esac
+        [ -e "$1/$_smb_n" ] || ln -s "$_smb_f" "$1/$_smb_n" 2>/dev/null || true
+      done
+    done
+  }
+  _sm_c0() {  # the anchor: a pristine tree on a scheduled run. rowa and rowb are N-A by manifest; rowc has map lines but NO @hermetic line, so it runs (E5, B1)
+    _sm_mk "$1" "$_vsd/sm0" || { _sm_why="no tree"; return 1; }
+    rm -f "$_vsd/sm0.sum"
+    _sm_run "$_vsd/sm0" --kit-selftests-by-manifest --event schedule --summary-file "$_vsd/sm0.sum"
+    _sm_exp N-A N-A PASS || return 1
+    _sm_note "kit selftests proven by release v1.2.3 (manifest sha256 $(_sm_hash "$_vsd/sm0/conformance/kit-release.sha256")): 3 rows not re-run." || return 1
+    grep -qF 'proven by release v1.2.3' "$_vsd/sm0.sum" 2>/dev/null || { _sm_why="--summary-file did not get the notice"; return 1; }
+  }
+  _sm_c6() {  # one changed byte in one mapped file runs exactly the rows that map it, and the notice names the file
+    _sm_mk "$1" "$_vsd/sm6" || { _sm_why="no tree"; return 1; }
+    printf 'one!\n' > "$_vsd/sm6/a/one.txt"
+    _sm_run "$_vsd/sm6" --kit-selftests-by-manifest --event schedule
+    _sm_exp PASS N-A PASS || return 1
+    _sm_note 'edited kit files: a/one.txt — these rows run: rowa' || return 1
+  }
+  _sm_hdr() {  # C7: a header that disagrees with .kit-source runs every eligible row
+    _sm_mk "$1" "$_vsd/sm7h" || { _sm_why="no tree"; return 1; }
+    _sm_mfst "$_vsd/sm7h" "$_sm_c2"
+    _sm_run "$_vsd/sm7h" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || return 1
+    _sm_note 'disagrees with .kit-source' || return 1
+  }
+  _sm_lnk() {  # C7 (E19): a symlink at a mapped path to an identical copy is never a match
+    _sm_mk "$1" "$_vsd/sm7l" || { _sm_why="no tree"; return 1; }
+    cp "$_vsd/sm7l/a/two.txt" "$_vsd/sm7l/a/two.copy"; rm "$_vsd/sm7l/a/two.txt"; ln -s two.copy "$_vsd/sm7l/a/two.txt"
+    _sm_git "$_vsd/sm7l" add -A
+    _sm_run "$_vsd/sm7l" --kit-selftests-by-manifest --event schedule
+    _sm_exp PASS N-A PASS || return 1
+    _sm_note 'edited kit files: a/two.txt' || return 1
+  }
+  _sm_all() {  # C7: an @all path edited runs every eligible row
+    _sm_mk "$1" "$_vsd/sm7a" || { _sm_why="no tree"; return 1; }
+    printf '# an edit\n' >> "$_vsd/sm7a/conformance/verify.sh"
+    _sm_run "$_vsd/sm7a" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || return 1
+    _sm_note 'conformance/verify.sh' || return 1
+  }
+  _sm_m2() {  # M2 (E7): the map is digest-checked: a map edited to drop one row's line, the manifest unchanged, runs every eligible row
+    _sm_mk "$1" "$_vsd/sm7m" || { _sm_why="no tree"; return 1; }
+    grep -v "^rowa${_sm_tab}a/one.txt\$" "$_vsd/sm7m/conformance/selftest-inputs.tsv" > "$_vsd/sm7m.map"
+    cp "$_vsd/sm7m.map" "$_vsd/sm7m/conformance/selftest-inputs.tsv"
+    _sm_run "$_vsd/sm7m" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || return 1
+  }
+  _sm_c7() {  # C7: no manifest · no hasher · a malformed header · a missing mapped file · an extra tracked file under a mapped glob
+    _sm_mk "$1" "$_vsd/sm7a1" || { _sm_why="no tree"; return 1; }
+    rm "$_vsd/sm7a1/conformance/kit-release.sha256"
+    _sm_run "$_vsd/sm7a1" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || { _sm_why="no manifest: $_sm_why"; return 1; }
+    _sm_mk "$1" "$_vsd/sm7a2" || { _sm_why="no tree"; return 1; }
+    _sm_nohash_bin "$_vsd/sm7a2.bin" || { _sm_why="no PATH copy"; return 1; }
+    _sm_o=$( cd "$_vsd/sm7a2" && env -u CI -u GITHUB_ACTIONS VERIFY_SKIP_PREFLIGHT=1 VERIFY_SELFTEST_REGISTRY="$_vsd/sm.registry" PATH="$_vsd/sm7a2.bin" "$_sm_sh" "$_vsd/sm7a2/conformance/verify.sh" --kit-selftests-by-manifest --event schedule 2>&1 ) || true
+    _sm_all_run || { _sm_why="no hasher: $_sm_why"; return 1; }
+    _sm_note 'no shasum or sha256sum' || return 1
+    _sm_mk "$1" "$_vsd/sm7a3" || { _sm_why="no tree"; return 1; }
+    { printf '# kit-release vX\n'; sed 1d "$_vsd/sm7a3/conformance/kit-release.sha256"; } > "$_vsd/sm7a3.mf"
+    cp "$_vsd/sm7a3.mf" "$_vsd/sm7a3/conformance/kit-release.sha256"
+    _sm_run "$_vsd/sm7a3" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || { _sm_why="malformed header: $_sm_why"; return 1; }
+    _sm_mk "$1" "$_vsd/sm7a4" || { _sm_why="no tree"; return 1; }
+    _sm_git "$_vsd/sm7a4" rm -q a/two.txt
+    _sm_run "$_vsd/sm7a4" --kit-selftests-by-manifest --event schedule
+    _sm_exp PASS N-A PASS || { _sm_why="a missing mapped file: $_sm_why"; return 1; }
+    _sm_mk "$1" "$_vsd/sm7a5" || { _sm_why="no tree"; return 1; }
+    printf 'z\n' > "$_vsd/sm7a5/b/z.txt"; _sm_git "$_vsd/sm7a5" add -A
+    _sm_run "$_vsd/sm7a5" --kit-selftests-by-manifest --event schedule
+    _sm_exp N-A PASS PASS || { _sm_why="an extra tracked file: $_sm_why"; return 1; }
+    _sm_note 'edited kit files: b/z.txt' || return 1
+  }
+  _sm_c8() {  # C8: the manifest-change rule
+    _sm_mk "$1" "$_vsd/sm8" || { _sm_why="no tree"; return 1; }
+    _sm_lst 8a 'conformance/kit-release.sha256'
+    _sm_run "$_vsd/sm8" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-8a.lst"
+    _sm_all_run || { _sm_why="the manifest named, .kit-source not: $_sm_why"; return 1; }
+    _sm_note 'manifest changed without a kit update (.kit-source unchanged)' || return 1
+    _sm_lst 8b 'conformance/kit-release.sha256
+.kit-source'
+    _sm_run "$_vsd/sm8" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-8b.lst"
+    _sm_exp N-A N-A PASS || { _sm_why="both named: $_sm_why"; return 1; }
+    _sm_note 'the manifest and .kit-source both changed' || return 1
+    _sm_note 'release v1.2.3' || return 1
+    _sm_lst 8c 'src/app.ts'
+    _sm_run "$_vsd/sm8" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-8c.lst"
+    _sm_exp N-A N-A PASS || { _sm_why="neither named: $_sm_why"; return 1; }
+  }
+  _sm_nolist() {  # E6: a pull request with no listing (a non-default base) runs everything
+    _sm_mk "$1" "$_vsd/sm9a" || { _sm_why="no tree"; return 1; }
+    _sm_run "$_vsd/sm9a" --kit-selftests-by-manifest --event pull_request
+    _sm_all_run || return 1
+  }
+  _sm_refused() {  # E6: the refused-diff sentinel runs everything
+    _sm_mk "$1" "$_vsd/sm9b" || { _sm_why="no tree"; return 1; }
+    _sm_lst 9b '.github/kit-listing-refused'
+    _sm_run "$_vsd/sm9b" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-9b.lst"
+    _sm_all_run || return 1
+  }
+  _sm_ev() {  # E6: a missing --event, and any event outside the table, run everything
+    _sm_mk "$1" "$_vsd/sm9c" || { _sm_why="no tree"; return 1; }
+    _sm_lst 9c 'src/app.ts'
+    _sm_run "$_vsd/sm9c" --kit-selftests-by-manifest --changed "$_vsd/sm-9c.lst"
+    _sm_all_run || { _sm_why="no --event, a listing: $_sm_why"; return 1; }
+    _sm_run "$_vsd/sm9c" --kit-selftests-by-manifest
+    _sm_all_run || { _sm_why="no --event, no listing: $_sm_why"; return 1; }
+    _sm_run "$_vsd/sm9c" --kit-selftests-by-manifest --event workflow_dispatch --changed "$_vsd/sm-9c.lst"
+    _sm_all_run || { _sm_why="another event: $_sm_why"; return 1; }
+    _sm_run "$_vsd/sm9c" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-9c.none"
+    _sm_all_run || { _sm_why="a listing that is given but missing: $_sm_why"; return 1; }
+  }
+  _sm_push() {  # E27, E35: a push with no listing runs everything unless --first-push says it is the first push of the default branch
+    _sm_mk "$1" "$_vsd/sm9d" || { _sm_why="no tree"; return 1; }
+    _sm_run "$_vsd/sm9d" --kit-selftests-by-manifest --event push
+    _sm_all_run || { _sm_why="a push with no listing and no --first-push: $_sm_why"; return 1; }
+    _sm_run "$_vsd/sm9d" --kit-selftests-by-manifest --event push --first-push
+    _sm_exp N-A N-A PASS || { _sm_why="a first push: $_sm_why"; return 1; }
+    _sm_run "$_vsd/sm9d" --kit-selftests-by-manifest --event pull_request --first-push
+    _sm_all_run || { _sm_why="--first-push on a pull request: $_sm_why"; return 1; }
+  }
+  _sm_fpath() {  # E35: a listing that holds the old marker path plus the manifest, and no .kit-source, is judged by the manifest-change rule: everything runs
+    _sm_mk "$1" "$_vsd/sm9e" || { _sm_why="no tree"; return 1; }
+    _sm_lst 9e 'conformance/kit-release.sha256
+.github/kit-listing-first-push'
+    _sm_run "$_vsd/sm9e" --kit-selftests-by-manifest --event push --changed "$_vsd/sm-9e.lst"
+    _sm_all_run || return 1
+  }
+  _sm_fp2() {  # E35: --first-push together with a listing is a usage error (exit 2), before any row
+    _sm_mk "$1" "$_vsd/sm9f" || { _sm_why="no tree"; return 1; }
+    _sm_lst 9f 'src/app.ts'
+    _sm_run "$_vsd/sm9f" --kit-selftests-by-manifest --event push --first-push --changed "$_vsd/sm-9f.lst"
+    [ "$_sm_rc" = 2 ] || { _sm_why="exit $_sm_rc, not 2"; return 1; }
+    printf '%s\n' "$_sm_o" | grep -q '^verify: usage error — --first-push cannot be combined with --changed' || { _sm_why="no usage-error line"; return 1; }
+    if printf '%s\n' "$_sm_o" | grep -q '\[control\]'; then _sm_why="a row ran"; return 1; fi
+  }
+  _sm_kit() {  # C9: the flag on a kit tree is refused (exit 2) and not one row runs
+    _sm_mk "$1" "$_vsd/sm10" kit || { _sm_why="no tree"; return 1; }
+    _sm_run "$_vsd/sm10" --kit-selftests-by-manifest --event schedule
+    [ "$_sm_rc" = 2 ] || { _sm_why="exit $_sm_rc, not 2"; return 1; }
+    printf '%s\n' "$_sm_o" | grep -q '^verify: --kit-selftests-by-manifest is refused on a kit tree' || { _sm_why="no refusal line"; return 1; }
+    if printf '%s\n' "$_sm_o" | grep -q '\[control\]'; then _sm_why="a row ran on a kit tree under the flag"; return 1; fi
+  }
+  _sm_of() {  # C9: the flag with --output-file is a usage error (exit 2) and no record is written
+    _sm_mk "$1" "$_vsd/sm11" || { _sm_why="no tree"; return 1; }
+    rm -f "$_vsd/sm11.rec"
+    _sm_run "$_vsd/sm11" --kit-selftests-by-manifest --event schedule --output-file "$_vsd/sm11.rec"
+    [ "$_sm_rc" = 2 ] || { _sm_why="exit $_sm_rc, not 2"; return 1; }
+    printf '%s\n' "$_sm_o" | grep -q '^verify: usage error — --kit-selftests-by-manifest cannot be combined with --output-file' || { _sm_why="no usage-error line"; return 1; }
+    if [ -e "$_vsd/sm11.rec" ]; then _sm_why="a record was written"; return 1; fi
+  }
+  _sm_ovr() {  # --kit-selftests overrides the mode: every row runs and no by-manifest notice is printed
+    _sm_mk "$1" "$_vsd/sm12" || { _sm_why="no tree"; return 1; }
+    _sm_run "$_vsd/sm12" --kit-selftests-by-manifest --event schedule --kit-selftests
+    _sm_all_run || return 1
+    if printf '%s\n' "$_sm_o" | grep -q '^kit selftests '; then _sm_why="a notice was printed although --kit-selftests overrode the mode"; return 1; fi
+  }
+  _sm_wins() {  # the mode wins over --kit-selftests-on-change: the old no-listing skip would N-A rowc, the mode keeps it running (no @hermetic line)
+    _sm_mk "$1" "$_vsd/sm13" || { _sm_why="no tree"; return 1; }
+    _sm_run "$_vsd/sm13" --kit-selftests-on-change --kit-selftests-by-manifest --event schedule
+    _sm_exp N-A N-A PASS || return 1
+  }
+  _sm_ex1() {  # E9: an edited file one row EXCLUDES (rowd's `!d/stamp.conf`) leaves rowd N-A, and still runs rowa, which maps that very file: the exclusion is rowd's alone
+    _sm_mk "$1" "$_vsd/sm14a" || { _sm_why="no tree"; return 1; }
+    printf 's!\n' > "$_vsd/sm14a/d/stamp.conf"
+    _sm_run "$_vsd/sm14a" --kit-selftests-by-manifest --event schedule
+    _sm_exp PASS N-A PASS N-A || return 1
+    _sm_note 'edited kit files: d/stamp.conf — these rows run: rowa' || return 1
+  }
+  _sm_ex2() {  # E9: an extra tracked file under rowd's glob (d/foo.conf) runs rowd, and the notice names it
+    _sm_mk "$1" "$_vsd/sm14b" || { _sm_why="no tree"; return 1; }
+    printf 'f\n' > "$_vsd/sm14b/d/foo.conf"; _sm_git "$_vsd/sm14b" add -A
+    _sm_run "$_vsd/sm14b" --kit-selftests-by-manifest --event schedule
+    _sm_exp N-A N-A PASS PASS || return 1
+    _sm_note 'edited kit files: d/foo.conf — these rows run: rowd' || return 1
+  }
+  _sm_nlname() {  # R1: a tracked path holding a newline is two lines to a text list, so the extra input under rowb's glob would go unseen: every eligible row runs
+    _sm_mk "$1" "$_vsd/sm15" || { _sm_why="no tree"; return 1; }
+    : > "$_vsd/sm15/b/z${_sm_nl}.txt"; _sm_git "$_vsd/sm15" add -A
+    _sm_run "$_vsd/sm15" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || return 1
+    _sm_note 'newline' || return 1
+  }
+  _sm_self() {  # S1: a map without the @all lines for itself and for verify.sh, the manifest unchanged, cannot be trusted to say what to check: every eligible row runs
+    _sm_mk "$1" "$_vsd/sm16" || { _sm_why="no tree"; return 1; }
+    grep -v "^@all${_sm_tab}conformance/selftest-inputs.tsv\$" "$_vsd/sm16/conformance/selftest-inputs.tsv" > "$_vsd/sm16.map"
+    cp "$_vsd/sm16.map" "$_vsd/sm16/conformance/selftest-inputs.tsv"
+    _sm_run "$_vsd/sm16" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || { _sm_why="no self line for the map: $_sm_why"; return 1; }
+    _sm_mk "$1" "$_vsd/sm16b" || { _sm_why="no tree"; return 1; }
+    grep -v "^@all${_sm_tab}conformance/verify.sh\$" "$_vsd/sm16b/conformance/selftest-inputs.tsv" > "$_vsd/sm16b.map"
+    cp "$_vsd/sm16b.map" "$_vsd/sm16b/conformance/selftest-inputs.tsv"
+    _sm_mfst "$_vsd/sm16b" "$_sm_c"   # the manifest agrees with the edited map, so the map's own @all digest holds and only the verify.sh half of SM:self can force the run
+    _sm_run "$_vsd/sm16b" --kit-selftests-by-manifest --event schedule
+    _sm_all_run || { _sm_why="no @all line for verify.sh: $_sm_why"; return 1; }
+    _sm_note "has no '@all' line" || return 1
+  }
+  _sm_c8n() {  # R3: no row is eligible (no @hermetic line), the manifest valid, a kit update in the listing: it never says "proven by release"; it says 0 rows and prints the accept line
+    _sm_mk "$1" "$_vsd/sm17" || { _sm_why="no tree"; return 1; }
+    grep -v "@hermetic" "$_vsd/sm17/conformance/selftest-inputs.tsv" > "$_vsd/sm17.map"
+    cp "$_vsd/sm17.map" "$_vsd/sm17/conformance/selftest-inputs.tsv"; _sm_mfst "$_vsd/sm17" "$_sm_c"
+    _sm_lst 17 'conformance/kit-release.sha256
+.kit-source'
+    _sm_run "$_vsd/sm17" --kit-selftests-by-manifest --event pull_request --changed "$_vsd/sm-17.lst"
+    _sm_all_run || return 1
+    if printf '%s\n' "$_sm_o" | grep -q '^kit selftests proven by release'; then _sm_why="the notice says 'proven by release' for 0 rows"; return 1; fi
+    _sm_note 'kit selftests by manifest: 0 rows not re-run' || return 1
+    _sm_note 'the manifest and .kit-source both changed' || return 1
+  }
+  # the sourced-file census (E37, E43): every file verify.sh sources carries an `@all` map line; `. "$VAR"` is resolved or fails closed
+  _sm_census() {  # <verify-file> <map-file> : every reason it finds, one per line; rc 0 when none
+    _smc_f=$1; _smc_m=$2; _smc_w=""
+    sed '/^if \[ "\${1:-}" = "--selftest" \]/,/^fi$/d' "$_smc_f" | awk '/^[ \t]*#/ { next } { print }' > "$_vsd/smc.text" || { echo "the text of $_smc_f could not be read"; return 1; }
+    awk '
+      { s = $0
+        while (match(s, /(^|[;&|({]|then|do|else)[ \t]*(\.|source)[ \t]+[^ \t;&|)]+/)) {
+          t = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+          sub(/^(then|do|else)/, "", t); sub(/^[;&|({ \t]+/, "", t); sub(/^(\.|source)[ \t]+/, "", t); gsub(/"/, "", t)
+          if (t ~ /^[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?$/) { gsub(/[${}]/, "", t); print "VAR\t" t }
+          else if (t ~ /^[A-Za-z0-9._\/-]+$/) print "LIT\t" t
+          else print "ODD\t" t
+        } }' "$_vsd/smc.text" > "$_vsd/smc.src" || { echo "the sourced-file scan failed"; return 1; }
+    [ -s "$_vsd/smc.src" ] || _smc_w="$_smc_w
+no source line was found in $_smc_f (the scan is vacuous)"
+    while IFS="$_sm_tab" read -r _smc_k _smc_v; do
+      _smc_p=""
+      case "$_smc_k" in
+        LIT) _smc_p=${_smc_v#./} ;;
+        VAR)
+          if [ "$_smc_v" = VERIFY_SELFTEST_REGISTRY ]; then continue; fi   # the test seam: refused outright under CI, so no adopter run reads it
+          _smc_r=$(awk -v n="$_smc_v" '
+            { l = $0; sub(/^[ \t]+/, "", l) }
+            index(l, n "=") == 1 || index(l, "; " n "=") > 0 || index(l, " " n "=") > 0 { cnt++; lit = l }
+            END { pre = n "=\"$(dirname \"$0\")/"
+                  if (cnt == 1 && index(lit, pre) == 1) { r = substr(lit, length(pre) + 1); if (r ~ /^[A-Za-z0-9._\/-]+"([ \t]*(#.*)?)$/) { sub(/".*$/, "", r); print r } } }' "$_vsd/smc.text") || _smc_r=""
+          case "$_smc_r" in
+            '') _smc_w="$_smc_w
+a source line reads \$$_smc_v, which is not assigned once as $_smc_v=\"\$(dirname \"\$0\")/<path>\": it cannot be resolved" ;;
+            *)
+              _smc_q=${_smc_r#../}
+              case "$_smc_q" in
+                *..*) _smc_w="$_smc_w
+\$$_smc_v resolves through a '..' that is not the leading one: $_smc_r" ;;
+                *) if [ "$_smc_q" != "$_smc_r" ]; then _smc_p=$_smc_q; else _smc_p=conformance/$_smc_r; fi ;;
+              esac ;;
+          esac ;;
+        *) _smc_w="$_smc_w
+a source line this census cannot resolve: $_smc_v" ;;
+      esac
+      [ -z "$_smc_p" ] || grep -Fqx "@all${_sm_tab}$_smc_p" "$_smc_m" || _smc_w="$_smc_w
+$_smc_p is sourced by $_smc_f and has no '@all' map line"
+    done < "$_vsd/smc.src"
+    [ -z "$_smc_w" ] && return 0
+    printf '%s\n' "$_smc_w" | sed 1d
+    return 1
+  }
+  _sm_cen() {  # the real file and the real map hold; <verify-source> <map-source>
+    _sm_why=$(_sm_census "$1" "$2") || { _sm_why="red on the real file: $_sm_why"; return 1; }
+  }
+  _sm_cenmap() {  # E37 mutant target: the map without the @all line for scripts/fail-annotate.sh must red, and name it
+    grep -v "^@all${_sm_tab}scripts/fail-annotate.sh\$" "$2" > "$_vsd/smc.map"
+    cmp -s "$2" "$_vsd/smc.map" && { _sm_why="the map has no @all line for scripts/fail-annotate.sh to drop"; return 0; }
+    if _sm_why=$(_sm_census "$1" "$_vsd/smc.map"); then _sm_why="the census stayed green without the @all line"; return 0; fi
+    case "$_sm_why" in *'scripts/fail-annotate.sh is sourced'*) return 1 ;; esac
+    _sm_why="red, but not for its reason: $_sm_why"; return 0
+  }
+  _sm_cenvar() {  # E43 mutant target: a source of a variable that is never assigned must red
+    cp "$1" "$_vsd/smc.verify"; printf '. "$_SM_UNASSIGNED"\n' >> "$_vsd/smc.verify"
+    if _sm_why=$(_sm_census "$_vsd/smc.verify" "$2"); then _sm_why="an unresolvable source line was accepted"; return 0; fi
+    case "$_sm_why" in *'cannot be resolved'*) return 1 ;; esac
+    _sm_why="red, but not for its reason: $_sm_why"; return 0
+  }
+  # R3-m1: the four kit-only markers the SI census keys on are still in scripts/incept.sh's KIT_INTERNAL_MARKERS, so that list stays the single source
+  _sm_mark() {  # <incept-file> : the four names this file's SI census loops over are each in that one line's value
+    _smk_l=$(awk -F"'" '/^KIT_INTERNAL_MARKERS=/ { n++; v = $2 } END { if (n == 1) print v }' "$1")
+    [ -n "$_smk_l" ] || { _sm_why="$1 has no single KIT_INTERNAL_MARKERS line"; return 1; }
+    _smk_n=$(awk 'index($0, "for _si" "_mk in ") { s = $0; sub(/^.*_mk in /, "", s); sub(/; do.*$/, "", s); print s }' "$_SELF")
+    [ "$(printf '%s\n' "$_smk_n" | grep -c .)" = 1 ] || { _sm_why="this file has not exactly one census marker loop"; return 1; }
+    [ "$(printf '%s\n' "$_smk_n" | tr ' ' '\n' | grep -c .)" = 4 ] || { _sm_why="the census marker loop does not name four markers"; return 1; }
+    for _smk_m in $_smk_n; do
+      case " $_smk_l " in *" $_smk_m "*) ;; *) _sm_why="$_smk_m is no longer in KIT_INTERNAL_MARKERS"; return 1 ;; esac
+    done
+  }
+  _sm_markmut() {  # mutant target: incept's list without docs/ROADMAP-KIT.md must red
+    sed 's# docs/ROADMAP-KIT.md##' "$1" > "$_vsd/sm-incept.mut"
+    cmp -s "$1" "$_vsd/sm-incept.mut" && { _sm_why="the mutant changed nothing"; return 0; }
+    if _sm_mark "$_vsd/sm-incept.mut"; then _sm_why="a dropped marker was not noticed"; return 0; fi
+    return 1
+  }
+  _sm_mut() {  # <label> <cell> <sed-script> : the cell must FAIL on a copy of this file edited by the script
+    sed "$3" "$_SELF" > "$_vsd/sm-mut.sh" || _vs_die "SM $1: sed failed"
+    if cmp -s "$_SELF" "$_vsd/sm-mut.sh"; then _vs_die "SM $1: the mutant changed nothing - its tag moved; retarget the sed"; fi
+    if "$2" "$_vsd/sm-mut.sh"; then _vs_die "SM $1: the mutant SURVIVED - the cell passed on a file with the behaviour removed (vacuous)"; fi
+    return 0
+  }
+  if [ -z "$(_sm_hash "$_SELF")" ]; then
+    echo "verify --selftest: SM (manifest mode) N-A — no shasum or sha256sum on this machine"
+  else
+    for _smx in c0:C6-anchor c6:C6 hdr:C7-header lnk:C7-symlink all:C7-@all m2:M2-map c7:C7 c8:C8 nolist:E6-nolist refused:E6-refused ev:E6-event push:E27-push fpath:E35-path fp2:E35-usage kit:C9-kit of:C9-output-file ovr:override wins:wins-over-on-change ex1:E9-exclusion ex2:E9-extra nlname:R1-newline-name self:S1-self-lines c8n:R3-no-eligible-rows; do
+      "_sm_${_smx%%:*}" "$_SELF" || _vs_die "SM ${_smx#*:}: $_sm_why"
+    done
+    _sm_mut C6 _sm_c6 '/# SM:cmp$/s/st\[t\] != man\[t\]/st[t] != st[t]/'
+    _sm_mut B1 _sm_c0 '/# SM:herm$/s/herm\[r\] == 1 && //'
+    _sm_mut C7-header _sm_hdr '/# SM:hdr$/s/.*/:/'
+    _sm_mut C7-symlink _sm_lnk '/# SM:lnk$/s/\[ -L "\$_sc_p" \] || //'
+    _sm_mut C7-all _sm_all '/# SM:all$/s/if (.*) { bad = /if (0) { bad = /'
+    _sm_mut M2-map _sm_m2 '/# SM:all$/s/if (.*) { bad = /if (0) { bad = /'
+    _sm_mut C8 _sm_c8 '/# SM:mrule$/s/.*/:/'
+    _sm_mut E6-nolist _sm_nolist '/# SM:nolist$/s/SM_REASON="[^"]*"; //'
+    _sm_mut E6-refused _sm_refused '/# SM:refused$/s/.*/:/'
+    _sm_mut E27 _sm_push '/# SM:push$/s/.*/      push) return 0 ;;/'
+    _sm_mut E35 _sm_fpath '/# SM:lst$/s/m = 1;/m = 1; if (q == ".github\/kit-listing-first-push") m = 0;/'
+    _sm_mut C9-kit _sm_kit '/# SM:kit$/s/.*/:/'
+    _sm_mut C9-output-file _sm_of '/# SM:of$/s/.*/:/'
+    _sm_mut wins _sm_wins '/# SM:wins$/s/.*/:/'
+    _sm_mut E9-ignore-exclusion _sm_ex1 '/# SM:ex$/s/ex\[\$1, substr(\$2, 2)\] = 1;//'
+    _sm_mut E9-exclusion-on-every-row _sm_ex1 '/# SM:ex$/s/ex\[\$1, substr(\$2, 2)\] = 1;/for (q = 1; q <= nrows; q++) ex[rows[q], substr($2, 2)] = 1;/'
+    _sm_mut R1 _sm_nlname '/# SM:nl$/s/.*/:/'
+    _sm_mut S1 _sm_self '/# SM:self$/s/.*/:/'
+    _sm_mut S1-verify-half _sm_self '/# SM:self$/s/ || ! grep -Fqx "@all\${_sc_t}conformance\/verify\.sh" conformance\/selftest-inputs\.tsv//'
+    _sm_mut R3 _sm_c8n '/# SM:n0$/s/-gt 0/-ge 0/'
+    _sm_cen "$_SELF" conformance/selftest-inputs.tsv || _vs_die "SM E37: $_sm_why"
+    if ! _sm_cenmap "$_SELF" conformance/selftest-inputs.tsv; then :; else _vs_die "SM E37 mutant: $_sm_why"; fi
+    if ! _sm_cenvar "$_SELF" conformance/selftest-inputs.tsv; then :; else _vs_die "SM E43 mutant: $_sm_why"; fi
+    if [ -f scripts/incept.sh ]; then
+      _sm_mark scripts/incept.sh || _vs_die "SM R3-m1: $_sm_why"
+      if ! _sm_markmut scripts/incept.sh; then :; else _vs_die "SM R3-m1 mutant: $_sm_why"; fi
+    fi
+    echo "verify --selftest: SM manifest mode holds (23 cells, 20 mutants, the sourced-file census with 2, the marker cell with 1)"
+  fi
 
   # -- ROW-SHARDS (SWAS-393, slice S3 of SWAS-314; design 2026-10-24-ci-shaping section 4.2; controls C6, C7, C8) -----------
   # `--require --shard i/N --output-file F` runs the rows whose ordinal mod N is i-1 and records them; `--merge --battery <dir>
@@ -2370,6 +2783,187 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   sh "$_core" --selftest >/dev/null 2>&1 || rc=1' "$_k7_wired" > "$_ksd/k7-wired.sh"
   cmp -s "$_k7_wired" "$_ksd/k7-wired.sh" && _ks_die "K7: mutant (ii) changed nothing - the presence-check line of release-tag-wired.sh moved; retarget the sed"
   ! _k7_holds "$_SELF" "$_ksd/k7-wired.sh" || _ks_die "K7: mutant (ii) — the selftest call put back into release-tag-wired.sh — still holds, so the cell would not catch it"
+
+  # ── SI (SWAS-1008 slice 3) — the selftest-input map census: design 3.1 legs 1-3, errata E1.2, E7, E8, E9, E26, E29 ──
+  # conformance/selftest-inputs.tsv says which kit files each --kitselftest row reads (the slice-4 verify mode reads it;
+  # nothing in this slice skips a row). Judged HERE, in kit CI, on the kit tree and on a DEFAULT export (SWAS-1011 design 8 (b)):
+  #   leg 1  every map row is a registry row; every --kitselftest row has map lines OR is named in the ledger below
+  #   leg 2  a row's own script is one of its inputs; every glob matches a file the default export ships
+  #   leg 3  agent-autonomy's resolved inputs equal aa_input_list on this tree, tracked files only (E9, E26)
+  #   plus   no profiles/ line (E8) · scripts/ lines are exact paths (E1.2) · `!` is exact and agent-autonomy's alone (E29)
+  #          · the map is its own @all input (E7) · the manifest names no line for itself
+  # What it cannot see: a selftest that starts reading a file its map omits (SWAS-1014). The @hermetic and `?` legs wait for
+  # the PR that adds the first `@hermetic` line: a map line grants nothing until then.
+  # LEDGER of --kitselftest rows with NO map line yet, and why (a row leaves it in the PR that maps it; one on it with lines reds):
+  #   row shellcheck           P3 by nature: lints the adopter's own scripts, which no manifest covers (E5, E8)
+  #   prepush-lane             HEAD-SEEDED: TR8 clones the live HEAD, and it reads profiles/ (E8, E51)
+  #   inception-done-surface   HEAD-SEEDED until its P2 fix lands (E50)
+  #   ci-gates-selftest        selftest :4434-7879 unread; its map lines and `?docs/ROADMAP-KIT.md` come with its @hermetic PR (E55)
+  #   promotion-verify        two reads open (ceremony-binding.sh's live root run; guard-core.sh), and its `?` lines need @hermetic (E47, E48, E54)
+  #   promotion-actuate        the same (E47, E48, E54)
+  _si_ledger='shellcheck prepush-lane inception-done-surface ci-gates-selftest promotion-verify promotion-actuate'
+  _si_t=$(printf '\t')
+  _si_map=conformance/selftest-inputs.tsv
+  # one awk program, two modes. scope: the paths of the list file that a (named) row's lines match, `!` paths removed.
+  # unmatched: the map lines that match nothing on the list. `*` is any run of characters, `/` included; the census
+  # admits only letters, digits and `. _ / * + -` in a path, so the glob-to-regex conversion below is exact.
+  _si_awk='
+    function rx(g,  i, c, o) {
+      o = "^"
+      for (i = 1; i <= length(g); i++) {
+        c = substr(g, i, 1)
+        if (c == "*") o = o ".*"
+        else if (c == ".") o = o "\\."
+        else if (c == "+") o = o "\\+"
+        else o = o c
+      }
+      return o "$"
+    }
+    BEGIN { FS = "\t" }
+    FNR == NR {
+      if ($0 ~ /^#/ || NF < 2) next
+      n++; r[n] = $1; v[n] = $2
+      if (substr($2, 1, 1) == "!") { ex[$1 SUBSEP substr($2, 2)] = 1; re[n] = ""; next }
+      re[n] = rx($2); next
+    }
+    {
+      for (i = 1; i <= n; i++) {
+        if (re[i] == "" || $0 !~ re[i]) continue
+        if (mode == "unmatched") { hit[i] = 1; continue }
+        if ((row == "" || r[i] == row) && !((r[i] SUBSEP $0) in ex)) { print; next }
+      }
+    }
+    END { if (mode == "unmatched") for (i = 1; i <= n; i++) if (re[i] != "" && !hit[i]) print r[i] "\t" v[i] }'
+  _si_run() { awk -v mode="$1" -v row="$2" "$_si_awk" "$3" "$4"; }   # <scope|unmatched> <row or empty> <map> <list>
+  # the registry's rows from THIS file's own `^check` lines (the single source K6 reads): name, flagged, own script
+  awk '/^check / { nm = $3; gsub(/"/, "", nm); fl = ($4 == "--kitselftest") ? "1" : "0"; sc = ""; if (fl == "1" && $5 == "sh") sc = $6; print nm "\t" fl "\t" sc }' "$_SELF" > "$_ksd/si-reg"
+  _si_regf="$_ksd/si-reg"   # the census reads the registry facts from here (a cell points it at an edited copy)
+  # _si_aa_cmp <tree> <map> <1|0> : rc 0 when the map's agent-autonomy inputs equal aa_input_list's on <tree>. aa_input_list lists
+  # untracked files (find under .claude/), which the manifest cannot state; the 1 form compares against the tracked files only (E26).
+  _si_aa_cmp() {
+    awk '/^aa_input_list[(][)] [{]/,/^}/' conformance/agent-autonomy.sh > "$_ksd/si-aa.fn"
+    [ -s "$_ksd/si-aa.fn" ] || return 2
+    ( cd "$1" && git ls-files ) | LC_ALL=C sort > "$_ksd/si-tracked"
+    _si_run scope agent-autonomy "$2" "$_ksd/si-tracked" | LC_ALL=C sort -u > "$_ksd/si-res"
+    ( . "$_ksd/si-aa.fn"; aa_input_list "$1" ) | LC_ALL=C sort -u > "$_ksd/si-aa"
+    if [ "$3" = 1 ]; then LC_ALL=C comm -12 "$_ksd/si-aa" "$_ksd/si-tracked" > "$_ksd/si-aa2"; else cp "$_ksd/si-aa" "$_ksd/si-aa2"; fi
+    cmp -s "$_ksd/si-res" "$_ksd/si-aa2"
+  }
+  # _si_census <map> <export file list> : prints every reason it finds (one per line); rc 0 when none
+  _si_census() {
+    _sc_m=$1; _sc_x=$2; _sc_why=""
+    if [ ! -s "$_sc_m" ]; then echo "the map is absent or empty"; return 1; fi
+    _sc_bad=$(awk -F'\t' '/^#/ || NF == 0 { next } NF != 2 || $1 !~ "^(@all|[A-Za-z0-9_.()-]+)$" || $2 !~ "^!?[A-Za-z0-9._/*+-]+$" { print NR ": " $0 }' "$_sc_m")
+    [ -z "$_sc_bad" ] || _sc_why="$_sc_why
+malformed map line (a row name and one path of letters, digits and . _ / * + -): $(printf '%s' "$_sc_bad" | head -3 | tr '\n' ' ')"
+    awk -F'\t' '/^#/ || NF < 2 { next } { p = $2; sub(/^!/, "", p) } p ~ /^profiles\// { print }' "$_sc_m" | grep -q . && _sc_why="$_sc_why
+a map line reaches profiles/ (E8: the manifest is profile-independent)"
+    awk -F'\t' '/^#/ || NF < 2 { next } { p = $2; sub(/^!/, "", p) } p ~ /^scripts\// && p ~ /[*]/ { print }' "$_sc_m" | grep -q . && _sc_why="$_sc_why
+a scripts/ line is a glob (E1.2: exact paths only, incept adds files there)"
+    awk -F'\t' '/^#/ || NF < 2 { next } substr($2, 1, 1) == "!" && ($1 != "agent-autonomy" || $2 ~ /[*]/) { print }' "$_sc_m" | grep -q . && _sc_why="$_sc_why
+a ! line that is a glob or is not agent-autonomy's (E29)"
+    grep -qx "@all${_si_t}conformance/selftest-inputs.tsv" "$_sc_m" || _sc_why="$_sc_why
+no '@all conformance/selftest-inputs.tsv' line (E7: the map is its own input, or an edit that drops a line is unseen)"
+    grep -q "${_si_t}conformance/kit-release.sha256\$" "$_sc_m" && _sc_why="$_sc_why
+a map line names conformance/kit-release.sha256 (the manifest holds no line for itself)"
+    awk -F'\t' '/^#/ || NF < 2 || $1 == "@all" { next } { print $1 }' "$_sc_m" | LC_ALL=C sort -u > "$_ksd/si-mapnames"
+    awk -F'\t' '{ print $1 }' "$_si_regf" | LC_ALL=C sort -u > "$_ksd/si-regnames"
+    awk -F'\t' '$2 == "1" { print $1 }' "$_si_regf" | LC_ALL=C sort -u > "$_ksd/si-flagged"
+    # shellcheck disable=SC2086  # the ledger is a space-separated list of row names, split on purpose
+    printf '%s\n' $_si_ledger | LC_ALL=C sort -u > "$_ksd/si-ledger"
+    _sc_x1=$(LC_ALL=C comm -23 "$_ksd/si-mapnames" "$_ksd/si-regnames" | tr '\n' ' ')
+    [ -z "$_sc_x1" ] || _sc_why="$_sc_why
+a map row is not in the registry: $_sc_x1"
+    _sc_x2=$(LC_ALL=C comm -23 "$_ksd/si-flagged" "$_ksd/si-mapnames" | LC_ALL=C comm -23 - "$_ksd/si-ledger" | tr '\n' ' ')
+    [ -z "$_sc_x2" ] || _sc_why="$_sc_why
+a --kitselftest row has no map line and is not in the ledger: $_sc_x2"
+    _sc_x3=$(LC_ALL=C comm -12 "$_ksd/si-mapnames" "$_ksd/si-ledger" | tr '\n' ' ')
+    [ -z "$_sc_x3" ] || _sc_why="$_sc_why
+a ledger row (no map line yet) has map lines: $_sc_x3"
+    _sc_x4=$(LC_ALL=C comm -23 "$_ksd/si-ledger" "$_ksd/si-flagged" | tr '\n' ' ')
+    [ -z "$_sc_x4" ] || _sc_why="$_sc_why
+a ledger row is not a --kitselftest row: $_sc_x4"
+    awk -F'\t' '/^#/ || NF < 2 { next } { print $1 "\t" $2 }' "$_sc_m" > "$_ksd/si-lines"
+    while IFS="$_si_t" read -r _sc_n _sc_f _sc_s; do
+      [ "$_sc_f" = 1 ] || continue
+      awk -F'\t' -v n="$_sc_n" '$1 == n { f = 1 } END { exit !f }' "$_ksd/si-lines" || continue   # no lines at all is leg 1's finding
+      if [ -z "$_sc_s" ]; then
+        _sc_why="$_sc_why
+a mapped row's check line is not 'sh <script>', so its own script cannot be judged: $_sc_n"
+        continue
+      fi
+      grep -Fqx "$_sc_n${_si_t}$_sc_s" "$_ksd/si-lines" || grep -Fqx "@all${_si_t}$_sc_s" "$_ksd/si-lines" || _sc_why="$_sc_why
+a mapped row's own script is not one of its inputs: $_sc_n ($_sc_s)"
+    done < "$_si_regf"
+    _sc_x5=$(_si_run unmatched "" "$_sc_m" "$_sc_x" | tr '\t\n' ' ;')
+    [ -z "$_sc_x5" ] || _sc_why="$_sc_why
+a map line matches no file in the default export: $_sc_x5"
+    _si_aa_cmp . "$_sc_m" 1 || _sc_why="$_sc_why
+agent-autonomy's resolved inputs differ from aa_input_list on this tree (tracked files)"
+    [ -z "$_sc_why" ] && return 0
+    printf '%s\n' "$_sc_why" | sed 1d
+    return 1
+  }
+  # a kit tree: ANY of the KIT-ONLY markers is present, so one deletion cannot silence the census. The set is four of the six
+  # in KIT_INTERNAL_MARKERS (scripts/incept.sh): the kit's backlog table, its roadmap, its publish-identifiers file and its
+  # meta-control log, all export-ignored and files no adopter has. docs/superpowers and .superpowers are left out: a plugin
+  # creates them in ADOPTER repos, and the census would then switch on there and red falsely.
+  _si_kit=0
+  for _si_mk in SPARKWRIGHT-CONSOLIDATED-BACKLOG.md docs/ROADMAP-KIT.md .publish-identifiers docs/governance/meta-control-log.md; do
+    if [ -e "$_si_mk" ]; then _si_kit=1; break; fi
+  done
+  if [ "$_si_kit" = 0 ] || ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "verify --selftest: SI (selftest-input map census) N-A — not a kit tree in a git repo"
+  else
+    [ -f "$_si_map" ] || _ks_die "SI: $_si_map is absent (the map of which kit file each --kitselftest row reads)"
+    _si_exp="$_ksd/si-exp"
+    sh scripts/adopter-export.sh "$_si_exp" >/dev/null 2>&1 || _ks_die "SI: a default export did not build, so the map's globs cannot be judged on it"
+    ( cd "$_si_exp" && find . -type f | sed 's|^\./||' | LC_ALL=C sort ) > "$_ksd/si-exp.list"
+    _si_out=$(_si_census "$_si_map" "$_ksd/si-exp.list") || _ks_die "SI: the map census is red on the real map" "$_si_out"
+    # each mutant is one edit of a COPY of the map, and must red for ITS reason (a substring of the census output)
+    _si_kill() {  # <label> <reason substring> <sed script>
+      sed -e "$3" "$_si_map" > "$_ksd/si-mut"
+      if cmp -s "$_si_map" "$_ksd/si-mut"; then _ks_die "SI mutant $1 changed nothing - its target line moved; retarget the sed"; fi
+      _sk_out=$(_si_census "$_ksd/si-mut" "$_ksd/si-exp.list") && _ks_die "SI mutant $1: the census stayed green on an edited map"
+      printf '%s\n' "$_sk_out" | grep -qF -e "$2" || _ks_die "SI mutant $1: red, but not for its reason ('$2')" "census said:" "$_sk_out"
+    }
+    _si_kill "drop one row's lines" "no map line and is not in the ledger: ci-classify" "/^ci-classify${_si_t}/d"
+    _si_kill "drop agent-autonomy's scripts/kit-guard line" "agent-autonomy's resolved inputs differ" "/^agent-autonomy${_si_t}scripts\\/kit-guard\$/d"
+    _si_kill "drop agent-autonomy's dials.conf exclusion (the ! form is read)" "agent-autonomy's resolved inputs differ" "/^agent-autonomy${_si_t}!\\.kit\\/dials\\.conf\$/d"
+    _si_kill "a row name not in the registry" "not in the registry: no-such-row" "\$a\\
+no-such-row${_si_t}conformance/verify.sh"
+    _si_kill "a profiles/ line" "reaches profiles/" "\$a\\
+ci-classify${_si_t}profiles/typescript-node/ci.yml"
+    _si_kill "a scripts/ glob" "a scripts/ line is a glob" "\$a\\
+ci-classify${_si_t}scripts/*"
+    _si_kill "drop the map's own @all line" "no '@all conformance/selftest-inputs.tsv' line" "/^@all${_si_t}conformance\\/selftest-inputs\\.tsv\$/d"
+    _si_kill "a ! line on a row that is not agent-autonomy's" "E29" "\$a\\
+ci-classify${_si_t}!conformance/verify.sh"
+    _si_kill "a glob that matches nothing" "matches no file in the default export" "\$a\\
+ci-classify${_si_t}conformance/no-such-input-*.xyz"
+    _si_kill "a row's own script dropped from its lines" "own script is not one of its inputs: license-check(selftest)" "/^license-check(selftest)${_si_t}scripts\\/license-check\\.sh\$/d"
+    _si_kill "a line for the manifest itself" "names conformance/kit-release.sha256" "\$a\\
+ci-classify${_si_t}conformance/kit-release.sha256"
+    _si_kill "a ledger row given map lines" "ledger row (no map line yet) has map lines: shellcheck" "\$a\\
+shellcheck${_si_t}conformance/shellcheck.sh"
+    _si_kill "a ! GLOB on agent-autonomy (E29: exact paths only)" "E29" "\$a\\
+agent-autonomy${_si_t}!.kit/*.conf"
+    # B3: a flagged, mapped row whose check line is not `sh <script>` is reported, not skipped without a word
+    awk -F'\t' -v OFS='\t' '$1 == "license-check(selftest)" { $3 = "" } { print }' "$_si_regf" > "$_ksd/si-reg-b3"
+    _si_regf="$_ksd/si-reg-b3"
+    _sb3=$(_si_census "$_si_map" "$_ksd/si-exp.list") && _ks_die "SI B3: a mapped row with no 'sh <script>' check line passed the census"
+    printf '%s\n' "$_sb3" | grep -qF "is not 'sh <script>'" || _ks_die "SI B3: red, but not for its reason" "$_sb3"
+    _si_regf="$_ksd/si-reg"
+    # E26: a developer's untracked .claude/settings.local.json is a battery input the manifest can never state. The compare is made
+    # on tracked files, so it stays green with the file present; the same compare without that intersection reds (the mutant).
+    _si_fx="$_ksd/si-fx"; mkdir -p "$_si_fx/.claude" "$_si_fx/scripts"
+    printf 'x\n' > "$_si_fx/.claude/tracked.txt"; printf 'x\n' > "$_si_fx/scripts/kit-guard"
+    ( cd "$_si_fx" && git init -q && git add -A )
+    printf 'x\n' > "$_si_fx/.claude/settings.local.json"
+    _si_aa_cmp "$_si_fx" "$_si_map" 1 || _ks_die "SI E26: an untracked .claude/ file made the agent-autonomy compare red (the compare must read tracked files only)"
+    if _si_aa_cmp "$_si_fx" "$_si_map" 0; then _ks_die "SI E26 mutant: without the tracked-files intersection the compare still holds, so the cell cannot see an untracked input"; fi
+    echo "verify --selftest: SI selftest-input map census holds (13 mutants, the B3 cell and the E26 cell killed)"
+  fi
   rm -rf "$_ksd"
 
   # ── KR (SWAS-607) — the kit-self rows file is data, judged before anything runs ─────────────────────────────
@@ -2719,6 +3313,9 @@ $(printf '%s\n' "$_cs_mj" | sed 's/      - cf-x/      - cf-y/')" bad 'no --merge
   echo "                         whole-name rendered row (a longer or [doc] row never counts), kept in variables everywhere else"
   echo "                       + VA-1..VA-13, VA-G (SWAS-945 E4): under the opt-in only, a red run ends with column-0 'FAIL: verify row <name> (<VERDICT>): <reason>'"
   echo "                         lines (at most 8 and an overflow line); off, half-on, library-absent, nested, green and merge shapes are pinned; each cell has a mutant"
+  echo "                       + SM (SWAS-1008 slice 4): --kit-selftests-by-manifest skips a row only when its @hermetic line, the manifest, .kit-source and every mapped"
+  echo "                         file agree, and runs it on every unknown (newline name, no self line, symlink, extra, missing, bad event or listing); the kit tree and"
+  echo "                         --output-file refuse it; the sourced-file census and the incept marker cell hold; each cell has a mutant that goes red"
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
   echo "                         commit, and stays silent on a tree that has history — both probes"
   echo "                         ANCHORED to the pre-flight's OWN sentence, so a failing child's prose"
@@ -2744,6 +3341,7 @@ fi
 _ks_kitmark=""
 if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then _ks_kitmark=1; fi
 if [ "$KS_ON_CHANGE" = 1 ] && [ -n "$_ks_kitmark" ]; then echo "verify: --kit-selftests-on-change is refused on a kit tree (it is an adopter's CI flag; the kit runs every row)" >&2; exit 2; fi   # E2:kit
+if [ "$KS_BYMAN" = 1 ] && [ -n "$_ks_kitmark" ]; then echo "verify: --kit-selftests-by-manifest is refused on a kit tree (it is an adopter's CI flag; the kit runs every row)" >&2; exit 2; fi   # SM:kit
 
 # ── TEST SEAMS NEVER PRODUCE A VERDICT (ADOPTER-KIT-SELFTESTS-ON-CHANGE, security). The two env seams the
 # selftest drives (a replacement registry; a stub classifier) would, in a real CI run, let whoever sets an
@@ -2790,7 +3388,217 @@ _ks_floor_hit() {  # <listing> -> 3 = examined, no floor path (skip allowed); an
   rm -f "$_kf_t"
   return "$_kf_rc"
 }
-if [ -n "$KS_CHANGED" ] && [ -f "$KS_CHANGED" ] && [ -r "$KS_CHANGED" ] && [ -s "$KS_CHANGED" ]; then
+# ── SWAS-1008 slice 4: --kit-selftests-by-manifest (design 3.3 and 5; errata E5 E6 E7 E19 E27 E35 E37 E43) ───────────────────────────────────
+# In an adopter's CI a `--kitselftest` row is shown N-A ONLY when ALL of these hold, decided ONCE here, before any row runs: the row has map lines
+# and exactly one `@hermetic` line in conformance/selftest-inputs.tsv (E5: no row has one yet, so today the mode skips nothing); the release manifest
+# conformance/kit-release.sha256 is a readable regular file whose header parses and agrees with .kit-source (a half-applied kit update fails this); the
+# event and listing rules below accept the tree's manifest; and every TRACKED file the row's globs resolve to is a regular file, never a symlink (E19),
+# listed in the manifest with an equal sha256, and every manifest path those globs match is present. EVERYTHING ELSE RUNS THE ROW: an unknown costs
+# CI time, never coverage (D-240903-3 item 3). `@all` paths (this file, the map, scripts/fail-annotate.sh and the shared libraries: E7, E37) are
+# digest-checked the same way, and a difference runs EVERY row. The listing never skips anything here: only the manifest-change rule reads it.
+# THE EVENT TABLE (E6, E27, E35): a pull_request or push WITH a usable listing applies the manifest-change rule (the manifest named without .kit-source
+# runs every row; both named accepts it; neither accepts it); a pull_request with no listing, the refused-diff sentinel, a push with no listing and no
+# --first-push, a schedule with a listing, an unusable listing, a missing or unknown --event: every row runs. Accepted with no listing: a schedule, and a
+# push with --first-push. HONEST CEILING (E23, E36, E42): the job runs the PR's own verify.sh, map, manifest and workflow, so no check in it binds a hostile
+# PR; the binding controls are server-side. Threat model: docs/architecture/2026-11-25-adopter-ci-manifest-1008-threat-model.md.
+# SOURCED FILES (E37, E43): this decision sources nothing and runs no helper beyond git, awk, tr and the hasher; the census in `verify.sh --selftest`
+# holds every file this script sources to an `@all` map line.
+_sm_msg() {  # <text> : the text with every byte outside a safe set replaced (a hostile path name cannot forge a log line or a workflow command)
+  printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/+() ,:=-' '?'
+}
+_sm_rule() {  # the event and listing rules (E6, E27, E35): sets SM_REASON when every row must run, SM_ACCEPT when both records changed
+  case "$KS_EVENT" in
+    pull_request|push|schedule) ;;
+    *) SM_REASON="the event is not pull_request, push or schedule (--event was '$(_sm_msg "$KS_EVENT")')"; return 0 ;;
+  esac
+  if [ "$KS_GIVEN" = 0 ]; then
+    case "$KS_EVENT" in
+      schedule) return 0 ;;
+      push) if [ "$KS_FIRSTPUSH" = 1 ]; then return 0; fi; SM_REASON="a push with no changed-path listing and no --first-push"; return 0 ;;   # SM:push
+      *) SM_REASON="a pull request with no changed-path listing (a non-default base, or the listing step did not run)"; return 0 ;;   # SM:nolist
+    esac
+  fi
+  if [ "$KS_EVENT" = schedule ]; then SM_REASON="a scheduled run carries a changed-path listing, which is not expected"; return 0; fi
+  if [ -z "$KS_CHANGED" ] || [ ! -f "$KS_CHANGED" ] || [ ! -r "$KS_CHANGED" ] || [ ! -s "$KS_CHANGED" ]; then SM_REASON="the changed-path listing is missing, empty or unreadable"; return 0; fi
+  if _sr_odd=$(LC_ALL=C tr -d ' -~\n' < "$KS_CHANGED"); then :; else _sr_odd=x; fi
+  if [ -n "$_sr_odd" ]; then SM_REASON="the changed-path listing holds a byte outside printable ASCII"; return 0; fi
+  if _sr_fl=$(LC_ALL=C awk '
+    BEGIN { f = 0; m = 0; s = 0 }
+    { p = $0; sub(/^\.\//, "", p); q = tolower(p); if (q == ".github/kit-listing-refused") f = 1; if (q == "conformance/kit-release.sha256") m = 1; if (p == ".kit-source") s = 1 }   # SM:lst
+    END { print f " " m " " s }' "$KS_CHANGED"); then :; else SM_REASON="the changed-path listing could not be read"; return 0; fi
+  _sr_f=${_sr_fl%% *}; _sr_rest=${_sr_fl#* }; _sr_m=${_sr_rest%% *}; _sr_s=${_sr_rest#* }
+  if [ "$_sr_f" = 1 ]; then SM_REASON="the changed-path listing is the refused-diff sentinel"; return 0; fi   # SM:refused
+  if [ "$_sr_m" = 1 ] && [ "$_sr_s" = 0 ]; then SM_REASON="manifest changed without a kit update (.kit-source unchanged)"; return 0; fi   # SM:mrule
+  if [ "$_sr_m" = 1 ]; then SM_ACCEPT="the manifest and .kit-source both changed in this change (a kit update or an adoption); compare the version and the manifest sha256 below with the release"; fi
+  return 0
+}
+# one awk program, two modes. need: the tracked paths to hash (every eligible row's resolved inputs, and the @all paths). decide: one line each:
+# `ALL<TAB>paths` (the @all paths that differ), `SKIP<TAB>row`, `RUN<TAB>row`, `INELIGIBLE<TAB>row`, `EDIT<TAB>paths` (every file that differs, once). `*` is
+# any run of characters, `/` included; the map grammar check below admits only letters, digits and `. _ / * + -` in a path, so the conversion is exact.
+_sm_awk='
+  function rx(g,  i, c, o) {
+    o = "^"
+    for (i = 1; i <= length(g); i++) {
+      c = substr(g, i, 1)
+      if (c == "*") o = o ".*"
+      else if (c == ".") o = o "\\."
+      else if (c == "+") o = o "\\+"
+      else o = o c
+    }
+    return o "$"
+  }
+  function hit(r, t,  k) {
+    for (k = 1; k <= ng[r]; k++) if (t ~ g[r, k]) return 1
+    return 0
+  }
+  function note(p) { if (!(p in ed)) { ed[p] = 1; edl = edl (edl == "" ? "" : ", ") p } }
+  BEGIN { FS = "\t" }
+  FILENAME == f_map {
+    if ($0 ~ /^#/ || $0 == "") next
+    if ($1 == "@all") { na++; allp[na] = $2; next }
+    if ($2 == "@hermetic") { herm[$1]++; next }
+    if (!($1 in seen)) { seen[$1] = 1; nrows++; rows[nrows] = $1 }
+    if (substr($2, 1, 1) == "!") { ex[$1, substr($2, 2)] = 1; next }   # SM:ex
+    ng[$1]++; g[$1, ng[$1]] = rx($2); next
+  }
+  FILENAME == f_man { nm++; mp[nm] = $1; man[$1] = $2; next }
+  FILENAME == f_trk { nt++; tl[nt] = $0; trk[$0] = 1; next }
+  FILENAME == f_st { if ($2 == "OK") st[$1] = $3; next }
+  END {
+    for (i = 1; i <= nrows; i++) { r = rows[i]; if (herm[r] == 1 && ng[r] > 0) elig[r] = 1 }   # SM:herm
+    if (mode == "need") {
+      for (i = 1; i <= na; i++) if (!(allp[i] in done)) { done[allp[i]] = 1; print allp[i] }
+      for (i = 1; i <= nrows; i++) {
+        r = rows[i]
+        if (!(r in elig)) continue
+        for (j = 1; j <= nt; j++) { t = tl[j]; if (hit(r, t) && !((r, t) in ex) && !(t in done)) { done[t] = 1; print t } }
+      }
+      exit 0
+    }
+    bad = ""
+    for (i = 1; i <= na; i++) { p = allp[i]; if (!(p in trk) || !(p in man) || !(p in st) || st[p] != man[p]) { bad = bad (bad == "" ? "" : ", ") p; note(p) } }   # SM:all
+    print "ALL\t" bad
+    for (i = 1; i <= nrows; i++) {
+      r = rows[i]
+      if (!(r in elig)) { print "INELIGIBLE\t" r; continue }
+      b = 0; seenany = 0
+      for (j = 1; j <= nt; j++) {
+        t = tl[j]
+        if (!hit(r, t) || ((r, t) in ex)) continue
+        seenany = 1
+        if (!(t in man) || !(t in st) || st[t] != man[t]) { b = 1; note(t) }   # SM:cmp
+      }
+      for (j = 1; j <= nm; j++) {
+        p = mp[j]
+        if (!hit(r, p) || ((r, p) in ex)) continue
+        seenany = 1
+        if (!(p in trk)) { b = 1; note(p) }
+      }
+      if (!seenany) b = 1
+      if (b == 0) print "SKIP\t" r; else print "RUN\t" r
+    }
+    print "EDIT\t" edl
+  }'
+_sm_core() {  # <scratch dir> : sets SM_REASON when a global unknown makes every row run; else SM_SKIP, SM_RUNROWS, SM_EDITED
+  _sc_d=$1
+  _sc_h=""
+  if command -v shasum >/dev/null 2>&1; then _sc_h=shasum; elif command -v sha256sum >/dev/null 2>&1; then _sc_h=sha256sum; fi
+  if [ -z "$_sc_h" ]; then SM_REASON="no shasum or sha256sum on this machine"; return 0; fi
+  for _sc_f in conformance/kit-release.sha256 conformance/selftest-inputs.tsv .kit-source; do
+    if [ ! -f "$_sc_f" ] || [ -L "$_sc_f" ] || [ ! -r "$_sc_f" ]; then SM_REASON="$_sc_f is missing, or is not a regular readable file"; return 0; fi
+  done
+  _sc_src=$(LC_ALL=C awk '
+    NR == 1 && $0 ~ /^commit [0-9a-f]+$/ && length($2) == 40 { c = $2; next }
+    NR == 2 && $0 ~ /^version [0-9A-Za-z][0-9A-Za-z._+-]*$/ { v = $2; next }
+    { bad = 1 }
+    END { if (!bad && NR == 2 && c != "" && v != "") print v " " c }' .kit-source) || _sc_src=""
+  if [ -z "$_sc_src" ]; then SM_REASON=".kit-source is not the two lines 'commit <40-hex>' and 'version <version>'"; return 0; fi
+  _sc_hd=$(LC_ALL=C awk -v out="$_sc_d/man.tsv" '
+    BEGIN { printf "" > out }
+    NR == 1 {
+      n = split($0, h, " ")
+      if ($0 ~ /\t/ || n != 4 || h[1] != "#" || h[2] != "kit-release" || h[3] !~ /^v[0-9A-Za-z][0-9A-Za-z._+-]*$/ || length(h[4]) != 40 || h[4] !~ /^[0-9a-f]+$/) bad = 1
+      v = substr(h[3], 2); c = h[4]; next
+    }
+    {
+      p = substr($0, 67)
+      if (length($0) < 67 || substr($0, 1, 64) !~ /^[0-9a-f]+$/ || substr($0, 65, 2) != "  " || p !~ /^[A-Za-z0-9._\/+-]+$/ || (p in seen)) { bad = 1; next }
+      seen[p] = 1; nb++; print p "\t" substr($0, 1, 64) > out
+    }
+    END { close(out); if (bad || nb == 0) print "BAD"; else print v " " c }' conformance/kit-release.sha256) || _sc_hd="BAD"
+  if [ "$_sc_hd" = BAD ] || [ -z "$_sc_hd" ]; then SM_REASON="the manifest conformance/kit-release.sha256 is empty or malformed (a header '# kit-release v<version> <40-hex commit>' and '<64-hex>  <path>' lines)"; return 0; fi
+  [ "$_sc_hd" = "$_sc_src" ] || { SM_REASON="the manifest header disagrees with .kit-source (a half-applied kit update?)"; return 0; }   # SM:hdr
+  SM_VER=${_sc_hd% *}
+  if [ "$_sc_h" = shasum ]; then _sc_o=$(shasum -a 256 -- conformance/kit-release.sha256 2>/dev/null) || _sc_o=""; else _sc_o=$(sha256sum -- conformance/kit-release.sha256 2>/dev/null) || _sc_o=""; fi
+  SM_SHA=${_sc_o%% *}
+  case "$SM_SHA" in *[!0-9a-f]*|'') SM_REASON="the manifest could not be hashed"; return 0 ;; esac
+  _sm_rule
+  [ -z "$SM_REASON" ] || return 0
+  _sc_t=$(printf '\t')
+  _sc_bad=$(LC_ALL=C awk -F'\t' '
+    /^#/ || $0 == "" { next }
+    NF == 2 && $1 ~ "^(@all|[A-Za-z0-9_.()-]+)$" && $2 ~ "^!?[A-Za-z0-9._/*+-]+$" && !($1 == "@all" && $2 ~ "[!*]") { next }
+    NF == 3 && $2 == "@hermetic" && $1 ~ "^[A-Za-z0-9_.()-]+$" && $3 ~ "^[A-Za-z0-9._/-]+$" { next }
+    { print NR; exit }' conformance/selftest-inputs.tsv) || _sc_bad=1
+  if [ -n "$_sc_bad" ]; then SM_REASON="conformance/selftest-inputs.tsv holds a line this mode does not read (the first is line $_sc_bad)"; return 0; fi
+  if git ls-files -z > "$_sc_d/trk.z" 2>/dev/null && LC_ALL=C tr '\0' '\n' < "$_sc_d/trk.z" > "$_sc_d/trk.txt"; then :; else SM_REASON="git ls-files failed (this is not a git work tree)"; return 0; fi
+  # a tracked name holding a newline is two lines in the list below, so an extra input under a glob could go unseen: the count of NUL-ended names must equal the count of lines (as adopter-export.sh counts)
+  _sc_nul=$(LC_ALL=C tr -cd '\0' < "$_sc_d/trk.z" | wc -c | tr -d ' ') || _sc_nul=x
+  _sc_ln=$(wc -l < "$_sc_d/trk.txt" | tr -d ' ') || _sc_ln=y
+  if [ "$_sc_nul" != "$_sc_ln" ]; then SM_REASON="a tracked file name holds a newline, so the list of tracked files cannot be read line by line"; return 0; fi   # SM:nl
+  if ! grep -Fqx "@all${_sc_t}conformance/selftest-inputs.tsv" conformance/selftest-inputs.tsv || ! grep -Fqx "@all${_sc_t}conformance/verify.sh" conformance/selftest-inputs.tsv; then SM_REASON="the map has no '@all' line for itself or for conformance/verify.sh, so an edit to them would go unseen"; return 0; fi   # SM:self
+  if LC_ALL=C awk -v mode=need -v f_map=conformance/selftest-inputs.tsv -v f_man="$_sc_d/man.tsv" -v f_trk="$_sc_d/trk.txt" "$_sm_awk" conformance/selftest-inputs.tsv "$_sc_d/man.tsv" "$_sc_d/trk.txt" > "$_sc_d/need.txt"; then :; else SM_REASON="the map could not be resolved"; return 0; fi
+  : > "$_sc_d/st.tsv"
+  while IFS= read -r _sc_p; do
+    [ -n "$_sc_p" ] || continue
+    case "$_sc_p" in *[!A-Za-z0-9._/+-]*|-*) continue ;; esac   # a name outside the manifest's alphabet can never match a line of it: it stays out of the state file, so it differs
+    if [ -L "$_sc_p" ] || [ ! -f "$_sc_p" ]; then continue; fi   # SM:lnk
+    if [ "$_sc_h" = shasum ]; then _sc_o=$(shasum -a 256 -- "$_sc_p" 2>/dev/null) || continue; else _sc_o=$(sha256sum -- "$_sc_p" 2>/dev/null) || continue; fi
+    _sc_x=${_sc_o%% *}
+    case "$_sc_x" in *[!0-9a-f]*|'') continue ;; esac
+    [ "${#_sc_x}" -eq 64 ] || continue
+    printf '%s\tOK\t%s\n' "$_sc_p" "$_sc_x" >> "$_sc_d/st.tsv"
+  done < "$_sc_d/need.txt"
+  if LC_ALL=C awk -v mode=decide -v f_map=conformance/selftest-inputs.tsv -v f_man="$_sc_d/man.tsv" -v f_trk="$_sc_d/trk.txt" -v f_st="$_sc_d/st.tsv" "$_sm_awk" conformance/selftest-inputs.tsv "$_sc_d/man.tsv" "$_sc_d/trk.txt" "$_sc_d/st.tsv" > "$_sc_d/dec.tsv"; then :; else SM_REASON="the decision could not be made"; return 0; fi
+  while IFS="$_sc_t" read -r _sc_k _sc_r; do
+    case "$_sc_k" in
+      ALL) if [ -n "$_sc_r" ]; then SM_REASON="a file that every row depends on differs from the manifest"; fi ;;
+      SKIP) SM_SKIP="$SM_SKIP$_sc_r " ;;
+      RUN) SM_RUNROWS="$SM_RUNROWS${SM_RUNROWS:+, }$_sc_r" ;;
+      EDIT) SM_EDITED=$_sc_r ;;
+    esac
+  done < "$_sc_d/dec.tsv"
+  if [ -n "$SM_REASON" ]; then SM_SKIP=" "; fi   # an @all path differs: every eligible row runs
+  return 0
+}
+_sm_decide() {
+  SM_ON=1
+  if _sm_dir=$(mktemp -d); then _sm_core "$_sm_dir" || true; rm -rf "$_sm_dir"; else SM_REASON="no temporary directory"; fi
+}
+_sm_notice() {  # one block before the Summary (never says "passed"); the same text goes to --summary-file
+  _sn_n=0; for _sn_w in $SM_SKIPPED; do _sn_n=$((_sn_n+1)); done
+  _sn_ed=$(_sm_msg "$SM_EDITED")
+  if [ "${#_sn_ed}" -gt 600 ]; then _sn_ed="$(printf '%s' "$_sn_ed" | cut -c1-600) ... (more)"; fi
+  if [ -n "$SM_REASON" ]; then
+    _sn_t="kit selftests by manifest: every eligible row runs — $SM_REASON"
+    [ -z "$_sn_ed" ] || _sn_t="$_sn_t
+edited kit files: $_sn_ed"
+  else
+    # "proven by release" is said only when a row was really skipped; with none, the notice says so and still carries the accept line and the edited files
+    if [ "$_sn_n" -gt 0 ]; then   # SM:n0
+      _sn_t="kit selftests proven by release v$(_sm_msg "$SM_VER") (manifest sha256 $SM_SHA): $_sn_n rows not re-run."
+    else
+      _sn_t="kit selftests by manifest: 0 rows not re-run — no row is both marked @hermetic in conformance/selftest-inputs.tsv and unchanged, so every kit selftest runs"
+    fi
+    [ -z "$SM_ACCEPT" ] || _sn_t="$_sn_t
+kit selftests by manifest: $SM_ACCEPT (release v$(_sm_msg "$SM_VER"), manifest sha256 $SM_SHA)"
+    [ -z "$_sn_ed" ] || _sn_t="$_sn_t
+edited kit files: $_sn_ed — these rows run: $(_sm_msg "$SM_RUNROWS")"
+  fi
+  printf '%s\n' "$_sn_t"
+  if [ -n "$KS_SUMMARY" ]; then ( printf '%s\n' "$_sn_t" >> "$KS_SUMMARY" ) 2>/dev/null || true; fi
+}
+if [ "$KS_BYMAN" = 0 ] && [ -n "$KS_CHANGED" ] && [ -f "$KS_CHANGED" ] && [ -r "$KS_CHANGED" ] && [ -s "$KS_CHANGED" ]; then
   if _ks_floor_hit "$KS_CHANGED"; then _ks_fr=0; else _ks_fr=$?; fi
   if [ "$_ks_fr" != 3 ]; then
     :   # forced full (a floor hit OR a floor error): the classifier is not even consulted
@@ -2806,6 +3614,10 @@ fi
 # fail-closed rule in depth. --kit-selftests overrides every skip. Without the flag nothing here fires.
 if [ "$KS_ON_CHANGE" = 1 ] && [ "$SKIP_KS" = 0 ] && [ "$KS_GIVEN" = 0 ]; then SKIP_KS=1; KS_NOLIST=1; fi   # E2:nolist
 if [ "$KS_ALL" = 1 ]; then SKIP_KS=0; KS_NOLIST=0; fi   # E2:all
+# SWAS-1008 slice 4: the manifest mode REPLACES --kit-selftests-on-change's decision (that flag's no-listing skip is dropped when both are given, and the classifier
+# never skips a row in this mode: only the manifest decides), and --kit-selftests overrides it.
+if [ "$KS_BYMAN" = 1 ]; then SKIP_KS=0; KS_NOLIST=0; fi   # SM:wins
+if [ "$KS_BYMAN" = 1 ] && [ "$KS_ALL" = 0 ]; then _sm_decide; fi
 
 # SWAS-393: a --merge validates its records and grades the battery row BEFORE it prints anything (a refused merge prints no rows).
 if [ "$MERGE" = 1 ]; then
@@ -2861,8 +3673,9 @@ check control hardlink-integrity          sh conformance/hardlink-integrity.sh
 check control hardlink-integrity-selftest sh conformance/hardlink-integrity.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code
 check control harness-generic  sh conformance/harness-adapter.sh adapters/generic
-# --kitselftest (SWAS-420B): the --selftest builds mktemp manifests; its expect-0 fixtures read the live AGENTS.md, agents-brief.sh, model-tiering.sh and agents/*.agent.md,
-# which the every-push rows harness-adapter, harness-generic, agents-brief and model-tiering-lock-run still grade.
+# --kitselftest (SWAS-420B; SWAS-1008 slice 2b): the --selftest builds mktemp manifests and runs them in a temp fixture tree seeded with its own stub kit files; its inputs are
+# conformance/harness-adapter.sh alone (the live AGENTS.md, model map, agents/ and git index are no longer read, and nothing is written under the repo root).
+# The live floor checks are still graded by the every-push rows harness-adapter, harness-generic, agents-brief and model-tiering-lock-run.
 check control harness-adapter-selftest --kitselftest sh conformance/harness-adapter.sh --selftest
 # agents-brief carries the ENTRY-CONTRACT lock (§1 byte-identical in every adapter's declared
 # contextFile). It ran only in CI and via harness-adapter's floor_holds, so `non-vacuity.sh --only
@@ -3014,7 +3827,7 @@ check control proportional-gate sh conformance/proportional-gate-wired.sh --self
 check control obligation-lib-selftest    sh conformance/obligation-lib.sh --selftest
 check control threat-obligation-selftest sh conformance/threat-obligation.sh --selftest
 check control uat-obligation-selftest    sh conformance/uat-obligation.sh --selftest
-# --kitselftest (design §3 (a)+(b), SWAS-605): the --selftest probes its own globs against canned path corpora and temp fixtures; the script is a conformance/ file.
+# --kitselftest (design §3 (a)+(b), SWAS-605): the --selftest probes its own globs against canned path corpora and temp fixtures; it reads conformance/a11y-obligation.sh, conformance/obligation-lib.sh and templates/A11Y-SIGNOFF-TEMPLATE.md (listed in conformance/selftest-inputs.tsv).
 check control a11y-obligation-selftest   --kitselftest sh conformance/a11y-obligation.sh --selftest
 # ceremony-binding follows the SAME split as the three obligations above: the selftest is
 # base-independent (every leg builds its own git fixture repos, each hermetic w.r.t. the surrounding
@@ -3052,11 +3865,11 @@ check control surface-lib-wired sh conformance/surface-lib-wired.sh --selftest
 # run as a dedicated ci.yml step on the kit source (which satisfies ci-selftest-coverage) plus the standing
 # self-negative inside --selftest; non-vacuity sweeps conformance/*.sh directly, so it is covered regardless.
 check control release-tag       sh conformance/release-tag-wired.sh
-# --kitselftest (SWAS-420B): split out of release-tag-wired.sh; the selftest reads only scripts/release-tag.sh (a scripts/ file) + temp fixtures.
+# --kitselftest (SWAS-420B): split out of release-tag-wired.sh; the selftest reads scripts/release-tag.sh, scripts/gh-tls.sh, conformance/ci-gates.sh, conformance/version-tag-coherent.sh and conformance/meta-control-fresh.sh + temp fixtures (the inputs are listed in conformance/selftest-inputs.tsv).
 check control release-tag-selftest --kitselftest sh scripts/release-tag.sh --selftest
 check control token-scope         sh conformance/token-scope.sh
 check control author-not-approver sh conformance/author-not-approver-wired.sh
-# --kitselftest (design §3 (a)+(b)): reads scripts/runaway-guard.sh and the real .kit/budget.conf (both control-plane) + temp git fixtures.
+# --kitselftest (design §3 (a)+(b)): reads scripts/runaway-guard.sh (it sources nothing), scripts/orchestrator-run.sh (scanned; missing is a FAIL) and the real .kit/budget.conf (all control-plane) + temp git fixtures (listed in conformance/selftest-inputs.tsv).
 check control runaway-killswitch --kitselftest sh conformance/runaway-killswitch-wired.sh --selftest
 # --adopter (ADOPTER-GATES-INERT A3): the subject is the ADOPTER'S OWN VERSION file vs THEIR OWN git
 # tags — it correctly N/As pre-inception (no tags cut yet) and ARMS once the adopter releases; --kitself
@@ -3218,6 +4031,7 @@ if [ -n "$SKIPPED_KS" ]; then
   printf '%s\n' "$_ks_note"
   if [ -n "$KS_SUMMARY" ]; then ( printf '%s\n' "$_ks_note" >> "$KS_SUMMARY" ) 2>/dev/null || true; fi
 fi
+if [ "$SM_ON" = 1 ]; then _sm_notice; fi   # SWAS-1008 slice 4: the manifest mode's notice (never says "passed"), also in --summary-file
 # `misconfigured` is APPENDED AFTER `failed`, never inserted: three ci.yml walk steps parse this line
 # with `sed -n 's/.*· \([0-9]*\) n\/a ·.*/\1/p'`, which needs the `· ` that follows `n/a` to survive.
 printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d n/a · %d failed · %d misconfigured\n' "$controls" "$docs" "$unverified" "$nas" "$failed" "$misconfigured"

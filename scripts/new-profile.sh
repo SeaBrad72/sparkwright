@@ -2,6 +2,7 @@
 # new-profile.sh — scaffold a new stack profile so an unsupported stack is a guided,
 # validated workflow (START-HERE.md §2B; the kit is never limited to pre-written stacks).
 # Usage: sh scripts/new-profile.sh <stack-name>
+#        sh scripts/new-profile.sh --selftest
 # Creates profiles/<stack>.md (from _TEMPLATE.md) + profiles/<stack>/{ci.yml,CODEOWNERS,BRANCH-PROTECTION.md}.
 # The stub ci.yml is CONFORMANT on creation: SHA-pinned actions, a checksum-verified gitleaks binary,
 # and a separate visibility-gated provenance job (passes action-pinning.sh + provenance-precondition.sh
@@ -11,6 +12,49 @@
 # What it changes: Creates profiles/<stack>.md + profiles/<stack>/{ci.yml,CODEOWNERS,BRANCH-PROTECTION.md} from the templates.
 # Guardrails: Rejects a non-slug name and refuses an existing profile (no clobber); run from the repo root; cleans up a partial scaffold on failure; the stub ci.yml conforms on creation.
 set -eu
+
+# --selftest (SWAS-1008 slice 5): scaffold a stub into a temp root, put the shipped GitLab shape beside it, and run the K5 lock
+# (verify-enforced-wired.sh --fleet, incl. the step-order lock) on it. A stub that lacks the standard kit-owned block (the
+# unmarked block this script emitted before) must red. Run from the kit root.
+if [ "${1:-}" = "--selftest" ]; then
+  _np_self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+  _np_root=$(pwd)
+  if [ ! -f "$_np_root/conformance/verify-enforced-wired.sh" ] || [ ! -f "$_np_root/profiles/_TEMPLATE.md" ]; then
+    echo "new-profile --selftest: FAIL (run from the kit repo root)"; exit 1
+  fi
+  _np_t=$(mktemp -d) || { echo "new-profile --selftest: FAIL (no tmpdir)"; exit 1; }
+  trap 'rm -rf "$_np_t"' EXIT
+  [ -f profiles/go/ci.yml ] || { echo "new-profile --selftest: FAIL (profiles/go/ci.yml, the shipped block the stub is held to, is absent)"; exit 1; }
+  mkdir -p "$_np_t/good/profiles/b" "$_np_t/good/profiles/ref" "$_np_t/mut/profiles/b" "$_np_t/mut/profiles/ref" "$_np_t/mut2/profiles/b" "$_np_t/mut2/profiles/ref" "$_np_t/mut2/profiles/zz-stub"
+  cp profiles/go/ci.yml "$_np_t/good/profiles/ref/ci.yml"
+  cp profiles/_TEMPLATE.md "$_np_t/good/profiles/_TEMPLATE.md"
+  ( cd "$_np_t/good" && sh "$_np_self" zz-stub > "$_np_t/scaffold.out" 2>&1 ) || { cat "$_np_t/scaffold.out"; echo "new-profile --selftest: FAIL (the scaffold itself failed)"; exit 1; }
+  printf 'conformance-aggregate:\n  stage: verify\n  script:\n    - unset KIT_GUARD_BATTERY_REF\n    - sh conformance/verify.sh --require\n' > "$_np_t/good/profiles/b/ci.gitlab-ci.yml"
+  printf '3.232.0\n' > "$_np_t/good/VERSION"; printf '## [3.232.0] - fixture\n' > "$_np_t/good/CHANGELOG.md"
+  sh "$_np_root/conformance/verify-enforced-wired.sh" --fleet --root="$_np_t/good" --expect-github=2 --expect-gitlab=1 > "$_np_t/good.out" 2>&1 \
+    || { cat "$_np_t/good.out"; echo "new-profile --selftest: FAIL (the K5 lock rejects a freshly scaffolded stub)"; exit 1; }
+  # the mutant: the stub without the kit:owned markers (the block this script emitted before); the lock must red, and name the block
+  cp "$_np_t/good/profiles/b/ci.gitlab-ci.yml" "$_np_t/mut/profiles/b/ci.gitlab-ci.yml"; cp "$_np_t/good/VERSION" "$_np_t/good/CHANGELOG.md" "$_np_t/mut/"
+  cp "$_np_t/good/profiles/ref/ci.yml" "$_np_t/mut/profiles/ref/ci.yml"
+  mkdir -p "$_np_t/mut/profiles/zz-stub"
+  sed '/kit:owned changed-listing/d' "$_np_t/good/profiles/zz-stub/ci.yml" > "$_np_t/mut/profiles/zz-stub/ci.yml"
+  if cmp -s "$_np_t/good/profiles/zz-stub/ci.yml" "$_np_t/mut/profiles/zz-stub/ci.yml"; then echo "new-profile --selftest: FAIL (the unmarked-block mutant changed nothing)"; exit 1; fi
+  if sh "$_np_root/conformance/verify-enforced-wired.sh" --fleet --root="$_np_t/mut" --expect-github=2 --expect-gitlab=1 > "$_np_t/mut.out" 2>&1; then
+    echo "new-profile --selftest: FAIL (the lock accepted a stub with no kit-owned block)"; exit 1
+  fi
+  grep -q 'kit:owned' "$_np_t/mut.out" || { cat "$_np_t/mut.out"; echo "new-profile --selftest: FAIL (the mutant went red but not for the missing kit-owned block)"; exit 1; }
+  # the second mutant: one word of a comment inside the stub's block changed; the identity lock (the block is byte-identical to the shipped profile's) must red and name itself
+  cp "$_np_t/good/profiles/b/ci.gitlab-ci.yml" "$_np_t/mut2/profiles/b/ci.gitlab-ci.yml"; cp "$_np_t/good/VERSION" "$_np_t/good/CHANGELOG.md" "$_np_t/mut2/"
+  cp "$_np_t/good/profiles/ref/ci.yml" "$_np_t/mut2/profiles/ref/ci.yml"
+  sed 's/Default branch only (security S2)/Default branch only (security S3)/' "$_np_t/good/profiles/zz-stub/ci.yml" > "$_np_t/mut2/profiles/zz-stub/ci.yml"
+  if cmp -s "$_np_t/good/profiles/zz-stub/ci.yml" "$_np_t/mut2/profiles/zz-stub/ci.yml"; then echo "new-profile --selftest: FAIL (the one-byte mutant changed nothing)"; exit 1; fi
+  if sh "$_np_root/conformance/verify-enforced-wired.sh" --fleet --root="$_np_t/mut2" --expect-github=2 --expect-gitlab=1 > "$_np_t/mut2.out" 2>&1; then
+    echo "new-profile --selftest: FAIL (the lock accepted a stub whose block differs from the shipped block)"; exit 1
+  fi
+  grep -q 'not byte-identical' "$_np_t/mut2.out" || { cat "$_np_t/mut2.out"; echo "new-profile --selftest: FAIL (the one-byte mutant went red but not for the identity lock)"; exit 1; }
+  echo "OK: new-profile selftest — a freshly scaffolded stub passes the K5, step-order and identity locks against a shipped profile; a stub with no kit-owned block reds it, and so does one differing by a word"
+  exit 0
+fi
 
 STACK="${1:-}"
 [ -n "$STACK" ] || { echo "usage: new-profile.sh <stack-name>" >&2; exit 2; }
@@ -65,6 +109,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
+
+      # >>> kit:owned changed-listing
       - name: Install pinned shellcheck v0.11.0 (sha256-verified; the runner image's 0.9.0 can run out of memory on the aggregate's lint)
         run: sh scripts/install-shellcheck.sh "$RUNNER_TEMP/sc" && echo "$RUNNER_TEMP/sc" >> "$GITHUB_PATH"
       - name: Shellcheck is the pinned v0.11.0 (fail loudly if not)
@@ -73,15 +119,16 @@ jobs:
         run: echo "KIT_CHANGED=" >> "$GITHUB_ENV"
 
       - name: Changed-path listing (default-branch pull request or push)
-        # ADOPTER-KIT-SELFTESTS-ON-CHANGE (the same step as profiles/typescript-node/ci.yml; locked by
-        # conformance/verify-enforced-wired.sh --fleet, leg K5). A pull request into the default branch lists
-        # BASE...HEAD; a push to the default branch lists the TWO-dot BEFORE..SHA. Both shas are ENV-BOUND, never
-        # interpolated into the script. The all-zero before of a first push writes no listing and exits here, so that run
-        # skips the kit's own selftests (--kit-selftests-on-change). Past that check, a bad sha, a failed diff, an empty
-        # diff or a path containing a newline writes the one-line listing `.github/kit-listing-refused`, which verify's
-        # literal floor reads as a control-plane path: that run is FULL. A schedule run or any other event gets no listing
-        # and skips them. Default branch only (security S2): a PR into another base branch, or a push to another branch,
-        # gets no listing, so it skips them too.
+        # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the run's changed paths so verify.sh can skip the kit's own
+        # selftests when none of them is a control-plane path. A pull request into the default branch lists
+        # BASE...HEAD; a push to the default branch lists the TWO-dot BEFORE..SHA (two trees, so a force-push
+        # over-lists, the safe direction). Both shas are ENV-BOUND, never interpolated into the script, and
+        # must be 40 or 64 hex. The all-zero before of a first push writes no listing and exits here, so that run skips
+        # the kit's own selftests (--kit-selftests-on-change). Past that check, a bad sha, a failed diff, an empty diff or a
+        # path containing a newline writes the one-line listing `.github/kit-listing-refused`, which verify's literal floor
+        # reads as a control-plane path: that run is FULL. A schedule run or any other event gets no listing and skips them.
+        # Default branch only (security S2): a PR into another base branch, or a push to another branch, gets no listing,
+        # so it skips them too. The clear step above empties KIT_CHANGED, so nothing an earlier step wrote can survive.
         if: (github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch) || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -106,9 +153,20 @@ jobs:
           fi
 
       - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
-        # KIT_CHANGED is set only by the listing step above; empty on a first push / schedule, so those skip the
-        # kit's own selftests (--kit-selftests-on-change). Keep this ONE line (verify-enforced-wired reads it).
+        # No `gate-*` id: this is the aggregate, not one of the eight §14 gate ids
+        # that conformance/ci-gates.sh REQUIREs. Blocks on the CONTROL battery — `[doc]` failures
+        # exit 0 by design (verify.sh's RESULT lines), so a day-one adopter is not blocked by an
+        # unwritten RPO/RTO. Placed before toolchain setup because the aggregate is POSIX sh with
+        # no toolchain dependency; identical placement across every emitted pipeline is what makes
+        # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
+        # KIT_CHANGED is set only by the listing step above (a default-branch pull request or push); empty on
+        # a schedule or any unknown. --kit-selftests-on-change makes a run with no listing skip the kit's own
+        # selftests (rows N-A, one notice); a listing that names a control-plane path still runs them all.
+        # Keep this ONE line (verify-enforced-wired reads it).
+        env:
+          SW_ANNOTATE: '1'
         run: sh conformance/verify.sh --require --kit-selftests-on-change ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
+      # <<< kit:owned changed-listing
 
       # TODO: add your language/runtime setup action (SHA-pin it, e.g. actions/setup-go@<sha>  # vX)
       - name: Lint

@@ -153,6 +153,7 @@ cl_awk() {  # <tracked-listing> <md-listing> <armed 0|1>
       if (p ~ /^docs\/architecture\/20/) return 1
       if (p ~ /^docs\/plans\/20/) return 1
       if (p ~ /^docs\/plans\/brief-/) return 1
+      if (p ~ /^changelog\.d\//) return 1   # MUT-1031A-DATED-CL
       if (b == "CHANGELOG.md") return 1
       if (b == "meta-control-log.md") return 1
       if (b ~ /^20[0-9][0-9]-.*\.md$/) return 1
@@ -463,6 +464,21 @@ selftest() {
   cl_add "$W/dsrc"
   cl_expect "a dated SOURCE citing a dead line does not fail the tree" 0 "$W/dsrc"
   cl_says  "and its exemption is REPORTED with an exact count" "1 EXEMPT-dated (sources 1/targets 0)" "$W/dsrc"
+
+  # ── DATED-CL (SWAS-1031). A changelog.d/ fragment is a dated record too: a dead line in it is EXEMPT.
+  cl_init "$W/dfrag"
+  cl_put "$W/dfrag" "docs/target.md" 'one\ntwo\n'
+  cl_put "$W/dfrag" "docs/a.md" 'see `docs/target.md:1` for it\n'
+  cl_put "$W/dfrag" "changelog.d/SWAS-5.md" '### Fixed\n- it said `docs/target.md:900` back then\n'
+  cl_add "$W/dfrag"
+  cl_expect "DATED-CL: a changelog.d fragment citing a dead line does not fail the tree" 0 "$W/dfrag"
+  cl_says  "DATED-CL: and its exemption is REPORTED with an exact count" "1 EXEMPT-dated (sources 1/targets 0)" "$W/dfrag"
+  # M-DATED-CL (MUT-1031A-DATED-CL): the fragment arm removed from a byte copy, the same fixture must now FAIL.
+  sed '/# MUT-1031A-DATED-CL$/s/return 1/return 0/' "$_self" > "$W/mut-dated-cl.sh"
+  if cmp -s "$_self" "$W/mut-dated-cl.sh"; then echo "FAIL: selftest -- M-DATED-CL: the mutation changed nothing"; sfail=1
+  else _selfsave=$_self; _self=$W/mut-dated-cl.sh
+    cl_expect "M-DATED-CL mutant: with the changelog.d/ arm removed the DATED-CL fixture FAILS (the cell is RED)" 1 "$W/dfrag"
+    _self=$_selfsave; fi
 
   # ── DATED TARGET -> EXEMPT, counted. A living doc anchoring INTO the record.
   cl_init "$W/dtgt"

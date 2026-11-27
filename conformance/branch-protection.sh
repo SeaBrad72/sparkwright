@@ -635,7 +635,7 @@ classify() {
     # it matters more under `review`. The reader is the dial file's own, parsed and never sourced.
     _bp_goact=""
     if go_act_review "$REPO_ROOT"; then
-      _bp_goact=" This tree's .kit/dials.conf sets GO_ACT=review: there an APPROVED review on the head is the merge GO, so a push that does not dismiss it leaves the GO standing on a head nobody approved."
+      _bp_goact=" This tree's .kit/dials.conf sets GO_ACT=review: there an APPROVED review on the head is the merge GO, and this setting binds an approval to the PR's diff, so a push that changes the diff and does not dismiss it leaves the GO standing on a diff nobody approved."
     fi
     # SWAS-812: with no reviews block at all, a PATCH of one key may have nothing to patch, so the two cures below lead with
     # the Settings UI there (the count-absent arm's shape); with the block present they stay the admin PATCH, byte for byte.
@@ -648,7 +648,7 @@ classify() {
       _bp_lp_cure="Fix it with the admin PATCH (NOT branch-protection-apply.sh --apply, which only adds status-check contexts): gh api -X PATCH repos/OWNER/REPO/branches/$BRANCH/protection/required_pull_request_reviews -F require_last_push_approval=true — or the Settings UI, Branches, edit the rule, 'Require approval of the most recent reviewable push'."
     fi
     printf '%s' "$_bp_rc_flat" | grep -q '"dismiss_stale_reviews":true' \
-      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the exact head (review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a tree nobody looked at merges on a review of a different tree. ${_bp_ds_cure}${_bp_goact}"; ok=1; }
+      || { printf '%s\n' "FAIL: $BRANCH does not set dismiss_stale_reviews to true — since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) this setting is what binds an approval to the PR's diff (GitHub dismisses an approval when a push changes the PR's diff, and kept one across a diff-neutral merge from the base; review-lane no longer re-reads the forge to compare the approval's commit.oid). Without it an approval given before a fix push survives that push, and a diff nobody looked at merges on a review of a different diff. ${_bp_ds_cure}${_bp_goact}"; ok=1; }
     _bp_sa=0; [ "${_bp_rc_count:-9}" = 0 ] && [ "$SA_OK" = 1 ] && _bp_sa=1
     if [ "$_bp_sa" = 1 ] && [ "$(bp_enforce_admins "$_bp_rc_flat")" != true ]; then printf '%s\n' "FAIL: the solo-agent state needs enforce_admins on: the solo-agent profile sets enforce_admins:true (Q6), but $BRANCH has it off, so an admin could merge past solo-go-bound. Cure (an admin act, done by a human): sh scripts/branch-protection-apply.sh --replace."; ok=1; fi  # MUT-BPSOLO
     printf '%s' "$_bp_rc_flat" | grep -q '"require_last_push_approval":true' \
@@ -927,6 +927,22 @@ selftest() {
   gact no "$_gooff" "dismiss_stale_reviews off + the dial absent -> still FAIL (not weakened), without the GO_ACT sentence"
   gact no "$_gosep" "dismiss_stale_reviews off + GO_ACT=separate -> still FAIL, without the GO_ACT=review sentence"
   gact no "$_bpdir/no-such-root" "dismiss_stale_reviews off + no dial file at all -> still FAIL"
+  # SWAS-1031 (BP-DS, design F5 + errata E7 item 1): the FAIL is unchanged; its reason now says the setting binds an approval to the PR's DIFF
+  # (GitHub dismisses on a diff change and kept an approval across a diff-neutral base merge), not to the exact head. :651 prints it on every
+  # fixture; :638 prints only on the GO_ACT=review fixture, so that fixture is asserted too. The old phrase must be gone.
+  bpds() {  # root label [needle only the :638 sentence carries]
+    out=$( ( REQUIRE=0; REPO=selftest; REPO_ROOT="$1"; DECLARATION="/nonexistent-required-checks-$$"
+             classify 0 '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":false,"require_last_push_approval":true},"required_status_checks":{}}' ) 2>&1 ) && g=0 || g=$?
+    if [ "$g" = 1 ] && printf '%s\n' "$out" | grep -qF -e "binds an approval to the PR's diff" \
+       && { [ -z "${3:-}" ] || printf '%s\n' "$out" | grep -qF -e "$3"; } \
+       && ! printf '%s\n' "$out" | grep -qF -e 'binds an approval to the exact head'; then
+      echo "selftest PASS: $2 -> exit $g"
+    else
+      echo "selftest FAIL: $2 want rc=1 + the diff phrase (and not the exact-head phrase) got rc=$g out=[$out]"; st=1
+    fi
+  }
+  bpds "$_bpdir/no-such-root" "BP-DS: dismiss_stale_reviews off -> FAIL, the reason says the setting binds an approval to the PR's diff"
+  bpds "$_goon" "BP-DS: dismiss_stale_reviews off + GO_ACT=review -> FAIL, the diff phrase, and the :638 sentence's own words" 'on a diff nobody approved'
 
   # ── SWAS-901 slice B (T15a-f): the solo-agent state. A tree that declares MERGE_RELATIONSHIP=solo (a regular dial file, no Governance
   # team override), lists solo-go-bound in REQUIRED-CHECKS.md, carries the installed workflow and the verbs' go-bound marker, and whose

@@ -56,7 +56,7 @@ The kit's merge verbs (`promotion-verify.sh actuate` for ordinary and sensitive 
 2. Run `sh scripts/promotion-verify.sh record` on that PR's head sha: class `control-plane`, your own words in `--token`, your name in `--go-by`. This is the root of the whole solo grant, so it must be on the trail; with it, `trace --recent` binds the hand merge to a note instead of flagging it as recordless.
 3. Merge that PR yourself, by hand. No `--admin` is needed on a free private repository. This is the one hand merge; from here the agent merges on your recorded GO, and your per-PR act is the GO only. `sh scripts/sparkwright doctor` and every `actuate` and `land` print that line.
 
-**Two kit checks on this PR do not pass, and that is expected.** The dial file is a control-plane change, so two of the kit's gates fail on this PR unless you carry their records [M: a solo-declared throwaway, 2026-11-16, where both failed and every other check passed]:
+**Two kit checks on this PR do not pass, and that is expected.** (This is the dial-file PR. The PR that first adds the kit is different: its checks and the hand merge are explained in [Your first PR](brownfield.md#your-first-pr).) The dial file is a control-plane change, so two of the kit's gates fail on this PR unless you carry their records [M: a solo-declared throwaway, 2026-11-16, where both failed and every other check passed]:
 - `loop-state`: no `Kit-Row` or `Kit-Class` trailer on the head commit;
 - `ceremony-binding`: no recorded design GO (`promotion-verify.sh record --gate design`).
 

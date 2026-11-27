@@ -694,6 +694,202 @@ go_check_ref() { # local_ref local_sha remote_ref remote_sha
   return $?
 }
 
+# decision_check_ref — SWAS-1010 PR 3: the decision-heading leg. Before a push that touches a decision file, runs
+# `conformance/inception-done.sh --quick --hook <tree>` on the PUSHED commit's files and refuses on a leg-4 FAIL:
+# a decision heading that CI's `--adopter` aggregate also reds (verify.sh:3087-3098). Legs 1-3 (the header fields, the
+# harness stamp, the backlog backend) and the drafts leg print OWED lines and never refuse: the person fills those
+# fields after `adopt`. THERE IS NO DIAL: it refuses only what CI would red later, so it adds no new red. D-240811-2
+# item 1 is amended for this leg by the entry in docs/governance/DECISIONS.md (the owner's Q1 = a, run C's measured catch).
+# Design: docs/architecture/2026-11-22-first-adoption-pr-1010-design.md 5.3, as amended by the errata (E-B1, E-M2, E-M3,
+# R2-N1, R2-N2, R2-N3, R2-N7).
+#  - Dispatch (D1, copied from go_check_ref): only a refs/heads/* push with a non-zero hex sha; never main or master, and
+#    never the branch that origin/HEAD names (a default called trunk). A push with no pushed ref cannot reach grading (D1,
+#    and the main loop's skip of a line with no remote ref), so errata cell H22 is not built; R2-N5's HEAD case applies only
+#    to a manual `--quick --hook` run. The hook assumes the remote is named origin, as the other legs do.
+#  - An absent or unreadable inception-done.sh is a SILENT N/A (D2). Three skips print a visible N/A line and ALLOW: one that
+#    predates --quick --hook (`N/A (skew)`), the kit's own tree (`N/A (kit tree)`: its CLAUDE.md is the principles document,
+#    a KIT_INTERNAL_MARKERS file present) and the default branch (`N/A (default branch <name>)`).
+#  - Only docs/architecture/ADR-000-stack.md is graded among the ADRs, matching PR 1's --hook and CI's leg 4.
+#  - The change-set is this leg's own (it does NOT reuse _push_class_listing, which classifies): remote_sha..local_sha, else
+#    the merge-base with origin/HEAD, origin/main or origin/master. A listing that cannot be derived, or that carries a
+#    newline, grades the WHOLE pushed tree (it never skips). A tree that cannot be read refuses.
+#  - The pushed commit is graded, not the working tree: each decision file is written from its blob into a temp tree, after
+#    a mode check (a symlink or submodule is not graded here, CI grades it), and the engine runs on that tree by absolute
+#    path. The model map is the one read from the working tree; inception-done prints that disclosure line.
+#  - The temp dir is removed on every return path (EXIT, INT, TERM and HUP traps, cleared on return; no other leg sets a
+#    trap, so clearing them clears nothing of another leg's); the selftest counts leftovers (H21).
+# CEILING: a speed bump, not a boundary (--no-verify, a never-installed hook or a stale copy bypasses it). A push from a
+# dev clone runs no hook; docs/operations/runtime-guards.md names the conduct for that case.
+_dc_say() { printf 'kit pre-push (decisions): %s\n' "$1" >&2; }
+_dc_refuse() { # <text>
+  printf 'kit pre-push: %s\n' "$1" >&2
+  printf '  override (deliberate): git push --no-verify\n' >&2
+}
+_dc_cannot_read() { # <sha> <git rc> <what>
+  _dc_refuse "cannot read the decision files in $(printf '%.8s' "$1") (git rc $2: $3); the decision-heading check cannot run. Remedy: git fetch origin, then push again; a push that cannot be checked is not let through."
+}
+_dc_kit_tree() { # 0 = a KIT_INTERNAL_MARKERS file is present, so this is the kit's own dev tree
+  _dck_m=$(sed -n "s/^KIT_INTERNAL_MARKERS='\\(.*\\)'.*/\\1/p" "$ROOT/scripts/incept.sh" 2>/dev/null </dev/null) || _dck_m=""
+  set -f   # the marker list is a word list from a file: no globbing of its words
+  for _dck_f in $_dck_m; do
+    if [ -e "$ROOT/$_dck_f" ]; then set +f; return 0; fi
+  done
+  set +f
+  return 1
+}
+_dc_is_decision_path() { # <path> — 0 when the path is one the leg is about
+  case "$1" in
+    CLAUDE.md | RUNBOOK.md | .kit/model-map.conf | docs/inception-draft/*) return 0 ;;
+    docs/architecture/ADR-000*.md) return 0 ;;
+  esac
+  return 1
+}
+# _dc_listing <sha> <remote_sha> <workdir> — sets _dc_ls (listed|newline|underivable) and _dc_hit (1 when a decision path changed).
+_dc_listing() {
+  _dcl_sha=$1; _dcl_rsha=$2; _dcl_z="$3/list.z"
+  _dc_ls=underivable; _dc_hit=0; _dcl_base=""
+  case "$_dcl_rsha" in
+    *[!0-9a-fA-F]*) : ;;
+    *[!0]*) if git cat-file -e "$_dcl_rsha^{commit}" 2>/dev/null </dev/null; then _dcl_base=$_dcl_rsha; fi ;;
+  esac
+  if [ -z "$_dcl_base" ]; then
+    for _dcl_ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master; do
+      _dcl_base=$(git merge-base "$_dcl_sha" "$_dcl_ref" 2>/dev/null </dev/null) || _dcl_base=""
+      if [ -n "$_dcl_base" ]; then break; fi
+    done
+  fi
+  [ -n "$_dcl_base" ] || return 0
+  if ! git -c core.quotePath=false diff --name-only -z --no-renames "$_dcl_base" "$_dcl_sha" > "$_dcl_z" 2>/dev/null </dev/null; then
+    return 0
+  fi
+  if [ "$(LC_ALL=C tr -cd '\n' < "$_dcl_z" | wc -c | tr -d ' ')" != 0 ]; then _dc_ls=newline; return 0; fi
+  _dc_ls=listed
+  tr '\0' '\n' < "$_dcl_z" > "$_dcl_z.l"
+  while IFS= read -r _dcl_p; do
+    if _dc_is_decision_path "$_dcl_p"; then _dc_hit=1; break; fi
+  done < "$_dcl_z.l"
+  return 0
+}
+# _dc_write_blob <sha> <path> — writes the path's blob at <sha> into the temp tree. rc 1 = refused (the text is printed).
+_dc_write_blob() {
+  _dw_ent=$(git ls-tree --full-tree "$1" -- "$2" 2>/dev/null </dev/null) || { _dc_cannot_read "$1" "$?" "$2"; return 1; }
+  [ -n "$_dw_ent" ] || return 0                      # absent at the pushed sha: the engine reads N/A
+  _dw_mode=${_dw_ent%% *}
+  _dw_oid=${_dw_ent#* }; _dw_oid=${_dw_oid#* }; _dw_oid=${_dw_oid%%[[:space:]]*}
+  case "$_dw_mode" in
+    100644 | 100755) : ;;
+    120000 | 160000) _dc_say "$2 is a symlink or submodule at $(printf '%.8s' "$1"); this check cannot grade it, CI grades it"; return 0 ;;
+    *) _dc_say "$2 is not a regular file at $(printf '%.8s' "$1"); this check cannot grade it, CI grades it"; return 0 ;;
+  esac
+  mkdir -p "$_dc_tmp/tree/$(dirname "$2")" 2>/dev/null
+  _dw_rc=0
+  git cat-file blob "$_dw_oid" > "$_dc_tmp/tree/$2" 2>/dev/null </dev/null || _dw_rc=$?
+  if [ "$_dw_rc" -ne 0 ]; then
+    rm -f "$_dc_tmp/tree/$2"
+    _dc_cannot_read "$1" "$_dw_rc" "$2"
+    return 1   # MUT-DC-H20
+  fi
+  return 0
+}
+_dc_relay_owed() { # <output> — the advisory lines only: OWED (inception ...) and the model-axis disclosure
+  printf '%s\n' "$1" | grep -e '^OWED' -e '^model axis' | while IFS= read -r _dro_l; do _dc_say "$_dro_l"; done
+  return 0
+}
+_dc_run_all() { # <sha> <remote_sha> — uses _dc_pred and the work dir _dc_tmp; rc 0 allow, 1 refuse
+  _dr_sha=$1
+  _dc_listing "$_dr_sha" "$2" "$_dc_tmp"
+  case "$_dc_ls" in
+    listed) : ;;
+    newline)
+      _dc_hit=1   # MUT-DC-H5
+      _dc_say "a changed path carries a literal NEWLINE; the whole pushed tree is graded (fail-safe)" ;;
+    *)
+      _dc_hit=1   # MUT-DC-H16
+      _dc_say "no change-set could be derived (no origin refs); the whole pushed tree is graded (fail-safe)" ;;
+  esac
+  [ "$_dc_hit" = 1 ] || return 0                     # no decision file touched: the leg does not run
+  _dc_base="$_dc_tmp/tree"   # MUT-DC-H14
+  for _dr_p in CLAUDE.md RUNBOOK.md docs/architecture/ADR-000-stack.md; do
+    _dc_write_blob "$_dr_sha" "$_dr_p" || return 1
+  done
+  _dr_out=$(sh "$_dc_pred" --quick --hook "$_dc_base" 2>&1 </dev/null); _dr_rc=$?
+  case "$_dr_rc" in
+    0)
+      _dc_relay_owed "$_dr_out"   # MUT-DC-H7
+      return 0 ;;
+    1)
+      printf '%s\n' "$_dr_out" | while IFS= read -r _dr_l; do printf 'kit pre-push: %s\n' "$_dr_l" >&2; done
+      printf 'kit pre-push:   remedy: CI reds this too. Add the missing heading to that file in the pushed commit, commit, and push again:\n' >&2
+      printf "kit pre-push:     RUNBOOK.md  '#### Deploy-target fit rationale'  (copy it from templates/RUNBOOK-TEMPLATE.md:51)\n" >&2
+      printf "kit pre-push:     ADR-000     '## Fit rationale'\n" >&2
+      printf "kit pre-push:     CLAUDE.md   '#### Harness fit rationale' or '#### Model fit rationale', when you record that decision\n" >&2
+      printf '  override (deliberate): git push --no-verify\n' >&2
+      return 1   # MUT-DC-H1
+      ;;
+    *)
+      _dc_refuse "conformance/inception-done.sh --quick --hook exited rc $_dr_rc, not 0 or 1, so the decision-heading check could not run:"
+      printf '%s\n' "$_dr_out" | while IFS= read -r _dr_l; do printf 'kit pre-push:   %s\n' "$_dr_l" >&2; done
+      return 1   # MUT-DC-H4
+      ;;
+  esac
+}
+decision_check_ref() { # local_ref local_sha remote_ref remote_sha
+  _dc_sha=$2
+  _dc_ref=$3
+  # D1 — dispatch, copied from go_check_ref: skip anything this leg cannot grade.
+  case "$_dc_ref" in
+    refs/heads/*) : ;;
+    *) return 0 ;;                                  # tags, notes — not a branch push
+  esac
+  case "$_dc_sha" in
+    *[!0]*) : ;;
+    *) return 0 ;;                                  # all-zero local_sha — a deletion
+  esac
+  case "$_dc_ref" in
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+  esac
+  case "$_dc_sha" in
+    *[!0-9a-fA-F]*) return 0 ;;
+  esac
+  # R2-N7: the branch origin/HEAD names (a default called trunk or develop) is also a trunk merge. This reads the REMOTE
+  # DEFAULT, not D11's scope key (it names no branch of the push). It reads the ref file directly, to avoid PP9's spellings.
+  # A reftable repository has no such file, so it misses the skip, which fails safe: the trunk push is graded.
+  _dc_gd=$(git rev-parse --git-common-dir 2>/dev/null </dev/null) || _dc_gd=""
+  _dc_oh=""
+  if [ -n "$_dc_gd" ] && [ -f "$_dc_gd/refs/remotes/origin/HEAD" ]; then
+    _dc_oh=$(sed -n 's/^ref: //p' "$_dc_gd/refs/remotes/origin/HEAD" 2>/dev/null </dev/null) || _dc_oh=""
+  fi
+  case "$_dc_oh" in
+    refs/remotes/origin/?*)
+      if [ "$_dc_ref" = "refs/heads/${_dc_oh#refs/remotes/origin/}" ]; then
+        _dc_say "N/A (default branch ${_dc_oh#refs/remotes/origin/}): a push to the default branch is graded at the PR, not here."
+        return 0
+      fi ;;
+  esac
+  # D2 — an absent or unreadable gate is a SILENT N/A, as in every other leg (an absent predicate never reds a first push).
+  _dc_pred="$ROOT/conformance/inception-done.sh"
+  [ -f "$_dc_pred" ] && [ -r "$_dc_pred" ] || return 0
+  if _dc_kit_tree; then
+    _dc_say "N/A (kit tree): this is the kit's own tree, whose CLAUDE.md is the principles document; the decision-heading check did not run."
+    return 0
+  fi
+  if ! grep -q -- '--quick' "$_dc_pred" 2>/dev/null || ! grep -q -- '--hook' "$_dc_pred" 2>/dev/null; then
+    _dc_say "this checkout of conformance/inception-done.sh predates --quick --hook, so the decision-heading check is N/A (skew) for this push (it did not run; CI grades the headings)."
+    return 0
+  fi
+  _dc_tmp=$(mktemp -d 2>/dev/null) || _dc_tmp=""
+  if [ -z "$_dc_tmp" ]; then
+    _dc_refuse "cannot create a temporary directory; the decision-heading check cannot run."
+    return 1
+  fi
+  trap 'rm -rf "$_dc_tmp"' EXIT
+  trap 'rm -rf "$_dc_tmp"; exit 1' INT TERM HUP
+  mkdir -p "$_dc_tmp/tree"
+  _dc_run_all "$_dc_sha" "$4"; _dc_rc=$?
+  rm -rf "$_dc_tmp"; trap - EXIT INT TERM HUP
+  return "$_dc_rc"
+}
+
 # cite_check_ref — the sixth dial's leg (D-240815-2d). Runs the SAME predicate the required
 # `docs-links` context runs — `conformance/citation-live.sh`, with NO ARGUMENTS, over the WHOLE
 # TRACKED TREE — and relays its verdict once per push.
@@ -2970,6 +3166,237 @@ refs/heads/main $MHEAD refs/heads/main $MHEAD"
   fi
   rm -f "$M_PROBE"
 
+  # ---------------------------------------------------------------------------------------------
+  # DC — the pre-push decision leg (decision_check_ref; SWAS-1010 PR 3; design 5.3 as amended by errata E-B1, E-M2,
+  # E-M3, R2-N1, R2-N2, R2-N3, R2-N7). Cells H1-H21 and H23 (H22 is not built: see the leg's header). Each cell
+  # re-invokes THIS file with the push protocol on stdin, in a throwaway repo. The `real` fixtures carry copies of
+  # the real inception-done.sh and its engine (so the verdicts are the real ones); `rec`, `old` and `rc2` plant a
+  # stub in their place (a recorder, a copy that predates --quick, a copy that errors). TMPDIR is a counted
+  # directory (H21). No cell touches the repository this hook lives in.
+  # ---------------------------------------------------------------------------------------------
+  DCTMP=$(mktemp -d)
+  dc_commit() { ( cd "$1" && git add -A && git -c user.email=t@kit -c user.name=kit commit -q -m "$2" ); }
+  dc_sha() { ( cd "$1" && git rev-parse HEAD ); }
+  dc_mkfix() { # kind(real|rec|old|rc2) default-branch(main) -> sets DCF: origin/<default> at c0, feature/x checked out
+    DCF=$(mktemp -d)
+    _dm_def=${2:-main}
+    ( cd "$DCF" && git init -q && printf 'seed\n' > README.md && git add -A \
+        && git -c user.email=t@kit -c user.name=kit commit -q -m c0 \
+        && git update-ref "refs/remotes/origin/$_dm_def" HEAD \
+        && printf 'ref: refs/remotes/origin/%s\n' "$_dm_def" > .git/refs/remotes/origin/HEAD \
+        && git checkout -q -b feature/x )
+    mkdir -p "$DCF/conformance" "$DCF/scripts" "$DCF/docs/architecture"
+    case "$1" in
+      real)
+        for _dm_f in inception-done.sh decision-integrity.sh backlog-lib.sh wf-helpers.sh surface-lib.sh; do
+          cp "$ROOT/conformance/$_dm_f" "$DCF/conformance/$_dm_f"
+        done
+        cp "$ROOT/scripts/fail-annotate.sh" "$DCF/scripts/fail-annotate.sh" ;;
+      rec) printf '#!/bin/sh\n# supports --quick --hook\necho called >> "%s"\nexit 0\n' "$DCF/dc-rec" > "$DCF/conformance/inception-done.sh" ;;
+      old) printf '#!/bin/sh\necho "an older gate"\nexit 0\n' > "$DCF/conformance/inception-done.sh" ;;
+      rc2) printf '#!/bin/sh\n# supports --quick --hook\necho "stub engine error" >&2\nexit 2\n' > "$DCF/conformance/inception-done.sh" ;;
+    esac
+  }
+  dc_claude_entry() { printf '# Project\n\nEntry contract only.\n' > "$1/CLAUDE.md"; }
+  dc_adr_good() { printf '# ADR-000\n\n## Fit rationale\nChosen for team skill, ecosystem fit and deploy simplicity on this workload.\n' > "$1/docs/architecture/ADR-000-stack.md"; }
+  dc_adr_bad() { printf '# ADR-000\n\nWe use it.\n' > "$1/docs/architecture/ADR-000-stack.md"; }
+  dc_rb_good() { printf '# Runbook\n\n#### Deploy-target fit rationale\nStateless service with spiky traffic; a managed platform fits the ops burden and cost.\n' > "$1/RUNBOOK.md"; }
+  dc_rb_bad() { printf '# Runbook\n\nDeploy by hand.\n' > "$1/RUNBOOK.md"; }
+  dc_run_with() { # hook-file dir ref-line -> dc_out, dc_rc
+    dc_out=$(cd "$2" && printf '%s\n' "$3" | KIT_GUARD_CORE="$DECL_CORE" TMPDIR="$DCTMP" sh "$1" 2>&1); dc_rc=$?
+  }
+  dc_run() { dc_run_with "$SELF" "$1" "$2"; }
+  dc_expect_called() { # desc dir want(yes|no)
+    if [ -f "$2/dc-rec" ]; then _dc_got=yes; else _dc_got=no; fi
+    if [ "$_dc_got" = "$3" ]; then echo "PASS: $1 (inception-done called: $_dc_got)"; else echo "FAIL: $1 (inception-done called: $_dc_got, wanted $3)"; fail=1; fi
+    rm -f "$2/dc-rec"
+  }
+
+  # H1 — a push touching RUNBOOK.md with the deploy heading missing is refused, naming the heading and the template line.
+  dc_mkfix real; DC1=$DCF
+  dc_claude_entry "$DC1"; dc_adr_good "$DC1"; dc_rb_bad "$DC1"; dc_commit "$DC1" bad
+  DC1S=$(dc_sha "$DC1")
+  dc_run "$DC1" "refs/heads/feature/x $DC1S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H1: a RUNBOOK.md push with the deploy heading missing is refused"
+  decl_expect_contains "H1: the refusal names the heading" "Deploy-target fit rationale" "$dc_out"
+  decl_expect_contains "H1: the refusal names the template line" "templates/RUNBOOK-TEMPLATE.md:51" "$dc_out"
+  dc_rb_good "$DC1"; dc_commit "$DC1" good
+  dc_run "$DC1" "refs/heads/feature/x $(dc_sha "$DC1") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H1 control: the same push with the heading present is allowed"
+
+  # H2 — a push touching no decision file is allowed and the leg does not run (the recorder sees no call); the control runs it.
+  dc_mkfix rec; DC2=$DCF
+  printf 'x\n' > "$DC2/other.txt"; dc_commit "$DC2" other
+  dc_run "$DC2" "refs/heads/feature/x $(dc_sha "$DC2") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H2: a push touching no decision file is allowed"
+  dc_expect_called "H2: the leg did not run" "$DC2" no
+  dc_rb_bad "$DC2"; dc_commit "$DC2" rb
+  dc_run "$DC2" "refs/heads/feature/x $(dc_sha "$DC2") refs/heads/feature/x $Z"
+  dc_expect_called "H2 control: a push touching RUNBOOK.md runs the leg" "$DC2" yes
+
+  # H3 — an inception-done.sh with no --quick prints the visible N/A (skew) line and allows.
+  dc_mkfix old; DC3=$DCF
+  dc_rb_bad "$DC3"; dc_commit "$DC3" rb
+  dc_run "$DC3" "refs/heads/feature/x $(dc_sha "$DC3") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H3: a gate that predates --quick is allowed"
+  decl_expect_contains "H3: the skew is visible, never silent" "N/A (skew)" "$dc_out"
+
+  # H4 — --quick --hook returning rc 2 refuses, with the error text.
+  dc_mkfix rc2; DC4=$DCF
+  dc_rb_bad "$DC4"; dc_commit "$DC4" rb
+  DC4S=$(dc_sha "$DC4")
+  dc_run "$DC4" "refs/heads/feature/x $DC4S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H4: a gate that exits 2 refuses the push"
+  decl_expect_contains "H4: the error text is relayed" "stub engine error" "$dc_out"
+
+  # H5 — a listing failure runs the check: a newline in a changed path cannot be listed, so the whole pushed tree is graded.
+  dc_mkfix real; DC5=$DCF
+  dc_claude_entry "$DC5"; dc_adr_good "$DC5"; dc_rb_bad "$DC5"
+  printf 'x\n' > "$DC5/$(printf 'a\nb')"; dc_commit "$DC5" nl
+  DC5S=$(dc_sha "$DC5")
+  dc_run "$DC5" "refs/heads/feature/x $DC5S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H5: a newline in a changed path still runs the check, and the bad RUNBOOK.md refuses"
+  decl_expect_contains "H5: the refusal names the heading" "Deploy-target fit rationale" "$dc_out"
+
+  # H6 — on the kit's own tree (a KIT_INTERNAL_MARKERS file present) the leg is N/A.
+  dc_mkfix real; DC6=$DCF
+  printf "KIT_INTERNAL_MARKERS='docs/ROADMAP-KIT.md'\n" > "$DC6/scripts/incept.sh"
+  printf 'x\n' > "$DC6/docs/ROADMAP-KIT.md"
+  dc_rb_bad "$DC6"; dc_commit "$DC6" rb
+  dc_run "$DC6" "refs/heads/feature/x $(dc_sha "$DC6") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H6: on a kit-tree fixture the leg is N/A, even with a bad RUNBOOK.md"
+  decl_expect_contains "H6: the kit-tree skip is visible" "N/A (kit tree)" "$dc_out"
+
+  # H7 — a mid-adoption tree (entry-contract CLAUDE.md, ADR-000 with its heading, no RUNBOOK.md) is allowed with OWED lines.
+  dc_mkfix real; DC7=$DCF
+  dc_claude_entry "$DC7"; dc_adr_good "$DC7"; dc_commit "$DC7" mid
+  DC7S=$(dc_sha "$DC7")
+  dc_run "$DC7" "refs/heads/feature/x $DC7S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H7: a mid-adoption tree is allowed"
+  decl_expect_contains "H7: the owed fields print as OWED, never as a refusal" "OWED (inception)" "$dc_out"
+
+  # H8 — a header-less older adopter whose push touches a valid RUNBOOK.md is allowed, with an OWED line.
+  dc_mkfix real; DC8=$DCF
+  printf '# Older project\n\nNo header lines here.\n' > "$DC8/CLAUDE.md"; dc_rb_good "$DC8"; dc_commit "$DC8" older
+  dc_run "$DC8" "refs/heads/feature/x $(dc_sha "$DC8") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H8: a header-less older adopter with a valid RUNBOOK.md is allowed"
+  decl_expect_contains "H8: with an OWED line" "OWED (inception)" "$dc_out"
+
+  # H9-H11 — D1 dispatch: a notes ref, a tag and a branch deletion are skipped (the recorder sees no call). The control runs the leg.
+  dc_mkfix rec; DC9=$DCF
+  dc_rb_bad "$DC9"; dc_commit "$DC9" rb
+  DC9S=$(dc_sha "$DC9")
+  dc_run "$DC9" "refs/heads/feature/x $DC9S refs/heads/feature/x $Z"
+  dc_expect_called "H9-H11 control: a branch push runs the leg" "$DC9" yes
+  dc_run "$DC9" "refs/notes/promotions $DC9S refs/notes/promotions $Z"
+  decl_expect_rc "$dc_rc" allow "H9: a refs/notes/promotions push is allowed"
+  dc_expect_called "H9: the leg was skipped" "$DC9" no
+  dc_run "$DC9" "refs/tags/v1 $DC9S refs/tags/v1 $Z"
+  decl_expect_rc "$dc_rc" allow "H10: a tag push is allowed"
+  dc_expect_called "H10: the leg was skipped" "$DC9" no
+  dc_run "$DC9" "(delete) $Z refs/heads/feature/x $DC9S"
+  decl_expect_rc "$dc_rc" allow "H11: a branch deletion is allowed"
+  dc_expect_called "H11: the leg was skipped" "$DC9" no
+
+  # H12 — a new branch on a remote whose default is trunk derives its listing through origin/HEAD.
+  dc_mkfix real trunk; DC12=$DCF
+  dc_claude_entry "$DC12"; dc_adr_good "$DC12"; dc_rb_bad "$DC12"; dc_commit "$DC12" rb
+  dc_run "$DC12" "refs/heads/feature/x $(dc_sha "$DC12") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H12: a touched bad RUNBOOK.md is graded when the default branch is trunk"
+  dc_mkfix rec trunk; DC12B=$DCF
+  dc_rb_bad "$DC12B"; dc_commit "$DC12B" rb
+  ( cd "$DC12B" && git update-ref refs/remotes/origin/trunk HEAD )
+  printf 'y\n' > "$DC12B/other.txt"; dc_commit "$DC12B" other
+  dc_run "$DC12B" "refs/heads/feature/x $(dc_sha "$DC12B") refs/heads/feature/x $Z"
+  dc_expect_called "H12: an untouched decision file is not graded (the listing came from origin/HEAD, not the whole tree)" "$DC12B" no
+
+  # H14 — the pushed sha is graded, not the working tree: a committed missing heading with the working tree fixed is refused.
+  dc_mkfix real; DC14=$DCF
+  dc_claude_entry "$DC14"; dc_adr_good "$DC14"; dc_rb_bad "$DC14"; dc_commit "$DC14" bad
+  DC14S=$(dc_sha "$DC14")
+  dc_rb_good "$DC14"
+  dc_run "$DC14" "refs/heads/feature/x $DC14S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H14: a committed missing heading is refused although the working tree is fixed"
+
+  # H15 — pushing branch b while a is checked out grades b's sha.
+  dc_mkfix real; DC15=$DCF
+  dc_commit "$DC15" scripts   # the gate's copies are tracked on a, so checking a out again keeps them (they would otherwise leave with b)
+  ( cd "$DC15" && git checkout -q -b b )
+  dc_claude_entry "$DC15"; dc_adr_good "$DC15"; dc_rb_bad "$DC15"; dc_commit "$DC15" bad
+  DC15S=$(dc_sha "$DC15")
+  ( cd "$DC15" && git checkout -q feature/x )
+  dc_run "$DC15" "refs/heads/b $DC15S refs/heads/b $Z"
+  decl_expect_rc "$dc_rc" refuse "H15: branch b is graded at its own sha while a is checked out"
+
+  # H16 — an underivable listing (no origin refs) grades the whole pushed tree: a bad ADR-000 refuses, naming the heading.
+  dc_mkfix real; DC16=$DCF
+  rm -f "$DC16/.git/refs/remotes/origin/HEAD"
+  ( cd "$DC16" && git update-ref -d refs/remotes/origin/main )
+  dc_adr_bad "$DC16"; dc_commit "$DC16" bad
+  DC16S=$(dc_sha "$DC16")
+  dc_run "$DC16" "refs/heads/feature/x $DC16S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H16: an underivable listing grades the whole pushed tree and refuses a bad ADR-000"
+  decl_expect_contains "H16: the refusal names the heading" "Fit rationale" "$dc_out"
+
+  # H17 — an underivable listing and an unreadable pushed tree refuse, with the one-line reason and the remedy.
+  DC17S=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  dc_run "$DC16" "refs/heads/feature/y $DC17S refs/heads/feature/y $Z"
+  decl_expect_rc "$dc_rc" refuse "H17: a pushed tree that cannot be read refuses"
+  decl_expect_contains "H17: the reason is one named line" "cannot read the decision files" "$dc_out"
+  decl_expect_contains "H17: the remedy names the fetch" "git fetch origin" "$dc_out"
+
+  # H18 — the model map is read from the working tree, and the leg says so.
+  dc_mkfix real; DC18=$DCF
+  dc_claude_entry "$DC18"; dc_adr_good "$DC18"; dc_commit "$DC18" mid
+  DC18S=$(dc_sha "$DC18")
+  mkdir -p "$DC18/.kit"; printf 'deep=opus\ndecision=D-1\n' > "$DC18/.kit/model-map.conf"
+  dc_run "$DC18" "refs/heads/feature/x $DC18S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H18: a working-tree map that binds a model grades the pushed CLAUDE.md against it"
+  decl_expect_contains "H18: the disclosure line prints" "model axis: only the map" "$dc_out"
+
+  # H19 — a symlinked RUNBOOK.md prints the cannot-grade line and allows.
+  dc_mkfix real; DC19=$DCF
+  ln -s README.md "$DC19/RUNBOOK.md"; dc_commit "$DC19" link
+  dc_run "$DC19" "refs/heads/feature/x $(dc_sha "$DC19") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H19: a symlinked RUNBOOK.md is allowed"
+  decl_expect_contains "H19: the cannot-grade line prints" "symlink or submodule" "$dc_out"
+
+  # H20 — a blob that cannot be read refuses (the loose object is removed after the commit).
+  dc_mkfix real; DC20=$DCF
+  dc_claude_entry "$DC20"; dc_adr_good "$DC20"; dc_rb_good "$DC20"; dc_commit "$DC20" good
+  DC20S=$(dc_sha "$DC20")
+  DC20O=$( cd "$DC20" && git rev-parse HEAD:RUNBOOK.md )
+  rm -f "$DC20/.git/objects/$(printf '%.2s' "$DC20O")/${DC20O#??}"
+  dc_run "$DC20" "refs/heads/feature/x $DC20S refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" refuse "H20: an unreadable blob refuses"
+  decl_expect_contains "H20: the reason names the unreadable files" "cannot read the decision files" "$dc_out"
+
+  # H24 — a decision path that is a directory (mode 040000) prints "is not a regular file" and allows.
+  dc_mkfix real; DC24=$DCF
+  dc_claude_entry "$DC24"; mkdir -p "$DC24/RUNBOOK.md"; printf 'x\n' > "$DC24/RUNBOOK.md/a"; dc_commit "$DC24" dir
+  dc_run "$DC24" "refs/heads/feature/x $(dc_sha "$DC24") refs/heads/feature/x $Z"
+  decl_expect_rc "$dc_rc" allow "H24: a directory at RUNBOOK.md is allowed"
+  decl_expect_contains "H24: the not-a-regular-file line prints" "is not a regular file" "$dc_out"
+
+  # H23 — a push to the default branch named trunk (the origin/HEAD target) is skipped.
+  dc_mkfix rec trunk; DC23=$DCF
+  dc_rb_bad "$DC23"; dc_commit "$DC23" rb
+  DC23S=$(dc_sha "$DC23")
+  dc_run "$DC23" "refs/heads/feature/x $DC23S refs/heads/feature/x $Z"
+  dc_expect_called "H23 control: a feature-branch push runs the leg" "$DC23" yes
+  dc_run "$DC23" "refs/heads/trunk $DC23S refs/heads/trunk $(cd "$DC23" && git rev-parse refs/remotes/origin/trunk)"
+  decl_expect_rc "$dc_rc" allow "H23: a push to trunk is allowed"
+  decl_expect_contains "H23: the default-branch skip is visible and names the branch" "N/A (default branch trunk)" "$dc_out"
+  dc_expect_called "H23: the leg was skipped" "$DC23" no
+
+  # H21 — nothing is left under the fixtures' TMPDIR after H1-H23.
+  _dc_left=$(find "$DCTMP" -mindepth 1 | wc -l | tr -d ' ')
+  if [ "$_dc_left" = 0 ]; then
+    echo "PASS: H21 no leftover under TMPDIR after the decision-leg cells"
+  else
+    echo "FAIL: H21 $_dc_left leftover(s) under TMPDIR after the decision-leg cells"; fail=1
+  fi
+
   # MUTANTS (hand-built: hooks/* is outside non-vacuity.sh's sweep). Each copies THIS file, deletes
   # the ONE line carrying a trailing marker with sed, re-runs the named cell on the copy and expects
   # the verdict to FLIP. The copy is asserted to differ from the original and the marker to occur
@@ -3013,6 +3440,63 @@ refs/heads/main $MHEAD refs/heads/main $MHEAD"
   mut_leg MUT-883-LEG-CITE "stub citation site" "cite_check_ref"
   mut_leg MUT-883-LEG-PRES "stub verdict" "presence_check_ref"
 
+  # The decision leg's mutants (SWAS-1010 PR 3). Each REPLACES the one marked line, re-runs the named cell on the
+  # copy, and expects its verdict to FLIP. The marker must end exactly one line; a rotted marker reds here.
+  mut_sub() { # marker-name out-file replacement -> a copy of $SELF with the marked line replaced; sets mut_ok=1|0
+    mut_ok=0
+    _ms_n=$(grep -c "# $1\$" "$SELF" || true)
+    if [ "$_ms_n" != 1 ]; then
+      echo "FAIL: mutant $1: the marker must end exactly ONE line of the hook (found $_ms_n)"; fail=1; return 0
+    fi
+    sed "/# $1\$/s/.*/$3/" "$SELF" > "$2"
+    if cmp -s "$SELF" "$2"; then
+      echo "FAIL: mutant $1: the sed changed nothing"; fail=1; return 0
+    fi
+    mut_ok=1
+  }
+  # M-H1: the leg returns 0 on a FAIL -> H1 flips to an allow.
+  mut_sub MUT-DC-H1 "$TM/mut-dc.sh" "      return 0"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC1" "refs/heads/feature/x $DC1S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H1: a leg that returns 0 on a FAIL lets H1's push through (H1 reds)"
+  fi
+  # M-H4: rc 2 allowed -> H4 flips.
+  mut_sub MUT-DC-H4 "$TM/mut-dc.sh" "      return 0"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC4" "refs/heads/feature/x $DC4S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H4: a leg that allows rc 2 lets H4's push through (H4 reds)"
+  fi
+  # M-H5: a listing failure (a newline in a path) skips -> H5 flips.
+  mut_sub MUT-DC-H5 "$TM/mut-dc.sh" "      _dc_hit=0"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC5" "refs/heads/feature/x $DC5S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H5: a listing failure that skips lets H5's push through (H5 reds)"
+  fi
+  # M-H7: legs 1-3 refuse in hook context -> H7 flips to a refusal.
+  mut_sub MUT-DC-H7 "$TM/mut-dc.sh" "      if printf '%s' \"\$_dr_out\" | grep -q 'OWED (inception)'; then return 1; fi"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC7" "refs/heads/feature/x $DC7S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" refuse "M-H7: a leg that refuses on the owed fields refuses H7's mid-adoption push (H7 reds)"
+  fi
+  # M-H14: the working tree is graded (the engine is pointed at the cwd) -> H14 flips to an allow.
+  mut_sub MUT-DC-H14 "$TM/mut-dc.sh" "  _dc_base=\"\$PWD\""
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC14" "refs/heads/feature/x $DC14S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H14: a leg that grades the working tree lets H14's push through (H14 reds)"
+  fi
+  # M-H16: an underivable listing is empty instead of the whole tree -> H16 flips.
+  mut_sub MUT-DC-H16 "$TM/mut-dc.sh" "      _dc_hit=0"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC16" "refs/heads/feature/x $DC16S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H16: an empty underivable listing lets H16's push through (H16 reds)"
+  fi
+  # M-H20: a blob read error is treated as absent -> H20 flips.
+  mut_sub MUT-DC-H20 "$TM/mut-dc.sh" "    return 0"
+  if [ "$mut_ok" = 1 ]; then
+    dc_run_with "$TM/mut-dc.sh" "$DC20" "refs/heads/feature/x $DC20S refs/heads/feature/x $Z"
+    decl_expect_rc "$dc_rc" allow "M-H20: a blob read error treated as absent lets H20's push through (H20 reds)"
+  fi
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
@@ -3035,6 +3519,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   go_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   cite_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   presence_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
+  decision_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
 done <<KIT_883_STDIN || status=1
 $_kit_stdin
 KIT_883_STDIN

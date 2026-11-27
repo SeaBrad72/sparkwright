@@ -377,10 +377,53 @@ run() {
 selftest() {
   st=0
   base=$(mktemp -d)   # fixtures left in place (no rm; 7e control-plane guard)
+  # SWAS-1008 slice 2b: HERMETIC. Every fixture run takes its cwd in a fixture tree that carries only this
+  # selftest's own bytes, never the tree the selftest was started from. floor_holds therefore grades the fixture
+  # tree, not the adopter's AGENTS.md, model map, agents/ or git index, and nothing is written under the live root.
+  # The kit scripts floor_holds composes are STUBS here (agents-brief, model-tiering, guard-core-sourced, guard-wired):
+  # they have their own every-push rows. agents-brief and model-tiering stubs read the CONTENT of the seeded
+  # context document and map, so a tree that holds other bytes reds the floor (that is what the plant cell uses).
+  # The selftest's inputs: this file only. Everything else is written below into $base.
+  self=$(CDPATH='' cd -P -- "$(dirname "$0")" && pwd)/$(basename "$0")
+  # a nested plant-cell run is recognised only by a marker file in ITS cwd that matches the env token; an
+  # inherited env value alone never skips the cell
+  nested=0
+  if [ -n "${HA_PLANT_CELL:-}" ] && [ -f ./.ha-plant-marker ] && [ "$(cat ./.ha-plant-marker)" = "$HA_PLANT_CELL" ]; then nested=1; fi
+  leakb=$(ls -d ./.nv-hactx-* ./conformance/.nv-hafp-* 2>/dev/null | LC_ALL=C sort || :)
+  pro=""; wd=""
+  cleanup() {
+    if [ -n "$pro" ]; then chmod u+w "$pro" "$pro/conformance" 2>/dev/null || :; fi
+    if [ -n "$wd" ]; then rm -f "$wd"/conformance/.nv-hafp-*.sh 2>/dev/null || :; fi
+  }
+  trap 'cleanup; exit 130' INT TERM
+  trap cleanup EXIT
+  ft="$base/fixture-tree"
+  wd="$ft"
+  hrun() { ( cd "$wd" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && GIT_CEILING_DIRECTORIES="$base" && export GIT_CEILING_DIRECTORIES && sh "$self" "$@" ); }
+  # gitin <dir> <git args>: a git command in <dir> that cannot see the caller's repo
+  gitin() { gi_d=$1; shift; env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CEILING_DIRECTORIES="$base" git -C "$gi_d" -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+  # seedtree <dir>: write the stand-in kit tree (only this file's own bytes) and commit it
+  seedtree() {
+    sd=$1
+    mkdir -p "$sd/conformance" "$sd/hooks" "$sd/scripts" "$sd/agents" "$sd/.kit"
+    printf '# fixture context document\n\nCLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md\n' > "$sd/AGENTS.md"
+    printf '# fixture\n' > "$sd/.gitignore"
+    printf 'apex=unset\ndeep=unset\nfast=unset\nlight=unset\ndecision=none\n' > "$sd/.kit/model-map.conf"
+    printf '#!/bin/sh\n[ -f AGENTS.md ] && grep -q "fixture context document" AGENTS.md\n' > "$sd/conformance/agents-brief.sh"
+    printf '#!/bin/sh\n[ -f .kit/model-map.conf ] && grep -q "decision=none" .kit/model-map.conf\n' > "$sd/conformance/model-tiering.sh"
+    printf '#!/bin/sh\nexit 0\n' > "$sd/conformance/guard-core-sourced.sh"
+    printf '#!/bin/sh\nexit 0\n' > "$sd/conformance/guard-wired.sh"
+    for ff in conformance/agent-boundary.sh conformance/branch-protection.sh hooks/pre-push scripts/kit-guard; do
+      printf '#!/bin/sh\n' > "$sd/$ff"
+    done
+    for ff in orchestrator engineer reviewer security; do printf '# fixture seat\n' > "$sd/agents/$ff.agent.md"; done
+    { gitin "$sd" init -q && gitin "$sd" add -A && gitin "$sd" commit -q -m seed; } >/dev/null 2>&1 || :
+  }
+  seedtree "$ft"
   mkconf() { mkdir -p "$1"; printf '%s\n' "$2" > "$1/adapter.json"; }
   expect() {  # <expected-rc> <adapter-dir> <label>
     e=$1; a=$2; lbl=$3
-    ( sh "$0" "$a" ) >/dev/null 2>&1 && g=0 || g=$?
+    hrun "$a" >/dev/null 2>&1 && g=0 || g=$?
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
   # expect_why: `expect` PLUS the REASON. Use it for any rule that a rule ABOVE it in the chain could
@@ -393,7 +436,7 @@ selftest() {
   # while its fixture printed PASS. An rc-only assertion cannot see a substitution; this one can.
   expect_why() {  # <expected-rc> <adapter-dir> <label> <fixed substring the output MUST contain>
     ewe=$1; ewa=$2; ewl=$3; eww=$4
-    ewo=$( ( sh "$0" "$ewa" ) 2>&1 ) && ewg=0 || ewg=$?
+    ewo=$( hrun "$ewa" 2>&1 ) && ewg=0 || ewg=$?
     if [ "$ewg" != "$ewe" ]; then
       echo "selftest FAIL: $ewl want $ewe got $ewg"; st=1; return 0
     fi
@@ -443,21 +486,18 @@ selftest() {
   # wider surface the manifest never claimed. The fixture script below exits 0 ONLY when invoked WITH
   # the flag — a regression that accepts the flag but drops it before `sh "$chkpath" "$chkflag"`
   # reddens this fixture instead of passing vacuously (the substitution-blindness this file already
-  # guards against elsewhere). Lives under conformance/ only for the fixture's own lifetime — created
-  # and removed here, matching the repo-root `.nv-` fixture discipline above (ctxsym/ctxuntracked).
+  # guards against elsewhere). Lives under conformance/ of the FIXTURE tree only for its own lifetime — created
+  # and removed here, matching the `.nv-` fixture discipline below (ctxsym/ctxuntracked). It is a
+  # fixture-relative path, so the manifest's check string stays a bare conformance/*.sh path.
   flagfix="conformance/.nv-hafp-rung1flag.sh"
-  # B3 r3 LOW-C: this fixture lives at a repo-relative path (not under $base, which mktemp -d
-  # already isolates), so an INTERRUPT between creation and the explicit `rm -f` below would leak
-  # it into the working tree. Trap the same glob shape non-vacuity.sh's own selftest discipline
-  # uses elsewhere in this repo; disarmed right after the explicit cleanup so it cannot mask a
-  # later, unrelated trap this script might grow.
-  trap 'rm -f conformance/.nv-hafp-*.sh' INT TERM
-  printf '#!/bin/sh\n[ "$1" = "--rung1-only" ] && exit 0\nexit 1\n' > "$flagfix"
+  # B3 r3 LOW-C: an INTERRUPT between creation and the explicit `rm -f` below must not leak it; the
+  # selftest's cleanup() (trap on EXIT, INT and TERM, set at the top) removes the same glob shape. Since
+  # slice 2b the file lives in the temp fixture tree, never under the repo root.
+  printf '#!/bin/sh\n[ "$1" = "--rung1-only" ] && exit 0\nexit 1\n' > "$wd/$flagfix"
   mkconf "$base/flagok" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"__FLAGFIX__ --rung1-only"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
   sed "s#__FLAGFIX__#$flagfix#" "$base/flagok/adapter.json" > "$base/flagok/adapter.tmp" && mv "$base/flagok/adapter.tmp" "$base/flagok/adapter.json"
   expect 0 "$base/flagok" "proof.check '<path> --rung1-only' executes WITH the flag (native)"
-  rm -f "$flagfix"
-  trap - INT TERM
+  rm -f "$wd/$flagfix"
 
   # The flag is exactly ONE token: a second token after it is REJECTED, not silently dropped.
   mkconf "$base/flagtwo" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh --rung1-only --extra"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
@@ -480,8 +520,11 @@ selftest() {
   # silently fall through to a BARE run of <path> — reject it, matching the comment that already
   # claimed an "empty remainder after the space" is rejected (it wasn't, because the charset check
   # only ever ran when chkflag was non-empty). command-guard is declared native with this shape and
-  # a bare run of guard-wired.sh WOULD pass here (this repo's own tree is wired), so a regression
-  # that re-opens the bare-run path would show as this fixture flipping from FAIL to PASS.
+  # a bare run of the fixture tree's guard-wired.sh stub (seeded `exit 0`, so it WOULD pass) is what the
+  # reject-at-the-split rule prevents, so a regression that re-opens the bare-run path would show as
+  # this fixture flipping from FAIL to PASS. (The FAIL line is the same lying-native line for every
+  # rejection, so the reason cannot be pinned with expect_why; the rc is the discriminator, and the
+  # seeded stub is what keeps it one: without the file the fixture would fail for a missing check.)
   mkconf "$base/flagtrailspace" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/guard-wired.sh "}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
   expect 1 "$base/flagtrailspace" "proof.check '<path> ' (trailing space, empty remainder) is REJECTED, not run bare"
 
@@ -566,8 +609,8 @@ selftest() {
   # RULE 3 (symlink) and RULE 5 (tracked) need REAL on-disk witnesses. A nonexistent path would be
   # refused by the regular-file rule first, and the fixture would then attest nothing about the rule it
   # is named after — the vacuity this file has already been bitten by twice. Both witnesses live under
-  # the repo-root `.nv-` prefix that .gitignore already carries (so a leaked artifact can never be
-  # committed) and are removed immediately after use.
+  # the `.nv-` prefix that the fixture tree's .gitignore carries (and the repo's own does too), and are
+  # created in the temp fixture tree, not the repo root, and removed immediately after use.
   ctxsym=".nv-hactx-symlink.md"; ctxuntracked=".nv-hactx-untracked.md"
   # THE LINK TARGET MUST RESOLVE. It used to be `../outside-this-tree.md` — a DANGLING link, which the
   # regular-file rule (`[ -f ]` follows the link and finds nothing) refused BEFORE the symlink walk was
@@ -575,8 +618,8 @@ selftest() {
   # refuse it: `[ -f ]` now succeeds, and so does the tracked check on the link's target name. That is
   # what makes the mutant on ctx_path_has_symlink die instead of survive. Paired with expect_why below —
   # the target change makes the rule REACHABLE, the reason assertion proves it is what actually fired.
-  ln -sf AGENTS.md "$ctxsym"
-  printf '# untracked context document\n' > "$ctxuntracked"
+  ln -sf AGENTS.md "$wd/$ctxsym"
+  printf '# untracked context document\n' > "$wd/$ctxuntracked"
   # ceremony-binding MED-5, third recurrence in this surface area: a symlink whose content is not in the
   # tree would let A1.3's position-assert read a document that appears in NO diff.
   mkconf "$base/symctx"    "{$hdr,\"contextFile\":\"$ctxsym\",\"dimensions\":{$seven}}"
@@ -585,7 +628,7 @@ selftest() {
   # Guarding the ASSERTION with the same predicate as the RULE is what keeps this honest in both
   # environments instead of green in one and red in the other. `-- ':/'` here is in LOCKSTEP with ctx_ok's
   # own probe; if the two ever disagree this fixture runs against a rule that did not.
-  if [ -n "$(git ls-files -- ':/' 2>/dev/null | head -1)" ]; then
+  if [ -n "$(gitin "$wd" ls-files -- ':/' 2>/dev/null | head -1)" ]; then
     mkconf "$base/untrackedctx" "{$hdr,\"contextFile\":\"$ctxuntracked\",\"dimensions\":{$seven}}"
     expect_why 1 "$base/untrackedctx" "contextFile exists but is UNTRACKED -> FAIL" "is not a tracked file"
     # D(ii) (A3): the FAIL must carry its remedy — the measured way to reach this state on a real
@@ -594,7 +637,7 @@ selftest() {
   else
     echo "selftest n/a: untracked-contextFile fixture (no populated git index in this tree)"
   fi
-  rm -f "$ctxsym" "$ctxuntracked"
+  rm -f "$wd/$ctxsym" "$wd/$ctxuntracked"
 
   # ---- .git components: MEASURED rc=0 on the adopter tree for all three of these. The tracked rule was
   # the ONLY thing refusing them, and an empty index skips exactly that rule — so the refusal was missing
@@ -658,7 +701,7 @@ selftest() {
   sevenansilvl="\"context-binding\":{\"level\":\"floor\"},\"command-guard\":{\"level\":\"floor\"},\"history-protection\":{\"level\":\"floor\"},\"review-roles\":{\"level\":\"floor\"},\"mcp-gate\":{\"level\":\"n-a\"},\"orchestration\":{\"level\":\"floor\"},\"model-tiering\":{\"level\":\"flo${esc}[2Kor\"}"
   mkconf "$base/ansikey" "{\"harness\":\"fixture\",\"controlPlanePaths\":[\".claude/settings.json\"],\"bindingFiles\":[\"${esc}[2Kfake.txt\"],\"contextFile\":\"${esc}[2K${del}fake-context.md\",\"dimensions\":{$sevenansilvl,\"${esc}[2K${del}evil\":{\"level\":\"floor\"}}}"
   expect 1 "$base/ansikey" "ANSI/DEL extra key + ANSI bindingFile + ANSI contextFile + ANSI level still FAIL"
-  if ( sh "$0" "$base/ansikey" ) 2>&1 | tr -d '\n' | LC_ALL=C grep -q '[[:cntrl:]]'; then
+  if hrun "$base/ansikey" 2>&1 | tr -d '\n' | LC_ALL=C grep -q '[[:cntrl:]]'; then
     echo "selftest FAIL: manifest control bytes reached the output (unsanitized)"; st=1
   else
     echo "selftest PASS: manifest control bytes stripped from the output"
@@ -672,18 +715,73 @@ selftest() {
   # otherwise conformant, so it MUST still pass (rc 0) — sanitizing must not be bought by failing.
   mkconf "$base/ansiok" "{\"harness\":\"fix${esc}[2K${del}ture\",\"controlPlanePaths\":[\".claude/settings.json\"],\"bindingFiles\":[\"AGENTS.md\"],\"contextFile\":\"AGENTS.md\",\"dimensions\":{$seven}}"
   expect 0 "$base/ansiok" "ANSI/DEL harness still PASSES (sanitizing is not bought by failing)"
-  if ( sh "$0" "$base/ansiok" ) 2>&1 | tr -d '\n' | LC_ALL=C grep -q '[[:cntrl:]]'; then
+  if hrun "$base/ansiok" 2>&1 | tr -d '\n' | LC_ALL=C grep -q '[[:cntrl:]]'; then
     echo "selftest FAIL: control bytes reached the SUCCESS line (unsanitized .harness)"; st=1
   else
     echo "selftest PASS: control bytes stripped from the SUCCESS line"
   fi
 
   # adapter dir not found -> UNVERIFIED(2) local, FAIL(1) under CI/--require
-  # shellcheck disable=SC1007 # CI= is intentional: clears CI in the subshell to test non-CI path
-  ( CI= REQUIRE=0 sh "$0" "$base/does-not-exist" ) >/dev/null 2>&1 && g=0 || g=$?
+  ( CI=""; REQUIRE=0; export CI REQUIRE; hrun "$base/does-not-exist" ) >/dev/null 2>&1 && g=0 || g=$?
   if [ "$g" = "2" ]; then echo "selftest PASS: missing adapter -> exit 2 (UNVERIFIED)"; else echo "selftest FAIL: missing adapter want 2 got $g"; st=1; fi
-  ( CI=true sh "$0" "$base/does-not-exist" ) >/dev/null 2>&1 && g=0 || g=$?
+  ( CI=true; export CI; hrun "$base/does-not-exist" ) >/dev/null 2>&1 && g=0 || g=$?
   if [ "$g" = "1" ]; then echo "selftest PASS: missing adapter + CI -> exit 1"; else echo "selftest FAIL: missing adapter + CI want 1 got $g"; st=1; fi
+
+  # ---- harness-adapter-selftest-plant (SWAS-1008 slice 2b, errata E30): the selftest verdict must not depend on
+  # the bytes of the tree it is run from. Two fresh dirs are seeded with the same stand-in tree and a copy of
+  # THIS file alone (nothing is copied from the cwd). The second dir then gets adopter-shaped bytes planted over
+  # its context document and model map, and its root and conformance/ are write-protected. The selftest is run
+  # in each (two nested runs); the verdicts must be identical and OK, because the fixtures run in the selftest's
+  # own temp tree. The mutant reverts the fix CONSISTENTLY (the fixture cwd and every cwd-relative write
+  # become the starting dir) and the same pair must then DIFFER: that is what shows the cell can see the live read.
+  # A nested run is recognised by a marker file in its own cwd that matches the env token; an inherited
+  # HA_PLANT_CELL alone never skips the cell.
+  if [ "$nested" = "1" ]; then
+    echo "selftest n/a: harness-adapter-selftest-plant (this is a nested run of the cell)"
+  else
+    ptoken="$$-$(basename "$base")"
+    pnest() {  # <script> <dir>: run the selftest in <dir>, print its output and rc
+      ( cd "$2" && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && HA_PLANT_CELL="$ptoken" sh "$1" --selftest 2>&1 && echo "verdict-rc=0" || echo "verdict-rc=$?" )
+    }
+    mkdir -p "$base/mut"
+    for pd in plant-a plant-b; do
+      seedtree "$base/$pd"
+      cp "$self" "$base/$pd/conformance/harness-adapter.sh"
+      printf '%s\n' "$ptoken" > "$base/$pd/.ha-plant-marker"
+    done
+    for pf in "$base/plant-b/AGENTS.md" "$base/plant-b/.kit/model-map.conf"; do
+      if [ -L "$pf" ]; then echo "selftest FAIL: harness-adapter-selftest-plant: refusing to plant over a symlink"; st=1; fi
+      rm -f "$pf"
+    done
+    printf '# adopter planted context document\n' > "$base/plant-b/AGENTS.md"
+    printf 'this line is not a key=value line\n' > "$base/plant-b/.kit/model-map.conf"
+    pro="$base/plant-b"; chmod a-w "$pro" "$pro/conformance"
+    pwp="write-protected root"
+    if [ "$(id -u)" = "0" ]; then pwp="write-protect leg NOT proved (uid 0)"; fi
+    pva=$(pnest conformance/harness-adapter.sh "$base/plant-a")
+    pvb=$(pnest conformance/harness-adapter.sh "$base/plant-b")
+    if [ "$pva" = "$pvb" ] && printf '%s\n' "$pva" | grep -qF "harness-adapter --selftest: OK"; then
+      echo "selftest PASS: harness-adapter-selftest-plant: planted adopter bytes leave the verdict unchanged ($pwp)"
+    else
+      echo "selftest FAIL: harness-adapter-selftest-plant: the verdict moved with the tree it ran from (unplanted vs planted differ, or the unplanted run is not OK)"; st=1
+    fi
+    sed 's#^  wd="\$ft"$#  wd=.#' "$self" > "$base/mut/harness-adapter.sh"
+    if cmp -s "$self" "$base/mut/harness-adapter.sh"; then
+      echo "selftest FAIL: harness-adapter-selftest-plant mutant changed nothing (the wd line is gone or renamed; retarget the sed)"; st=1
+    else
+      mva=$(pnest "$base/mut/harness-adapter.sh" "$base/plant-a")
+      mvb=$(pnest "$base/mut/harness-adapter.sh" "$base/plant-b")
+      if [ "$mva" != "$mvb" ]; then
+        echo "selftest PASS: harness-adapter-selftest-plant mutant (live cwd and cwd-relative writes restored) is killed: the pair differs"
+      else
+        echo "selftest FAIL: harness-adapter-selftest-plant mutant (live cwd and cwd-relative writes restored) SURVIVED: the pair agrees, the cell cannot see the live read"; st=1
+      fi
+    fi
+    chmod u+w "$pro" "$pro/conformance"; pro=""
+  fi
+  # the selftest leaves nothing behind in the root it was started from: the same glob, before and after
+  leaka=$(ls -d ./.nv-hactx-* ./conformance/.nv-hafp-* 2>/dev/null | LC_ALL=C sort || :)
+  if [ "$leaka" = "$leakb" ]; then echo "selftest PASS: no .nv-hactx-* or conformance/.nv-hafp-* file was added to or removed from the repo root"; else echo "selftest FAIL: the selftest changed the .nv-hactx-* or conformance/.nv-hafp-* files in the repo root"; st=1; fi
 
   [ "$st" = "0" ] && echo "harness-adapter --selftest: OK"
   return "$st"

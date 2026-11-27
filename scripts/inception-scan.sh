@@ -5,8 +5,9 @@
 # It reads the root Makefile (GNUmakefile, makefile, Makefile) and package.json "scripts" AS TEXT, never calls make, npm or any tool the repository defines,
 # and asks the guard of the tree it runs from, copied into a temp directory, about each recipe line. Exit: 0 ok · 1 every line came back "not judged" (the cause
 # is named on stderr) · 2 usage or a missing tool. POSIX sh; dash-clean.
+# It also reads a .kit-digests (this kit's, else the target's) and hashes the target's scripts/*.sh, so a script that is byte-identical to one the kit ships is counted and left unlisted.
 # What it changes: Nothing in the target repository, the guard, settings or conformance/. It writes a temp directory (mktemp -d) holding a copy of the guard and its working files, removed on exit, and prints the proposals to stdout.
-# Guardrails: Static text parse only (awk for the Makefile, jq for package.json); make, npm and the target's own code are never run and nothing from the target is sourced or eval'd; the guard is the single source of "denied" (the scanner holds no pattern list); each guard call's JSON is built with jq --arg, never by printf; the verdict is read from the guard's exit code and output together (exit 2 is "not judged", never a deny); every line printed has control, bidi and zero-width characters stripped; a proposal is text and is never applied.
+# Guardrails: Static text parse only (awk for the Makefile, jq for package.json); make, npm and the target's own code are never run and nothing from the target is sourced or eval'd; the guard is the single source of "denied" (the scanner holds no pattern list); each guard call's JSON is built with jq --arg, never by printf; the verdict is read from the guard's exit code and output together (exit 2 is "not judged", never a deny); every line printed has control, bidi and zero-width characters stripped; a proposal is text and is never applied; the .kit-digests read is an exact compare of one path field and one sha256, and no path is opened from it.
 set -eu
 
 ROOT=$(CDPATH='' cd "$(dirname "$0")/.." && pwd)
@@ -188,12 +189,42 @@ collect_unscanned() {
   for _cu_n in justfile Justfile .justfile Taskfile.yml Taskfile.yaml Taskfile.dist.yml Taskfile.dist.yaml; do
     if [ -e "$TARGET/$_cu_n" ]; then printf 'N%s%s\n' "$US" "$_cu_n" >> "$RECS"; fi
   done
-  _cu_c=0
+  _cu_kd=''; _cu_kn=''
+  if [ -f "$ROOT/.kit-digests" ]; then _cu_kd="$ROOT/.kit-digests"; _cu_kn="this kit's"
+  elif [ -f "$TARGET/.kit-digests" ]; then _cu_kd="$TARGET/.kit-digests"; _cu_kn="the target's"   # MUT-KITNOFALLBACK
+  fi
+  if [ -n "$_cu_kd" ] && ! have_hasher; then _cu_kd=''; fi
+  _cu_c=0; _cu_k=0; _cu_s=0
   for _cu_f in "$TARGET"/scripts/*.sh; do
     [ -f "$_cu_f" ] || continue
-    _cu_c=$((_cu_c + 1)); [ "$_cu_c" -le 20 ] || break
+    _cu_s=$((_cu_s + 1))
+    if [ -n "$_cu_kd" ] && kit_script_match "$_cu_kd" "$_cu_f"; then _cu_k=$((_cu_k + 1)); continue; fi   # MUT-KITSKIP
+    _cu_c=$((_cu_c + 1)); [ "$_cu_c" -le 20 ] || continue   # MUT-KITCAP
     printf 'N%s%s\n' "$US" "scripts/${_cu_f##*/}" >> "$RECS"
   done
+  if [ -n "$_cu_kd" ]; then
+    printf 'K%s%s\n' "$US" "scripts/: $_cu_k kit script(s) match $_cu_kn .kit-digests and are not listed" >> "$RECS"
+  fi
+  if [ -z "$_cu_kd" ] && [ "$_cu_s" -gt 0 ]; then
+    printf 'K%s%s\n' "$US" "scripts/: the kit's own scripts were not filtered (no .kit-digests in this kit or the target, or no sha256 hasher), so every script is listed" >> "$RECS"   # MUT-KITNOLINE
+  fi
+}
+# The filter reads the .kit-digests the kit's export ships (one "<sha256>  <path>" line per file). It hides a target script only when the file holds that exact
+# path and the script's own sha256 equals the recorded one; no path is ever opened from the file, and an adopter-edited script is listed.
+have_hasher() { command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; }
+unscanned_hash() {  # <file> -> its sha256, by the exporter's own choice of hasher (shasum -a 256, else sha256sum)
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" 2>/dev/null | cut -d ' ' -f 1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -d ' ' -f 1
+  fi
+}
+kit_digest_for() {  # <digests file> <path> -> the sha256 recorded for exactly that path (an exact compare of the line's path field)
+  KD_WANT=$2 awk '{ if (substr($0, 65, 2) == "  " && substr($0, 67) == ENVIRON["KD_WANT"]) { print substr($0, 1, 64); exit } }' "$1"
+}
+kit_script_match() {  # <digests file> <script> -> 0 when the file records scripts/<name> and the script's sha256 equals it
+  _km_want=$(kit_digest_for "$1" "scripts/${2##*/}")
+  [ -n "$_km_want" ] || return 1
+  [ ! -L "$2" ] || return 1
+  [ "$(unscanned_hash "$2")" = "$_km_want" ]   # MUT-KITPATHONLY
 }
 
 # --- judge: one recipe line, as a synthetic Bash tool call, to the guard copied into $TMP. Sets V (allow|deny|ask|notjudged) and WHY.
@@ -279,6 +310,7 @@ report() {
       I) printf -- '- %s: %s (not followed)\n' "$(st "$_rp_a")" "$(st "$_rp_b")" ;;
       P) printf -- '- %s: partly scanned (it uses %s, so recipes may be missed or over-reported)\n' "$(st "$_rp_a")" "$(st "$_rp_b")" ;;
       N) printf -- '- %s: not scanned (listed by name only)\n' "$(st "$_rp_a")" ;;
+      K) printf -- '- %s\n' "$(st "$_rp_a")" ;;
       X) printf -- '- %s: not scanned (%s)\n' "$(st "$_rp_a")" "$(st "$_rp_b")" ;;
     esac
   done < "$RECS"
@@ -339,7 +371,7 @@ scan() {
   return 0
 }
 
-# --- the selftest: cells S1-S10 (S1-S7 of the design, S8 the skill marker check, S9 unreadable, S10 symlink) and their mutants. Each cell builds a fixture tree holding a COPY of this script and the guard it runs from
+# --- the selftest: cells S1-S10 (S1-S7 of the design, S8 the skill marker check, S9 unreadable, S10 symlink), S11 (invalid UTF-8), S12-S18 (SWAS-1012: the kit's own scripts are not listed) and their mutants. Each cell builds a fixture tree holding a COPY of this script and the guard it runs from
 #     (the real one, or a stub written here), so the guard in use is never chosen by an environment variable or an argument.
 SELFTEST_BAD=0; SELFTEST_QUIET=0; SEQ=0
 chk() {  # <0 ok | 1 bad> <message>
@@ -580,6 +612,93 @@ cell_s11() {  # invalid UTF-8 in a recipe (a raw Latin-1 byte) neither aborts th
   has "Proposals: 1 target(s)" "S11 one proposal"
 }
 
+kd_hash() {  # <file> -> its sha256, by the hasher the exporter picks (shasum -a 256, else sha256sum)
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d ' ' -f 1
+  else sha256sum "$1" | cut -d ' ' -f 1
+  fi
+}
+kd_line() { printf '%s  %s\n' "$(kd_hash "$1")" "$2"; }   # <file> <path> -> one .kit-digests line, as the exporter writes it
+kd_target() {  # <dir> -> a target holding a Makefile, a script the kit also ships (adopt.sh) and the adopter's own (deploy.sh)
+  mkdir -p "$1/scripts"
+  printf 'all: ; echo ok\n' > "$1/Makefile"
+  printf 'echo adopt\n' > "$1/scripts/adopt.sh"
+  printf 'echo deploy\n' > "$1/scripts/deploy.sh"
+}
+
+cell_s12() {  # SWAS-1012: a target script whose bytes match the scanner's own kit .kit-digests is not listed; the adopter's own script is
+  mk_dir; _s12_d=$MKD; kd_target "$_s12_d"
+  mk_tree allow; kd_line "$_s12_d/scripts/adopt.sh" scripts/adopt.sh > "$TREE/.kit-digests"
+  run_scan "$TREE" "$_s12_d"
+  rc_is 0 "S12 a scan with a kit .kit-digests, rc 0"
+  has "scripts/deploy.sh: not scanned" "S12 the adopter's own script is listed"
+  hasnt "scripts/adopt.sh" "S12 the byte-identical kit script is not listed"
+  has "1 kit script(s) match" "S12 the count line says 1"
+}
+
+cell_s13() {  # a kit script the adopter edited (one byte) is listed: it is now their code
+  mk_dir; _s13_d=$MKD; kd_target "$_s13_d"
+  mk_tree allow; kd_line "$_s13_d/scripts/adopt.sh" scripts/adopt.sh > "$TREE/.kit-digests"
+  printf 'echo adopt!\n' > "$_s13_d/scripts/adopt.sh"
+  run_scan "$TREE" "$_s13_d"
+  rc_is 0 "S13 a scan with an edited kit script, rc 0"
+  has "scripts/adopt.sh: not scanned" "S13 the edited kit script is listed"
+}
+
+cell_s14() {  # run C's shape: the scanner runs from inside the target, which holds the .kit-digests and the kit's scripts
+  mk_tree allow; _s14_t=$TREE; kd_target "$_s14_t"
+  { kd_line "$_s14_t/scripts/inception-scan.sh" scripts/inception-scan.sh; kd_line "$_s14_t/scripts/adopt.sh" scripts/adopt.sh; } > "$_s14_t/.kit-digests"
+  run_scan "$_s14_t" "$_s14_t"
+  rc_is 0 "S14 a scan run from inside the target, rc 0"
+  has "scripts/deploy.sh: not scanned" "S14 the adopter's own script is listed"
+  hasnt "scripts/adopt.sh" "S14 the kit's adopt.sh is not listed"
+  hasnt "scripts/inception-scan.sh" "S14 the kit's own scanner is not listed"
+}
+
+cell_s15() {  # no .kit-digests in either place: every script is listed, and one line says why the kit's scripts were not filtered
+  mk_dir; _s15_d=$MKD; kd_target "$_s15_d"
+  mk_tree allow; run_scan "$TREE" "$_s15_d"
+  rc_is 0 "S15 a scan with no .kit-digests, rc 0"
+  has "scripts/adopt.sh: not scanned" "S15 every script is listed (adopt.sh)"
+  has "scripts/deploy.sh: not scanned" "S15 every script is listed (deploy.sh)"
+  has ".kit-digests" "S15 a line names why the kit's scripts were not filtered"
+}
+
+cell_s16() {  # the cap of 20 counts only the listed (non-kit) scripts: 25 kit scripts, then the adopter's three, all three listed
+  mk_dir; _s16_d=$MKD; mkdir -p "$_s16_d/scripts"
+  printf 'all: ; echo ok\n' > "$_s16_d/Makefile"
+  mk_tree allow; : > "$TREE/.kit-digests"
+  _s16_i=1
+  while [ "$_s16_i" -le 25 ]; do
+    _s16_n=$(printf 'a%02d' "$_s16_i")
+    printf 'echo %s\n' "$_s16_n" > "$_s16_d/scripts/$_s16_n.sh"
+    kd_line "$_s16_d/scripts/$_s16_n.sh" "scripts/$_s16_n.sh" >> "$TREE/.kit-digests"
+    _s16_i=$((_s16_i + 1))
+  done
+  for _s16_z in z1 z2 z3; do printf 'echo own\n' > "$_s16_d/scripts/$_s16_z.sh"; done
+  run_scan "$TREE" "$_s16_d"
+  rc_is 0 "S16 a scan past the cap, rc 0"
+  for _s16_z in z1 z2 z3; do has "scripts/$_s16_z.sh: not scanned" "S16 the adopter's $_s16_z.sh is listed"; done
+}
+
+cell_s17() {  # S12's scan writes nothing: the target and the scanner tree are byte-identical after
+  mk_dir; _s17_d=$MKD; kd_target "$_s17_d"
+  mk_tree allow; _s17_t=$TREE; kd_line "$_s17_d/scripts/adopt.sh" scripts/adopt.sh > "$_s17_t/.kit-digests"
+  _s17_a=$(snap "$_s17_d" "$_s17_t")
+  run_scan "$_s17_t" "$_s17_d"
+  _s17_b=$(snap "$_s17_d" "$_s17_t")
+  if [ "$_s17_a" = "$_s17_b" ]; then chk 0 "S17 the target and the scanner tree are byte-identical after the scan"; else chk 1 "S17 the scan wrote into the target or the scanner tree"; fi
+}
+
+cell_s18() {  # the vendor-clone shape: no .kit-digests in the scanner tree; the target holds one, and the filter reads it
+  mk_dir; _s18_d=$MKD; kd_target "$_s18_d"
+  kd_line "$_s18_d/scripts/adopt.sh" scripts/adopt.sh > "$_s18_d/.kit-digests"
+  mk_tree allow; run_scan "$TREE" "$_s18_d"
+  rc_is 0 "S18 a scan from a tree with no .kit-digests, rc 0"
+  has "scripts/deploy.sh: not scanned" "S18 the adopter's own script is listed"
+  hasnt "scripts/adopt.sh" "S18 the kit script named by the target's .kit-digests is not listed"
+  has "target's .kit-digests" "S18 the filter line names the target's .kit-digests"
+}
+
 skill_mutant() {  # <label> <sed script> <cell>: the script is applied to a COPY of the skill; the named cell must go red
   _sm_l=$1; _sm_f="$W/skill-$_sm_l.md"
   printf '%s\n' "$2" > "$W/skill.sed"
@@ -619,7 +738,7 @@ selftest() {
   mkdir -p "$W/home" "$W/tmp"
   SRC=$SELF
   SKILL_REAL="$ROOT/skills/inception-from-code/SKILL.md"; SKILL_FILE=$SKILL_REAL
-  for _c in cell_s1 cell_s2 cell_s3 cell_s4 cell_s5 cell_s6 cell_s7 cell_s8 cell_s9 cell_s10 cell_s11; do
+  for _c in cell_s1 cell_s2 cell_s3 cell_s4 cell_s5 cell_s6 cell_s7 cell_s8 cell_s9 cell_s10 cell_s11 cell_s12 cell_s13 cell_s14 cell_s15 cell_s16 cell_s17 cell_s18; do
     "$_c"
     rm -rf "$W"/d[0-9]* "$W"/t[0-9]*
   done
@@ -633,6 +752,12 @@ selftest() {
   mutant "single-pass-strip" '/# MUT-LOOP$/s#.*#  while [ "$_si" -lt 1 ]; do#' cell_s5
   mutant "exit-code-ignored" '/# MUT-RC$/s#.*#  :#' cell_s6
   mutant "inline-form-dropped" '/# MUT-INLINE$/s#.*#  if (0) emit("")#' cell_s7
+  # SWAS-1012: the kit-script filter. Each sed is anchored on the end-of-line tag, so it cannot match these lines.
+  mutant "MUT-KITSKIP" '/# MUT-KITSKIP$/s#.*#    :#' cell_s12 cell_s14 cell_s16 cell_s18
+  mutant "MUT-KITPATHONLY" '/# MUT-KITPATHONLY$/s#.*#  :#' cell_s13
+  mutant "MUT-KITCAP" '/# MUT-KITCAP$/s#.*#    _cu_c=$_cu_s; [ "$_cu_c" -le 20 ] || continue#' cell_s16
+  mutant "MUT-KITNOLINE" '/# MUT-KITNOLINE$/s#.*#    :#' cell_s15
+  mutant "MUT-KITNOFALLBACK" '/# MUT-KITNOFALLBACK$/s#.*#  elif false; then :#' cell_s18
   skill_mutant "no-run-rule-deleted" '/no `make`, no `make -n`/d' cell_s8
   if [ "$SELFTEST_BAD" -eq 0 ]; then echo "inception-scan --selftest: OK"; return 0; fi
   echo "inception-scan --selftest: FAIL ($SELFTEST_BAD)" >&2; return 1

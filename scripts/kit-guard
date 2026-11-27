@@ -1416,7 +1416,7 @@ klog_check "K-LOG-TRG T3s segment field of the secret-write line is empty (path 
 klog_sweep
 # K-LOG-TRG-REDACT (LIVE, SWAS-966 fix): the canary is FED THROUGH the Bash arm, never the path surface (`kit-guard path` takes a file name,
 # so a canary could never reach it). The branch is decided at run time: if the guard denies a shell write into .env (design §7 T3s), the
-# logged trigger must be stop-secret-write; if it allows it (SWAS-996), fall back to a command the 12 redaction cells already show denied,
+# logged trigger must be secret-write-shell (the SWAS-996 Bash arm); if it allows it, fall back to a command the 12 redaction cells already show denied,
 # with the canary in a masked shape. Either way the canary must be ABSENT from the log; a case match (no grep) keeps the GMQ grep count down.
 klog_canary_absent() { # <label> <canary>
   KLOG_BODY=""
@@ -1433,7 +1433,7 @@ if klog_verdict 'echo sk_klogsecretcanary > .env'; then  # gitleaks:allow - a CA
   KLOG_RB="fallback:prefix-assign-sed-i-cp"; KLOG_RWANT=""
   if klog_verdict 'GHTOKEN=sk_klogsecretcanary sed -i s/a/b/ conformance/verify.sh'; then klog_bad "K-LOG-TRG-REDACT the fallback command is DENIED (branch=$KLOG_RB)"; fi  # gitleaks:allow - canary
 else
-  KLOG_RB="deny-env"; KLOG_RWANT="stop-secret-write"
+  KLOG_RB="deny-env"; KLOG_RWANT="secret-write-shell"
 fi
 KLOG_RT=$(klog_trg)
 klog_check "K-LOG-TRG-REDACT writes exactly one line (branch=$KLOG_RB)" "$(klog_lines)" "1"

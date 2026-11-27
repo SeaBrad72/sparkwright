@@ -122,6 +122,40 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+      # ★ THE ADOPTION-PR TEST (SWAS-1010) — A NAMED EXCEPTION TO "THE POLICY LIVES IN THE SCRIPT", AND IT
+      # CANNOT LIVE IN ONE. On an adoption PR the base commit predates the kit, so there is no script to
+      # run, and running one from the PR head would be running code the PR controls (the rule above). So
+      # this step reads the BASE commit's tree with `git ls-tree --full-tree` and prints `adoption=1` only
+      # when all six facts hold: the base commit resolves; the PR targets the default branch; and the base
+      # commit holds NONE of this workflow file, conformance/verify.sh, conformance/agent-boundary.sh or
+      # .kit/. Any error, any output, any mismatch prints `adoption=0` and the gate runs as before: an error
+      # can never produce a skip. The body between the markers is byte-identical in the four jobs that carry
+      # it (conformance/adopter-gates-parity.sh P1) and is RUN against fixture repositories by that check's
+      # --selftest. THE CEILING, said plainly: this YAML comes from the PR, so a PR that edits it can make
+      # any job here exit 0 — true before this step existed, and a control-plane diff under the server-side
+      # review requirement. No `working-directory:` may be added to this file (parity leg P6).
+      - name: Adoption-PR test (the base commit carries no kit)
+        id: adopt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ADOPT_WF: ratification.yml
+          ADOPT_GATE: agent-boundary.sh
+        run: |
+          # ADOPTION-BASE-BEGIN
+          adoption=0
+          if [ -n "$BASE_SHA" ] && [ -n "$BASE_REF" ] && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            adoption=1
+            if ! git rev-parse --verify --quiet "$BASE_SHA^{commit}" >/dev/null 2>&1; then adoption=0; fi
+            for p in ".github/workflows/$ADOPT_WF" conformance/verify.sh "conformance/$ADOPT_GATE" .kit; do
+              if ! out=$(git ls-tree --full-tree "$BASE_SHA" -- "$p" 2>/dev/null); then adoption=0; fi
+              if [ -n "$out" ]; then adoption=0; fi
+            done
+          fi
+          case "$BASE_SHA" in ''|*[!0-9a-f]*) adoption=0 ;; esac
+          echo "adoption=$adoption" | tee -a "$GITHUB_OUTPUT"
+          # ADOPTION-BASE-END
       - name: Compute changed files (from the PR files API — never from the PR's own tree)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -207,7 +241,18 @@ jobs:
           # 0 = the review list could not be read. Not defaulted anywhere downstream: the render mode
           # routes an empty value to its `error` arm rather than to the value that renders green.
           REVIEWS_READABLE: ${{ steps.ratify.outputs.reviews_readable }}
+          # The adoption-PR test's answer (step `adopt`). Consumed ONLY as `[ "$ADOPTION" = 1 ]`, so an
+          # empty or garbage value runs the gate.
+          ADOPTION: ${{ steps.adopt.outputs.adoption }}
         run: |
+          # ADOPTION-ARM-BEGIN
+          if [ "$ADOPTION" = 1 ]; then
+            _anote='control-plane-ratification: SKIPPED (adoption PR) — the base commit carries no kit (no ratification.yml, conformance/verify.sh, conformance/agent-boundary.sh or .kit/), so there is no trusted gate to judge from. This PR is ratified by its one hand merge: docs/adoption/brownfield.md#your-first-pr'
+            printf '%s\n' "$_anote" | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '::notice title=control-plane-ratification: SKIPPED (adoption PR)::%s\n' "$_anote"
+            exit 0
+          fi
+          # ADOPTION-ARM-END
           # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
           #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
           set +e

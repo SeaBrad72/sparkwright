@@ -787,6 +787,7 @@ selftest() {
       printf '{"name":"%s","conclusion":"%s"}\n' "$_lj" "$_lgc"
     done > "$_lgd/evjobs"
     printf '{"name":"conformance","conclusion":"success"}\n' >> "$_lgd/evjobs"
+    printf '{"name":"a1-premise","conclusion":"success"}\n{"name":"a1-premise-full","conclusion":"success"}\n' >> "$_lgd/evjobs"
     [ "$_lgk" = nogate ] || printf '{"name":"gate","conclusion":"success"}\n' >> "$_lgd/evjobs"
     {
       printf '#!/bin/sh\ncase "$*" in\n'
@@ -797,6 +798,8 @@ selftest() {
       # LGH_NOREV=1 (SWAS-207b): the ONE-ACCOUNT forge — the reviews call answers NOTHING, so no approval can be derived
       if [ -n "${LGH_NOREV:-}" ]; then printf '  */reviews*) : ;;\n'
       else printf '  */reviews*) printf "APPROVED\\t%%s\\t%%s\\tUser\\n" "%s" "%s" ;;\n' "$1" "$2"; fi
+      # SWAS-1031: `land --update-behind` asks the forge to update the PR branch; the stub records the call's arguments (appended, so a cell can count calls)
+      printf '  *update-branch*) printf "%%s\\n" "$*" >> "%s" ;;\n' "$D/gh-upd.args"
       printf '  *) printf "AuthorLogin\\n" ;;\nesac\n'
     } > "$_lgd/gh"
     chmod +x "$_lgd/gh"
@@ -3999,6 +4002,123 @@ EOF
   _j323 SPm _f_sp 's/if \[ -z "\$_land_base" \] || \[ "\$_land_brc" -ne 0 \]; then/if false; then/' "dropping the refusal lands a stale head"
   _j323 CAP _f_cap - "the land record counts toward the 64-record cap: 63 records + GO + land refuses"
   _j323 CAPm _f_cap 's/^  if \[ -n "\${lbody:-}" \]; then _nw_kept=\$((_nw_kept + 1)); fi$/  :/' "not counting the land record writes a 65th record"
+
+  # =====================================================================================
+  # SWAS-1031 (PR B): a behind head's refusal names the fix (`--update-behind`, rc 6, nothing recorded), and a MERGE head must be a plain update
+  # from main (the belt: B1 two parents, B2 the second parent is an ancestor of origin's tip, B3 the tree is merge-tree's). Cells L1031-*; the
+  # belt cells run one serial land of an H' built in a fixture origin: a base merge (ok), an evil merge, an octopus, a foreign second parent, a
+  # plain commit (na), a main move of code plus CHANGELOG.md (code), and a clean merge where main and the PR changed CHANGELOG.md apart (overlap).
+  # =====================================================================================
+  _l1_cl() {   # <line> <text> -> $LOA/CHANGELOG.md of 20 lines (l1..l20) with line <line> replaced by <text> (line 0 replaces none)
+    awk -v n="$1" -v t="$2" 'BEGIN { for (i = 1; i <= 20; i++) print (i == n ? t : "l" i) }' > "$LOA/CHANGELOG.md"
+  }
+  _l1031_fx() {   # <name> <kind> -> a fresh origin whose main moved to M; feat = P off the base; _l1_h = the head to land, by <kind>
+    mkorigin "$1"; rm -f "$LAND_MARK" "$D/gh-upd.args"; _l1k="$2"
+    ( set -e; cd "$LOA"
+      _l1_cl 0 x; git add CHANGELOG.md; git commit -qm cl; git push -q origin HEAD:refs/heads/main; git branch base
+      git checkout -q -b feat; _l1_cl 1 p1; printf 'f\n' > feat.txt; git add CHANGELOG.md feat.txt; git commit -qm feat-head
+      git checkout -q "$LOTRUNK"
+      case "$_l1k" in
+        code) _l1_cl 20 m20; printf 'echo m\n' > tool.sh; git add CHANGELOG.md tool.sh ;;
+        overlap) _l1_cl 20 m20; git add CHANGELOG.md ;;
+        conflict) _l1_cl 1 m1; git add CHANGELOG.md ;;
+        *) mkdir -p docs; printf 'x\n' > docs/x.md; git add docs/x.md ;;
+      esac
+      git commit -qm main-move; git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+    ( set -e; cd "$LOA"; git checkout -q feat; _l1m="$(git rev-parse "$LOTRUNK")"
+      case "$_l1k" in
+        evil) git merge -q --no-ff --no-commit "$_l1m"; printf 'evil\n' > evil.txt; git add evil.txt; git commit -qm evil ;;
+        octo) _l1t="$(git merge-tree --write-tree "$_l1m" feat | head -n 1)"   # a B1-only octopus: the tree IS merge-tree's two-parent result, so only B1 can refuse it
+              _l1o="$(git commit-tree "$_l1t" -p feat -p "$_l1m" -p base -m octo)"; git reset -q --hard "$_l1o" ;;
+        conflict) _l1t="$(git merge-tree --write-tree "$_l1m" "$(git rev-parse feat)" | head -n 1)"   # the conflicted merge's own tree (merge-tree exits 1), committed as the head; feat as its full sha so the markers carry the labels the belt's own call would
+                  _l1o="$(git commit-tree "$_l1t" -p feat -p "$_l1m" -m conflict)"; git reset -q --hard "$_l1o" ;;
+        foreign) git merge -q --no-ff -m upd "$_l1m"; git checkout -q -b other base; printf 'o\n' > other.txt; git add other.txt; git commit -qm other
+                 git checkout -q feat; git merge -q --no-ff -m foreign other ;;
+        unrelated) git checkout -q --orphan unrel; git rm -rfq .; printf 'u\n' > u.txt; git add u.txt; git commit -qm unrelated-base   # a parentless base that becomes origin's tip, merged into feat as _rv_fx does
+                   git push -q -f origin HEAD:refs/heads/main; git checkout -q feat; git merge -q --no-ff --allow-unrelated-histories -m upd unrel ;;
+        na) git checkout -q -b feat2 "$_l1m"; printf 'f\n' > feat.txt; git add feat.txt; git commit -qm plain-on-main ;;
+        *) git merge -q --no-ff -m upd "$_l1m" ;;
+      esac ) >/dev/null 2>&1
+    _l1_h="$(git -C "$LOA" rev-parse HEAD)"
+  }
+  _l1_behind() {   # <name> -> a head (feat) that origin's main is NOT an ancestor of (the _f_sp shape); _l1_h = that head
+    mkorigin "$1"; rm -f "$LAND_MARK" "$D/gh-upd.args"
+    ( cd "$LOA" && git checkout -q -b feat && printf 'f\n' > feat.txt && git add feat.txt && git commit -qm feat-head \
+        && git checkout -q "$LOTRUNK" && printf 'n\n' > newer.txt && git add newer.txt && git commit -qm newer \
+        && git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+    _l1_h="$(git -C "$LOA" rev-parse feat)"
+  }
+  _l1_ran() {   # the land ran to its own verdict (no crash, no missing file): only the property may differ under a mutant
+    LOUT="$_ld_out"; LRC="$_ldc"
+    if ! printf '%s' "$_ld_out" | grep -qE 'syntax error|not found'; then _op323=0; fi
+  }
+  _l1_landed() { [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && [ ! -f "$D/gh-upd.args" ]; }
+  _l1_refused() {   # the belt refused: rc 1, nothing merged, no note on origin, the belt's own sentence
+    [ "$_ldc" = 1 ] && [ ! -f "$LAND_MARK" ] && ! onote "$_l1_h" \
+      && printf '%s' "$_ld_out" | grep -qF 'the head is a merge that is not a plain update from main'
+  }
+  _l1_belt() {   # <name> <kind> -> one land of the H' the fixture built for <kind>
+    _l1031_fx "$1" "$2"; lland "$LAND_STUB" "$_l1_h" control-plane "branch/$1"; _l1_ran
+  }
+  _f_l1031_word() {   # a behind head, no flag: refused as today (first line byte-identical), nothing recorded, and the new cure sentence
+    _l1_behind "$1"; lland "$LAND_STUB" "$_l1_h" control-plane "branch/$1"; _l1_ran
+    [ "$_ldc" = 1 ] && [ ! -f "$LAND_MARK" ] && ! onote "$_l1_h" \
+      && printf '%s' "$_ld_out" | grep -qF 'LAND REFUSED: serial land needs an up-to-date head; the train computes prefixes.' \
+      && printf '%s' "$_ld_out" | grep -qF -e '--update-behind' \
+      && printf '%s' "$_ld_out" | grep -qF 'wait for CI on the new head' \
+      && printf '%s' "$_ld_out" | grep -qF "a re-approval is owed only if the update changed the PR's diff" \
+      && ! printf '%s' "$_ld_out" | grep -qF 'update the branch, re-review, and record and land again'
+  }
+  _f_l1031_upd() {   # --update-behind on a behind head: the forge update, pinned to the head, called once; rc 6; nothing recorded or merged
+    _l1_behind "$1"; lland "$LAND_STUB" "$_l1_h" control-plane "branch/$1" --update-behind; _l1_ran
+    [ "$_ldc" = 6 ] && [ ! -f "$LAND_MARK" ] && ! onote "$_l1_h" && [ -f "$D/gh-upd.args" ] \
+      && [ "$(wc -l < "$D/gh-upd.args" | tr -d ' ')" = 1 ] \
+      && grep -qF -e "expected_head_sha=$_l1_h" "$D/gh-upd.args" && grep -qF -e 'update-branch' "$D/gh-upd.args" \
+      && printf '%s' "$_ld_out" | grep -qF 'UPDATE REQUESTED (202), NOT MERGED' && ! printf '%s' "$_ld_out" | grep -qF 'UPDATED, NOT MERGED'
+  }
+  _f_l1031_uptodate() {   # --update-behind on an up-to-date head: lands as today, and the forge update is never called
+    mkorigin "$1"; rm -f "$LAND_MARK" "$D/gh-upd.args"; _l1_h="$LOSHA"
+    lland "$LAND_STUB" "$LOSHA" control-plane "branch/$1" --update-behind; _l1_ran
+    _l1_landed
+  }
+  _f_l1031_b_ok() { _l1_belt "$1" ok; _l1_landed; }   # a qualifying base merge (B1-B3 pass): lands
+  _f_l1031_b_evil() { _l1_belt "$1" evil; _l1_refused; }   # B3: the merge's tree is not merge-tree's
+  _f_l1031_b_octo() { _l1_belt "$1" octo; _l1_refused && printf '%s' "$_ld_out" | grep -qF 'B1: it has 3 parents'; }   # B1 alone: three parents, merge-tree's own tree
+  _f_l1031_b_conflict() { _l1_belt "$1" conflict; _l1_refused && printf '%s' "$_ld_out" | grep -qF 'the update conflicts (merge-tree exit 1)'; }   # B3: a conflicted merge's tree is not a plain update
+  _f_l1031_b_oldgit() {   # B3: a git whose merge-tree --write-tree fails (exit 129, as git before 2.38 does) is refused, never read as "no tree"
+    _l1031_fx "$1" ok; _og_real="$(command -v git)"; _og="$D/oldgit-$1"; mkdir -p "$_og"
+    printf '#!/bin/sh\ncase "$*" in\n  *merge-tree*--write-tree*) echo "git: merge-tree: unknown option" >&2; exit 129 ;;\nesac\nexec "%s" "$@"\n' "$_og_real" > "$_og/git"
+    chmod +x "$_og/git"; _og_path="$PATH"; PATH="$_og:$PATH"
+    lland "$LAND_STUB" "$_l1_h" control-plane "branch/$1"; PATH="$_og_path"; _l1_ran
+    _l1_refused && printf '%s' "$_ld_out" | grep -qF 'could not run (needs git 2.38 or later)'
+  }
+  _f_l1031_b_foreign() { _l1_belt "$1" foreign; _l1_refused; }   # B2: the second parent is not an ancestor of origin's tip
+  _f_l1031_b_unrelated() { _l1_belt "$1" unrelated; _l1_landed; }   # a clean merge of an unrelated (parentless) base that is origin's tip: B3 runs merge-tree with --allow-unrelated-histories, so it lands
+  _f_l1031_b_na() { _l1_belt "$1" na; _l1_landed; }   # a head that is not a merge is not judged by the belt
+  _f_l1031_b_code() { _l1_belt "$1" code; _l1_landed; }   # main's move is code plus CHANGELOG.md: the belt runs no classify, so it passes
+  _f_l1031_b_overlap() { _l1_belt "$1" overlap; _l1_landed; }   # main and the PR changed CHANGELOG.md in different hunks: a clean merge, the belt passes
+  _j323 L1031-WORD _f_l1031_word - "a behind head without the flag is refused with the new cure sentence (--update-behind, wait for CI, re-approval only if the diff changed), nothing recorded"
+  _j323 L1031-UPD _f_l1031_upd - "--update-behind on a behind head calls the forge update once, pinned with expected_head_sha=<head>, exits rc 6, records and merges nothing"
+  _j323 L1031-UPTODATE _f_l1031_uptodate - "--update-behind on an up-to-date head lands as today and never calls the forge update"
+  _j323 L1031-B-OK _f_l1031_b_ok - "a head that is a plain base merge (two parents, main's tip as the second, merge-tree's tree) lands"
+  _j323 L1031-B-EVIL _f_l1031_b_evil - "a merge whose tree is not merge-tree's (an evil merge) is refused by the belt"
+  _j323 L1031-B-OCTO _f_l1031_b_octo - "an octopus merge head whose tree is merge-tree's two-parent result is refused by B1 alone"
+  _j323 L1031-B-CONFLICT _f_l1031_b_conflict - "a head that commits a conflicted merge's tree (merge-tree exit 1) is refused by the belt, naming the conflict"
+  _j323 L1031-B-OLDGIT _f_l1031_b_oldgit - "a git that cannot run merge-tree --write-tree (exit 129) is refused by the belt, naming the git 2.38 need"
+  _j323 L1031-B-FOREIGN _f_l1031_b_foreign - "a merge whose second parent is not an ancestor of origin's tip is refused by the belt"
+  _j323 L1031-B-UNRELATED _f_l1031_b_unrelated - "a head that is a clean merge of an unrelated (parentless) base that is origin's tip lands (the review-mode fixture shape)"
+  _j323 L1031-B-NA _f_l1031_b_na - "a head that is not a merge lands as today (the belt does not judge it)"
+  _j323 L1031-B-CODE _f_l1031_b_code - "a base merge whose main move is code plus CHANGELOG.md passes the belt and lands (the belt runs no classify)"
+  _j323 L1031-B-OVERLAP _f_l1031_b_overlap - "a clean base merge where main and the PR changed CHANGELOG.md in different hunks passes the belt and lands"
+  # The six PR B mutants, each a sed over a layout-carrying COPY of the gate (J323_COPY=1), on a line tagged MUT-1031-* in pv_land_update_behind
+  # and pv_land_belt. M-BELT-B1 is a single leg: the octopus fixture's tree is merge-tree's own two-parent result, so B3 passes it and
+  # only B1 can refuse it. Its B3 test being on is what proves B1 stands alone.
+  _j323 M-EXPECT _f_l1031_upd '/MUT-1031-EXPECT/ s/ -f expected_head_sha="\$2"//' "dropping expected_head_sha from the forge update call leaves the update unpinned to the approved head"
+  _j323 M-BELT-B1 _f_l1031_b_octo '/MUT-1031-BELT-B1/ s/ && \[ "\$_pb_n" -ne 2 \]/ \&\& false/' "the two-parent test off lets an octopus merge land (its tree is merge-tree's, so B3 passes it)"
+  _j323 M-BELT-B2 _f_l1031_b_foreign '/MUT-1031-BELT-B2/ s/ && ! git .*; then/ \&\& false; then/' "the second-parent ancestry test off lets a merge of a foreign second parent land"
+  _j323 M-BELT-B3 _f_l1031_b_evil '/MUT-1031-BELT-B3/ s/ && {.*; }; then/ \&\& false; then/' "the merge-tree compare off lets an evil merge land"
+  _j323 M-BELTB4 _f_l1031_b_overlap '/MUT-1031-BELTB4/ s#^.*$#  _pb_mb="$(git -C "$ROOT" merge-base "$_pb_p1" "$_pb_p2")"; for _b4 in $(git -C "$ROOT" diff --name-only "$_pb_mb" "$_pb_p2"); do if git -C "$ROOT" diff --name-only "$_pb_mb" "$_pb_p1" | grep -qx "$_b4"; then _pb_why="B4: $_b4 changed on both sides"; fi; done#' "adding a per-path main-bytes-only test to the belt refuses a clean overlapping base merge"
+  _j323 M-BELTLANE _f_l1031_b_code '/MUT-1031-BELTLANE/ s#^.*$#  _pb_mb="$(git -C "$ROOT" merge-base "$_pb_p1" "$_pb_p2")"; for _bl in $(git -C "$ROOT" diff --name-only "$_pb_mb" "$_pb_p2"); do if [ "${_bl%.md}" = "$_bl" ]; then _pb_why="LANE: main moved $_bl, not docs-only"; fi; done#' "adding a docs-only classify test to the belt refuses a base merge whose main move is code"
   J323_COPY=0
 
   # =====================================================================================

@@ -1,6 +1,8 @@
 #!/bin/sh
 # inception-done.sh — verify the Inception-Done gate (START-HERE.md / DEVELOPMENT-PROCESS.md §3)
 # in a project directory. Usage: sh conformance/inception-done.sh [dir]   (default: .)
+#          sh conformance/inception-done.sh --quick [dir]   (SWAS-1010: the file-reading legs only, no network, no gh; not the gate)
+#          sh conformance/inception-done.sh --quick --hook <tree>   (the pre-push form: legs 1-3 OWED, leg 4 refuses; <tree> holds the pushed commit's decision files)
 #          sh conformance/inception-done.sh --selftest   (mutation-proven fixture matrix; T3)
 # NOTE: the gate is expected to FAIL at the kit root (the kit is the template source, not an
 # instantiated project). It passes only in a project that has completed Inception. The --selftest
@@ -56,6 +58,9 @@ kit_annot_init
 # its own; the query must always run the invoking kit's copy, exactly as the disposition FILE
 # (read from the target tree) and the QUERY SCRIPT (read from the kit) are two different subjects.
 CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
+# SWAS-1010 (errata R2-N2): the decision-integrity engine by ABSOLUTE path, resolved from this script's own dirname like CI_GATES_SH. Only `--quick --hook` uses it: the engine cds
+# to its own repository root, so a graded temp tree is reached by an absolute file argument, never by the cwd.
+ID_ENGINE="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/decision-integrity.sh"
 # SWAS-814: the kit's own waivers-valid.sh, resolved exactly as CI_GATES_SH is (this script's own dirname,
 # never the target tree). In an adopter's normal run (`sh conformance/inception-done.sh` inside their tree) $0 IS the
 # tree's own copy, so the tree's own waivers-valid.sh answers, exactly as with CI_GATES_SH; only a kit run against
@@ -77,6 +82,14 @@ if [ -f "$_ID_GHTLS" ]; then . "$_ID_GHTLS"; fi
 ID_FIRST_SLICE_IDS="charter stack-adr repo-protect env-secrets ci-green project-files config roles identities"
 ID_FIRST_DEPLOY_IDS="slo envs oncall bia rb-deploy rb-rollback rb-dr rb-monitor"
 
+# ── SWAS-1010 — the header-field WARN epoch (owner ruling Q4: MINOR on the 3.x line; the precedent is the model axis's one-release WARN in decision-integrity.sh).
+# An ABSENT `**Project:**` or `**Intent owner:**` line, and (strict) an absent `## 1. Overview` heading, print WARN and leave the verdict alone for ONE release;
+# SWAS-1019 turns the WARN into a FAIL. ID_HDR_WARN_UNTIL is the last version that warns: the release cut that ships this slice, not the VERSION at its land.
+# Selftest cell v4 compares VERSION with it through conformance/version-helpers.sh and reds the kit's own CI on the first VERSION past it, so the flip cannot be forgotten.
+ID_HDR_WARN_UNTIL=3.250.0
+# _id_absent <what is absent> <the fix> : the one place an absent field is worded. SWAS-1019 changes this function to print FAIL and set the verdict.
+_id_absent() { echo "WARN: $1 — this warns through $ID_HDR_WARN_UNTIL and then fails (SWAS-1019); $2"; }
+
 # ── SWAS-779 — the draft banner. Hard-coded HERE and never read from templates/INCEPTION-DRAFT-TEMPLATE.md, because an agent can edit that
 # template; selftest cell dr8 locks the two together. A ratified file that still carries this whole line was moved into place unread.
 ID_DRAFT_BANNER='> **DRAFT: inferred from the repository by an agent. Not ratified. A person reviews it and moves what is right into place.**'
@@ -87,12 +100,13 @@ ID_DRAFT_BANNER_OWNER="> **DRAFT: written by an agent from the owner's words in 
 # _id_owed_spec <id> : sets _id_owf (the file the item lives in) and _id_owt (the template placeholder that, still
 # present, means the item is owed; empty = a presence read of the file alone). rc 1 for an id outside the first-deploy
 # set. The tokens are mirrored against templates/PROJECT-CLAUDE-TEMPLATE.md and templates/RUNBOOK-TEMPLATE.md by cell s2e.
+# SWAS-1010: _id_owa is the ANCHOR an item must carry in its file (empty = none required); a file without it reads `absent`, never `filled`.
 _id_owed_spec() {
-  _id_owt=''
+  _id_owt=''; _id_owa=''
   case "$1" in
-    slo)         _id_owf=CLAUDE.md; _id_owt='[soft track-and-guide / hard-gating]' ;;
-    envs)        _id_owf=CLAUDE.md; _id_owt='[per-tier deploy trigger]' ;;
-    oncall)      _id_owf=CLAUDE.md; _id_owt='| On-call / operator | [...] |' ;;
+    slo)         _id_owf=CLAUDE.md; _id_owt='[soft track-and-guide / hard-gating]'; _id_owa='**SLO / error-budget posture**' ;;
+    envs)        _id_owf=CLAUDE.md; _id_owt='[per-tier deploy trigger]'; _id_owa='**Environments**' ;;
+    oncall)      _id_owf=CLAUDE.md; _id_owt='| On-call / operator | [...] |'; _id_owa='| On-call / operator |' ;;
     bia)         _id_owf=docs/continuity/BIA.md ;;
     rb-deploy)   _id_owf=RUNBOOK.md; _id_owt='[deploy command(s)]' ;;
     rb-rollback) _id_owf=RUNBOOK.md; _id_owt='[rollback command]' ;;
@@ -177,12 +191,186 @@ _id_head_matches() {
   rm -f "$_idhm_t"; return 1
 }
 
+# ── The legs below read files in the tree and are shared by run_gate and run_quick (SWAS-1010), so the two cannot drift. Each runs with the cwd
+#    already in the project and writes the gate's `fail` accumulator; run_gate and run_quick are the only callers.
+
+# _id_leg_backend : the backlog backend declaration (B6 rider a). It reads the declaration with resolve_backend, the same reader backlog-current.sh and backlog-presence.sh use,
+# never a literal grep for the field NAME (that matched even while the value was still the unfilled choice-list). resolve_backend treats an unfilled choice-list as
+# UNDECLARED, the same as a wholly absent field, so this leg agrees with what the board gates will see; an unrecognized token (a fat-fingered `markdow`) is a FAIL.
+_id_leg_backend() {
+  _id_tok=$(resolve_backend "." 2>/dev/null || true)
+  case "$_id_tok" in
+    unrecognized:*)
+      echo "FAIL: backlog backend '${_id_tok#unrecognized:}' is not a recognized token (known: md github jira ado linear gitlab) — fix CLAUDE.md's Backlog backend field"; fail=1 ;;
+    '')
+      if [ -f BACKLOG.md ]; then
+        echo "PASS present: backlog (BACKLOG.md present; no explicit backend declared in CLAUDE.md)"
+      else
+        echo "FAIL missing: BACKLOG.md or a declared backlog backend (CLAUDE.md's Backlog backend field is absent or still the unfilled choice-list placeholder)"; fail=1
+      fi ;;
+    *)
+      echo "PASS present: backlog (declared backend: $_id_tok)" ;;
+  esac
+}
+
+# _id_leg_hdr : the project CLAUDE.md key header fields. A leftover placeholder is a FAIL. An ABSENT line is the SWAS-1010 case: before it, the placeholder test alone
+# read an absent line as filled. During the WARN epoch (ID_HDR_WARN_UNTIL) an absent line prints WARN and leaves the verdict alone; the PASS line is printed only
+# when both lines exist and neither is a placeholder.
+_id_leg_hdr() {
+  if grep -Eq '\*\*Project:\*\* \[name\]|\*\*Intent owner:\*\* \[(who owns|owed)' CLAUDE.md 2>/dev/null; then
+    echo "FAIL: project CLAUDE.md key fields not filled (Project / Intent owner)"; fail=1; return 0
+  fi
+  _id_hdrabs=0
+  for _id_hdrf in Project 'Intent owner'; do
+    if ! grep -q -e "^\*\*$_id_hdrf:\*\* " CLAUDE.md 2>/dev/null; then   # MUT-V1
+      _id_absent "project CLAUDE.md missing the **$_id_hdrf:** header field (templates/PROJECT-CLAUDE-TEMPLATE.md:36-37)" "add the line"
+      _id_hdrabs=$((_id_hdrabs + 1))
+    fi
+  done
+  if [ "$_id_hdrabs" -eq 0 ]; then echo "PASS: project CLAUDE.md key header fields filled"; fi
+}
+
+# _id_leg_harness <adapter|stamp> : the Target harness(es) field must be stamped; `adapter` also requires every selected adapter to conform to the boundary contract
+# (the Inception-Done enforcement of the harness floor; brownfield-critical: a merged repo cannot pass Inception until its declared adapter(s) conform). `stamp`
+# is run_quick's form: the field alone, because the adapter-conformance call is a separate process the quick check does not run (SWAS-1010 task 0.5, unmeasured).
+_id_leg_harness() {
+  hline=$(grep -E '^\- \*\*Target harness\(es\)\*\*' CLAUDE.md 2>/dev/null || true)
+  if [ -z "$hline" ]; then
+    echo "FAIL: project CLAUDE.md missing the Target harness(es) field"; fail=1
+  else
+    # value after the '(§harness-neutrality): ' marker, first whitespace token (the comma-list)
+    hval=$(printf '%s' "$hline" | sed 's/^.*(§harness-neutrality): *//' | cut -d' ' -f1)
+    case "$hval" in
+      *'['*|'') echo "FAIL: Target harness(es) not stamped (placeholder remains)"; fail=1 ;;
+      *)
+        for _h in $(printf '%s' "$hval" | tr ',' ' '); do
+          _h=$(printf '%s' "$_h" | sed 's/[[:punct:][:space:]]*$//')  # G13: tolerate a trailing period/space in the stamped value
+          [ -z "$_h" ] && continue
+          HARNESSES="$HARNESSES $_h"  # T2.3: resolved list feeds the harness-aware runtime-guard leg in run_gate
+          if [ "$1" = stamp ]; then
+            echo "PASS: Target harness '$_h' stamped (adapter conformance is graded by the strict gate, not the quick check)"
+          elif ! [ -d "adapters/$_h" ]; then
+            echo "FAIL: harness adapter '$_h' directory not found — expected: adapters/$_h"; fail=1
+          elif sh conformance/harness-adapter.sh "adapters/$_h" >/dev/null 2>&1; then
+            echo "PASS: harness adapter '$_h' conforms to the boundary contract"
+          else
+            echo "FAIL: harness adapter '$_h' does not conform — run: sh conformance/harness-adapter.sh adapters/$_h"; fail=1
+          fi
+        done ;;
+    esac
+  fi
+}
+
+# _id_leg_drafts : the inception-drafts leg (SWAS-779). Strict FAILS while docs/inception-draft/ exists, or while any of the four ratified files still carries the draft
+# banner line; any other MODE reports each as OWED and never fails on it. The match is the WHOLE line, anchored, against the hard-coded literal above. A missing file is
+# "no banner" (BACKLOG.md is absent on a tracker-backed board); an unreadable file is a FAIL, read from grep's own exit code (0 found, 1 not found, 2 trouble), as the
+# first-deploy set reads it. Honest ceiling: the gate sees text, so a person's review of the PR that moves a draft into place is the control, not this leg.
+_id_leg_drafts() {
+  _id_drn=0
+  _id_dremit() {
+    if [ "$MODE" = strict ]; then echo "FAIL: inception drafts unratified — $1"; fail=1; else echo "OWED (inception drafts): $1"; fi
+    _id_drn=$((_id_drn + 1))
+  }
+  #    The banner is matched after the carriage returns are removed and the whitespace around the line is trimmed, so a CRLF file or a banner
+  #    with trailing spaces is still the banner line. A regular FILE named docs/inception-draft counts as the directory.
+  if [ -e docs/inception-draft ] || [ -L docs/inception-draft ]; then _id_dremit "docs/inception-draft/ still exists; move what is right into place, then delete it"; fi   # MUT-DRDIR
+  for _id_drf in CLAUDE.md docs/architecture/ADR-000-stack.md RUNBOOK.md BACKLOG.md; do
+    [ -e "$_id_drf" ] || [ -L "$_id_drf" ] || continue
+    _id_drr=0
+    if [ ! -r "$_id_drf" ]; then _id_drr=2
+    else tr -d '\r' < "$_id_drf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -e "$ID_DRAFT_BANNER" -e "$ID_DRAFT_BANNER_OWNER" || _id_drr=$?   # MUT-DRBANNER
+    fi
+    case "$_id_drr" in
+      0) _id_dremit "$_id_drf still carries the draft banner line; a person reviews it, edits it and removes the banner" ;;
+      1) : ;;
+      *) _id_dremit "$_id_drf could not be read, so it cannot be shown free of the draft banner" ;;   # MUT-DRUNREAD
+    esac
+  done
+  if [ "$_id_drn" -eq 0 ]; then
+    if [ "$MODE" = strict ]; then echo "PASS: no inception draft remains — docs/inception-draft/ is absent and no ratified file carries the draft banner"; else echo "surface: no inception draft present"; fi
+  fi
+}
+
+# _id_dq_run <axis> <relative path> <engine> [<absolute base>] : one decision-integrity run. The engine's verdict line is printed as it is. rc 0 (PASS, N/A, WARN) passes; rc 1 is the
+# engine's FAIL; any other rc, or an engine that cannot run, is a FAIL too (fail-closed, never a silent pass).
+#   No base (plain --quick): the engine is called with NO path, exactly as CI's --adopter run does (verify.sh:3087-3098), so every N/A CI reads (an absent file, an unfilled example) reads N/A here.
+#   A base (--quick --hook): the file is <base>/<path>, graded by ABSOLUTE path (the engine cds to its own root). An explicit path that is absent is a usage error (rc 2) in the engine, so an
+#   absent file is read here as N/A before the call. The model axis, whose map decides whether a missing file is a FAIL, is graded on an EMPTY stand-in file inside the base (created and removed here):
+#   a bound map then FAILs (no heading) and an unbound one reads N/A, so a pushed commit that deleted CLAUDE.md is judged like CI judges it, not by the working tree's CLAUDE.md (N1).
+_id_dq_run() {
+  _id_dqa=''; _id_dqs=''
+  if [ -n "${4:-}" ]; then
+    _id_dqa="$4/$2"
+    # A file that is a symlink (or a submodule path) is not read: it could point outside the tree. It is not graded here, as errata R2-N3 rules; CI grades it. Treated as N/A.
+    if [ -L "$_id_dqa" ]; then echo "N/A: $2 is a symlink, not graded here; CI grades it"; return 0; fi
+    if [ ! -f "$_id_dqa" ]; then
+      if [ "$1" != model ]; then echo "N/A: $2 absent (no $1 decision recorded yet)"; return 0; fi
+      # The stand-in is made by mktemp, which creates with O_EXCL and never follows an existing entry (a planted symlink at a fixed name would be truncated through). A failure is a visible FAIL.
+      _id_dqs=$(mktemp "$4/.id-absent.XXXXXX" 2>/dev/null) || { echo "FAIL: decision-integrity $1 — cannot create the stand-in file for the absent $2 in $4"; fail=1; return 0; }   # MUT-H3
+      _id_dqa=$_id_dqs
+    fi
+  fi
+  _id_dqo=$(sh "$3" "$1" ${_id_dqa:+"$_id_dqa"} 2>&1) && _id_dqr=0 || _id_dqr=$?
+  if [ -n "$_id_dqs" ]; then rm -f "$_id_dqs"; fi
+  case "$_id_dqr" in
+    0) printf '%s\n' "$_id_dqo" ;;
+    1) printf '%s\n' "$_id_dqo"; fail=1 ;;
+    *) echo "FAIL: decision-integrity $1 — ${_id_dqo:-UNVERIFIED (conformance/decision-integrity.sh not runnable)} (rc $_id_dqr)"; fail=1 ;;
+  esac
+}
+
+# ── run_quick [dir] : SWAS-1010. The pre-push quick check, `--quick`: only the legs that read files in the tree, with no network, no gh and no git-hook
+#    inspection. (1) the key header fields, (2) the Target harness(es) stamp, (3) the backlog backend, (4) the four decision-integrity runs CI's --adopter aggregate
+#    runs (stack on ADR-000, deploy on RUNBOOK.md, harness and model on CLAUDE.md), (5) the drafts leg, reported OWED and never refused (the --surface reading).
+#    It keeps --surface's stage meaning: it refuses nothing that a fresh incept run with --intent-owner leaves (cell qk3; CI's bootstrap job is the proof, ci.yml:2779-2783). The exception is
+#    `sparkwright new`, which stamps the intent owner as `[owed]`: that placeholder is refused here by design, as --surface refuses it. Its OK line never claims the Inception-Done gate.
+#    `--quick --hook <tree>` (errata round 1 E-B1, round 2 R2-N2) is the pre-push form: <tree> is a temp tree holding the pushed commit's decision files. Legs 1-3 print `OWED (inception): ...`
+#    and never refuse (the person fills those fields after `adopt`), the drafts leg is not read, and leg 4 refuses, calling the engine by ABSOLUTE path on ABSOLUTE files.
+_id_leg4() { # <engine> [<absolute base>]
+  _id_dq_run stack docs/architecture/ADR-000-stack.md "$1" "${2:-}"
+  _id_dq_run deploy RUNBOOK.md "$1" "${2:-}"   # MUT-Q1
+  _id_dq_run harness CLAUDE.md "$1" "${2:-}"
+  if [ -n "${2:-}" ]; then echo "model axis: only the map (.kit/model-map.conf) is read from the working tree, not the pushed commit; the rationale file is the pushed commit's"; fi
+  _id_dq_run model CLAUDE.md "$1" "${2:-}"   # MUT-Q5
+}
+# _id_hook_legs : legs 1-3 in a subshell (so the verdict stays untouched), every FAIL or WARN line printed as OWED. The cwd is the temp tree.
+_id_hook_legs() {
+  _id_hl=$( ( fail=0; HARNESSES=''; _id_leg_hdr; _id_leg_harness stamp; _id_leg_backend ) 2>&1 )
+  printf '%s\n' "$_id_hl" | sed -e 's/^FAIL:* */OWED (inception): /' -e 's/^WARN:* */OWED (inception): /'
+}
+run_quick() { # <dir> <hook: yes|no>
+DIR="${1:-.}"
+cd -- "$DIR"
+fail=0
+HARNESSES=''
+MODE=surface
+if [ "${2:-no}" = yes ]; then
+  _id_hook_legs   # MUT-H1
+  echo "OWED (inception drafts): not read from a pushed commit; CI and the strict gate grade them"
+  _id_leg4 "$ID_ENGINE" "$PWD"   # MUT-H2
+else
+  if [ ! -f CLAUDE.md ]; then echo "FAIL missing: CLAUDE.md"; echo "FAIL: quick check not satisfied in '$DIR'"; return 1; fi
+  _id_leg_hdr
+  _id_leg_harness stamp
+  _id_leg_backend
+  _id_leg4 conformance/decision-integrity.sh
+  _id_leg_drafts
+fi
+if [ "$fail" -ne 0 ]; then echo "FAIL: quick check not satisfied in '$DIR'"; return 1; fi
+if [ "${2:-no}" = yes ]; then
+  echo "OK: hook check satisfied in '$DIR' (decision headings only; the header, harness and backlog fields are advisory and the drafts are not read here; this is not the Inception-Done gate)"
+  return 0
+fi
+echo "OK: quick check satisfied in '$DIR' (header fields, harness stamp, backlog, decision headings, drafts; this is not the Inception-Done gate)"
+return 0
+}
+
 # ── run_gate [dir] : the Inception-Done gate. All FAIL paths accumulate into `fail`; a non-zero
 #    `fail` yields a non-zero return. These accumulators are the mutation surface non-vacuity.sh
 #    neuters — every one is caught by a negative fixture in selftest() below.
 run_gate() {
 DIR="${1:-.}"
-cd "$DIR"
+cd -- "$DIR"
 fail=0
 is_repo=0
 HARNESSES=''
@@ -326,62 +514,10 @@ else
   echo "FAIL missing: docs/architecture/ADR-000*.md"; fail=1
 fi
 
-# B6 rider (a): read the declaration with resolve_backend (the same reader backlog-current.sh /
-# backlog-presence.sh use), NOT a literal `grep -q "Backlog backend"` — that literal grep matched the
-# FIELD NAME even when its value is still the unfilled choice-list placeholder
-# (`Backlog backend (§...): [md/github/jira/ado/linear/gitlab]`), so an adopter who never actually
-# chose a backend passed Inception-Done and then every board gate silently N/A'd forever (the
-# measured defect; the negative fixture below is exactly this CLAUDE.md). resolve_backend treats an
-# unfilled choice-list as UNDECLARED (empty), same as a wholly absent field — so this leg now agrees
-# with what the board gates will actually see. Fail-CLOSED on `unrecognized:*` (a fat-fingered token
-# like `markdow`): that must not be silently accepted as "some backend is declared".
-_id_tok=$(resolve_backend "." 2>/dev/null || true)
-case "$_id_tok" in
-  unrecognized:*)
-    echo "FAIL: backlog backend '${_id_tok#unrecognized:}' is not a recognized token (known: md github jira ado linear gitlab) — fix CLAUDE.md's Backlog backend field"; fail=1 ;;
-  '')
-    if [ -f BACKLOG.md ]; then
-      echo "PASS present: backlog (BACKLOG.md present; no explicit backend declared in CLAUDE.md)"
-    else
-      echo "FAIL missing: BACKLOG.md or a declared backlog backend (CLAUDE.md's Backlog backend field is absent or still the unfilled choice-list placeholder)"; fail=1
-    fi ;;
-  *)
-    echo "PASS present: backlog (declared backend: $_id_tok)" ;;
-esac
-
-# project CLAUDE.md key header fields must be filled (no leftover placeholders)
-if grep -Eq '\*\*Project:\*\* \[name\]|\*\*Intent owner:\*\* \[(who owns|owed)' CLAUDE.md 2>/dev/null; then
-  echo "FAIL: project CLAUDE.md key fields not filled (Project / Intent owner)"; fail=1
-else
-  echo "PASS: project CLAUDE.md key header fields filled"
-fi
-
-# the Target harness(es) field must be stamped AND every selected adapter must conform to the
-# boundary contract — the Inception-Done enforcement of the harness floor (brownfield-critical:
-# an adopter's merged repo can't pass Inception until its declared adapter(s) actually conform).
-hline=$(grep -E '^\- \*\*Target harness\(es\)\*\*' CLAUDE.md 2>/dev/null || true)
-if [ -z "$hline" ]; then
-  echo "FAIL: project CLAUDE.md missing the Target harness(es) field"; fail=1
-else
-  # value after the '(§harness-neutrality): ' marker, first whitespace token (the comma-list)
-  hval=$(printf '%s' "$hline" | sed 's/^.*(§harness-neutrality): *//' | cut -d' ' -f1)
-  case "$hval" in
-    *'['*|'') echo "FAIL: Target harness(es) not stamped (placeholder remains)"; fail=1 ;;
-    *)
-      for _h in $(printf '%s' "$hval" | tr ',' ' '); do
-        _h=$(printf '%s' "$_h" | sed 's/[[:punct:][:space:]]*$//')  # G13: tolerate a trailing period/space in the stamped value
-        [ -z "$_h" ] && continue
-        HARNESSES="$HARNESSES $_h"  # T2.3: resolved list feeds the harness-aware runtime-guard leg below
-        if ! [ -d "adapters/$_h" ]; then
-          echo "FAIL: harness adapter '$_h' directory not found — expected: adapters/$_h"; fail=1
-        elif sh conformance/harness-adapter.sh "adapters/$_h" >/dev/null 2>&1; then
-          echo "PASS: harness adapter '$_h' conforms to the boundary contract"
-        else
-          echo "FAIL: harness adapter '$_h' does not conform — run: sh conformance/harness-adapter.sh adapters/$_h"; fail=1
-        fi
-      done ;;
-  esac
-fi
+# The backlog backend, the key header fields and the Target harness(es) legs (each now a function above, shared with run_quick).
+_id_leg_backend
+_id_leg_hdr
+_id_leg_harness adapter
 
 # T2.3 (F3) — harness-aware runtime-guard leg. Classify EACH declared harness by its OWN
 # adapters/<h>/adapter.json .dimensions.command-guard.level (never a hardcoded name list), so
@@ -677,14 +813,16 @@ fi
 #    reds until both decisions are recorded. Measured defect (ten-lens eval, 2026-09-01): strict
 #    returned OK with §1 Overview still `[what problem this solves, for whom]` and ADR-000 still the
 #    unfilled example — the exit gate proved presence, not decision.
-#    Honest ceiling: what is detected is the TEMPLATE placeholder. A deleted section or a one-word
-#    charter passes; whether the decision is GOOD stays the owner's Go/No-Go. The ADR leg reuses the
+#    Honest ceiling: what is detected is the TEMPLATE placeholder, and (SWAS-1010, errata E-m7) the absence of the `## 1. Overview` heading itself: a deleted section no
+#    longer passes (a WARN through ID_HDR_WARN_UNTIL, then a FAIL once SWAS-1019 lands). A one-word charter still passes; whether the decision is GOOD stays the owner's Go/No-Go. The ADR leg reuses the
 #    decision-integrity engine's own verdict: its unfilled-example N/A (correct for a lint that runs
 #    all loop long) is a FAIL at THIS gate, and so is an absent ADR. Fail-closed if the engine is absent.
 if [ "$MODE" = strict ]; then
   _id_ph=$(grep -c -F -e '[what problem this solves, for whom]' -e "[how we know it's working]" -e "[what's explicitly in / out]" CLAUDE.md 2>/dev/null || true)
   if [ "${_id_ph:-0}" -gt 0 ]; then
     echo "FAIL: charter undecided — CLAUDE.md §1 Overview still carries $_id_ph template placeholder line(s) (Problem / Vision / Scope); write the charter prose (incept epilogue step 1)"; fail=1
+  elif ! grep -q -e '^## 1\. Overview' CLAUDE.md 2>/dev/null; then   # MUT-V2
+    _id_absent "charter absent — CLAUDE.md has no '## 1. Overview' section (templates/PROJECT-CLAUDE-TEMPLATE.md:57)" "add the section and write the charter prose"
   else
     echo "PASS: charter decided — no §1 Overview template placeholder remains in CLAUDE.md"
   fi
@@ -703,40 +841,14 @@ else
   echo "surface: charter + ADR-000 decision legs deferred to strict (incept epilogue steps 1-2 are judgment, not scaffold)"
 fi
 
-# ── The inception-drafts leg (SWAS-779). Inception cannot be graded done on unratified drafts: strict FAILS while docs/inception-draft/
-#    exists, or while any of the four ratified files still carries the draft banner line; --surface reports each as OWED and never fails
-#    on it. The match is the WHOLE line, anchored, against the hard-coded literal above. A missing file is "no banner" (BACKLOG.md is
-#    absent on a tracker-backed board); an unreadable file is a FAIL, read from grep's own exit code (0 found, 1 not found, 2 trouble),
-#    as the first-deploy set below reads it. Honest ceiling: the gate sees text, so a person's review of the PR that moves a draft into
-#    place is the control, not this leg.
-_id_drn=0
-_id_dremit() {
-  if [ "$MODE" = strict ]; then echo "FAIL: inception drafts unratified — $1"; fail=1; else echo "OWED (inception drafts): $1"; fi
-  _id_drn=$((_id_drn + 1))
-}
-#    The banner is matched after the carriage returns are removed and the whitespace around the line is trimmed, so a CRLF file or a banner
-#    with trailing spaces is still the banner line. A regular FILE named docs/inception-draft counts as the directory.
-if [ -e docs/inception-draft ] || [ -L docs/inception-draft ]; then _id_dremit "docs/inception-draft/ still exists; move what is right into place, then delete it"; fi   # MUT-DRDIR
-for _id_drf in CLAUDE.md docs/architecture/ADR-000-stack.md RUNBOOK.md BACKLOG.md; do
-  [ -e "$_id_drf" ] || [ -L "$_id_drf" ] || continue
-  _id_drr=0
-  if [ ! -r "$_id_drf" ]; then _id_drr=2
-  else tr -d '\r' < "$_id_drf" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -qxF -e "$ID_DRAFT_BANNER" -e "$ID_DRAFT_BANNER_OWNER" || _id_drr=$?   # MUT-DRBANNER
-  fi
-  case "$_id_drr" in
-    0) _id_dremit "$_id_drf still carries the draft banner line; a person reviews it, edits it and removes the banner" ;;
-    1) : ;;
-    *) _id_dremit "$_id_drf could not be read, so it cannot be shown free of the draft banner" ;;   # MUT-DRUNREAD
-  esac
-done
-if [ "$_id_drn" -eq 0 ]; then
-  if [ "$MODE" = strict ]; then echo "PASS: no inception draft remains — docs/inception-draft/ is absent and no ratified file carries the draft banner"; else echo "surface: no inception draft present"; fi
-fi
+# ── The inception-drafts leg (SWAS-779), now the function _id_leg_drafts above (shared with run_quick): strict FAILS on a draft, --surface reports it OWED.
+_id_leg_drafts
 
 # ── The first-deploy set (SWAS-769, option A). Eight items are owed before the first production deploy, not before
 #    the first slice, so nothing here is graded: each prints one OWED line and the loop-entry verdict below is not
 #    read from them, in either mode. A line is a reminder, not a proof: `owed` means the file is missing or still
-#    carries its template placeholder; `filled` means only that the placeholder is gone (a stub BIA reads filled), and a
+#    carries its template placeholder; `absent` (SWAS-1010, errata E-m7) means the file lacks the item's anchor (the item's section was deleted);
+#    `filled` means only that the anchor is there and the placeholder is gone (a stub BIA reads filled), and a
 #    human still judges the content. `N/A` for bia and rb-dr when the project is not data-backed, by the same
 #    has_data_surface rule `readiness.sh dr-ready` applies. The gate that makes these block a deploy is a later card.
 for _id_ow in $ID_FIRST_DEPLOY_IDS; do
@@ -745,13 +857,20 @@ for _id_ow in $ID_FIRST_DEPLOY_IDS; do
     bia|rb-dr)
       if ! has_data_surface .; then echo "OWED (first-deploy set): $_id_ow — N/A — $_id_owf"; continue; fi ;;
   esac
+  _id_oar=0
   if [ ! -f "$_id_owf" ]; then _id_ows=owed
-  elif [ -z "$_id_owt" ]; then _id_ows=filled
   else
-    # grep exit: 0 placeholder found (owed), 1 not found (filled), 2 unreadable (owed: a file that cannot be read is not shown filled)
-    if grep -qF -e "$_id_owt" "$_id_owf" 2>/dev/null; then _id_ows=owed
+    # the anchor first (SWAS-1010): grep exit 0 present, 1 absent, 2 unreadable (owed). An item with no anchor skips this read.
+    if [ -n "$_id_owa" ]; then grep -qF -e "$_id_owa" "$_id_owf" 2>/dev/null || _id_oar=$?; fi
+    if [ "$_id_oar" -eq 1 ]; then _id_ows=absent   # MUT-V3
+    elif [ "$_id_oar" -ne 0 ]; then _id_ows=owed
+    elif [ -z "$_id_owt" ]; then _id_ows=filled
     else
-      case $? in 1) _id_ows=filled ;; *) _id_ows=owed ;; esac
+      # grep exit: 0 placeholder found (owed), 1 not found (filled), 2 unreadable (owed: a file that cannot be read is not shown filled)
+      if grep -qF -e "$_id_owt" "$_id_owf" 2>/dev/null; then _id_ows=owed
+      else
+        case $? in 1) _id_ows=filled ;; *) _id_ows=owed ;; esac
+      fi
     fi
   fi
   echo "OWED (first-deploy set): $_id_ow — $_id_ows — $_id_owf"
@@ -778,6 +897,10 @@ selftest() {
   st_fail=0
   ROOT=$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)
   WORK=$(mktemp -d)
+  if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
+    echo "inception-done --selftest: FAIL — mktemp -d gave no directory"
+    return 1
+  fi
   # Build the once-cloned fixture template. seed_fixture_template (below the oracle marker with the
   # st_* helpers) decides clone-vs-worktree-seed; its header documents the three cases (CP-5 + K9).
   if ! seed_fixture_template "$ROOT" "$WORK/tmpl"; then
@@ -1613,6 +1736,22 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   }
   _bpw_run() { OUT=$( ( INCEPTION_DONE_GH_CMD="$_pub_stub" MODE="${2:-strict}" run_gate "$1" ) 2>&1 ); RC=$?; }
   _bpw_line="WAIVED: branch protection — NOT ENFORCED: this plan cannot enforce protection on a private repository; waived by"
+  # (w3h) SWAS-1008 — (w3) is hermetic against an adopter's committed register. A template carrying an ACTIVE
+  # branch-protection-plan row stands for an adopter clone (run C's shape). LIVENESS: a plain git clone of it, which bypasses
+  # st_mkfix, is WAIVED, so the row is live and would suppress the OUTSTANDING line. NEGATIVE: the same template through
+  # st_mkfix is not WAIVED (st_mkfix removes the register), so (w3)'s lines still hold. The mutant (drop the rm in st_mkfix)
+  # is HAND-CHECKED: st_mkfix sits below the oracle marker, so no sweep mutant reaches it.
+  echo "--- (w3h) a register-carrying template: a plain clone is WAIVED (liveness); a st_mkfix fixture is not (negative) ---"
+  git clone -q "$WORK/tmpl" "$WORK/tmplreg"; _bpw_reg "$WORK/tmplreg" branch-protection-plan @jdoe "$_bpD0" "$_bpD60"
+  git -C "$WORK/tmplreg" add WAIVER-REGISTER.md; git -C "$WORK/tmplreg" -c user.email=selftest@kit -c user.name=selftest commit -qm register
+  d="$WORK/w3h-live"; git clone -q "$WORK/tmplreg" "$d"; st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 "UNVERIFIED: protection endpoint returned non-200 on me/repo: $_plan_cause — run in CI or authenticate gh. (NOT a pass.)"
+  st_real "$d" surface; st_has "WAIVED: branch protection — NOT ENFORCED"; st_hasnt "OUTSTANDING: branch protection"
+  d=$(st_mkfix w3h-neg claude-code "$WORK/tmplreg"); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 2 "UNVERIFIED: protection endpoint returned non-200 on me/repo: $_plan_cause — run in CI or authenticate gh. (NOT a pass.)"
+  printf 'FROM scratch\n' > "$d/Dockerfile"; _id_mkdisp_apply "$d"
+  st_real "$d" surface; st_has "OUTSTANDING: branch protection — GitHub state unverifiable"; st_hasnt "WAIVED: branch protection"
+  st_real "$d" strict;  st_has "FAIL: Inception-Done gate not satisfied"; st_hasnt "WAIVED: branch protection"
   echo "--- (bpw0) baseline: verified protection (bp exit 0) -> the return the waived runs must equal ---"
   d=$(st_mkfix bpw0 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0; rm -f "$d/WAIVER-REGISTER.md"
   _bpw_run "$d"; st_has "PASS: verified protected"; _bpw_base_rc=$RC
@@ -1853,6 +1992,242 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
     done
   fi
 
+  # (ab1)-(ab7) SWAS-1010 — an ABSENT field is not a filled one. The placeholder-only test read a CLAUDE.md with no `**Project:**` / `**Intent owner:**` line, no
+  # `## 1. Overview` heading, or no SLO / Environments / On-call anchor as filled (FIELD-REPORT item 28). Under the one-release WARN epoch (owner Q4; the
+  # decision-integrity model-axis precedent) the first two print WARN and the verdict is unchanged; the OWED lines print `absent` (they never graded anything).
+  _v_strip() { # <dir> <ERE of the CLAUDE.md lines to drop>
+    grep -v -E -e "$2" "$1/CLAUDE.md" > "$1/CLAUDE.md.v"; mv "$1/CLAUDE.md.v" "$1/CLAUDE.md"
+  }
+  echo "--- (ab1) a CLAUDE.md with no **Project:** line, or no **Intent owner:** line, WARNs (never PASS) and the surface verdict stays OK ---"
+  d=$(_s2_fix v1p filled); _v_strip "$d" '^\*\*Project:\*\* '
+  st_run "$d" surface
+  st_has "WARN: project CLAUDE.md missing the **Project:** header field"; st_has "SWAS-1019"; st_hasnt "PASS: project CLAUDE.md key header fields filled"
+  st_hasnt "FAIL: project CLAUDE.md"; st_has "OK: Inception-Done gate satisfied"; st_rc 0
+  d=$(_s2_fix v1o filled); _v_strip "$d" '^\*\*Intent owner:\*\* '
+  st_run "$d" surface
+  st_has "WARN: project CLAUDE.md missing the **Intent owner:** header field"; st_hasnt "PASS: project CLAUDE.md key header fields filled"
+  st_hasnt "FAIL: project CLAUDE.md"; st_has "OK: Inception-Done gate satisfied"; st_rc 0
+  echo "--- (ab1c) both lines present and decided -> the PASS line, no WARN (the fix does not fire on a filled header) ---"
+  d=$(_s2_fix v1c filled)
+  st_run "$d" surface
+  st_has "PASS: project CLAUDE.md key header fields filled"; st_hasnt "WARN: project CLAUDE.md missing"
+  echo "--- (ab2) strict: a CLAUDE.md with no '## 1. Overview' heading WARNs charter absent (never PASS) and adds no FAIL line ---"
+  d=$(_s2_fix v2 filled); _v_strip "$d" '^## 1\. Overview'
+  st_run "$d" strict
+  st_has "WARN: charter absent — CLAUDE.md has no '## 1. Overview' section"; st_has "SWAS-1019"; st_hasnt "PASS: charter decided"; st_hasnt "FAIL: charter"
+  _v_nfail=$(printf '%s\n' "$OUT" | grep -c '^FAIL' || true)
+  if [ "$_v_nfail" = 2 ]; then printf '    ok  : exactly 2 FAIL lines (the no-remote protection leg and the summary), none from the charter\n'; else printf '    BAD : %s FAIL lines (wanted exactly 2)\n' "$_v_nfail"; st_fail=1; fi
+  echo "--- (ab2c) strict: the heading present and no placeholder -> PASS charter decided ---"
+  d=$(_s2_fix v2c filled)
+  st_run "$d" strict
+  st_has "PASS: charter decided"; st_hasnt "WARN: charter absent"
+  echo "--- (ab3) the first-deploy OWED line reads absent, never filled, when its anchor is gone: each of slo, envs, oncall alone ---"
+  for _v_it in slo envs oncall; do
+    case "$_v_it" in slo) _v_re='SLO / error-budget posture' ;; envs) _v_re='\*\*Environments\*\*' ;; oncall) _v_re='On-call / operator' ;; esac
+    d=$(_s2_fix "v3$_v_it" filled); _v_strip "$d" "$_v_re"
+    st_run "$d" surface
+    st_has "OWED (first-deploy set): $_v_it — absent — CLAUDE.md"; st_hasnt "OWED (first-deploy set): $_v_it — filled"
+    st_has "OK: Inception-Done gate satisfied"; st_rc 0
+    for _v_oth in slo envs oncall; do
+      [ "$_v_oth" = "$_v_it" ] && continue
+      st_has "OWED (first-deploy set): $_v_oth — filled — CLAUDE.md"
+    done
+  done
+  echo "--- (ab3m) every anchor the OWED section requires is still in its template ---"
+  if [ ! -f "$_s2_tc" ]; then
+    echo "selftest n/a: (ab3m) skipped — the project CLAUDE template is not in this tree"
+  else
+    for _v_it in slo envs oncall; do
+      _id_owed_spec "$_v_it"
+      if [ -n "${_id_owa:-}" ] && grep -qF -e "$_id_owa" "$_s2_tc"; then printf '    ok  : [%s] anchor is in %s\n' "$_v_it" "${_s2_tc##*/}"; else printf '    BAD : [%s] anchor [%s] is not in %s (a reworded template would read every item as absent)\n' "$_v_it" "${_id_owa:-}" "${_s2_tc##*/}"; st_fail=1; fi
+    done
+  fi
+  echo "--- (ab4) the WARN epoch is pinned to VERSION: equal is green, the next version is red, and the kit's own VERSION is not past it ---"
+  if [ ! -f "$ROOT/VERSION" ] || [ ! -f "$ROOT/conformance/version-helpers.sh" ]; then
+    echo "selftest n/a: (ab4) skipped — VERSION or conformance/version-helpers.sh is not in this tree"
+  elif [ -z "${ID_HDR_WARN_UNTIL:-}" ]; then
+    printf '    BAD : ID_HDR_WARN_UNTIL is not defined (the WARN epoch has no end to pin)\n'; st_fail=1
+  else
+    . "$ROOT/conformance/version-helpers.sh"
+    _v4_nxt="${ID_HDR_WARN_UNTIL%%.*}.$(( $(printf '%s' "${ID_HDR_WARN_UNTIL#*.}" | cut -d. -f1) + 1 )).0"
+    if ver_gt "$ID_HDR_WARN_UNTIL" "$ID_HDR_WARN_UNTIL"; then printf '    BAD : the epoch reads as ended at its own last version %s\n' "$ID_HDR_WARN_UNTIL"; st_fail=1; else printf '    ok  : VERSION equal to %s is green\n' "$ID_HDR_WARN_UNTIL"; fi
+    if ver_gt "$_v4_nxt" "$ID_HDR_WARN_UNTIL"; then printf '    ok  : the next version %s is red\n' "$_v4_nxt"; else printf '    BAD : the next version %s does not read as past %s\n' "$_v4_nxt" "$ID_HDR_WARN_UNTIL"; st_fail=1; fi
+    # The kit's own tree, read the way adopter-export.sh reads it: the KIT_INTERNAL_MARKERS that scripts/incept.sh carries (the one list). A single forged file must not arm the read, so TWO markers are required.
+    _v4_nm=0
+    for _v4_m in $(sed -n "s/^KIT_INTERNAL_MARKERS='\\(.*\\)'.*/\\1/p" "$ROOT/scripts/incept.sh" 2>/dev/null); do
+      if [ -e "$ROOT/$_v4_m" ]; then _v4_nm=$((_v4_nm + 1)); fi
+    done
+    _v4_cur=$(head -n 1 "$ROOT/VERSION" | tr -d '[:space:]')
+    if [ "$_v4_nm" -lt 2 ]; then
+      echo "selftest n/a: (ab4) the live VERSION read is the kit's own tree only (an adopter's VERSION is theirs; $_v4_nm kit-internal marker(s) here, 2 needed)"
+    elif ! printf '%s\n' "$_v4_cur" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+      printf '    BAD : VERSION [%s] is not X.Y.Z, so the epoch pin cannot compare it\n' "$_v4_cur"; st_fail=1
+    else
+      if ver_gt "$_v4_cur" "$ID_HDR_WARN_UNTIL"; then printf '    BAD : the inception-done header-field WARN epoch ended at %s; land SWAS-1019 (VERSION is %s)\n' "$ID_HDR_WARN_UNTIL" "$_v4_cur"; st_fail=1; else printf '    ok  : the kit VERSION %s is not past the epoch end %s\n' "$_v4_cur" "$ID_HDR_WARN_UNTIL"; fi
+    fi
+  fi
+
+  # (qk1)-(qk13) and (hk1)-(hk6) SWAS-1010 — `--quick`: the file-reading legs of the gate, run before a first push. It is its own mode, never the gate: its OK line says so.
+  _q_fix() { # <name> -> a fixture shaped like what incept leaves: stamped header, harness and backlog backend; ADR-000 and RUNBOOK carry the TEMPLATE's own unfilled decision sections; the model map all-unset
+    _qf=$(st_mkfix "$1" claude-code) || return 1
+    st_undecided_adr "$_qf"; rm -f "$_qf/docs/ROADMAP-KIT.md"   # the kit marker would move the engine's default model path to RUNBOOK.md (the engine's own kit-tree rule)
+    printf '%s\n' '- **Backlog backend** (§6): md' '**Problem:** [what problem this solves, for whom]' >> "$_qf/CLAUDE.md"
+    printf '# Backlog\n' > "$_qf/BACKLOG.md"
+    printf '#### Deploy-target fit rationale\n[why this platform fits THIS workload — cite the fit dimensions that drove the choice]\n' > "$_qf/RUNBOOK.md"
+    mkdir -p "$_qf/.kit"; printf 'apex=unset\ndeep=unset\nfast=unset\nlight=unset\n' > "$_qf/.kit/model-map.conf"
+    printf '%s' "$_qf"
+  }
+  _q_run() { OUT=$( sh "$0" --quick "$1" 2>&1 ); RC=$?; }
+  echo "--- (qk3) --quick passes the fixture shaped like a fresh incept run with --intent-owner (sparkwright new, which stamps [owed], is the exception) ---"
+  d=$(_q_fix q3); _q_run "$d"
+  st_has "OK: quick check satisfied"; st_hasnt "FAIL"; st_has "N/A: docs/architecture/ADR-000-stack.md — Fit rationale is the unfilled example"; st_has "N/A: RUNBOOK.md — Deploy-target fit rationale is the unfilled example"; st_rc 0
+  st_hasnt "Inception-Done gate satisfied"
+  echo "--- (qk1) --quick: ADR-000 with no '## Fit rationale' -> FAIL naming the heading, the not-satisfied return ---"
+  d=$(_q_fix q1); printf '# ADR-000\n\nno rationale section here\n' > "$d/docs/architecture/ADR-000-stack.md"; _q_run "$d"
+  st_has "FAIL: docs/architecture/ADR-000-stack.md — missing required '## Fit rationale' section"; st_has "FAIL: quick check not satisfied"; st_hasnt "OK: quick check"; st_rc 1
+  echo "--- (qk2) --quick: RUNBOOK.md with no '#### Deploy-target fit rationale' -> FAIL naming the heading ---"
+  d=$(_q_fix q2); printf '# Runbook\n\nno deploy rationale here\n' > "$d/RUNBOOK.md"; _q_run "$d"
+  st_has "FAIL: RUNBOOK.md — missing required '#### Deploy-target fit rationale' section"; st_has "FAIL: quick check not satisfied"; st_hasnt "OK: quick check"; st_rc 1
+  echo "--- (qk5) --quick: a bound model map and no '#### Model fit rationale' -> FAIL (the model axis is a leg) ---"
+  d=$(_q_fix q5); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"; _q_run "$d"
+  st_has "FAIL: CLAUDE.md — missing required '#### Model fit rationale' section"; st_has "FAIL: quick check not satisfied"; st_rc 1
+  echo "--- (qk6) --quick: a bias-only harness rationale -> FAIL (the harness axis is a leg) ---"
+  d=$(_q_fix q6); printf '#### Harness fit rationale\nit is the default everyone uses\n' >> "$d/CLAUDE.md"; _q_run "$d"
+  st_has "FAIL: CLAUDE.md — Harness fit rationale cites no recognized fit dimension"; st_has "FAIL: quick check not satisfied"; st_rc 1
+  echo "--- (qk7) --quick: the field legs: an unfilled header and an undeclared backend FAIL; an absent header line WARNs and the verdict stays OK ---"
+  d=$(_q_fix q7h); printf '%s\n' '**Intent owner:** [who owns the why]' >> "$d/CLAUDE.md"; _q_run "$d"
+  st_has "FAIL: project CLAUDE.md key fields not filled"; st_rc 1
+  d=$(_q_fix q7b); rm -f "$d/BACKLOG.md"; _v_strip "$d" 'Backlog backend'; _q_run "$d"
+  st_has "FAIL missing: BACKLOG.md or a declared backlog backend"; st_rc 1
+  d=$(_q_fix q7t); _v_strip "$d" 'Target harness'; _q_run "$d"
+  st_has "FAIL: project CLAUDE.md missing the Target harness(es) field"; st_rc 1
+  d=$(_q_fix q7a); _v_strip "$d" '^\*\*Project:\*\* '; _q_run "$d"
+  st_has "WARN: project CLAUDE.md missing the **Project:** header field"; st_has "OK: quick check satisfied"; st_rc 0
+  d=$(_q_fix q7m); rm -f "$d/CLAUDE.md"; _q_run "$d"
+  st_has "FAIL missing: CLAUDE.md"; st_has "FAIL: quick check not satisfied"; st_hasnt "Target harness(es) field"; st_rc 1   # the guard returns before any leg, so a leg's own FAIL cannot stand in for it
+  d=$(_q_fix q7u); _v_strip "$d" 'Target harness'; printf '%s\n' '- **Target harness(es)** (§harness-neutrality): [claude-code]' >> "$d/CLAUDE.md"; _q_run "$d"
+  st_has "FAIL: Target harness(es) not stamped (placeholder remains)"; st_rc 1
+  echo "--- (qk12) --quick: a decision-integrity engine that errors (rc 2) is a FAIL, never a pass ---"
+  d=$(_q_fix q12); printf '#!/bin/sh\necho engine-broke\nexit 2\n' > "$d/conformance/decision-integrity.sh"; _q_run "$d"
+  st_has "FAIL: decision-integrity stack — engine-broke (rc 2)"; st_has "FAIL: quick check not satisfied"; st_hasnt "OK: quick check"; st_rc 1
+  echo "--- (qk8) --quick: a draft directory is reported OWED and never refused ---"
+  d=$(_q_fix q8); mkdir -p "$d/docs/inception-draft"; printf 'x\n' > "$d/docs/inception-draft/CHARTER.md"; _q_run "$d"
+  st_has "OWED (inception drafts): docs/inception-draft/ still exists"; st_hasnt "FAIL"; st_has "OK: quick check satisfied"; st_rc 0
+  echo "--- (qk9) usage errors, rc 2: --quick with --surface or --strict (either order), --hook without --quick, an unknown option ---"
+  d=$(_q_fix q9); OUT=$( sh "$0" --quick --surface "$d" 2>&1 ); RC=$?
+  st_has "cannot be combined"; st_rc 2
+  OUT=$( sh "$0" --strict --quick "$d" 2>&1 ); RC=$?
+  st_has "cannot be combined"; st_rc 2
+  OUT=$( sh "$0" --hook "$d" 2>&1 ); RC=$?
+  st_has "--hook works only with --quick"; st_rc 2
+  OUT=$( sh "$0" --bogus "$d" 2>&1 ); RC=$?
+  st_has "unknown option '--bogus'"; st_rc 2
+  echo "--- (qk13) --quick reads N/A wherever CI's engine run reads N/A: an absent RUNBOOK.md and an absent ADR-000 are N/A, never FAIL ---"
+  d=$(_q_fix q13); rm -f "$d/RUNBOOK.md" "$d/docs/architecture/ADR-000-stack.md"; _q_run "$d"
+  st_has "N/A: RUNBOOK.md absent"; st_has "N/A: docs/architecture/ADR-000-stack.md absent"; st_hasnt "FAIL"; st_has "OK: quick check satisfied"; st_rc 0
+  echo "--- (qk4) --quick runs no gh and no network: a gh stub on PATH that records any call must record none ---"
+  d=$(_q_fix q4); mkdir -p "$WORK/q4bin"; rm -f "$WORK/q4bin/q4.calls"
+  printf '#!/bin/sh\necho "$@" >> "$(dirname "$0")/q4.calls"\nexit 1\n' > "$WORK/q4bin/gh"; chmod +x "$WORK/q4bin/gh"
+  OUT=$( PATH="$WORK/q4bin:$PATH" sh "$0" --quick "$d" 2>&1 ); RC=$?
+  st_has "OK: quick check satisfied"; st_rc 0
+  if [ ! -e "$WORK/q4bin/q4.calls" ]; then printf '    ok  : the gh stub recorded no call\n'; else printf '    BAD : --quick called gh: %s\n' "$(cat "$WORK/q4bin/q4.calls")"; st_fail=1; fi
+  # (hk1)-(hk6) `--quick --hook <tree>`: legs 1-3 OWED and never refused, leg 4 refuses, the engine graded by ABSOLUTE path on the temp tree's files (errata R2-N2). The script copy runs inside the fixture, so
+  # its engine and its model map are the fixture's (all unset).
+  _h_tree() { # <name> -> a temp tree holding only an entry-contract CLAUDE.md and a decided ADR-000 (what an adoption push carries before the person fills the rest)
+    _ht="$WORK/$1.tree"; mkdir -p "$_ht/docs/architecture"
+    printf '# Entry contract only\n**Project:** [name]\n**Intent owner:** [who owns the why]\n' > "$_ht/CLAUDE.md"
+    printf '# ADR-000\n\n## Fit rationale\nteam skills and ecosystem fit for this workload.\n' > "$_ht/docs/architecture/ADR-000-stack.md"
+    printf '%s' "$_ht"
+  }
+  _h_run() { # <fixture> <tree>
+    cp "$0" "$1/conformance/inception-done-hk.sh"
+    OUT=$( sh "$1/conformance/inception-done-hk.sh" --quick --hook "$2" 2>&1 ); RC=$?
+  }
+  echo "--- (hk1) --hook: an entry-contract-only CLAUDE.md prints OWED for legs 1-3 and is never refused ---"
+  d=$(_q_fix hk1); t=$(_h_tree hk1); _h_run "$d" "$t"
+  st_has "OWED (inception): project CLAUDE.md key fields not filled"; st_has "OWED (inception): project CLAUDE.md missing the Target harness(es) field"; st_has "OWED (inception): missing: BACKLOG.md or a declared backlog backend"
+  st_hasnt "FAIL"; st_has "OK: hook check satisfied"; st_hasnt "OK: quick check"; st_has "the drafts are not read here"; st_rc 0
+  echo "--- (hk5) --hook discloses that only the model map is read from the working tree, and reads the drafts leg as not read ---"
+  st_has "model axis: only the map (.kit/model-map.conf) is read from the working tree, not the pushed commit"; st_has "OWED (inception drafts): not read from a pushed commit"
+  echo "--- (hk2) --hook: leg 4 refuses a missing '## Fit rationale' in the temp tree, naming the absolute file ---"
+  d=$(_q_fix hk2); t=$(_h_tree hk2); printf '# ADR-000\n\nno rationale\n' > "$t/docs/architecture/ADR-000-stack.md"; _h_run "$d" "$t"
+  st_has "FAIL: $t/docs/architecture/ADR-000-stack.md — missing required '## Fit rationale' section"; st_has "FAIL: quick check not satisfied"; st_rc 1
+  echo "--- (hk3) --hook grades the temp tree, not the working tree: a bad tree under a good working tree is refused; a good tree under a bad working tree is allowed ---"
+  d=$(_q_fix hk3); printf '# ADR-000\n\n## Fit rationale\nteam skills and ecosystem fit for this workload.\n' > "$d/docs/architecture/ADR-000-stack.md"
+  t=$(_h_tree hk3); printf '# ADR-000\n\nno rationale\n' > "$t/docs/architecture/ADR-000-stack.md"; _h_run "$d" "$t"
+  st_has "missing required '## Fit rationale' section"; st_rc 1
+  d=$(_q_fix hk3b); printf '# ADR-000\n\nno rationale\n' > "$d/docs/architecture/ADR-000-stack.md"; t=$(_h_tree hk3b); _h_run "$d" "$t"
+  st_hasnt "FAIL"; st_has "OK: hook check satisfied"; st_rc 0
+  echo "--- (hk4) --hook: an absent RUNBOOK.md and an absent ADR-000 in the tree read N/A, never FAIL ---"
+  d=$(_q_fix hk4); t=$(_h_tree hk4); rm -f "$t/docs/architecture/ADR-000-stack.md"; _h_run "$d" "$t"
+  st_has "N/A: docs/architecture/ADR-000-stack.md absent"; st_has "N/A: RUNBOOK.md absent"; st_hasnt "FAIL"; st_rc 0
+  echo "--- (hk9) --hook, a pushed commit with no CLAUDE.md: a bound map FAILs the model axis (CI would), an unbound map reads N/A, whatever the working tree's CLAUDE.md says ---"
+  d=$(_q_fix hk9); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"; printf '#### Model fit rationale\nreasoning depth and cost fit.\n' >> "$d/CLAUDE.md"
+  t=$(_h_tree hk9); rm -f "$t/CLAUDE.md"; _h_run "$d" "$t"
+  st_has "missing required '#### Model fit rationale' section"; st_has "FAIL: quick check not satisfied"; st_rc 1
+  _hk_left=no; for _hk_f in "$t"/.id-absent*; do if [ -e "$_hk_f" ] || [ -L "$_hk_f" ]; then _hk_left=yes; fi; done
+  if [ "$_hk_left" = no ]; then printf '    ok  : the stand-in file is removed\n'; else printf '    BAD : the stand-in file was left in the tree\n'; st_fail=1; fi
+  echo "--- (hk11) --hook: a symlink planted at the old fixed stand-in name is never followed: the sentinel it points to is unchanged and the run still FAILs ---"
+  d=$(_q_fix hk11); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"; printf '#### Model fit rationale\nreasoning depth and cost fit.\n' >> "$d/CLAUDE.md"
+  t=$(_h_tree hk11); rm -f "$t/CLAUDE.md"; printf 'keep\n' > "$WORK/hk11.sentinel"; ln -s "$WORK/hk11.sentinel" "$t/.id-absent-CLAUDE.md"; _h_run "$d" "$t"
+  st_has "missing required '#### Model fit rationale' section"; st_rc 1
+  if [ "$(cat "$WORK/hk11.sentinel")" = keep ]; then printf '    ok  : the sentinel behind the planted symlink is unchanged\n'; else printf '    BAD : the sentinel was truncated or rewritten through the symlink\n'; st_fail=1; fi
+  echo "--- (hk12) --hook: a stand-in that cannot be created is a visible FAIL, never a pass (skipped as root, where a read-only directory still writes) ---"
+  if [ "$(id -u)" = 0 ]; then
+    echo "selftest n/a: (hk12) skipped — running as root, a read-only directory does not stop mktemp"
+  else
+    d=$(_q_fix hk12); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"
+    t=$(_h_tree hk12); rm -f "$t/CLAUDE.md"; chmod a-w "$t"; _h_run "$d" "$t"; chmod u+w "$t"
+    st_has "FAIL: decision-integrity model — cannot create the stand-in file"; st_has "FAIL: quick check not satisfied"; st_rc 1
+  fi
+  echo "--- (hk13) --hook: a symlinked RUNBOOK.md in the tree is not read and not graded: a visible N/A line, never a FAIL from the file it points to ---"
+  d=$(_q_fix hk13); t=$(_h_tree hk13); printf '# no deploy heading\n' > "$WORK/hk13.outside"; ln -s "$WORK/hk13.outside" "$t/RUNBOOK.md"; _h_run "$d" "$t"
+  st_has "N/A: RUNBOOK.md is a symlink, not graded here; CI grades it"; st_hasnt "FAIL"; st_has "OK: hook check satisfied"; st_rc 0
+  d=$(_q_fix hk9b); t=$(_h_tree hk9b); rm -f "$t/CLAUDE.md"; _h_run "$d" "$t"
+  st_has "every value in the model map is unset"; st_hasnt "FAIL"; st_has "OK: hook check satisfied"; st_rc 0
+  echo "--- (hk6) --hook: a decision-integrity engine that errors is a refusal, not a pass ---"
+  d=$(_q_fix hk6); t=$(_h_tree hk6); printf '#!/bin/sh\necho engine-broke\nexit 2\n' > "$d/conformance/decision-integrity.sh"; _h_run "$d" "$t"
+  st_has "FAIL: decision-integrity stack — engine-broke (rc 2)"; st_rc 1
+  # MUTANTS (SWAS-1010): a copy of this gate with one marked line changed is run as the real entry against its own fixture and must print the FLIPPED verdict.
+  _v_mut() { # <dir> <label> <sed-script> <line the intact cell prints> <line the mutant must print instead> <entry args after the dir...>
+    _vm_d=$1; _vm_l=$2; _vm_s=$3; _vm_i=$4; _vm_f=$5; shift 5
+    sed -e "$_vm_s" "$0" > "$_vm_d/conformance/inception-done-vm.sh"
+    if cmp -s "$0" "$_vm_d/conformance/inception-done-vm.sh"; then echo "    BAD : the $_vm_l mutant did not apply (the sed expression matched nothing)"; st_fail=1; return 0; fi
+    if ! sh -n "$_vm_d/conformance/inception-done-vm.sh" 2>/dev/null; then echo "    BAD : the $_vm_l mutant does not parse (a mutant that cannot run would read as killed)"; st_fail=1; return 0; fi
+    OUT=$( INCEPTION_DONE_GH_CMD="$_pub_stub" sh "$_vm_d/conformance/inception-done-vm.sh" "$_vm_d" "$@" 2>&1 ); RC=$?
+    case "$OUT" in
+      *"$_vm_i"*) printf '    BAD : the %s mutant survived (the cell still prints [%s])\n' "$_vm_l" "$_vm_i"; st_fail=1 ;;
+      *"$_vm_f"*) printf '    ok  : the %s mutant no longer prints [%s] and prints [%s]\n' "$_vm_l" "$_vm_i" "$_vm_f" ;;
+      *) printf '    BAD : the %s mutant dropped [%s] but did not print the flipped verdict [%s] (it died some other way)\n' "$_vm_l" "$_vm_i" "$_vm_f"; st_fail=1 ;;
+    esac
+  }
+  echo "--- (ab5) mutant M-V1: the header-line presence test reverted to the placeholder-only read -> the ab1 cell must red ---"
+  d=$(_s2_fix v5 filled); _v_strip "$d" '^\*\*Project:\*\* '
+  _v_mut "$d" M-V1 '/# MUT-V1$/s/.*/    if false; then/' "WARN: project CLAUDE.md missing the **Project:** header field" "PASS: project CLAUDE.md key header fields filled" --surface
+  echo "--- (ab6) mutant M-V2: the Overview presence test removed -> the ab2 cell must red ---"
+  d=$(_s2_fix v6 filled); _v_strip "$d" '^## 1\. Overview'
+  _v_mut "$d" M-V2 '/# MUT-V2$/s/.*/  elif false; then/' "WARN: charter absent" "PASS: charter decided" --strict
+  echo "--- (ab7) mutant M-V3: the absent state folded into filled -> the ab3 cell must red ---"
+  d=$(_s2_fix v7 filled); _v_strip "$d" 'SLO / error-budget posture'
+  _v_mut "$d" M-V3 '/# MUT-V3$/s/_id_ows=absent/_id_ows=filled/' "OWED (first-deploy set): slo — absent" "OWED (first-deploy set): slo — filled" --surface
+  echo "--- (qk10) mutant M-Q1: --quick drops the deploy leg -> the qk2 cell must red ---"
+  d=$(_q_fix q10); printf '# Runbook\n\nno deploy rationale here\n' > "$d/RUNBOOK.md"
+  _v_mut "$d" M-Q1 '/# MUT-Q1$/s/.*/  _id_dq_run harness CLAUDE.md "$1" "${2:-}"/' "FAIL: RUNBOOK.md — missing required '#### Deploy-target fit rationale' section" "OK: quick check satisfied" --quick
+  echo "--- (qk11) mutant M-Q5: --quick drops the model leg -> the qk5 cell must red ---"
+  d=$(_q_fix q11); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"
+  _v_mut "$d" M-Q5 '/# MUT-Q5$/s/.*/  _id_dq_run harness CLAUDE.md "$1" "${2:-}"/' "missing required '#### Model fit rationale' section" "OK: quick check satisfied" --quick
+  echo "--- (hk7) mutant M-H1: --hook runs legs 1-3 as refusals -> the hk1 cell must red ---"
+  d=$(_q_fix hk7); t=$(_h_tree hk7)
+  _v_mut "$d" M-H1 '/# MUT-H1$/s/.*/  _id_leg_hdr; _id_leg_harness stamp; _id_leg_backend/' "OWED (inception): project CLAUDE.md key fields not filled" "FAIL: project CLAUDE.md key fields not filled" --quick --hook "$t"
+  echo "--- (hk8) mutant M-H2: --hook grades the working tree (no absolute base) -> the hk3 cell must red ---"
+  d=$(_q_fix hk8); printf '# ADR-000\n\n## Fit rationale\nteam skills and ecosystem fit for this workload.\n' > "$d/docs/architecture/ADR-000-stack.md"
+  t=$(_h_tree hk8); printf '# ADR-000\n\nno rationale\n' > "$t/docs/architecture/ADR-000-stack.md"
+  _v_mut "$d" M-H2 '/# MUT-H2$/s/.*/  _id_leg4 "$ID_ENGINE"/' "missing required '## Fit rationale' section" "OK: hook check satisfied" --quick --hook "$t"
+  echo "--- (hk10) mutant M-H3: --hook calls the model axis with no path when CLAUDE.md is absent -> the hk9 cell must red ---"
+  d=$(_q_fix hk10); printf 'decision=D-000000-0\ndeep=opus\n' > "$d/.kit/model-map.conf"; printf '#### Model fit rationale\nreasoning depth and cost fit.\n' >> "$d/CLAUDE.md"
+  t=$(_h_tree hk10); rm -f "$t/CLAUDE.md"
+  _v_mut "$d" M-H3 "/# MUT-H3\$/s/.*/      _id_dqa=''/" "missing required '#### Model fit rationale' section" "OK: hook check satisfied" --quick --hook "$t"
+
   # (dr) SWAS-779 — the inception-drafts leg. Strict fails on a docs/inception-draft/ directory or on the draft banner (a whole line) in any of
   # the four ratified files; --surface reports each as OWED and does not fail on it. A missing file is no banner; an unreadable one fails.
   _dr_ban=$ID_DRAFT_BANNER
@@ -2067,18 +2442,21 @@ st_real() { OUT=$( INCEPTION_DONE_GH_CMD="$_pub_stub" sh "$0" "$1" ${2:+--$2} 2>
 st_has()   { case "$OUT" in *"$1"*) printf '    ok  : has [%s]\n' "$1" ;; *) printf '    BAD : MISSING [%s]\n' "$1"; st_fail=1 ;; esac; }
 st_hasnt() { case "$OUT" in *"$1"*) printf '    BAD : SHOULD-NOT have [%s]\n' "$1"; st_fail=1 ;; *) printf '    ok  : absent [%s]\n' "$1" ;; esac; }
 st_rc()    { if [ "$RC" = "$1" ]; then printf '    ok  : rc %s\n' "$RC"; else printf '    BAD : rc %s (wanted %s)\n' "$RC" "$1"; st_fail=1; fi; }
-# st_mkfix <name> <harness>: echo the path to a fresh project fixture that (before perturbation)
-#   satisfies every leg — a cheap local re-clone of the once-cloned template, with the four adopter
+# st_mkfix <name> <harness> [template]: echo the path to a fresh project fixture that (before perturbation)
+#   satisfies every leg — a cheap local re-clone of the once-cloned template (or of [template]), with the register
+#   removed (WAIVER-REGISTER.md never survives into a fixture: SWAS-1008), the four adopter
 #   files stamped and CLAUDE.md carrying real (non-placeholder) header fields + the harness value.
 st_mkfix() {
   _d="$WORK/$1"
-  git clone -q "$WORK/tmpl" "$_d"
+  git clone -q "${3:-$WORK/tmpl}" "$_d" || { echo "inception-done --selftest: FAIL — st_mkfix cannot clone the template"; return 1; }
+  rm -f "$_d/WAIVER-REGISTER.md"   # hermetic: a fixture never inherits the template's (an adopter's) waiver register (SWAS-1008)
   : > "$_d/ENGINEERING-PRINCIPLES.md"; : > "$_d/RUNBOOK.md"; : > "$_d/.env.example"
   {
     echo "# Fixture project"
     echo "**Project:** fixture-project"
     echo "**Intent owner:** the fixture owner"
     echo "- **Target harness(es)** (§harness-neutrality): $2"
+    printf '## 1. Overview\nA decided fixture charter.\n'
   } > "$_d/CLAUDE.md"
   # decided-not-present legs: the template clone carries the kit's UNFILLED example ADR-000, which the
   # strict gate reds by design — give every fixture a decided one; (n1)/(n2)/(n3) undo this deliberately.
@@ -2119,7 +2497,10 @@ st_attest() { printf '%s\n' '- **Branch protection** (§branch-protection): atte
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
   *)
-    MODE=strict; _dir=.
-    for a in "$@"; do case "$a" in --surface) MODE=surface ;; --strict) MODE=strict ;; *) _dir="$a" ;; esac; done
+    MODE=strict; _dir=.; _quick=no; _moded=no; _hook=no
+    for a in "$@"; do case "$a" in --surface) MODE=surface; _moded=yes ;; --strict) MODE=strict; _moded=yes ;; --quick) _quick=yes ;; --hook) _hook=yes ;; -*) echo "usage: inception-done.sh [--surface|--strict|--quick [--hook]] [dir]  (unknown option '$a')" >&2; exit 2 ;; *) _dir="$a" ;; esac; done
+    if [ "$_quick" = yes ] && [ "$_moded" = yes ]; then echo "usage: --quick is its own mode and cannot be combined with --surface or --strict" >&2; exit 2; fi
+    if [ "$_hook" = yes ] && [ "$_quick" = no ]; then echo "usage: --hook works only with --quick" >&2; exit 2; fi
+    if [ "$_quick" = yes ]; then run_quick "$_dir" "$_hook"; exit $?; fi
     MODE="$MODE" run_gate "$_dir"; exit $? ;;
 esac

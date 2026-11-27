@@ -2596,7 +2596,7 @@ case "$*" in
   */actions/runs/*)
     c=success; [ "$mode" != cheap ] || c=skipped
     for n in changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam h2-hermetic conformance-docs docs-links; do [ "$mode" = noh2 ] && [ "$n" = h2-hermetic ] && continue; job "$n" "$c"; done
-    job conformance success; job 'non-vacuity (1)' "$c"; [ "$mode" = nogate ] || job gate success
+    job conformance success; job a1-premise success; job a1-premise-full success; job 'non-vacuity (1)' "$c"; [ "$mode" = nogate ] || job gate success
     [ "$mode" != jobspartial ] || exit 1 ;;
   *) exit 1 ;;
 esac

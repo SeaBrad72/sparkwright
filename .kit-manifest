@@ -532,6 +532,7 @@ conformance/hermetic-exclusions.txt
 conformance/inception-bootstrap-documented.sh
 conformance/inception-done.sh
 conformance/kit-current.sh
+conformance/kit-release.sha256
 conformance/loop-state.sh
 conformance/mcp-policy.sh
 conformance/meta-control-fresh.sh
@@ -576,6 +577,7 @@ conformance/secret-scan-wired.sh
 conformance/security-channel-live.sh
 conformance/security-policy.sh
 conformance/selftest-hermetic.sh
+conformance/selftest-inputs.tsv
 conformance/shell-parse-lint.sh
 conformance/shellcheck.sh
 conformance/shim-coverage.sh
@@ -1025,6 +1027,7 @@ scripts/slice-resume.sh
 scripts/sod-check.sh
 scripts/solo-to-team.sh
 scripts/sparkwright
+scripts/stamp-lib.sh
 scripts/start.sh
 scripts/tracker-conf.sh
 scripts/tracker-cred.sh

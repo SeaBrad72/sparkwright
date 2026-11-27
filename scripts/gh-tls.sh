@@ -8,7 +8,7 @@
 # `gh api rate_limit` call and reads its stderr. ONLY on that exact x509 + OSStatus -26276 signature, and ONLY if the root-owned system CA bundle passes the checks below,
 # it exports SSL_CERT_FILE=<that bundle>, so every subshell, `eval` and child script of the verb inherits it. It runs only on Darwin, and never when SSL_CERT_FILE or
 # SSL_CERT_DIR already holds a NON-EMPTY value (a value a person chose is never overwritten; an empty one is read as unset). It always returns 0 (safe under the caller's
-# `set -eu`). It adds nothing to the guard: no prefix is admitted anywhere; the kit's verb sets its own trust store.
+# `set -eu`). It adds nothing to the guard: the guard admits only the one exact byte-0 literal `SSL_CERT_FILE=/private/etc/ssl/cert.pem ` (D-241120-1); the kit's verb sets its own trust store.
 #
 # THE PIN CHECKS. The leaf is a regular file (never a symlink) owned by uid 0 whose mode string neither ends in `+` (an ACL) nor grants group or world write; each parent
 # (/private/etc/ssl, /private/etc, /private) is a real directory (never a symlink) with the same owner and mode rules. `ls` and `awk` are called by absolute path

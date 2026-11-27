@@ -247,34 +247,56 @@ sandbox_enabled_in() {  # <settings file> -> prints true, false or unset (the fi
 # file is read where readable (macOS /Library/Application Support/ClaudeCode/managed-settings.json, Linux
 # /etc/claude-code/managed-settings.json). The "cannot start here" warn shows whenever enabled resolves true:
 # with the sandbox off there is nothing to start. Informational: never sets `miss`.
+# user_settings_scope (SWAS-1012): the user-scope settings file Claude Code reads. Sets _us_path (the file to read), _us_label (what to print: the variable's NAME, never its value),
+# _us_rel (1 when CLAUDE_CONFIG_DIR is set, non-empty and not absolute: the scope is then not read, HOME's file is never read in its place) and _us_cfg (1 when the variable chose the file).
+user_settings_scope() {
+  _us_path="${HOME:-}/.claude/settings.json"; _us_rel=0; _us_cfg=0
+  # shellcheck disable=SC2088  # a literal label printed to a person, never a path the shell opens
+  _us_label="~/.claude/settings.json"
+  [ -n "${CLAUDE_CONFIG_DIR:-}" ] || return 0   # MUT-CCD-EMPTY
+  _us_label='$CLAUDE_CONFIG_DIR/settings.json'   # MUT-CCD-LABEL
+  case "$CLAUDE_CONFIG_DIR" in
+    /*) _us_path="$CLAUDE_CONFIG_DIR/settings.json"; _us_cfg=1 ;;   # MUT-CCD-ROUTE
+    *)
+      _us_path=""   # MUT-CCD-RELPATH
+      _us_rel=1 ;;   # MUT-CCD-REL
+  esac
+}
 check_sandbox() {
-  _sfile=".claude/settings.json"; _sloc=".claude/settings.local.json"; _suser="${HOME:-}/.claude/settings.json"
+  user_settings_scope
+  _sfile=".claude/settings.json"; _sloc=".claude/settings.local.json"; _suser="$_us_path"; _srel=$_us_rel
+  # in a session a CLAUDE_CONFIG_DIR file may not be read-denied to the shell as HOME's is: it is not read
+  _ssess=0; if [ -n "${SANDBOX_RUNTIME:-}" ] && [ "$_us_cfg" -eq 1 ]; then _ssess=1; fi   # MUT-CCD-SESS
   case "$(uname -s 2>/dev/null)" in
     Darwin) _smgd="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
     *) _smgd="/etc/claude-code/managed-settings.json" ;;
   esac
   if [ "${SEAMS:-0}" -eq 1 ]; then
     _sfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_sfile}"; _sloc="${PREFLIGHT_SANDBOX_LOCAL:-$_sloc}"
+    if [ -n "${PREFLIGHT_SANDBOX_USER:-}" ]; then _srel=0; _ssess=0; fi
     _suser="${PREFLIGHT_SANDBOX_USER:-$_suser}"; _smgd="${PREFLIGHT_SANDBOX_MANAGED:-$_smgd}"
   fi
   command -v jq >/dev/null 2>&1 || { echo "  skip sandbox profile — jq absent"; return 0; }
+  _snote=""; if [ "$_srel" -eq 1 ]; then _snote=" (user scope not read: CLAUDE_CONFIG_DIR is not an absolute path)"; fi
+  if [ "$_ssess" -eq 1 ]; then _snote=" (user scope not read in a session: CLAUDE_CONFIG_DIR is set)"; fi
   _seff='unset'
   for _sf in "$_smgd" "$_sloc" "$_sfile" "$_suser"; do
+    if { [ "$_srel" -eq 1 ] || [ "$_ssess" -eq 1 ]; } && [ "$_sf" = "$_suser" ]; then continue; fi
     _sen=$(sandbox_enabled_in "$_sf")
     if [ "$_sen" != unset ]; then _seff=$_sen; break; fi
   done
   if [ "$_seff" != true ]; then
-    echo "  ok   agent OS sandbox: off (the shipped default is on; here it is turned off in a settings scope or the settings carry no sandbox block; to restore it, remove the override; to keep it off, declare the opt-out in .kit/boundary-optout.conf)"
+    printf '%s\n' "  ok   agent OS sandbox: off (the shipped default is on; here it is turned off in a settings scope or the settings carry no sandbox block; to restore it, remove the override; to keep it off, declare the opt-out in .kit/boundary-optout.conf)$_snote"
     return 0
   fi
-  echo "  ok   agent OS sandbox: on (the guard files are read-only to the shell; an update that changes them is one terminal git command)"
+  printf '%s\n' "  ok   agent OS sandbox: on (the guard files are read-only to the shell; an update that changes them is one terminal git command)$_snote"
   if _sreason=$(sandbox_unavailable_reason); then
     echo "  ok   agent OS sandbox can start here"
     # SWAS-903: inside the macOS sandbox a bare `gh` fails TLS (x509 OSStatus -26276); the kit's own verbs set their own trust store. Informational, never a warn.
     _sgos=$(uname -s 2>/dev/null) || _sgos=""
     if [ "${SEAMS:-0}" -eq 1 ]; then _sgos="${PREFLIGHT_SANDBOX_OS:-$_sgos}"; fi
     if [ "$_sgos" = Darwin ] && [ -z "${SSL_CERT_FILE-}" ] && [ -z "${SSL_CERT_DIR-}" ]; then
-      echo "  info gh: agent gh calls outside kit verbs fail TLS in the sandbox; see runtime-guards, gh inside the sandbox"
+      echo "  info gh: inside the sandbox a bare gh call fails TLS (x509: OSStatus -26276). Fix: start the command with SSL_CERT_FILE=/private/etc/ssl/cert.pem gh ... ; the prefix must be the first bytes of the command, alone (D-241120-1). Kit verbs set it themselves."   # MUT-GH-FIX
     fi
   else
     printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
@@ -831,7 +853,7 @@ boundary_egress_block() {
     _eb_un=$(jq -r '.sandbox.network.allowedDomains | if type == "array" then length else 0 end' "$_buser" 2>/dev/null) || _eb_un=unreadable   # a COUNT, never a host
   fi
   _eb_blk=$(jq -cn '{sandbox: {network: {strictAllowlist: true, allowedDomains: []}}}') || _eb_blk=""   # MUT-BLOCK
-  printf '%s\n' "  info egress: the user-level block to copy whole into ~/.claude/settings.json (valid JSON, it carries no host):"
+  printf '%s\n' "  info egress: the user-level block to copy whole into $_bulabel (valid JSON, it carries no host):"
   if [ -n "$_eb_blk" ]; then printf '%s\n' "    $_eb_blk"; else printf '%s\n' "    (the block could not be built here: set sandbox.network.strictAllowlist to true at user scope)"; fi
   printf '%s\n' "  info egress: add the hosts below to any allowedDomains you already have; do not replace your list."
   case "$_eb_un" in
@@ -851,13 +873,36 @@ boundary_egress_block() {
     printf '%s\n' "  info egress: this repo's .claude/settings.json could not be read here; add the hosts you use to allowedDomains yourself."
   fi
   [ -z "$_eb_th" ] || printf '%s\n' "  info egress: From this repo's .kit/tracker.conf (your board); review before you add it:" "      $_eb_th"
+  boundary_kit_group
+}
+# SWAS-1012: the hosts kit flows use, one "host|use" line each. Suggestions for a person to review (D-241023-2 item 4: no script writes a settings file). registry.npmjs.org only for a Node project.
+boundary_kit_hosts() {
+  printf '%s\n' "results-receiver.actions.githubusercontent.com|gh run view --log (CI logs)"
+  if [ -f package.json ] || [ "${STACK:-}" = typescript-node ]; then   # MUT-EGR-NODE
+    printf '%s\n' "registry.npmjs.org|npm install. A supply-chain host: with it allowed an agent's npm install fetches any package with no prompt (DECISIONS F8); add it only if you want unprompted installs"
+  fi
+}
+boundary_kit_group() {  # the kit's hosts and their uses, names only (the user's own file is never read here)
+  printf '%s\n' "  info egress: From the kit (hosts kit flows use); review each before you add it:"   # MUT-EGR-KIT
+  boundary_kit_hosts | while IFS='|' read -r _kg_h _kg_u; do
+    printf '%s\n' "      $_kg_h  ($_kg_u)"
+  done
+}
+boundary_kit_missing() {  # <user settings file>: an info line per kit host the user's allowedDomains lacks. A jq boolean on each fixed kit name, so no user host is ever printed.
+  [ -f "$1" ] || return 0
+  boundary_kit_hosts | while IFS='|' read -r _km_h _km_u; do
+    _km_in=$(jq -r --arg h "$_km_h" '.sandbox.network.allowedDomains | if type == "array" then any(.[]; . == $h) else false end' "$1" 2>/dev/null) || _km_in=unreadable
+    if [ "$_km_in" = false ]; then printf '%s\n' "  info egress: your user-level allowedDomains lacks $_km_h, which kit flows use ($_km_u)"; fi   # MUT-EGR-MEMBER
+  done
 }
 # boundary_summary (SWAS-474): the exit summary for a failed boundary. When egress is the failing part it leads with the strict step (the one act every adopter owes), then the declaration; when a
 # non-egress part failed as well (or egress did not fail) the old sentence follows or stands alone, unchanged. A plain line, never counted. The exit stays at the call site.
 boundary_summary() {
-  _bsm_strict=""; _bsm_old=""
+  _bsm_strict=""; _bsm_old=""; _bsm_l=${_bulabel:-}
+  # shellcheck disable=SC2088  # a literal label printed to a person, never a path the shell opens
+  [ -n "$_bsm_l" ] || _bsm_l='~/.claude/settings.json'
   if [ "${_bnd_egress_gap:-0}" -eq 1 ]; then
-    _bsm_strict="Agent boundary: egress is not enforced. (1) The one act every adopter owes, once per machine: merge the block printed under the egress line above into ~/.claude/settings.json, then add the hosts you trust from the list there to sandbox.network.allowedDomains (they come from this repo; review each first). (2) Or, to opt out on purpose, declare it in .kit/boundary-optout.conf."
+    _bsm_strict="Agent boundary: egress is not enforced. (1) The one act every adopter owes, once per machine: merge the block printed under the egress line above into $_bsm_l, then add the hosts you trust from the list there to sandbox.network.allowedDomains (they come from this repo; review each first). (2) Or, to opt out on purpose, declare it in .kit/boundary-optout.conf."
   fi
   if [ "${_bnd_egress_gap:-0}" -eq 0 ] || [ "${_bnd_nonegress:-0}" -eq 1 ]; then
     _bsm_old="Agent boundary: an UNDECLARED opt-out (or a malformed or UNTRUSTED declaration, or an unreadable declaration while a part is OFF) is listed above — declare it in .kit/boundary-optout.conf or remove the override (UNTRUSTED or UNVERIFIED: follow its Remedy)."
@@ -917,13 +962,16 @@ boundary_local_bind() {
 
 check_boundary() {
   _bnd_egress_gap=0; _bnd_nonegress=0; _bpread=0   # SWAS-474: the summary's two kinds of bfail, and whether the project scope was readable (the egress block reads its allowedDomains only then)
-  _bfile=".claude/settings.json"; _bloc=".claude/settings.local.json"; _buser="${HOME:-}/.claude/settings.json"
+  user_settings_scope
+  _bfile=".claude/settings.json"; _bloc=".claude/settings.local.json"; _buser="$_us_path"; _bulabel="$_us_label"; _burel=$_us_rel; _bucfg=$_us_cfg
   case "$(uname -s 2>/dev/null)" in
     Darwin) _bmgd="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
     *) _bmgd="/etc/claude-code/managed-settings.json" ;;
   esac
   if [ "${SEAMS:-0}" -eq 1 ]; then
     _bfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_bfile}"; _bloc="${PREFLIGHT_SANDBOX_LOCAL:-$_bloc}"
+    # shellcheck disable=SC2088  # a literal label printed to a person, never a path the shell opens
+    if [ -n "${PREFLIGHT_SANDBOX_USER:-}" ]; then _burel=0; _bucfg=0; _bulabel="~/.claude/settings.json"; fi
     _buser="${PREFLIGHT_SANDBOX_USER:-$_buser}"; _bmgd="${PREFLIGHT_SANDBOX_MANAGED:-$_bmgd}"
   fi
   command -v jq >/dev/null 2>&1 || { echo "  skip boundary — jq absent"; bunv=1; return 0; }
@@ -948,6 +996,7 @@ check_boundary() {
     case "$_bn" in managed) _bf=$_bmgd ;; local) _bf=$_bloc ;; project) _bf=$_bfile ;; *) _bf=$_buser ;; esac
     _bs=$(boundary_read_scope "$_bf")
     if [ "$_bn" = user ] && [ -n "${SANDBOX_RUNTIME:-}" ]; then _bs=unreadable; fi   # MUT-INSESSION: in an agent session the user scope is read-denied, so it is not read
+    if [ "$_bn" = user ] && [ "$_burel" -eq 1 ]; then _bs=unreadable; fi   # SWAS-1012: a relative CLAUDE_CONFIG_DIR is not guessed at: the user scope is not read
     case "$_bs" in
       absent) continue ;;
       unreadable)
@@ -1067,19 +1116,27 @@ check_boundary() {
         _bfx=$(printf '%s' "$_boff" | sed 's/^ //; s/ /,/g'); [ "$_bau" -eq 0 ] || _bfx="all"
         boundary_judge boundary PARTIAL "" "$_bneed" "the sandbox is on but read-deny: $_brd, write-protect: $_bwr$_bunsb (SHADOWED means an allowRead names more than the two env templates). Where the default comes from: docs/operations/runtime-guards.md, \"The agent boundary: on by default\"" "declare it in .kit/boundary-optout.conf (part=$_bfx), $_bfix" "$_bcons"
       fi
+      if [ "$_bucfg" -eq 1 ]; then   # MUT-CCD-INFO
+        printf '%s\n' "  info boundary: the shipped write-protect names ~/.claude/settings.json, not $_bulabel, so that file is protected only if it lies outside the sandbox's write roots"
+      fi
       if [ "$_bci" -eq 1 ]; then
         printf '%s\n' "  ok   egress: N/A $_bleg — CI runs no agent session; the user-level act is per machine"
       elif [ "$_bst" -eq 1 ]; then
         printf '%s\n' "  ok   egress: ENFORCED $_bleg — strictAllowlist is set at user or managed scope"
-        [ -n "${SANDBOX_RUNTIME:-}" ] || boundary_user_hosts "$_buser"
+        if [ -z "${SANDBOX_RUNTIME:-}" ]; then boundary_user_hosts "$_buser"; boundary_kit_missing "$_buser"; fi
         boundary_webfetch_allows "$_bloc" enforced
       elif [ "$_buserunv" -eq 1 ]; then
         bunv=1; bwarn=$((${bwarn:-0} + 1))
+        if [ "$_burel" -eq 1 ]; then
+          printf '%s\n' "  warn egress: CLAUDE_CONFIG_DIR is not an absolute path, so the user scope was not read"
+          bwarn=$((${bwarn:-0} + 1))
+        fi
         printf '%s\n' "  warn egress: UNVERIFIED $_bleg — strictAllowlist belongs at user scope, which is unreadable here; run 'sh scripts/preflight.sh' from a terminal to read it"
+        boundary_kit_group
         boundary_webfetch_allows "$_bloc" session
       else
         _bign=""; [ "$_bstrepo" -eq 0 ] || _bign=" (a strictAllowlist in a repo file is ignored by Claude Code, docs-stated)"
-        boundary_judge egress "NOT ENFORCED" "" egress "strictAllowlist is not set at user or managed scope$_bign. Until it is, an unlisted host is a prompt a person can approve, and a mode that approves without a person (auto, bypass) lets it through" "(1) merge the user-level block into ~/.claude/settings.json (the block is printed on the lines below, with the hosts to review, or why none could be listed; one human act per machine; it applies to every project on this machine; see docs/operations/runtime-guards.md); or (2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf (reviewed as control-plane)" "$_bcons"
+        boundary_judge egress "NOT ENFORCED" "" egress "strictAllowlist is not set at user or managed scope$_bign. Until it is, an unlisted host is a prompt a person can approve, and a mode that approves without a person (auto, bypass) lets it through" "(1) merge the user-level block into $_bulabel (the block is printed on the lines below, with the hosts to review, or why none could be listed; one human act per machine; it applies to every project on this machine; see docs/operations/runtime-guards.md); or (2) to opt out on purpose, commit part=egress to .kit/boundary-optout.conf (reviewed as control-plane)" "$_bcons"
         [ "$_bnd_egress_gap" -eq 0 ] || boundary_egress_block   # SWAS-474: only on the UNDECLARED path (a declared opt-out, an unread or unreadable declaration never sets the flag)
         boundary_webfetch_allows "$_bloc" open
       fi ;;
@@ -4950,7 +5007,7 @@ EOF
   unset SSL_CERT_FILE SSL_CERT_DIR
   sbx_prof profile-gh-info-darwin on "$_sbx/on.json" "" Darwin "sandbox-exec" 1
   case "$out" in
-    *"info gh:"*"gh inside the sandbox"*) echo "PASS: sandbox profile [profile-gh-info-darwin] -> the gh info line" ;;
+    *"info gh:"*"OSStatus -26276"*"SSL_CERT_FILE=/private/etc/ssl/cert.pem gh"*) echo "PASS: sandbox profile [profile-gh-info-darwin] -> the gh info line" ;;
     *) echo "FAIL: sandbox profile [profile-gh-info-darwin] printed no gh info line ($out)"; fail=1 ;;
   esac
   sbx_prof profile-gh-info-linux on "$_sbx/on.json" "" Linux "bwrap socat" 1
@@ -5530,6 +5587,215 @@ EOF
   fi
   rm -rf "$_e4_sw" "$_e4"
   _g_proj=""; _g_user=""; _g_local=""; _g_mgd=""; _g_decl=""; _g_os=""; _g_env=""; _g_dir=""; _g_path=""; _g_home=""; _g_ci=""; _g_tty=""
+
+  # ---- SWAS-1012 PR 1 (items 1, 2 and 5): the user scope follows CLAUDE_CONFIG_DIR (cells S1012-CCD-1 to -13), the egress block suggests the kit's hosts (S1012-EGR-1 to -9),
+  # and the gh line carries the fix (S1012-GH-1 to -3). The cells call the real check_boundary / check_sandbox in a subshell through the existing PREFLIGHT_SANDBOX_* seams, with
+  # PREFLIGHT_SANDBOX_USER UNSET (the CCD cells need the resolver, which the seam would override) and HOME, CLAUDE_CONFIG_DIR and the cwd pointing at fixtures. A cell prints one line.
+  _s12=$(mktemp -d)
+  mkdir -p "$_s12/cwd" "$_s12/node" "$_s12/cfgstrict" "$_s12/cfgplain" "$_s12/cfgon" "$_s12/ccd7-MARKERQ9Z" "$_s12/homestrict/.claude" "$_s12/homeplain/.claude" "$_s12/homeon/.claude"
+  printf '{"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_s12/cfgstrict/settings.json"
+  printf '{"permissions":{}}\n' > "$_s12/cfgplain/settings.json"
+  printf '{"sandbox":{"enabled":true}}\n' > "$_s12/cfgon/settings.json"
+  printf '{"permissions":{}}\n' > "$_s12/ccd7-MARKERQ9Z/settings.json"
+  printf '{"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_s12/homestrict/.claude/settings.json"
+  printf '{"permissions":{}}\n' > "$_s12/homeplain/.claude/settings.json"
+  printf '{"sandbox":{"enabled":true}}\n' > "$_s12/homeon/.claude/settings.json"
+  mkdir -p "$_s12/homehosts/.claude"
+  printf '{"sandbox":{"network":{"allowedDomains":["private-host.example"]}}}\n' > "$_s12/homehosts/.claude/settings.json"
+  printf '{"sandbox":{"network":{"strictAllowlist":true}}}\n' > "$_s12/mgd-strict.json"
+  printf '{"permissions":{}}\n' > "$_s12/noblock.json"
+  printf '{"sandbox":{"enabled":true}}\n' > "$_s12/on.json"
+  printf '{"name":"fixture"}\n' > "$_s12/node/package.json"
+  printf '{"sandbox":{"network":{"strictAllowlist":true,"allowedDomains":["github.com"]}}}\n' > "$_s12/u-gh.json"
+  printf '{"sandbox":{"network":{"strictAllowlist":true,"allowedDomains":["results-receiver.actions.githubusercontent.com"]}}}\n' > "$_s12/u-rr.json"
+  printf '{"sandbox":{"network":{"strictAllowlist":true,"allowedDomains":["private-host.example"]}}}\n' > "$_s12/u-priv.json"
+  _s12_reset() {  # the scenario globals the two runners read; every cell starts from these
+    _s12_cwd="$_s12/cwd"; _s12_proj="$_bnd/full.json"; _s12_home="$_s12/homeplain"; _s12_cfg=@unset; _s12_usr=""; _s12_rt=""; _s12_stk=""; _s12_sum=0
+    _s12_os=Darwin; _s12_tools=sandbox-exec; _s12_ssl=""; _s12_mgd=/nonexistent-managed
+  }
+  _s12_bc() {  # runs check_boundary (then boundary_summary when _s12_sum is 1) in the scenario; output in $out. CLAUDE_CONFIG_DIR is set only when _s12_cfg is not @unset (an empty value is a set, empty one)
+    out=$( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME CLAUDE_CONFIG_DIR PREFLIGHT_SANDBOX_USER SSL_CERT_FILE SSL_CERT_DIR
+      cd "$_s12_cwd" || exit 1
+      HOME="$_s12_home"; export HOME
+      if [ "$_s12_cfg" != @unset ]; then CLAUDE_CONFIG_DIR="$_s12_cfg"; export CLAUDE_CONFIG_DIR; fi
+      if [ -n "$_s12_usr" ]; then PREFLIGHT_SANDBOX_USER="$_s12_usr"; export PREFLIGHT_SANDBOX_USER; fi
+      if [ -n "$_s12_rt" ]; then SANDBOX_RUNTIME=1; export SANDBOX_RUNTIME; fi
+      if [ -n "$_s12_stk" ]; then STACK="$_s12_stk"; fi
+      PREFLIGHT_SANDBOX_SETTINGS="$_s12_proj"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_MANAGED="$_s12_mgd"; PREFLIGHT_BOUNDARY_OPTOUT=@absent
+      PREFLIGHT_SANDBOX_OS=Darwin; PREFLIGHT_SANDBOX_TOOLS=sandbox-exec; PREFLIGHT_SANDBOX_BWRAP_OK=1
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_MANAGED PREFLIGHT_BOUNDARY_OPTOUT PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      miss=0; rec=0; bfail=0; bunv=0; bwarn=0
+      check_boundary 2>&1
+      if [ "$_s12_sum" -eq 1 ]; then boundary_summary; fi ) || true
+  }
+  _s12_sb() {  # runs check_sandbox in the scenario (_s12_os, _s12_tools, _s12_ssl); output in $out
+    out=$( unset CI GITHUB_ACTIONS SANDBOX_RUNTIME CLAUDE_CONFIG_DIR PREFLIGHT_SANDBOX_USER SSL_CERT_FILE SSL_CERT_DIR
+      cd "$_s12_cwd" || exit 1
+      HOME="$_s12_home"; export HOME
+      if [ "$_s12_cfg" != @unset ]; then CLAUDE_CONFIG_DIR="$_s12_cfg"; export CLAUDE_CONFIG_DIR; fi
+      if [ -n "$_s12_usr" ]; then PREFLIGHT_SANDBOX_USER="$_s12_usr"; export PREFLIGHT_SANDBOX_USER; fi
+      if [ -n "$_s12_rt" ]; then SANDBOX_RUNTIME=1; export SANDBOX_RUNTIME; fi
+      if [ -n "$_s12_ssl" ]; then SSL_CERT_FILE="$_s12_ssl"; export SSL_CERT_FILE; fi
+      PREFLIGHT_SANDBOX_SETTINGS="$_s12_proj"; PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local; PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed
+      PREFLIGHT_SANDBOX_OS="$_s12_os"; PREFLIGHT_SANDBOX_TOOLS="$_s12_tools"; PREFLIGHT_SANDBOX_BWRAP_OK=1
+      export PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_MANAGED PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK
+      miss=0; rec=0
+      check_sandbox 2>&1 ) || true
+  }
+  _s12_beg() { _s12_ok=1; _s12_why=""; }   # start a cell: the checks below accumulate, _s12_end prints ONE line
+  _s12_has() {  # <substring>: $out must hold it
+    case "$out" in
+      *"$1"*) : ;;
+      *) _s12_ok=0; _s12_why="$_s12_why [missing: $1]" ;;
+    esac
+  }
+  _s12_not() {  # <substring>: $out must not hold it
+    case "$out" in
+      *"$1"*) _s12_ok=0; _s12_why="$_s12_why [printed: $1]" ;;
+      *) : ;;
+    esac
+  }
+  _s12_after() {  # <anchor> <substring>: the anchor is in $out and the substring comes after its first occurrence
+    _s12_r=${out#*"$1"}
+    if [ "$_s12_r" = "$out" ]; then _s12_ok=0; _s12_why="$_s12_why [missing anchor: $1]"; return 0; fi
+    case "$_s12_r" in
+      *"$2"*) : ;;
+      *) _s12_ok=0; _s12_why="$_s12_why [missing after '$1': $2]" ;;
+    esac
+  }
+  _s12_n() {  # <grep pattern> <count>: exactly <count> lines of $out match
+    _s12_c=$(printf '%s\n' "$out" | grep -c -e "$1" || true)
+    if [ "$_s12_c" != "$2" ]; then _s12_ok=0; _s12_why="$_s12_why [$_s12_c lines match '$1', wanted $2]"; fi
+  }
+  _s12_end() {  # <label> <what>
+    if [ "${_s12_mode:-}" = quiet ]; then   # a mutant run: no line, the failing labels are collected for _s12_mut
+      if [ "$_s12_ok" -eq 1 ]; then return 0; fi
+      _s12_failed="$_s12_failed $1"; return 0
+    fi
+    if [ "$_s12_ok" -eq 1 ]; then printf '%s\n' "PASS: $1 $2"; else printf '%s\n' "FAIL: $1 $2 ($_s12_why)"; fail=1; fi
+  }
+  _s12_kit='From the kit (hosts kit flows use); review each before you add it:'; _s12_rr='results-receiver.actions.githubusercontent.com'; _s12_npm='registry.npmjs.org'
+  _s12_cfgp='$CLAUDE_CONFIG_DIR/settings.json'
+  # shellcheck disable=SC2088  # a literal label printed to a person, never a path the shell opens
+  _s12_tilde='~/.claude/settings.json'
+  _s12_ccd() {   # the CCD cells; a function so the mutants below can run the same cells against a mutated copy of the functions under test
+  # CCD: the user scope. The project file enables the sandbox with read-deny and write-protect ON (full.json); the OS seam can start.
+  _s12_reset; _s12_cfg="$_s12/cfgstrict"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_end S1012-CCD-1 "[cfg-dir-is-the-user-scope] CLAUDE_CONFIG_DIR's settings.json (strict) is read, HOME's (not strict) is not: egress ENFORCED"
+  _s12_reset; _s12_cfg="$_s12/cfgplain"; _s12_home="$_s12/homestrict"; _s12_bc
+  _s12_beg; _s12_has 'egress: NOT ENFORCED'; _s12_not 'egress: ENFORCED'; _s12_end S1012-CCD-2 "[home-not-read-when-cfg-set] HOME's strict file is not read while CLAUDE_CONFIG_DIR is set: egress NOT ENFORCED"
+  _s12_reset; _s12_home="$_s12/homestrict"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_end S1012-CCD-3 "[unset-reads-home] CLAUDE_CONFIG_DIR unset: HOME's strict file is read, egress ENFORCED"
+  _s12_reset; _s12_cfg=""; _s12_home="$_s12/homestrict"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_end S1012-CCD-4 "[empty-reads-home] CLAUDE_CONFIG_DIR set but empty reads as unset: HOME's strict file is read, egress ENFORCED"
+  _s12_reset; _s12_cfg="$_s12/cfgplain"; _s12_sum=1; _s12_bc
+  _s12_beg; _s12_has 'egress: NOT ENFORCED'
+  _s12_has "the user-level block to copy whole into $_s12_cfgp"; _s12_has "(1) merge the user-level block into $_s12_cfgp"; _s12_has "merge the block printed under the egress line above into $_s12_cfgp"
+  _s12_f=$(printf '%s\n' "$out" | grep -v 'info boundary:' || true); _s12_o=$out; out=$_s12_f; _s12_not "$_s12_tilde"; out=$_s12_o
+  _s12_end S1012-CCD-5 "[label-names-the-file-read] the block heading, the Fix and the summary name \$CLAUDE_CONFIG_DIR/settings.json by the variable's name, and none names ~/.claude/settings.json"
+  _s12_reset; _s12_cfg=cfg; _s12_home="$_s12/homestrict"; _s12_bc
+  _s12_beg; _s12_has 'warn egress: UNVERIFIED'; _s12_has 'warn egress: CLAUDE_CONFIG_DIR is not an absolute path, so the user scope was not read'; _s12_not 'egress: ENFORCED'; _s12_not 'egress: NOT ENFORCED'
+  _s12_end S1012-CCD-6 "[relative-is-unverified] a relative CLAUDE_CONFIG_DIR reads egress UNVERIFIED with the not-absolute line, and HOME's strict file is not read in its place"
+  _s12_reset; _s12_cfg="$_s12/ccd7-MARKERQ9Z"; _s12_sum=1; _s12_bc
+  _s12_beg; _s12_has 'egress: NOT ENFORCED'; _s12_not 'MARKERQ9Z'
+  _s12_end S1012-CCD-7 "[value-never-printed] the directory CLAUDE_CONFIG_DIR names (a marker in its name) never appears in the output, which is the variable's name only"
+  _s12_reset; _s12_cfg="$_s12/cfgon"; _s12_proj="$_s12/noblock.json"; _s12_sb
+  _s12_beg; _s12_has 'agent OS sandbox: on'
+  _s12_end S1012-CCD-8 "[sandbox-line-reads-cfg] only CLAUDE_CONFIG_DIR's settings.json enables the sandbox: check_sandbox reads it as the user scope (agent OS sandbox: on)"
+  _s12_reset; _s12_cfg="$_s12/cfgstrict"; _s12_rt=1; _s12_bc
+  _s12_beg; _s12_has 'warn egress: UNVERIFIED'; _s12_not 'egress: ENFORCED'
+  _s12_end S1012-CCD-9 "[in-session-stays-unverified] in a session (SANDBOX_RUNTIME) the variable does not reopen the user scope: egress UNVERIFIED, never ENFORCED"
+  _s12_reset; _s12_cfg="$_s12/cfgstrict"; _s12_bc; _s12_beg; _s12_has 'info boundary:'
+  _s12_reset; _s12_home="$_s12/homestrict"; _s12_bc; _s12_not 'info boundary:'
+  _s12_end S1012-CCD-10 "[denywrite-belt-info] with CLAUDE_CONFIG_DIR used an info boundary line is printed (the shipped write-protect names the home file); with it unset none is"
+  _s12_reset; _s12_cfg=cfg; _s12_home="$_s12/homeon"; _s12_proj="$_s12/noblock.json"; _s12_sb
+  _s12_beg; _s12_not 'agent OS sandbox: on'; _s12_has 'user scope not read'
+  _s12_end S1012-CCD-11 "[relative-skips-user-scope-in-check-sandbox] a relative CLAUDE_CONFIG_DIR: check_sandbox does not read HOME's enabling file (not on) and says the user scope was not read"
+  _s12_reset; _s12_cfg=cfg; _s12_home="$_s12/homehosts"; _s12_mgd="$_s12/mgd-strict.json"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_not 'info egress: the user-level allowedDomains holds'; _s12_not 'lacks'
+  _s12_end S1012-CCD-12 "[relative-reads-no-home-hosts] ENFORCED by the managed scope with a relative CLAUDE_CONFIG_DIR: HOME's file (it holds hosts) is read for no host count and no kit-host line"
+  _s12_reset; _s12_cfg="$_s12/cfgon"; _s12_proj="$_s12/noblock.json"; _s12_rt=1; _s12_sb
+  _s12_beg; _s12_not 'agent OS sandbox: on'; _s12_has 'user scope not read in a session'
+  _s12_end S1012-CCD-13 "[in-session-cfg-file-not-read] in a session a CLAUDE_CONFIG_DIR file is not read by check_sandbox (it may not be read-denied): not on, with the clause"
+  }
+  # EGR: the kit's host suggestions. The user seam is set here (an UNDECLARED NOT ENFORCED run, or an ENFORCED one), the cwd is a fixture directory; no settings file is ever written.
+  _s12_egr() {
+  _s12_snap() { { find "$_s12" -type f -name '*.json' -exec cksum {} + 2>/dev/null; cksum "$_bnd/full.json" "$_bnd/user-plain.json"; } | sort; }
+  _s12_snap0=$(_s12_snap)
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_bc
+  _s12_beg; _s12_has 'FAIL egress: NOT ENFORCED and UNDECLARED'; _s12_after "$_s12_kit" "$_s12_rr"
+  _s12_end S1012-EGR-1 "[kit-group-lists-results-receiver] the egress block's From the kit group lists results-receiver.actions.githubusercontent.com"
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_cwd="$_s12/node"; _s12_bc
+  _s12_beg; _s12_after "$_s12_kit" "$_s12_npm"; _s12_has 'supply-chain'
+  _s12_end S1012-EGR-2 "[node-gets-npm] with a package.json at the root the group also lists registry.npmjs.org, flagged supply-chain"
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_bc
+  _s12_beg; _s12_has 'FAIL egress: NOT ENFORCED and UNDECLARED'; _s12_not "$_s12_npm"
+  _s12_end S1012-EGR-3 "[no-npm-without-node] no package.json and no --stack: registry.npmjs.org is printed nowhere"
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_stk=typescript-node; _s12_bc
+  _s12_beg; _s12_after "$_s12_kit" "$_s12_npm"
+  _s12_end S1012-EGR-4 "[stack-node-gets-npm] --stack typescript-node without a package.json: registry.npmjs.org is listed"
+  _s12_reset; _s12_usr="$_s12/u-gh.json"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_n "info egress:.*$_s12_rr" 1; _s12_not 'github.com'
+  _s12_end S1012-EGR-5 "[enforced-names-missing-kit-host] ENFORCED, user list holds only github.com: one info egress line names results-receiver, and github.com is never printed"
+  _s12_reset; _s12_usr="$_s12/u-rr.json"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_not "$_s12_rr"
+  _s12_end S1012-EGR-6 "[enforced-no-line-when-present] ENFORCED, user list already holds results-receiver: no kit-host line"
+  _s12_reset; _s12_usr="$_s12/u-priv.json"; _s12_bc
+  _s12_beg; _s12_has 'ok   egress: ENFORCED'; _s12_not 'private-host.example'
+  _s12_end S1012-EGR-7 "[user-host-never-printed] ENFORCED, user list holds private-host.example: that host is never printed"
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_cwd="$_s12/node"; _s12_bc; _s12_usr="$_s12/u-gh.json"; _s12_bc
+  _s12_snap1=$(_s12_snap)
+  _s12_beg
+  if [ "$_s12_snap0" != "$_s12_snap1" ]; then _s12_ok=0; _s12_why="$_s12_why [a fixture settings file changed]"; fi
+  if [ -z "$_s12_snap0" ]; then _s12_ok=0; _s12_why="$_s12_why [the snapshot is empty (vacuous)]"; fi
+  _s12_end S1012-EGR-8 "[settings-never-written] every fixture settings file is byte-identical after the egress runs"
+  _s12_reset; _s12_usr="$_bnd/user-plain.json"; _s12_rt=1; _s12_bc
+  _s12_beg; _s12_has 'warn egress: UNVERIFIED'; _s12_after 'warn egress: UNVERIFIED' "$_s12_kit"; _s12_after "$_s12_kit" "$_s12_rr"
+  _s12_end S1012-EGR-9 "[in-session-kit-group] in a session the UNVERIFIED line is followed by the kit group (names only)"
+  }
+  # GH: the gh line carries the fix. The project file enables the sandbox; the OS seam can start; the trust variables are cleared by the runner.
+  _s12_gh() {
+  _s12_reset; _s12_proj="$_s12/on.json"; _s12_usr=/nonexistent-user; _s12_sb
+  _s12_beg; _s12_has 'info gh:'; _s12_has 'OSStatus -26276'; _s12_has 'SSL_CERT_FILE=/private/etc/ssl/cert.pem gh'; _s12_has 'first bytes'
+  _s12_end S1012-GH-1 "[gh-line-carries-the-fix] on Darwin with no trust variable the gh line holds the error text, the SSL_CERT_FILE prefix form and the first-bytes rule"
+  _s12_reset; _s12_proj="$_s12/on.json"; _s12_usr=/nonexistent-user; _s12_ssl=/fixture/cert.pem; _s12_sb
+  _s12_beg; _s12_has 'agent OS sandbox can start here'; _s12_not 'info gh:'
+  _s12_end S1012-GH-2 "[gh-line-silent-with-ssl-file] SSL_CERT_FILE set: no gh line"
+  _s12_reset; _s12_proj="$_s12/on.json"; _s12_usr=/nonexistent-user; _s12_os=Linux; _s12_tools="bwrap socat"; _s12_sb
+  _s12_beg; _s12_has 'agent OS sandbox can start here'; _s12_not 'info gh:'
+  _s12_end S1012-GH-3 "[gh-line-silent-on-linux] the Linux seam: no gh line"
+  }
+  _s12_cells() { _s12_ccd; _s12_egr; _s12_gh; }   # in order; the mutants below run all three in quiet mode
+  _s12_cells
+  # The mutants: a sed mutation of a TEMP COPY, whose functions under test replace the originals in a subshell; the cells then run quietly and the labels that FAIL must be exactly the ones named.
+  # It must apply and parse, and a mutant that fails no cell is a FAIL (never padded).
+  _s12_mut() {  # <name> <sed expr> <the labels that must fail, each with a leading space, in cell order>
+    _s12_mf=$(mktemp)
+    sed "$2" "$_self" > "$_s12_mf"
+    if cmp -s "$_self" "$_s12_mf"; then printf '%s\n' "FAIL: mutant $1 did not apply (the sed expression matched nothing)"; fail=1; rm -f "$_s12_mf"; return 0; fi
+    if ! sh -n "$_s12_mf" 2>/dev/null; then printf '%s\n' "FAIL: mutant $1 does not parse (a mutant that cannot run would read as killed)"; fail=1; rm -f "$_s12_mf"; return 0; fi
+    _s12_got=$( for _s12_fn in user_settings_scope check_sandbox check_boundary boundary_egress_block boundary_kit_hosts boundary_kit_group boundary_kit_missing boundary_summary; do
+        eval "$(sed -n "/^$_s12_fn() {/,/^}/p" "$_s12_mf")"
+      done
+      _s12_mode=quiet; _s12_failed=""; _s12_cells
+      printf '%s' "$_s12_failed" ) || _s12_got="<aborted>"
+    rm -f "$_s12_mf"
+    if [ "$_s12_got" = "$3" ]; then printf '%s\n' "PASS: mutant $1 is killed (it reds exactly:$3)"; else printf '%s\n' "FAIL: mutant $1 reds '$_s12_got', wanted '$3'"; fail=1; fi
+  }
+  _s12_mut ccd-route-always-home '/# MUT-CCD-ROUTE$/s/_us_path="\$CLAUDE_CONFIG_DIR\/settings.json"/_us_path="${HOME:-}\/.claude\/settings.json"/' ' S1012-CCD-1 S1012-CCD-2 S1012-CCD-8'
+  _s12_mut ccd-label-always-home '/# MUT-CCD-LABEL$/s/_us_label=.[$]CLAUDE_CONFIG_DIR\/settings.json./_us_label="~\/.claude\/settings.json"/' ' S1012-CCD-5'
+  _s12_mut ccd-relative-treated-absolute '/# MUT-CCD-REL$/s/_us_rel=1/_us_path="$CLAUDE_CONFIG_DIR\/settings.json"; _us_cfg=1/' ' S1012-CCD-6 S1012-CCD-11'
+  _s12_mut ccd-empty-counts-as-set '/# MUT-CCD-EMPTY$/s/\[ -n "\${CLAUDE_CONFIG_DIR:-}" \]/[ "${CLAUDE_CONFIG_DIR+x}" = x ]/' ' S1012-CCD-4'
+  _s12_mut ccd-denywrite-info-off '/# MUT-CCD-INFO$/s/-eq 1 \]; then/-eq 9 ]; then/' ' S1012-CCD-10'
+  _s12_mut ccd-relative-keeps-home-path '/# MUT-CCD-RELPATH$/s/_us_path=""/:/' ' S1012-CCD-12'
+  _s12_mut ccd-session-skip-off '/# MUT-CCD-SESS$/s/_ssess=1; fi/_ssess=0; fi/' ' S1012-CCD-13'
+  _s12_mut egr-kit-group-not-printed '/# MUT-EGR-KIT$/s/printf .*# MUT-EGR-KIT$/: # MUT-EGR-KIT/' ' S1012-EGR-1 S1012-EGR-2 S1012-EGR-4 S1012-EGR-9'
+  _s12_mut egr-node-test-always-false '/# MUT-EGR-NODE$/s/if \[ -f package.json \] || \[ "\${STACK:-}" = typescript-node \]; then/if false; then/' ' S1012-EGR-2 S1012-EGR-4'
+  _s12_mut egr-node-test-always-true '/# MUT-EGR-NODE$/s/if \[ -f package.json \] || \[ "\${STACK:-}" = typescript-node \]; then/if true; then/' ' S1012-EGR-3'
+  _s12_mut egr-member-always-present '/# MUT-EGR-MEMBER$/s/\[ "\$_km_in" = false \]/false/' ' S1012-EGR-5'
+  _s12_mut egr-member-always-absent '/# MUT-EGR-MEMBER$/s/\[ "\$_km_in" = false \]/true/' ' S1012-EGR-6'
+  _s12_mut gh-fix-clause-dropped '/# MUT-GH-FIX$/s/ Fix: [^"]* Kit verbs/ Kit verbs/' ' S1012-GH-1'
+  rm -rf "$_s12"
 
   # ---- the real body: does an UNDECLARED opt-out move the EXIT (and only it)? Differential: plain rc versus the same run under --boundary-advisory, so an ambient
   # failure (a missing tool) cannot fake or hide the effect. Globals _g_* describe the scenario; CI, GITHUB_ACTIONS and SANDBOX_RUNTIME are cleared first.
@@ -6463,7 +6729,7 @@ EOF
     printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> calls' 'if [ -f .kit-run/run-env.names ]; then echo present >> seen; else echo gone >> seen; fi' 'case " $* " in''  *" --boundary-advisory "*) ;;' '  *) exit 1 ;;' 'esac' 'case " $* " in' '  *" --stack "*) exit 1 ;;' 'esac' 'exit 0' > "$_ic/scripts/preflight.sh"
     _ic_run() {  # <incept copy> [NAME=value ...] -> _ic_out; leaves the stub's recorded calls in $_ic/calls and, per call, whether the run-env names file existed in $_ic/seen (SWAS-934)
       _ic_cp=$1; shift
-      rm -f "$_ic/calls" "$_ic/seen"; cp "$_ic_cp" "$_ic/scripts/incept.sh"
+      rm -f "$_ic/calls" "$_ic/seen"; cp "$_ic_cp" "$_ic/scripts/incept.sh"; cp "$_sd/stamp-lib.sh" "$_ic/scripts/stamp-lib.sh"
       _ic_out=$( cd "$_ic" && env -u CI -u GITHUB_ACTIONS -u SANDBOX_RUNTIME -u CLAUDE_CONFIG_DIR -u GH_CONFIG_DIR -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM "$@" sh scripts/incept.sh --name T --intent-owner O --stack typescript-node --harness generic < /dev/null 2>&1 ) || true
     }
     _ic_run "$_sd/incept.sh"

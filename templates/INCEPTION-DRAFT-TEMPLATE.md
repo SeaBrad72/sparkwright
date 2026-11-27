@@ -22,6 +22,14 @@ Each stated fact carries exactly one tag.
 
 A field with no supporting fact stays unfilled: the ratified template's own placeholder stays in place.
 
+## Headings to keep
+
+Start each draft from its ratified template's headings, and keep them. decision-integrity reds a missing `## Fit rationale` or `#### Deploy-target fit rationale`:
+
+- `ADR-000-stack.md`: `## Fit rationale`
+- `RUNBOOK.md`: `#### Deploy-target fit rationale`
+- `CHARTER.md`: `## 1. Overview`, and the fields it becomes (`inception-done` checks it in strict mode, and only WARNs until SWAS-1019)
+
 ## Example
 
 - Runtime: Node 22 `[read]` `<file>:<line>`

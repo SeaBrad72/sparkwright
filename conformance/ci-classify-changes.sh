@@ -113,7 +113,8 @@ classify() {
 # aggregator needs conformance-docs, so R1 subsumes it without breaking on pre-slice runs.
 # SWAS-864: h2-hermetic (the join over the h2-face legs, which graded the H2 lane inside conformance-core before) joins the list, last before the aggregator, so the order of the first-failing reason for the older
 # shards is unchanged. PG_NEEDED also feeds head_evidence for the merge verbs (promotion-verify land, actuate, trace), so a CI run from before SWAS-864 reads needed-job-missing:h2-hermetic and the push runs the full suite (fail-closed). It is not in PG_HEAVY: a pre-SWAS-864 docs-only run has no such job, and the induction path asks only that the heavy shards skipped.
-PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam h2-hermetic conformance'
+PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery guard-delta boundary-redteam h2-hermetic a1-premise a1-premise-full conformance'
+# SWAS-1008 slice 3a (E57): the two A1 jobs join PG_NEEDED after h2-hermetic (SWAS-864's precedent: every earlier first-failing reason keeps its order). They run on every graded code run and end green by a fast exit when no A1 input changed, so a skip or a miss is refused here. Neither is in PG_HEAVY, so the docs-only induction is unchanged.
 PG_HEAVY='conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone'
 
 _pg_no()  { echo "push_graded=false reason=$1"; }
@@ -318,6 +319,32 @@ export_ignored_only() {
   return 0
 }
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# a1_trigger — the FOURTH predicate (SWAS-1008 slice 3a, errata E28, E34, E41). It decides whether the kit's A1 jobs run: the proof that export then incept (and adopt) leave
+# every mapped file byte-identical to the release manifest (scripts/a1-premise.sh). THE TRIGGER IS INVERTED (E34): the jobs run on a change to ANY input of the export, incept
+# or adopt: a path under scripts/, templates/, profiles/, conformance/, .claude/, .kit/, adapters/ or hooks/, or .gitattributes, VERSION or docs/adoption/brownfield.md.
+# `a1_trigger=false` is EARNED: the listing was readable, non-empty and EVERY path was affirmatively outside that list; an empty, unreadable or absent listing is unknown, and
+# unknown RUNS the jobs, the full ten-profile set included (an unknown listing may hide a VERSION change). `a1_full=true` (E41) is otherwise emitted only when the listing names VERSION itself (the release-cut PR); a schedule has no listing and
+# ci.yml sets a1_full=true there. Same doctrine as classify(): a wrong `true` costs runner minutes, a wrong `false` skips the proof.
+a1_trigger() {
+  _af=${1:-}
+  if [ -z "$_af" ] || [ ! -r "$_af" ] || [ ! -s "$_af" ]; then
+    echo "a1_trigger=true"; echo "a1_full=true"
+    return 0
+  fi
+  _ahit=0; _afull=0
+  while IFS= read -r _ap || [ -n "$_ap" ]; do
+    [ -n "$_ap" ] || continue
+    case "$_ap" in
+      VERSION) _ahit=1; _afull=1 ;;
+      scripts/*|templates/*|profiles/*|conformance/*|.claude/*|.kit/*|adapters/*|hooks/*|.gitattributes|docs/adoption/brownfield.md) _ahit=1 ;;
+    esac
+  done < "$_af"
+  if [ "$_ahit" -eq 1 ]; then echo "a1_trigger=true"; else echo "a1_trigger=false"; fi
+  if [ "$_afull" -eq 1 ]; then echo "a1_full=true"; else echo "a1_full=false"; fi
+  return 0
+}
+
 # ── selftest : the classifier's teeth. Every fixture below is a real mis-classification we must not make.
 #    The `false` cases matter far more than the `true` case: a wrong `false` costs CI minutes; a wrong
 #    `true` SKIPS THE GATES.
@@ -382,6 +409,7 @@ selftest() {
   selftest_pg || st=1
   selftest_he || st=1
   selftest_eio || st=1
+  selftest_a1 || st=1
   [ "$st" = 0 ] && echo "ci-classify-changes --selftest: OK" || { echo "ci-classify-changes --selftest: FAIL" >&2; return 1; }
   return "$st"
 }
@@ -417,11 +445,11 @@ selftest_pg() {
   # the three canonical job listings
   J_ALL='changes=success conformance-core=success conformance-selftests=success cf-doctor=success
     cf-export=success cf-export-claims=success cf-verify-enforced=success
-    cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success conformance-docs=success docs-links=success
+    cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success a1-premise=success a1-premise-full=success conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=success non-vacuity~(2)=success'
   J_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped
     cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped
-    cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=success docs-links=success
+    cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped a1-premise=success a1-premise-full=success conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=skipped non-vacuity~(2)=skipped'
 
   # shellcheck disable=SC2086   # the J_* listings are deliberately word-split into name=conclusion args
@@ -494,6 +522,19 @@ selftest_pg() {
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
   _reset; _j=$(printf '%s' "$J_ALL" | sed 's/h2-hermetic=success //'); _mkjobs "$p/jobs" $_j
   _case h2-hermetic-missing-refuses         "push_graded=false reason=needed-job-missing:h2-hermetic"
+  # SWAS-1008 slice 3a (E57): the two A1 jobs always run on a graded code run and end green by a fast exit when no A1 input changed. A green pair earns the all-shards path; a skip, a red or an absence (a run from before E57) is refused.
+  _reset; _case a1-green-by-fast-exit-earns-all-shards "$OK_ALL"
+  for _a1j in a1-premise a1-premise-full; do
+    # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+    _reset; _j=$(printf '%s' "$J_ALL" | sed "s/$_a1j=success/$_a1j=skipped/"); _mkjobs "$p/jobs" $_j
+    _case "$_a1j-skipped-on-a-code-run"    "push_graded=false reason=needed-job-not-success:$_a1j"
+    # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+    _reset; _j=$(printf '%s' "$J_ALL" | sed "s/$_a1j=success/$_a1j=failure/"); _mkjobs "$p/jobs" $_j
+    _case "$_a1j-red-refuses"              "push_graded=false reason=needed-job-not-success:$_a1j"
+    # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+    _reset; _j=$(printf '%s' "$J_ALL" | sed "s/ $_a1j=success//"); _mkjobs "$p/jobs" $_j
+    _case "$_a1j-missing-refuses"          "push_graded=false reason=needed-job-missing:$_a1j"
+  done
 
   # --- (+/-) 233a: matrix legs, named reasons, and the run selected by workflow FILE (D3) ---
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
@@ -580,9 +621,9 @@ selftest_he() {
     for _hp in "$@"; do _ho="$_ho${_ho:+,}{\"name\":\"$(printf '%s' "${_hp%%=*}" | tr '~' ' ')\",\"conclusion\":\"${_hp#*=}\"}"; done
     printf '{"jobs":[%s]}\n' "$_ho" > "$_hd"
   }
-  HJ_LIGHT='changes=success conformance-core=success conformance-selftests=success cf-doctor=success cf-export=success cf-export-claims=success cf-verify-enforced=success cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=success'
-  HJ_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=skipped'
-  HJ_CHEAP='changes=skipped conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped conformance-docs=skipped docs-links=skipped conformance=success non-vacuity~(1)=skipped'
+  HJ_LIGHT='changes=success conformance-core=success conformance-selftests=success cf-doctor=success cf-export=success cf-export-claims=success cf-verify-enforced=success cf-claims=success cf-green-on-clone=success guard-battery=success guard-delta=success boundary-redteam=success h2-hermetic=success a1-premise=success a1-premise-full=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=success'
+  HJ_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped a1-premise=success a1-premise-full=success conformance-docs=success docs-links=success conformance=success non-vacuity~(1)=skipped'
+  HJ_CHEAP='changes=skipped conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped guard-delta=skipped boundary-redteam=skipped h2-hermetic=skipped a1-premise=skipped a1-premise-full=skipped conformance-docs=skipped docs-links=skipped conformance=success non-vacuity~(1)=skipped'
   _hcase() { # _hcase <name> <runs-json-body> <jobs-listing> <expected-line> [head] [branch] [repo]
     printf '{"workflow_runs":[%s]}\n' "$2" > "$h/runs"
     # shellcheck disable=SC2086   # the HJ_* listings are deliberately word-split into name=conclusion args
@@ -603,6 +644,12 @@ selftest_he() {
   _hcase HE8-fork-head                      "$(_hrun 900 1 completed success "$H" '.github/workflows/ci.yml' '"head_branch":"feat/x","head_repository":{"full_name":"forker/kit"},"event":"pull_request","pull_requests":[]')" "$HJ_LIGHT" "evidence=no reason=no-graded-run"
   _hcase HE10a-matrix-leg-name-accepted     "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed 's/conformance=success/conformance~(light)=success/')" "evidence=ok reason=all-shards run=900"
   _hcase HE10b-cheap-matrix-leg-refused     "$OKR" "$(printf '%s' "$HJ_CHEAP" | sed 's/conformance=success/conformance~(cheap)=success/')" "evidence=no reason=needed-job-not-success:changes run=900"
+  # SWAS-1008 slice 3a (E57): head_evidence mirrors the push-graded refusals for both A1 jobs
+  for _a1j in a1-premise a1-premise-full; do
+    _hcase "HE11-$_a1j-skipped"             "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed "s/$_a1j=success/$_a1j=skipped/")" "evidence=no reason=needed-job-not-success:$_a1j run=900"
+    _hcase "HE11-$_a1j-red"                 "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed "s/$_a1j=success/$_a1j=failure/")" "evidence=no reason=needed-job-not-success:$_a1j run=900"
+    _hcase "HE11-$_a1j-missing"             "$OKR" "$(printf '%s' "$HJ_LIGHT" | sed "s/ $_a1j=success//")" "evidence=no reason=needed-job-missing:$_a1j run=900"
+  done
   # HE9: push_graded and head_evidence cannot diverge. The same run/jobs graded through both predicates must
   # carry the same reason (the existing push-graded fixtures above stay byte-identical on their own).
   T=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; S=1111111111111111111111111111111111111111
@@ -689,6 +736,60 @@ EOF
   return "$est"
 }
 
+# ── selftest_a1 : a1_trigger()'s teeth. A wrong `false` skips the A1 proof on a change that can break it; a wrong `true` costs a few runner minutes.
+selftest_a1() {
+  ast=0; a=$(mktemp -d)
+  _awant() { # _awant <name> <expected "trigger full"> <lines...>
+    _an=$1; _aexp=$2; shift 2
+    printf '%s\n' "$@" > "$a/$_an"
+    _agot=$(a1_trigger "$a/$_an" | tr '\n' ' ' | sed 's/ $//')
+    if [ "$_agot" = "$_aexp" ]; then printf 'PASS: a1 %-34s -> %s\n' "$_an" "$_agot"
+    else printf 'FAIL: a1 %-34s -> %s (want %s)\n' "$_an" "$_agot" "$_aexp"; ast=1; fi
+  }
+  T0='a1_trigger=true a1_full=false'; F0='a1_trigger=false a1_full=false'; TF='a1_trigger=true a1_full=true'
+  _awant script-change              "$T0" 'scripts/incept.sh'
+  _awant export-script-change       "$T0" 'scripts/adopter-export.sh'
+  _awant template-change            "$T0" 'templates/MODEL-MAP-TEMPLATE.conf'
+  _awant profile-scaffold-change    "$T0" 'profiles/typescript-node/scaffold/package.json'
+  _awant conformance-change         "$T0" 'conformance/selftest-inputs.tsv'
+  _awant claude-dir-change          "$T0" '.claude/settings.json'
+  _awant kit-conf-change            "$T0" '.kit/model-map.conf'
+  _awant adapter-change             "$T0" 'adapters/codex/adapter.json'
+  _awant hook-change                "$T0" 'hooks/pre-push'
+  _awant gitattributes-change       "$T0" '.gitattributes'
+  _awant brownfield-guide-change    "$T0" 'docs/adoption/brownfield.md'
+  _awant one-trigger-among-md       "$T0" 'README.md' 'scripts/preflight.sh' 'docs/x.md'
+  _awant version-bump-runs-matrix   "$TF" 'VERSION' 'CHANGELOG.md'
+  _awant version-among-others       "$TF" 'README.md' 'scripts/x.sh' 'VERSION'
+  # --- false must be EARNED: every path affirmatively outside the list ---
+  _awant markdown-only              "$F0" 'README.md' 'docs/architecture/x.md'
+  _awant other-docs-md              "$F0" 'docs/adoption/other.md'
+  _awant workflow-only              "$F0" '.github/workflows/ci.yml'
+  _awant version-lookalike          "$F0" 'VERSION.md' 'docs/VERSION'
+  _awant scripts-lookalike          "$F0" 'myscripts/a.sh' 'scripts'
+  # --- fail-safe: the unknown cases run the jobs ---
+  : > "$a/empty"
+  _agot=$(a1_trigger "$a/empty" | tr '\n' ' ' | sed 's/ $//')
+  if [ "$_agot" = "$TF" ]; then echo "PASS: a1 EMPTY listing                   -> $_agot (unknown => run)"
+  else echo "FAIL: a1 an EMPTY listing gave $_agot"; ast=1; fi
+  _agot=$(a1_trigger "$a/does-not-exist" | tr '\n' ' ' | sed 's/ $//')
+  if [ "$_agot" = "$TF" ]; then echo "PASS: a1 UNREADABLE listing              -> $_agot (unknown => run)"
+  else echo "FAIL: a1 an UNREADABLE listing gave $_agot"; ast=1; fi
+  _agot=$(a1_trigger "" | tr '\n' ' ' | sed 's/ $//')
+  if [ "$_agot" = "$TF" ]; then echo "PASS: a1 NO argument                     -> $_agot (unknown => run)"
+  else echo "FAIL: a1 a missing argument gave $_agot"; ast=1; fi
+  # --- THE LOAD-BEARING NEGATIVE: a change to the incept script can never read `false`. The sweep mutates this assertion.
+  printf '%s\n' 'scripts/incept.sh' > "$a/code"
+  if [ "$(a1_trigger "$a/code" | sed -n 1p)" = "a1_trigger=false" ]; then
+    echo "FAIL: a change to scripts/incept.sh was classified as not triggering the A1 proof — this silently skips the premise check"; ast=1
+  else
+    echo "PASS: a change to scripts/incept.sh can never skip the A1 proof (the one direction that must never happen)"
+  fi
+  rm -rf "$a"
+  [ "$ast" = 0 ] && echo "ci-classify-changes --a1-trigger selftest: OK" || { echo "ci-classify-changes --a1-trigger selftest: FAIL" >&2; return 1; }
+  return "$ast"
+}
+
 # DISPATCH. The BARE `<listing-file>` invocation prints EXACTLY `docs_only=true|false` — a
 # single-line contract consumers depend on (conformance/review-lane.sh:211 reads it via `tail -1`).
 # The third predicate is reached ONLY through its own flag, never bolted onto the bare output, so
@@ -698,7 +799,8 @@ case "${1:-}" in
   --selftest)            selftest; exit $? ;;
   --push-graded)         shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"; exit 0 ;;
   --export-ignored-only) shift; export_ignored_only "${1:-}"; exit 0 ;;
+  --a1-trigger)          shift; a1_trigger "${1:-}"; exit 0 ;;
   --head-evidence)       shift; head_evidence "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"; exit 0 ;;
-  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --head-evidence <runs.json> <jobs.json> <head-sha> <head-branch> <repo> [workflow-path] | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> [workflow-path] | --selftest" >&2; exit 2 ;;
+  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --a1-trigger <listing-file> | --head-evidence <runs.json> <jobs.json> <head-sha> <head-branch> <repo> [workflow-path] | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> [workflow-path] | --selftest" >&2; exit 2 ;;
   *)                     classify "$1"; exit 0 ;;
 esac

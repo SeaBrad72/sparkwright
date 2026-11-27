@@ -164,6 +164,39 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+      # ★ THE ADOPTION-PR TEST (SWAS-1010) — A NAMED EXCEPTION TO "THE POLICY LIVES IN THE SCRIPT". On an
+      # adoption PR the base commit predates the kit, so conformance/backlog-presence.sh does not exist
+      # there and the gate below could only report "cannot open" (a red no change on the branch can fix).
+      # This step reads the BASE commit's tree with `git ls-tree --full-tree`, prints `adoption=1` only when
+      # the PR targets the default branch AND the base commit holds NONE of adopter-gates.yml,
+      # conformance/verify.sh, conformance/backlog-presence.sh or .kit/, and prints `adoption=0` on any error,
+      # output or mismatch (an error can never produce a skip). The body is byte-identical in the four jobs
+      # that carry it (conformance/adopter-gates-parity.sh P1) and is RUN against fixtures by that check's
+      # --selftest. THE CEILING, said plainly: this YAML comes from the PR, so a PR that edits it can make
+      # any job here exit 0 — true before this step, and a control-plane diff under the review requirement.
+      # No `working-directory:` may be added to this file (parity leg P6).
+      - name: Adoption-PR test (the base commit carries no kit)
+        id: adopt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ADOPT_WF: adopter-gates.yml
+          ADOPT_GATE: backlog-presence.sh
+        run: |
+          # ADOPTION-BASE-BEGIN
+          adoption=0
+          if [ -n "$BASE_SHA" ] && [ -n "$BASE_REF" ] && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            adoption=1
+            if ! git rev-parse --verify --quiet "$BASE_SHA^{commit}" >/dev/null 2>&1; then adoption=0; fi
+            for p in ".github/workflows/$ADOPT_WF" conformance/verify.sh "conformance/$ADOPT_GATE" .kit; do
+              if ! out=$(git ls-tree --full-tree "$BASE_SHA" -- "$p" 2>/dev/null); then adoption=0; fi
+              if [ -n "$out" ]; then adoption=0; fi
+            done
+          fi
+          case "$BASE_SHA" in ''|*[!0-9a-f]*) adoption=0 ;; esac
+          echo "adoption=$adoption" | tee -a "$GITHUB_OUTPUT"
+          # ADOPTION-BASE-END
       - name: Compute changed files (from the PR files API — never from the PR's own tree)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -261,7 +294,15 @@ jobs:
           # in the PR-opening commit. Untrusted (attacker-influenceable) — env-bound, passed by
           # ARGUMENT, never interpolated into the shell line.
           HEAD_REF: ${{ github.head_ref }}
+          # The adoption-PR test's answer (step `adopt`), consumed ONLY as `[ "$ADOPTION" = 1 ]`.
+          ADOPTION: ${{ steps.adopt.outputs.adoption }}
         run: |
+          if [ "$ADOPTION" = 1 ]; then
+            _anote='backlog-presence: SKIPPED (adoption PR) — the base commit carries no kit (no adopter-gates.yml, conformance/verify.sh, conformance/backlog-presence.sh or .kit/), so there is no trusted gate to judge from. This PR is ratified by its one hand merge: docs/adoption/brownfield.md#your-first-pr'
+            printf '%s\n' "$_anote" | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '::notice title=backlog-presence: SKIPPED (adoption PR)::%s\n' "$_anote"
+            exit 0
+          fi
           set +e
           # Every real PR changes at least one file — an EMPTY listing means the gate could not SEE
           # the diff, not "nothing changed". Escalate to a gate error rather than reading it as N/A.
@@ -488,6 +529,35 @@ jobs:
           set +f
           # CRED-DROP-END
           echo "ceremony-binding: GO ledger fetched; checkout credential removed."
+      # ★ THE ADOPTION-PR TEST (SWAS-1010) — see the backlog-presence job for the full note: a NAMED
+      # EXCEPTION to "the policy lives in the script", the body byte-identical in four jobs (parity leg P1),
+      # reading only the BASE commit's tree. Here the gate STILL RUNS on an adoption PR (from the PR head,
+      # which carries the kit) and prints its verdict; only the job's colour changes, and only through the
+      # arms in the render and Verdict steps below. The ceiling is unchanged: the PR's own YAML can make this
+      # job exit 0. The step sits AFTER the credential drop above (the kit's credential-order locks want the
+      # first conformance/ path in this job to follow it); it runs only git, before any PR-controlled code.
+      - name: Adoption-PR test (the base commit carries no kit)
+        id: adopt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ADOPT_WF: adopter-gates.yml
+          ADOPT_GATE: ceremony-binding.sh
+        run: |
+          # ADOPTION-BASE-BEGIN
+          adoption=0
+          if [ -n "$BASE_SHA" ] && [ -n "$BASE_REF" ] && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            adoption=1
+            if ! git rev-parse --verify --quiet "$BASE_SHA^{commit}" >/dev/null 2>&1; then adoption=0; fi
+            for p in ".github/workflows/$ADOPT_WF" conformance/verify.sh "conformance/$ADOPT_GATE" .kit; do
+              if ! out=$(git ls-tree --full-tree "$BASE_SHA" -- "$p" 2>/dev/null); then adoption=0; fi
+              if [ -n "$out" ]; then adoption=0; fi
+            done
+          fi
+          case "$BASE_SHA" in ''|*[!0-9a-f]*) adoption=0 ;; esac
+          echo "adoption=$adoption" | tee -a "$GITHUB_OUTPUT"
+          # ADOPTION-BASE-END
       - name: DESIGN GATE binding (Sensitive/Control-plane change requires a recorded, scoped design GO)
         id: gate
         env:
@@ -544,7 +614,12 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.head_ref }}
           GATE_RC: ${{ steps.gate.outputs.rc }}
+          ADOPTION: ${{ steps.adopt.outputs.adoption }}
         run: |
+          if [ "$ADOPTION" = 1 ]; then
+            printf '%s\n' 'ceremony-binding: for information — not enforced on this adoption PR. The gate ran and its verdict is in the gate step log above; nothing is rendered here.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           case "$GATE_RC" in
             1) printf '%s\n' 'ceremony-binding: **WAITING** — no design-gate GO record scoped to this PR yet. This check will be RED and that is NOT a build failure: a human has not approved yet.' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
             2) printf '%s\n' 'ceremony-binding: **ANOMALY** — the gate could not evaluate, or the scoped record is defective (a real error; see the gate step log above).' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
@@ -561,6 +636,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GATE_RC: ${{ steps.gate.outputs.rc }}
+          ADOPTION: ${{ steps.adopt.outputs.adoption }}
         run: |
           # VALIDATE THE ONE VALUE THAT CROSSES A STEP BOUNDARY. An empty rc means the gate step died
           # before emitting one — a gate that could not evaluate, which is rc 2, not a silent pass.
@@ -568,6 +644,12 @@ jobs:
             0|1|2) rc=$GATE_RC ;;
             *) echo "ceremony-binding: the gate produced no usable rc ('$GATE_RC'); reporting 2."; rc=2 ;;
           esac
+          if [ "$ADOPTION" = 1 ]; then
+            _anote='ceremony-binding: PASS (Inception exemption) — the base commit carries no kit, so this is the adoption PR; §1 of the entry contract binds from the first feature branch onward (ENGINEERING-PRINCIPLES.md, Inception). docs/adoption/brownfield.md#your-first-pr'
+            { printf 'ceremony-binding: for information — not enforced on this adoption PR: the gate rc was %s (0 pass or N/A, 1 waiting for a design GO, 2 anomaly).\n' "$rc"; printf '%s\n' "$_anote"; } | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '::notice title=ceremony-binding: PASS (Inception exemption)::%s\n' "$_anote"
+            exit 0
+          fi
           # ceremony-binding IS a declared --for-gate token (unlike backlog-presence/loop-state, it
           # already ships in agent-boundary.sh's CONCLUSION_GATES) — so this genuinely can skew on an
           # OLDER checkout that predates --for-gate itself, which is why the guard below is a real
@@ -706,6 +788,36 @@ jobs:
               if (bad) exit 1
               print "trunk-tag-tripwire: OK - no tag shadows the trunk or a branch (" (remote == 1 ? "local and remote" : "local only") ")."
             }' "$L"
+      # ★ THE ADOPTION-PR TEST (SWAS-1010) — see the backlog-presence job for the full note: a NAMED
+      # EXCEPTION to "the policy lives in the script", the body byte-identical in four jobs (parity leg P1),
+      # reading only the BASE commit's tree. The Inception exemption of the entry contract ("§1 binds from
+      # the first feature branch onward") is read here from an objective fact instead of a sentence. The
+      # gate STILL RUNS on an adoption PR and prints its verdict; only the Verdict step's arm changes the
+      # colour. The step sits AFTER the trunk-tag tripwire above (the kit's order locks want the first
+      # conformance/ path in this job to follow it); it runs only git, before any PR-controlled code. The
+      # ceiling is unchanged: the PR's own YAML (and its LOOP_STATE_MODE dial) can already make this job exit 0.
+      - name: Adoption-PR test (the base commit carries no kit)
+        id: adopt
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ADOPT_WF: adopter-gates.yml
+          ADOPT_GATE: loop-state.sh
+        run: |
+          # ADOPTION-BASE-BEGIN
+          adoption=0
+          if [ -n "$BASE_SHA" ] && [ -n "$BASE_REF" ] && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+            adoption=1
+            if ! git rev-parse --verify --quiet "$BASE_SHA^{commit}" >/dev/null 2>&1; then adoption=0; fi
+            for p in ".github/workflows/$ADOPT_WF" conformance/verify.sh "conformance/$ADOPT_GATE" .kit; do
+              if ! out=$(git ls-tree --full-tree "$BASE_SHA" -- "$p" 2>/dev/null); then adoption=0; fi
+              if [ -n "$out" ]; then adoption=0; fi
+            done
+          fi
+          case "$BASE_SHA" in ''|*[!0-9a-f]*) adoption=0 ;; esac
+          echo "adoption=$adoption" | tee -a "$GITHUB_OUTPUT"
+          # ADOPTION-BASE-END
       # NO TOKEN AND NO API CALL ON AN `md` ADOPTER. This step runs ONLY when the base branch
       # declares a hosted tracker (.kit/tracker.conf present in the base checkout above); on `md`
       # the file is absent, the `if:` short-circuits, and the step (its token included) never runs.
@@ -752,6 +864,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GATE_RC: ${{ steps.gate.outputs.rc }}
+          ADOPTION: ${{ steps.adopt.outputs.adoption }}
         run: |
           case "$GATE_RC" in
             0|1|2) rc=$GATE_RC ;;
@@ -762,6 +875,12 @@ jobs:
             1) reason="this commit carries no Entry Declaration (or an invalid one)." ;;
             *) reason="the gate could not evaluate this commit (see the gate step log above)." ;;
           esac
+          if [ "$ADOPTION" = 1 ]; then
+            _anote='loop-state: PASS (Inception exemption) — the base commit carries no kit, so this is the adoption PR; §1 of the entry contract binds from the first feature branch onward (ENGINEERING-PRINCIPLES.md, Inception). The gate verdict is printed for information. docs/adoption/brownfield.md#your-first-pr'
+            { printf 'loop-state: for information — not enforced on this adoption PR: %s\n' "$reason"; printf '%s\n' "$_anote"; } | tee -a "$GITHUB_STEP_SUMMARY"
+            printf '::notice title=loop-state: PASS (Inception exemption)::%s\n' "$_anote"
+            exit 0
+          fi
           mode="${LOOP_STATE_MODE:-observe}"
           case "$mode" in
             enforce)

@@ -510,6 +510,7 @@ _redact_lines() {
 # _scan_tree — runs with the CWD at the tree root (see sensitive_hits); reads the parsed list at $_idl.
 _scan_tree() {
   _scan_tab=$(printf '\t')
+  # MUT-1031A-PUB: the selftest's M-PUB mutant deletes the `-ipath './changelog.d/*'` arm of the find below.
   # (1) withheld-document PATHS. find's stderr (unreadable dir, permission denied) is captured by the
   #     caller and turned into a scan failure — an unseeable subtree must not read as clean.
   find . \
@@ -522,6 +523,7 @@ _scan_tree() {
        -o -iname 'meta-control-log.md' \
        -o -iname '.meta-control-last' \
        -o -ipath './docs/architecture/*' \
+       -o -ipath './changelog.d/*' \
        -o -ipath './postmortems/*' \
        -o \( -ipath './docs/*' \
              -a \( -iname '*harvest*' -o -iname '*field-report*' -o -iname '*postmortem*' \) \) \
@@ -693,6 +695,8 @@ selftest() {
   : > "$_t/docs/architecture/a-design.md"
   mkdir -p "$_t/postmortems"
   : > "$_t/postmortems/x.md"                        # the kit's own root postmortems (PUBLISH-WITHHOLD-ROOT-POSTMORTEMS)
+  mkdir -p "$_t/changelog.d"
+  : > "$_t/changelog.d/SWAS-1031.md"                # PUB-WH (SWAS-1031): a changelog fragment is kit development history
   : > "$_t/docs/2026-07-11-a-harvest.md"
   : > "$_t/docs/2026-07-11-a-field-report.md"
   : > "$_t/docs/2026-07-11-a-postmortem.md"
@@ -729,6 +733,7 @@ selftest() {
   _hit  .meta-control-last                  "meta-control state"
   _hit  docs/architecture/a-design.md       "internal architecture doc"
   _hit  postmortems/x.md                    "the kit's own root postmortems never ship (PUBLISH-WITHHOLD-ROOT-POSTMORTEMS)"
+  _hit  changelog.d/SWAS-1031.md            "PUB-WH: a changelog.d fragment never ships (dev changelog, by path)"
   _hit  docs/2026-07-11-a-harvest.md        "harvest (candid synthesis)"
   _hit  docs/2026-07-11-a-field-report.md   "field report"
   _hit  docs/2026-07-11-a-postmortem.md     "postmortem"
@@ -1385,6 +1390,20 @@ EOF
     1:*"[malformed-block]"*) echo "  FAIL PNM   PNM4: the mutant still reports [malformed-block], so S-1 proves nothing"; _fail=$((_fail+1)) ;;
     1:*"CHANGELOG.md (between"*) echo "  ok   PNM   PNM4  without the both-markers clause S-1 goes red (the clause is load-bearing)" ;;
     *) echo "  FAIL PNM   PNM4: the mutant run did not red on the planted identifier (rc $_grc), so it proves nothing"; _fail=$((_fail+1)) ;;
+  esac
+  # M-PUB (MUT-1031A-PUB): the changelog.d/ path rule deleted from _scan_tree (the function text is cut out and sourced in a
+  # subshell, the PNM2 idiom) must miss a fragment that the real function names, so PUB-WH is load-bearing. The rule sits inside a
+  # find continuation, where a trailing comment cannot go, so it is deleted by its text and the tag stands on the comment above the find.
+  mkdir -p "$_t/pw-tree/changelog.d"; : > "$_t/pw-tree/changelog.d/SWAS-1031.md"
+  sed -n '/^_scan_tree() {/,/^}/p' "$ROOT/scripts/publish-public.sh" > "$_t/pw-fn.orig"
+  grep -v -F -e "-ipath './changelog.d/*'" "$_t/pw-fn.orig" > "$_t/pw-fn.mut"
+  if cmp -s "$_t/pw-fn.orig" "$_t/pw-fn.mut"; then echo "  FAIL PNM   M-PUB: the mutant is identical to the original"; _fail=$((_fail+1)); fi
+  _pw_real=$( sensitive_hits "$_t/pw-tree" 2>/dev/null ) || true
+  _pw_mut=$( . "$_t/pw-fn.mut"; sensitive_hits "$_t/pw-tree" 2>/dev/null ) || true
+  case "$_pw_real:$_pw_mut" in
+    *changelog.d/SWAS-1031.md*:*changelog.d/SWAS-1031.md*) echo "  FAIL PNM   M-PUB: the mutant still names the fragment, so PUB-WH proves nothing"; _fail=$((_fail+1)) ;;
+    *changelog.d/SWAS-1031.md*:*) echo "  ok   PNM   M-PUB  without the changelog.d/ path rule the fragment is missed (PUB-WH is load-bearing)" ;;
+    *) echo "  FAIL PNM   M-PUB: the real scan did not name the fragment, so the pair proves nothing"; _fail=$((_fail+1)) ;;
   esac
 
   # PNST: the selftest fails CLOSED. A scratch copy whose selftest aborts before its first section (the line

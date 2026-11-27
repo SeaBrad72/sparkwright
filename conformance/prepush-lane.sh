@@ -2738,7 +2738,7 @@ cache_init() {
   CACHE_KEY_FULL=$(cache_cksum < "$WORK/cache.lt")
   CACHE_KEY_BK=$(LC_ALL=C awk -F'\t' '{ p = $2
     if (p == "BACKLOG.md" || p == "CHANGELOG.md" || index(p, "docs/reviews/") == 1 ||
-        index(p, "docs/plans/") == 1 || index(p, "docs/architecture/") == 1) next
+        index(p, "docs/plans/") == 1 || index(p, "docs/architecture/") == 1 || index(p, "changelog.d/") == 1) next   # MUT-1031A-PL
     print }' "$WORK/cache.lt" | cache_cksum)
   if [ -z "$CACHE_KEY_FULL" ] || [ -z "$CACHE_KEY_BK" ]; then cache_off "no usable tree key"; return 0; fi
   _rc0=$(git rev-list --max-parents=0 HEAD 2>/dev/null | sed -n 1p)
@@ -5342,6 +5342,14 @@ selftest_cache_heavy_bookkeeping() {
   sfx "cache/heavy: the verdict counts the two cached arms" "PARITY-CORE: OK (2 arm(s) from cache, not executed this run)" "$(lastline)"
   printf 'x\n' >> "$d/conformance/beta.sh"; commit_fx
   _hr; sfx "cache/heavy: a code change re-runs the heavy arms" 4 "$(_hn)"
+  # PL-BOOK (SWAS-1031): a fragment-only commit is bookkeeping too, so it does NOT re-run the heavy arms.
+  mkdir -p "$d/changelog.d"; printf '### Added\n- a fragment\n' > "$d/changelog.d/SWAS-1031.md"; commit_fx
+  _hr; sfx "cache/heavy: PL-BOOK a changelog.d fragment-only commit does NOT re-run the heavy arms" 4 "$(_hn)"
+  want "cache/heavy: PL-BOOK claims SKIPs, saying the bookkeeping paths were not compared" "^  SKIP  heavy  *claims-registry .*(bookkeeping paths not compared; CI grades them)$"
+  # M-PL (MUT-1031A-PL): with the changelog.d/ prefix dropped from the bookkeeping key, the same fragment-only commit re-runs the heavy arms (hcount moves off 4: the cell is RED).
+  trmut plbook -e '/# MUT-1031A-PL$/s/ || index(p, "changelog.d\/") == 1//'
+  [ -z "$TRM" ] || { DVOUT=$( cd "$d" && PATH="$_pd:$PATH" HOME=$_h PREPUSH_NO_CACHE=0 sh "$TRM" --base "$_b0" --warranted 2>&1 ) || :
+    sfx "cache/heavy: M-PL mutant: with the changelog.d/ prefix dropped the fragment-only commit re-runs the heavy arms (the PL-BOOK cell is RED)" moved "$([ "$(_hn)" = 4 ] && echo same || echo moved)"; }
   rm -rf "$_pd"
 }
 

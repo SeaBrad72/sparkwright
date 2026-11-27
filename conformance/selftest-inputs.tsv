@@ -1,0 +1,71 @@
+# selftest-inputs.tsv — the kit files each --kitselftest row of conformance/verify.sh reads (SWAS-1008).
+# Kit-authored and shipped. Lines are `<row><TAB><path or glob>`; a glob's `*` is any run of characters, `/` included, and a path
+# holds only letters, digits and `. _ / * + -`. Three more forms: `@all<TAB><path>` (an edit to that file runs every row);
+# `<row><TAB>!<path>` (one exact path left out of that row's inputs, agent-autonomy's alone); a `#` line is a comment.
+# The exporter writes conformance/kit-release.sha256 from these lines: the sha256 of every shipped file one of them matches.
+# Nothing skips a row because of this file yet: that needs an `@hermetic` line, which a later PR adds per row after its plant cell.
+# KEPT CURRENT by the census in `verify.sh --selftest`: every row here is a registry row; every --kitselftest row has lines or is on
+# that census's ledger (with its reason); a row's own script is one of its inputs; every glob matches a file the default export ships;
+# agent-autonomy's lines equal aa_input_list on the tracked files; no line reaches profiles/ (the manifest is profile-independent);
+# scripts/ lines are exact paths (incept adds files there). It cannot see a row that starts reading a file listed nowhere (SWAS-1014).
+#
+# Edits to these files run every row, so a PR cannot drop a line here, or edit the files that decide the skip, unseen.
+@all	conformance/verify.sh
+@all	conformance/selftest-inputs.tsv
+@all	scripts/fail-annotate.sh
+@all	conformance/union-lib.sh
+@all	conformance/backlog-lib.sh
+@all	conformance/obligation-lib.sh
+#
+# agent-autonomy: exactly aa_input_list (conformance/agent-autonomy.sh): every file under .claude/, every .kit/*.conf but six that
+# are export-ignored (incept stamps two of them, so they must not read as inputs), every adapters/*/adapter.json, and eight scripts.
+agent-autonomy	.claude/*
+agent-autonomy	.kit/*.conf
+agent-autonomy	!.kit/dials.conf
+agent-autonomy	!.kit/ratification-seats.conf
+agent-autonomy	!.kit/tracker.conf
+agent-autonomy	!.kit/model-map.conf
+agent-autonomy	!.kit/boundary-optout.conf
+agent-autonomy	!.kit/ci-pre-approval.conf
+agent-autonomy	adapters/*/adapter.json
+agent-autonomy	scripts/kit-guard
+agent-autonomy	conformance/agent-autonomy.sh
+agent-autonomy	conformance/promotion-readiness.sh
+agent-autonomy	conformance/agent-boundary.sh
+agent-autonomy	conformance/branch-protection.sh
+agent-autonomy	conformance/union-lib.sh
+agent-autonomy	conformance/backlog-lib.sh
+agent-autonomy	conformance/verify.sh
+#
+# The rows whose selftest the inventory (docs/reviews/2026-11-23-selftest-hermetic-inventory-1008.md) read in full and found to read
+# only these kit files and its own temp fixtures. Every shared library a row sources is an @all line above.
+harness-adapter-selftest	conformance/harness-adapter.sh
+dep-scan-visibility-selftest	conformance/dep-scan-visibility.sh
+license-check(selftest)	scripts/license-check.sh
+license-check(selftest)	scripts/fixtures/sbom/sample-cyclonedx.json
+ci-classify	conformance/ci-classify-changes.sh
+adopter-export-claims-selftest	conformance/adopter-export-claims.sh
+a11y-obligation-selftest	conformance/a11y-obligation.sh
+a11y-obligation-selftest	conformance/obligation-lib.sh
+a11y-obligation-selftest	templates/A11Y-SIGNOFF-TEMPLATE.md
+non-vacuity	conformance/non-vacuity.sh
+non-vacuity	conformance/*.sh
+non-vacuity	conformance/nv-coverage.tsv
+release-tag-selftest	scripts/release-tag.sh
+release-tag-selftest	scripts/gh-tls.sh
+release-tag-selftest	conformance/ci-gates.sh
+release-tag-selftest	conformance/version-tag-coherent.sh
+release-tag-selftest	conformance/meta-control-fresh.sh
+runaway-killswitch	conformance/runaway-killswitch-wired.sh
+runaway-killswitch	scripts/runaway-guard.sh
+runaway-killswitch	scripts/orchestrator-run.sh
+runaway-killswitch	.kit/budget.conf
+promotion-actuate-run	conformance/promotion-actuate-wired.sh
+promotion-actuate-run	scripts/promotion-verify.sh
+promotion-actuate-run	.claude/hooks/guard-core.sh
+go-toolchain-coherent-selftest	conformance/go-toolchain-coherent.sh
+script-disclosure	conformance/script-disclosure.sh
+script-disclosure	conformance/fixtures/script-disclosure/*
+shell-parse-lint	conformance/shell-parse-lint.sh
+owner-step-markers-selftest	conformance/owner-step-markers.sh
+security-channel-live-selftest	conformance/security-channel-live.sh

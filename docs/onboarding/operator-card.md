@@ -19,7 +19,8 @@ Only a person does these. Each is one line.
   may be low]. `--quick`: status lines in 3 s [measured 2026-11-15, v3.247.0, n = 1], plus up to
   about 20 s of tracker reads [timeout limit]; skips conformance. See `docs/operations/doctor.md`.
 - `/hooks` and `/status`, once per session: the guard hook is listed, Project settings is on.
-- The egress merge that preflight prints, into `~/.claude/settings.json`, once per machine.
+- The egress merge that preflight prints, into `~/.claude/settings.json` (or
+  `$CLAUDE_CONFIG_DIR/settings.json` when that is set), once per machine.
 - `gh auth refresh -h github.com -s workflow`, so the agent may push workflow files.
 - Admin, real terminal: `sh scripts/branch-protection-apply.sh --replace` (team: add `--team`).
 - Jira: make the two accounts and the token, then set the `KIT_TRACKER_USER` and
@@ -34,36 +35,31 @@ Each entry is the exact text the kit prints, the file it comes from, and the one
 ### `escape card R<n> <slug>`
 From: .claude/hooks/guard-core.sh
 Do: the agent takes that row's one retry, once. You do nothing unless it stops.
-
 ### `Next: stop and escalate.`
 From: .claude/hooks/guard-core.sh
 Do: the agent stops and shows you the command. You decide. Do not set the override because it asks.
-
 ### `escape card R1 quoted-alternation`
 From: .claude/hooks/guard-core.sh
 Do: the agent retries once with `grep -e A -e B <path>`, or the Grep tool.
-
 ### `escape card R30 cp-write`
 From: .claude/hooks/guard-core.sh
 Do: the agent makes kit-file changes in a dev clone, then opens a pull request.
-
 ### `Next: push a feature branch and open a PR instead`
 From: .claude/hooks/guard-core.sh
 Do: expected after the first push. Every later change goes through a pull request.
-
 ### `agent-guard: the guard hook did not return a decision`
 From: conformance/guard-wired.sh
 Do: relaunch the session in the project root. (The hook command is in .claude/settings.json.)
-
 ### `FAIL egress: NOT ENFORCED and UNDECLARED [static]`
 From: scripts/preflight.sh
 Do: do the one-time egress merge that preflight prints under that line.
-
 ### `FAIL boundary: OFF and UNDECLARED`
 From: scripts/preflight.sh
 Do: you (not the agent) turn it on, or declare the opt-out with part=all in
 .kit/boundary-optout.conf.
-
+### `info gh: inside the sandbox a bare gh call fails TLS`
+From: scripts/preflight.sh
+Do: the agent starts the gh command with SSL_CERT_FILE=/private/etc/ssl/cert.pem, alone.
 ### `Overall: FAIL  (`
 From: scripts/doctor.sh
 Do: the parenthesis says why: it names the failed part, or says to run doctor without --quick.

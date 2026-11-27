@@ -20,20 +20,20 @@
 # Guardrails: Run on a fresh clone; interactive by default (--noninteractive for CI); the DB-region strip refuses an open-ended range (both markers required) so it can never wipe gates to EOF.
 set -eu
 
+# --- The stamping library (SWAS-1009): esc, sedi, strip_db_region, strip_template_banner, the pipeline origin
+#     stamp, the CODEOWNERS transform, the REQUIRED-CHECKS fill, the tracker conf and the board-governance row.
+#     Sourced FIRST, from incept's OWN resolved directory and never the cwd: two seams below run with a cwd that
+#     is not the export root (`__db-curate` on a fixture cwd, `__install-pipeline` on paths outside the tree). ---
+_SL_DIR=$(CDPATH='' cd -P "$(dirname "$0")" && pwd -P)
+[ -f "$_SL_DIR/stamp-lib.sh" ] || { echo "incept: a broken kit distribution: $_SL_DIR/stamp-lib.sh is missing" >&2; exit 1; }
+. "$_SL_DIR/stamp-lib.sh"
+
 # --- DB-archetype curation (KW3) — defined FIRST so the internal `__db-curate` seam needs none of the
 #     inception preamble (adapters registry, preflight, safety guards). The ts-node profile ships the
 #     `kit:db-backed` CI region (Postgres service + DATABASE_URL) + a scaffold/.db-backed marker ACTIVE
 #     because its default reference archetype is DB-backed. A NON-DB archetype (--no-db) strips both so
-#     first-run-green stays honest — no idle database service, and the detector marks db-postgres N/A. ---
-strip_db_region() {  # FILE — delete the `# >>> kit:db-backed` … `# <<< kit:db-backed` region in-place; no-op if absent
-  [ -f "$1" ] || return 0
-  # GUARD (Security-Medium): a `sed '/start/,/end/d'` range with NO closing match deletes to EOF — which
-  # would silently wipe EVERY gate below the region (sast/secret/agent-trace/provenance), leaving a
-  # gateless-but-green CI. Only strip when BOTH markers are present; otherwise no-op, loudly.
-  grep -q '# >>> kit:db-backed' "$1" || return 0   # no opening marker — nothing to strip
-  grep -q '# <<< kit:db-backed' "$1" || { echo "warn: kit:db-backed closing marker missing in $1 — leaving CI untouched (refusing an open-ended range that would wipe gates to EOF)" >&2; return 0; }
-  sed '/# >>> kit:db-backed/,/# <<< kit:db-backed/d' "$1" > "$1.kwtmp" && mv "$1.kwtmp" "$1"
-}
+#     first-run-green stays honest — no idle database service, and the detector marks db-postgres N/A.
+#     (strip_db_region itself lives in scripts/stamp-lib.sh.) ---
 curate_db_backed() {  # MODE(1|0) — 0=non-DB: strip the CI region(s) + marker + DB env lines + the DR drill; 1=DB-backed: keep
   [ "${1:-1}" = 0 ] || return 0
   strip_db_region .github/workflows/ci.yml
@@ -229,42 +229,14 @@ cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
   fi
 }
 
-# CP7R5-GATE-AUTHORITY §4 — the RATIFIED provenance mechanism (option P2): stamp an ORIGIN MARKER into
-# the CI pipeline incept INSTALLS. It lets conformance/verify-enforced-wired.sh tell DRIFT (the kit
-# installed this pipeline and someone stripped a required step) apart from an UNMET DOCUMENTED MERGE
-# OBLIGATION (a brownfield adopter owns their pipeline and merges the gate-ids by hand, exactly as
-# docs/adoption/brownfield.md instructs). Nothing in an adopter tree recorded which of the two it was:
-# .kit-manifest lists the EXPORT's files (workflows are export-ignored), never an installed path.
-# Provenance written by the ACT of installation travels IN the artifact it describes, so it cannot go
-# stale relative to that artifact and survives a rename.
-#
-# TWO PROPERTIES ARE LOAD-BEARING — both locked by conformance/pipeline-origin.sh:
-#  1. NON-COLLISION. The marker must match NEITHER kit-own ERE passed below ('Kit-own CI|Sparkwright',
-#     'Sparkwright'). If it did, installing it would silently flip a LATER cp_kit_replace from PRESERVE
-#     to OVERWRITE and clobber an adopter's edited CI — a data-safety regression by the back door.
-#  2. ONLY STAMP A FILE WE WROTE. cp_kit_replace returns 0 whether it copied or preserved, so a blind
-#     post-call prepend would stamp a brownfield-PRESERVED adopter pipeline as kit-emitted — precisely
-#     the false-FAIL class this design exists to remove. Mirror its write condition up front instead,
-#     the same way install_codeowners does ("only transform a file WE wrote").
-# The marker goes at the TOP of the file, not inside it: curate_db_backed -> strip_db_region runs AFTER
-# the §5 wiring block and deletes the bounded `# >>> kit:db-backed` … `# <<< kit:db-backed` region, so a
-# marker placed inside that region would vanish on a --no-db incept.
-# HONEST CEILING: an adopter can delete this line. Under §4 that is an accepted self-assertion of
-# ownership — it downgrades enforcement to a DISCLOSED N/A, never to a silent pass.
-PIPELINE_ORIGIN_MARKER='# kit-pipeline-origin: emitted'
+# CP7R5-GATE-AUTHORITY §4, the pipeline ORIGIN MARKER: the full rationale, the two load-bearing properties (non-collision with the kit-own EREs passed below; only stamp a file WE wrote, so this function mirrors cp_kit_replace's write condition) and the honest ceiling are in scripts/stamp-lib.sh, beside PIPELINE_ORIGIN_MARKER and pipeline_origin_stamp, which conformance/pipeline-origin.sh reads there.
 install_pipeline() {  # <src> <dst> <kit-own-marker-ERE> — brownfield-safe copy + origin stamp
   _ip_write=0
   { [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; } && _ip_write=1
   cp_kit_replace "$1" "$2" "$3"
   [ "$_ip_write" -eq 1 ] || return 0     # brownfield-preserved — their file, not ours to label
   [ -f "$2" ] || return 0
-  if ! grep -qF "$PIPELINE_ORIGIN_MARKER" "$2" 2>/dev/null; then   # idempotent: never double-stamp
-    # Unpredictable temp name beside the target (same idiom as install_codeowners) — avoids following
-    # a pre-placed symlink at a predictable path. A failed mktemp STOPS the write: there is no
-    # fallback name, because a guessable name brings that symlink back (SWAS-754).
-    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || { printf '%s\n' "incept: could not create a temporary file in $(dirname "$2") (mktemp failed), so incept stopped part-way and this directory is half-incepted; check the disk has free space and the directory is writable, then re-export the kit into a fresh directory and run 'sh scripts/incept.sh' there (in an existing repository, restore it from git instead and rerun)" >&2; exit 1; }
-    { printf '%s\n' "$PIPELINE_ORIGIN_MARKER"; cat "$2"; } > "$_ip_tmp" && mv "$_ip_tmp" "$2"
-  fi
+  pipeline_origin_stamp "$2"   # scripts/stamp-lib.sh: idempotent, line 1, a failed mktemp stops the write
 }
 # Internal/testing seam: run ONLY install_pipeline SRC DST (incept's own copy + origin stamp), then exit.
 # ci-gates.sh --selftest's YF-incept cell drives this; argument-borne, never an env var.
@@ -479,36 +451,7 @@ if ! owns_itself "$PWD" && [ "${ALLOW_NESTED:-0}" -eq 0 ]; then
   exit 1
 fi
 
-# escape a string for safe use as a sed REPLACEMENT. Escapes & / \ AND the `#` delimiter every `sedi`
-# stamp below uses: without `#`, a `#`-bearing value terminates the `s#..#..#` program and the trailing
-# text is read as sed COMMANDS (e.g. `w <path>` = arbitrary file write). Escaping `#` closes EVERY
-# `#`-delimited stamp sink at once, not just one call site (T9 — defense in depth with --stack validation).
-esc() { printf '%s' "$1" | sed 's/[&/#\\]/\\&/g'; }
-# portable in-place sed: last positional arg is the FILE (POSIX; no bash ${@: -1})
-sedi() {
-  last=
-  for last in "$@"; do :; done
-  sed -i.bak "$@" && rm -f "${last}.bak"
-}
-warn_codeowners_active_placeholder() {  # <dst> — G11: warn ONLY on an ACTIVE (uncommented) @your-org rule
-  if [ -f "$1" ] && grep -Eq '^[[:space:]]*[^#].*@your-org' "$1" 2>/dev/null; then
-    echo "warning: $1 has an ACTIVE @your-org/* placeholder — replace it with REAL teams/users" >&2
-    echo "         BEFORE enabling branch protection (require_code_owner_reviews), or that merge gate" >&2
-    echo "         will block (the placeholder owners don't exist). See docs/operations/review-lane.md." >&2
-  fi
-}
-
-# K3 (CP-7 recert Slice 2): incept must ship an INERT CODEOWNERS so require_code_owner_reviews cannot
-# silently block every merge. OWNER is free text ("who owns the why"); a blind substitution is INVALID
-# CODEOWNERS syntax, so seed the `*` rule ONLY when OWNER is an explicit @handle (@user or @org/team).
-# A bare name / free text stays fully inert — seeding a wrong/non-existent owner would re-introduce the
-# very block K3 fixes. Honest ceiling: incept cannot confirm the handle exists (no guaranteed network).
-codeowners_seed_handle() {  # <owner> — echoes the normalized @handle iff handle-shaped, else nothing
-  case "$1" in '@'*) : ;; *) return 0 ;; esac
-  _csh_h=${1#@}
-  printf '%s' "$_csh_h" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]{0,38}(/[A-Za-z0-9._-]+)?$' || return 0
-  printf '@%s' "$_csh_h"
-}
+# (esc, sedi, warn_codeowners_active_placeholder and codeowners_seed_handle live in scripts/stamp-lib.sh.)
 install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform + opportunistic @handle seed
   # Mirror cp_kit_replace's write condition up front so we only transform a file WE wrote (kit-own/absent);
   # a brownfield-preserved adopter file is left untouched (only the active-placeholder warning fires).
@@ -516,26 +459,7 @@ install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform
   { [ ! -f "$2" ] || grep -qE 'COPY & ADAPT|@your-org' "$2" 2>/dev/null; } && _ic_write=1
   cp_kit_replace "$1" "$2" 'COPY & ADAPT|@your-org'
   [ "$_ic_write" -eq 1 ] || { warn_codeowners_active_placeholder "$2"; return 0; }
-  _ic_seed=$(codeowners_seed_handle "$OWNER")
-  # Comment every active ownership rule: ANY line whose first non-blank char is not '#' (a CODEOWNERS rule,
-  # whatever its leading glyph — `*`, `/`, or a bare-word path a future profile might use). Header comments
-  # and blank lines are untouched. (dual-review Minor: don't couple to the current `*`/`/` rule shapes.)
-  sedi 's/^\([[:space:]]*[^#[:space:]]\)/# \1/' "$2"
-  # Unpredictable temp name (mktemp, O_EXCL) beside the target — avoids following a pre-placed symlink
-  # at a predictable path (dual-review Low). A failed mktemp STOPS the write: there is no pid-name
-  # fallback, because a guessable name brings that symlink back (SWAS-754).
-  _ic_tmp=$(mktemp "$(dirname "$2")/.codeowners.XXXXXX" 2>/dev/null) || { printf '%s\n' "incept: could not create a temporary file in $(dirname "$2") (mktemp failed), so incept stopped part-way and this directory is half-incepted; check the disk has free space and the directory is writable, then re-export the kit into a fresh directory and run 'sh scripts/incept.sh' there (in an existing repository, restore it from git instead and rerun)" >&2; exit 1; }
-  {
-    echo "# EDIT before enabling require_code_owner_reviews: replace the commented @your-org/*"
-    echo "# placeholder teams below with REAL teams/users, then uncomment. An active @your-org"
-    echo "# owner does not exist and would block EVERY merge (K3 / DEVELOPMENT-PROCESS.md §12)."
-    if [ -n "$_ic_seed" ]; then
-      echo "# Seeded from --intent-owner; confirm it is a real VCS user/team and add co-reviewers."
-      echo "*            ${_ic_seed}"
-    fi
-    echo ""
-    cat "$2"
-  } > "$_ic_tmp" && mv "$_ic_tmp" "$2"
+  codeowners_inert "$2" "$OWNER"   # scripts/stamp-lib.sh: comment every rule, header, optional @handle seed
   warn_codeowners_active_placeholder "$2"
 }
 
@@ -1362,8 +1286,7 @@ if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
   # cannot drift apart — a future backend joins BOTH by flipping ONE line, not two independently.
   _tbg_line=''
   [ "$_TBG_CONF_STAMPED" -eq 1 ] && _tbg_line='tracker-board-gates'
-  awk -v ci="$_ci_line" -v tbg="$_tbg_line" '$0=="<your-check-name>"{print ci; print "control-plane-ratification"; print "backlog-presence"; print "ceremony-binding"; print "loop-state"; if (tbg != "") print tbg; next}1' REQUIRED-CHECKS.md > REQUIRED-CHECKS.md.tmp && mv REQUIRED-CHECKS.md.tmp REQUIRED-CHECKS.md \
-    || { rm -f REQUIRED-CHECKS.md.tmp; echo "incept: could not fill REQUIRED-CHECKS.md — declare ci, control-plane-ratification, backlog-presence, ceremony-binding, loop-state${_tbg_line:+, $_tbg_line} by hand (inception-done will name them)" >&2; }
+  required_checks_fill REQUIRED-CHECKS.md "$_ci_line" "$_tbg_line" ''   # scripts/stamp-lib.sh; the empty solo slot: incept never writes solo-go-bound
   # FIRST-RUN TRUTH, PRINTED RATHER THAN ASSUMED. loop-state is now a live required context and it
   # ENFORCES, so the adopter's very first PR must carry an Entry Declaration or it will not merge.
   # There is no incept commit on their branch to carry one for them (this script writes a kit-base
@@ -1465,12 +1388,6 @@ fi
 stamp_board_governance_waiver() {   # $1 = the chosen backend token
   [ -f WAIVER-REGISTER.md ] || cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md
   grep -q '^| board-governance |' WAIVER-REGISTER.md && return 0    # idempotent
-  # +90 days: GNU then BSD. If NEITHER parses (a date(1) with neither dialect), stamp the opening
-  # date — a same-day expiry is still refused for its placeholders, so the fallback cannot
-  # accidentally widen anything; it only makes the row shorter-lived.
-  _sbw_exp=$(date -u -d "$DATE +90 days" +%Y-%m-%d 2>/dev/null \
-    || date -u -j -v+90d -f %Y-%m-%d "$DATE" +%Y-%m-%d 2>/dev/null) || _sbw_exp="$DATE"
-  [ -n "$_sbw_exp" ] || _sbw_exp="$DATE"
   # NO `|` IN AN INTERPOLATED VALUE (security S-L4). The row IS a markdown table row, so a pipe in
   # $1 would forge extra columns and shift Owner/Opened/Expires into cells the validator then reads
   # as something else. $1 is already constrained to the six tokens by the --backlog parse check, so
@@ -1479,18 +1396,10 @@ stamp_board_governance_waiver() {   # $1 = the chosen backend token
   case "$1" in
     *'|'*) echo "incept: refusing to stamp a board-governance waiver for a backend token containing '|' — add the row by hand (templates/WAIVER-REGISTER.md)." >&2; return 0 ;;
   esac
-  # printf, NOT `awk -v` (security S-L4). `awk -v row=...` runs ESCAPE PROCESSING over the assigned
-  # value, so a `\t`, a `\n` or a lone `\` in the text becomes something else inside the program —
-  # a data-into-program path for a value the program then prints verbatim. Build the line with
-  # printf, and hand awk only the FILE it is reading.
-  # SWAS-203: the Remediation cell names a cure that exists today. Jira has a kit adapter (the bind);
-  # every other backend has none, so its way out is its own adapter or BACKLOG.md. No pipe, no
-  # "when released": the validator reads this cell as a plan, and a plan must not wait on a release.
-  case "$1" in
-    jira) _sbw_fix="Bind tracker-board-gates once branch protection is available, or move the board to BACKLOG.md" ;;
-    *) _sbw_fix="Adopt a kit adapter for '$1', or move the board to BACKLOG.md" ;;
-  esac
-  _sbw_row=$(printf '| board-governance | The kit reads BACKLOG.md only; board-bound gates cannot read '"'"'%s'"'"' | [owner] | %s | %s | %s | [security-owner] |' "$1" "$DATE" "$_sbw_exp" "$_sbw_fix")
+  # The row text, its +90 days and its remediation cell are built by board_governance_row (scripts/stamp-lib.sh),
+  # with printf and never `awk -v` (security S-L4): `awk -v` runs ESCAPE PROCESSING over the value, so hand awk
+  # only the FILE it is reading and the row through the environment below.
+  _sbw_row=$(board_governance_row "$1" "$DATE")
   # Insert directly after the Active table's separator row — awk to a temp file, then move, because
   # `sedi` is a substitution helper and this is an insertion. The row reaches awk through the
   # ENVIRONMENT (ENVIRON), which is not escape-processed.
@@ -1528,62 +1437,7 @@ stamp_tracker_conf() {  # $1 = existing (0|1)
     echo "note: .kit/tracker.conf already exists — not overwritten (brownfield-safe)."
     return 0
   fi
-  if [ "$1" -eq 1 ]; then
-    cat > .kit/tracker.conf <<'EOF_TC'
-# .kit/tracker.conf — stamped by `incept --backlog jira --existing`. Fail-closed key=value grammar;
-# see docs/architecture/2026-09-19-tracker-backed-governance-design.md §5, or `sh scripts/
-# tracker-conf.sh <this-file>` to validate. Credentials are ENV ONLY: KIT_TRACKER_USER /
-# KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN honoured as aliases) — never stamp a token here.
-version=1
-backend=jira
-base_url=https://your-site.example.invalid
-flavour=cloud
-auth=basic
-project=PROJ
-list_cap=200
-# --existing: the state map below is intentionally EMPTY. Set KIT_TRACKER_USER/KIT_TRACKER_TOKEN,
-# then run `sh conformance/tracker-contract.sh --discover` to print this instance's id<->name state
-# map, and add one `state.<kit-state>=<tracker-status>` line per §4.1 kit state (the FIRST line for
-# a given kit state is the `move` target). field.<name>=customfield_NNNNN|label:<prefix>|none lines
-# follow the same discovery step.
-# create.issuetype is the issue type `board create` makes. Field ids are PER ISSUE TYPE on
-# team-managed projects: map field.size/field.risk to THIS type's ids, printed by
-# `sh conformance/tracker-contract.sh --fields`.
-# A field your Jira REQUIRES on create (it will be listed under REQUIRED by --fields) needs a line here:
-# create.<fieldId>=<value> (a team default) or create.<fieldId>=prompt (the agent supplies it per card).
-create.issuetype=Task
-EOF_TC
-  else
-    cat > .kit/tracker.conf <<'EOF_TC'
-# .kit/tracker.conf — stamped by `incept --backlog jira`. Fail-closed key=value grammar; see
-# docs/architecture/2026-09-19-tracker-backed-governance-design.md §5, or `sh scripts/
-# tracker-conf.sh <this-file>` to validate. Credentials are ENV ONLY: KIT_TRACKER_USER /
-# KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN honoured as aliases) — never stamp a token here.
-# Edit base_url/project for your instance, then verify with `sh conformance/tracker-contract.sh`.
-version=1
-backend=jira
-base_url=https://your-site.example.invalid
-flavour=cloud
-auth=basic
-project=PROJ
-state.backlog=Backlog
-state.ready=Ready
-state.in-progress=In Progress
-state.in-review=In Review
-state.released=Released
-state.done=Done
-state.blocked=Blocked
-field.size=label:size
-field.risk=label:risk
-list_cap=200
-# create.issuetype is the issue type `board create` makes. Field ids are PER ISSUE TYPE on
-# team-managed projects: map field.size/field.risk to THIS type's ids, printed by
-# `sh conformance/tracker-contract.sh --fields`.
-# A field your Jira REQUIRES on create (it will be listed under REQUIRED by --fields) needs a line here:
-# create.<fieldId>=<value> (a team default) or create.<fieldId>=prompt (the agent supplies it per card).
-create.issuetype=Task
-EOF_TC
-  fi
+  tracker_conf_write .kit/tracker.conf "$1"   # scripts/stamp-lib.sh: the two bodies; incept passes no url or project
   echo "note: .kit/tracker.conf stamped — credentials go in env only: KIT_TRACKER_USER, KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN also honoured). Never stamp a token into the conf."
 }
 
@@ -1625,16 +1479,7 @@ mkdir -p docs/architecture
 # protection...` fragment — a mid-sentence continuation with its subject deleted, which reads WORSE
 # than the banner it replaced. The unit is the blockquote run, not the line: skip while the line is
 # still part of the quote, then swallow one trailing blank so no double blank is left behind.
-strip_template_banner() {  # <file> — drop the whole `> **Template.**` blockquote run + one blank after
-  [ -f "$1" ] || return 0
-  grep -q '^> \*\*Template\.\*\*' "$1" || return 0
-  awk '
-    /^> \*\*Template\.\*\*/ { skip = 1; next }
-    skip == 1 && /^>/       { next }
-    skip == 1 && $0 == ""   { skip = 0; next }
-    { skip = 0; print }
-  ' "$1" > "$1.b3tmp" && mv "$1.b3tmp" "$1"
-}
+# (strip_template_banner lives in scripts/stamp-lib.sh.)
 for _b3f in CLAUDE.md README.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md .env.example docs/governance/DECISIONS.md; do
   strip_template_banner "$_b3f"
 done
